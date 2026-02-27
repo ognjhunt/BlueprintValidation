@@ -31,6 +31,8 @@ def test_config_defaults():
     assert config.eval_policy.vlm_judge.model == "gemini-3-flash-preview"
     assert config.eval_policy.unnorm_key == "bridge_orig"
     assert config.eval_policy.vlm_judge.enable_agentic_vision is True
+    assert config.policy_finetune.enabled is False
+    assert config.policy_finetune.dataset_name == "bridge_orig"
 
 
 def test_facility_config():
@@ -64,6 +66,13 @@ def test_config_with_all_sections(tmp_path):
             "tasks": ["go forward"],
             "vlm_judge": {"model": "gemini-3-flash", "enable_agentic_vision": True},
         },
+        "policy_finetune": {
+            "enabled": True,
+            "openvla_repo": "/tmp/openvla",
+            "data_root_dir": "/tmp/data",
+            "dataset_name": "bridge_orig",
+            "max_steps": 100,
+        },
         "eval_visual": {"metrics": ["psnr", "ssim"]},
         "eval_crosssite": {"num_clips_per_model": 5},
     }
@@ -80,6 +89,8 @@ def test_config_with_all_sections(tmp_path):
     assert config.finetune.lora_rank == 16
     assert config.eval_policy.num_rollouts == 10
     assert config.eval_policy.vlm_judge.enable_agentic_vision is True
+    assert config.policy_finetune.enabled is True
+    assert config.policy_finetune.max_steps == 100
     assert "psnr" in config.eval_visual.metrics
 
 
@@ -100,6 +111,10 @@ def test_config_resolves_relative_paths(tmp_path):
         "enrich": {"cosmos_checkpoint": "./data/checkpoints/cosmos"},
         "finetune": {"dreamdojo_repo": "./vendor/DreamDojo"},
         "eval_policy": {"openvla_checkpoint": rel_checkpoint},
+        "policy_finetune": {
+            "openvla_repo": "./vendor/openvla",
+            "data_root_dir": "./data/openvla",
+        },
     }
     config_path = cfg_dir / "validation.yaml"
     config_path.write_text(yaml.dump(config_data))
@@ -110,3 +125,5 @@ def test_config_resolves_relative_paths(tmp_path):
     assert config.enrich.cosmos_checkpoint.is_absolute()
     assert config.finetune.dreamdojo_repo.is_absolute()
     assert config.eval_policy.openvla_checkpoint.is_absolute()
+    assert config.policy_finetune.openvla_repo.is_absolute()
+    assert config.policy_finetune.data_root_dir.is_absolute()

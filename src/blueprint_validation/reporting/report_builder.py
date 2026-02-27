@@ -52,7 +52,7 @@ def _collect_results(config: ValidationConfig, work_dir: Path) -> Dict[str, Any]
     }
 
     stages = [
-        "s1_render", "s2_enrich", "s3_finetune",
+        "s1_render", "s2_enrich", "s3_finetune", "s3b_policy_finetune",
         "s4_policy_eval", "s5_visual_fidelity", "s6_spatial_accuracy",
     ]
 
@@ -148,6 +148,19 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
             lines.append(f"- Training time: {ft.get('training_seconds', 'N/A')}s")
             lines.append("")
 
+        if "s3b_policy_finetune" in fac_data:
+            pf = fac_data["s3b_policy_finetune"]
+            metrics = pf.get("metrics", {})
+            outputs = pf.get("outputs", {})
+            lines.append("### Policy Fine-tuning (OpenVLA)\n")
+            lines.append(f"- Status: {pf.get('status', 'N/A')}")
+            lines.append(f"- Dataset: {metrics.get('dataset_name', 'N/A')}")
+            lines.append(f"- Return code: {metrics.get('returncode', 'N/A')}")
+            lines.append(
+                f"- Adapted checkpoint: {outputs.get('adapted_openvla_checkpoint', 'N/A')}"
+            )
+            lines.append("")
+
     # Cross-Site Discrimination
     if data.get("cross_site"):
         cs = data["cross_site"]
@@ -190,6 +203,8 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
     lines.append(f"- Render resolution: {config.render.resolution}")
     lines.append(f"- Model size: {config.finetune.model_size}")
     lines.append(f"- LoRA: {'rank=' + str(config.finetune.lora_rank) if config.finetune.use_lora else 'disabled (full fine-tuning)'}")
+    lines.append(f"- Policy finetune enabled: {config.policy_finetune.enabled}")
+    lines.append(f"- Policy dataset: {config.policy_finetune.dataset_name}")
     lines.append(f"- VLM judge: {config.eval_policy.vlm_judge.model}")
     lines.append(f"- Agentic Vision: {config.eval_policy.vlm_judge.enable_agentic_vision}")
 

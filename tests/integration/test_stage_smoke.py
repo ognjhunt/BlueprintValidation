@@ -9,6 +9,16 @@ import numpy as np
 from blueprint_validation.common import write_json
 
 
+def test_stage3b_policy_finetune_skips_when_disabled(sample_config, tmp_path):
+    from blueprint_validation.stages.s3b_policy_finetune import PolicyFinetuneStage
+
+    fac = sample_config.facilities["test_facility"]
+    work_dir = tmp_path / "outputs" / "test_facility"
+    stage = PolicyFinetuneStage()
+    result = stage.execute(sample_config, fac, work_dir, {})
+    assert result.status == "skipped"
+
+
 def test_stage2_to_stage3_handoff(sample_config, tmp_path, monkeypatch):
     from blueprint_validation.enrichment.cosmos_runner import CosmosOutput
     from blueprint_validation.stages.s2_enrich import EnrichStage
@@ -83,6 +93,7 @@ def test_stage2_to_stage3_handoff(sample_config, tmp_path, monkeypatch):
 
 def test_stage4_policy_eval_deterministic_metrics(sample_config, tmp_path, monkeypatch):
     from blueprint_validation.evaluation.vlm_judge import JudgeScore
+    from blueprint_validation.common import StageResult
     from blueprint_validation.stages.s4_policy_eval import PolicyEvalStage
 
     sample_config.eval_policy.num_rollouts = 5
@@ -91,6 +102,9 @@ def test_stage4_policy_eval_deterministic_metrics(sample_config, tmp_path, monke
     fac = sample_config.facilities["test_facility"]
     work_dir = tmp_path / "outputs" / "test_facility"
     (work_dir / "finetune" / "adapted_checkpoint").mkdir(parents=True)
+    adapted_policy_dir = work_dir / "policy_finetune" / "adapters"
+    adapted_policy_dir.mkdir(parents=True)
+    (adapted_policy_dir / "adapter_model.safetensors").write_bytes(b"x")
     (work_dir / "renders").mkdir(parents=True)
     write_json({"clips": []}, work_dir / "renders" / "render_manifest.json")
 
@@ -99,10 +113,13 @@ def test_stage4_policy_eval_deterministic_metrics(sample_config, tmp_path, monke
         "blueprint_validation.stages.s4_policy_eval._extract_initial_frames",
         lambda manifest: [frame],
     )
-    monkeypatch.setattr(
-        "blueprint_validation.stages.s4_policy_eval.load_openvla",
-        lambda *args, **kwargs: ("model", "processor"),
-    )
+    load_calls = []
+
+    def fake_load_openvla(model_name, checkpoint_path, device):
+        load_calls.append((model_name, checkpoint_path, device))
+        return ("model", "processor")
+
+    monkeypatch.setattr("blueprint_validation.stages.s4_policy_eval.load_openvla", fake_load_openvla)
     monkeypatch.setattr(
         "blueprint_validation.stages.s4_policy_eval.load_dreamdojo_world_model",
         lambda *args, **kwargs: "world",
@@ -127,9 +144,20 @@ def test_stage4_policy_eval_deterministic_metrics(sample_config, tmp_path, monke
     monkeypatch.setattr("blueprint_validation.stages.s4_policy_eval.run_rollout", fake_run_rollout)
     monkeypatch.setattr("blueprint_validation.stages.s4_policy_eval.score_rollout", fake_score_rollout)
 
+    previous = {
+        "s3b_policy_finetune": StageResult(
+            stage_name="s3b_policy_finetune",
+            status="success",
+            elapsed_seconds=1.0,
+            outputs={"adapted_openvla_checkpoint": str(adapted_policy_dir)},
+        )
+    }
     stage = PolicyEvalStage()
-    result = stage.execute(sample_config, fac, work_dir, {})
+    result = stage.execute(sample_config, fac, work_dir, previous)
     assert result.status == "success"
     assert result.metrics["num_rollouts_baseline"] == 5
     assert result.metrics["num_rollouts_adapted"] == 5
     assert result.metrics["improvement_pct"] > 0
+    assert result.metrics["used_adapted_policy_checkpoint"] is True
+    assert len(load_calls) == 2
+    assert load_calls[1][1] == adapted_policy_dir

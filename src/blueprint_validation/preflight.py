@@ -77,6 +77,12 @@ def check_external_tool(cmd: str) -> PreflightCheck:
     return PreflightCheck(name=f"tool:{cmd}", passed=False, detail=f"{cmd} not found in PATH")
 
 
+def check_path_exists(path: Path, name: str) -> PreflightCheck:
+    if path.exists():
+        return PreflightCheck(name=name, passed=True, detail=str(path))
+    return PreflightCheck(name=name, passed=False, detail=f"Not found at {path}")
+
+
 def check_facility_ply(facility_id: str, ply_path: Path) -> PreflightCheck:
     if ply_path.exists() and ply_path.stat().st_size > 0:
         size_mb = ply_path.stat().st_size / (1024**2)
@@ -126,6 +132,44 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
 
     # API keys
     checks.append(check_api_key(config.eval_policy.vlm_judge.api_key_env))
+
+    # Optional OpenVLA fine-tuning prerequisites
+    if config.policy_finetune.enabled:
+        checks.append(check_external_tool("torchrun"))
+        checks.append(
+            check_path_exists(
+                config.policy_finetune.openvla_repo,
+                "policy_finetune:openvla_repo",
+            )
+        )
+        script_path = Path(config.policy_finetune.finetune_script)
+        if not script_path.is_absolute():
+            script_path = config.policy_finetune.openvla_repo / script_path
+        checks.append(check_path_exists(script_path, "policy_finetune:finetune_script"))
+        if config.policy_finetune.data_root_dir is None:
+            checks.append(
+                PreflightCheck(
+                    name="policy_finetune:data_root_dir",
+                    passed=False,
+                    detail="Set policy_finetune.data_root_dir when policy_finetune.enabled=true",
+                )
+            )
+        else:
+            checks.append(
+                check_path_exists(
+                    config.policy_finetune.data_root_dir,
+                    "policy_finetune:data_root_dir",
+                )
+            )
+            dataset_dir = (
+                config.policy_finetune.data_root_dir / config.policy_finetune.dataset_name
+            )
+            checks.append(
+                check_path_exists(
+                    dataset_dir,
+                    "policy_finetune:dataset_dir",
+                )
+            )
 
     # Log summary
     passed = sum(1 for c in checks if c.passed)

@@ -9,6 +9,7 @@ PLY file (from BlueprintCapturePipeline)
   → Stage 1: Render video clips at robot-height via gsplat
   → Stage 2: Enrich with Cosmos Transfer 2.5 (5-10 variants per clip)
   → Stage 3: Fine-tune DreamDojo-2B on enriched video
+  → Stage 3b (optional): Fine-tune OpenVLA policy (LoRA/OFT)
   → Stage 4: OpenVLA policy eval (baseline vs adapted) + VLM judge scoring
   → Stage 5: Visual fidelity metrics (PSNR/SSIM/LPIPS)
   → Stage 6: Spatial accuracy (VLM layout verification)
@@ -45,6 +46,7 @@ blueprint-validate run-all
 blueprint-validate render --facility facility_a
 blueprint-validate enrich --facility facility_a
 blueprint-validate finetune --facility facility_a
+blueprint-validate finetune-policy --facility facility_a  # optional
 blueprint-validate eval-policy --facility facility_a
 blueprint-validate eval-visual --facility facility_a
 blueprint-validate eval-spatial --facility facility_a
@@ -80,6 +82,14 @@ blueprint-validate --config /app/configs/example_validation.yaml run-all
 - `uv` package manager
 - Google Gemini API key (for VLM judge)
 - HuggingFace account (for model downloads)
+
+## Manipulation-Focused Setup
+
+- Use manipulation-centric tasks in `eval_policy.tasks` (pick/place/regrasp/tote handling).
+- Use close-range capture paths around task-relevant objects (totes, bins, shelf faces).
+- If you want policy weight updates, enable `policy_finetune.enabled=true` and point
+  `policy_finetune.data_root_dir` to an OpenVLA-compatible dataset root.
+- Capture checklist: `configs/capture/manipulation_capture_checklist.md`
 
 ## Testing
 

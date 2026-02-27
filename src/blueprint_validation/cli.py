@@ -127,6 +127,23 @@ def finetune(ctx: click.Context, facility: str) -> None:
     click.echo(f"Finetune complete: {result.status} ({result.elapsed_seconds:.1f}s)")
 
 
+@cli.command("finetune-policy")
+@click.option("--facility", required=True, help="Facility ID.")
+@click.pass_context
+def finetune_policy(ctx: click.Context, facility: str) -> None:
+    """Optional Stage 3b: OpenVLA policy fine-tuning."""
+    from .stages.s3b_policy_finetune import PolicyFinetuneStage
+
+    config = ctx.obj["config"]
+    fac = _get_facility(ctx, facility)
+    work_dir = _get_stage_work_dir(ctx, facility)
+
+    stage = PolicyFinetuneStage()
+    result = stage.execute(config, fac, work_dir, {})
+    result.save(work_dir / "s3b_policy_finetune_result.json")
+    click.echo(f"Policy finetune complete: {result.status} ({result.elapsed_seconds:.1f}s)")
+
+
 @cli.command("eval-policy")
 @click.option("--facility", required=True, help="Facility ID.")
 @click.pass_context
@@ -243,7 +260,7 @@ def status(ctx: click.Context) -> None:
     work_dir = ctx.obj["work_dir"]
 
     stages = [
-        "s1_render", "s2_enrich", "s3_finetune", "s4_policy_eval",
+        "s1_render", "s2_enrich", "s3_finetune", "s3b_policy_finetune", "s4_policy_eval",
         "s5_visual_fidelity", "s6_spatial_accuracy",
     ]
 

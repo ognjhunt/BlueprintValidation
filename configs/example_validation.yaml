@@ -38,6 +38,9 @@ render:
       num_orbits: 2
     - type: sweep
       length_m: 10.0
+    # Close-range arc around a tote/bin manipulation zone.
+    - type: file
+      path: ./camera_paths/manipulation_closeup_arc.json
   num_clips_per_path: 3
 
 # ---- Stage 2: Enrich ----
@@ -88,15 +91,35 @@ eval_policy:
   num_rollouts: 50
   max_steps_per_rollout: 100
   tasks:
-    - "Navigate forward through the corridor"
-    - "Turn left at the intersection"
-    - "Approach the shelving rack"
-    - "Pick up the box from the floor"
-    - "Navigate around the obstacle"
+    - "Approach the tote on the floor pallet"
+    - "Align gripper with tote handles"
+    - "Lift the tote to shelf level one"
+    - "Place the tote onto the target shelf"
+    - "Pick from left bin and place into right bin"
+    - "Regrasp the tote and stabilize before placement"
   vlm_judge:
     model: gemini-3-flash-preview
     api_key_env: GOOGLE_GENAI_API_KEY
     enable_agentic_vision: true
+
+# ---- Stage 3b: Optional OpenVLA policy fine-tune ----
+# Uses official OpenVLA finetune entrypoint (torchrun vla-scripts/finetune.py).
+# Keep disabled unless you have an OpenVLA-compatible dataset root.
+policy_finetune:
+  enabled: false
+  openvla_repo: /opt/openvla
+  finetune_script: vla-scripts/finetune.py
+  # data_root_dir should contain datasets like <data_root_dir>/bridge_orig
+  data_root_dir: ./data/openvla_datasets
+  dataset_name: bridge_orig
+  lora_rank: 32
+  batch_size: 8
+  grad_accumulation_steps: 2
+  learning_rate: 5.0e-4
+  save_steps: 1000
+  max_steps: 5000
+  image_aug: true
+  nproc_per_node: 1
 
 # ---- Stage 5: Visual Fidelity ----
 eval_visual:

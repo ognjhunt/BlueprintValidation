@@ -10,6 +10,7 @@ from .config import ValidationConfig
 from .stages.s1_render import RenderStage
 from .stages.s2_enrich import EnrichStage
 from .stages.s3_finetune import FinetuneStage
+from .stages.s3b_policy_finetune import PolicyFinetuneStage
 from .stages.s4_policy_eval import PolicyEvalStage
 from .stages.s5_visual_fidelity import VisualFidelityStage
 from .stages.s6_spatial_accuracy import SpatialAccuracyStage
@@ -35,6 +36,7 @@ class ValidationPipeline:
             RenderStage(),
             EnrichStage(),
             FinetuneStage(),
+            PolicyFinetuneStage(),
             PolicyEvalStage(),
             VisualFidelityStage(),
             SpatialAccuracyStage(),

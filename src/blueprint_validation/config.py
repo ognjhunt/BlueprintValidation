@@ -106,6 +106,27 @@ class PolicyEvalConfig:
 
 
 @dataclass
+class PolicyFinetuneConfig:
+    enabled: bool = False
+    openvla_repo: Path = Path("/opt/openvla")
+    finetune_script: str = "vla-scripts/finetune.py"
+    data_root_dir: Optional[Path] = None
+    dataset_name: str = "bridge_orig"
+    run_root_dir: Path = Path("./data/outputs/policy_finetune/runs")
+    adapter_tmp_dir: Path = Path("./data/outputs/policy_finetune/adapters")
+    lora_rank: int = 32
+    batch_size: int = 8
+    grad_accumulation_steps: int = 2
+    learning_rate: float = 5e-4
+    save_steps: int = 1000
+    max_steps: int = 5000
+    image_aug: bool = True
+    nproc_per_node: int = 1
+    wandb_project: Optional[str] = None
+    wandb_entity: Optional[str] = None
+
+
+@dataclass
 class VisualFidelityConfig:
     metrics: List[str] = field(default_factory=lambda: ["psnr", "ssim", "lpips"])
     lpips_backbone: str = "alex"
@@ -141,6 +162,7 @@ class ValidationConfig:
     enrich: EnrichConfig = field(default_factory=EnrichConfig)
     finetune: FinetuneConfig = field(default_factory=FinetuneConfig)
     eval_policy: PolicyEvalConfig = field(default_factory=PolicyEvalConfig)
+    policy_finetune: PolicyFinetuneConfig = field(default_factory=PolicyFinetuneConfig)
     eval_visual: VisualFidelityConfig = field(default_factory=VisualFidelityConfig)
     eval_spatial: SpatialAccuracyConfig = field(default_factory=SpatialAccuracyConfig)
     eval_crosssite: CrossSiteConfig = field(default_factory=CrossSiteConfig)
@@ -292,6 +314,40 @@ def load_config(path: Path) -> ValidationConfig:
                 enable_agentic_vision=vlm_raw.get("enable_agentic_vision", True),
                 scoring_prompt=vlm_raw.get("scoring_prompt", VLMJudgeConfig().scoring_prompt),
             ),
+        )
+
+    # Policy fine-tuning (OpenVLA LoRA/OFT adapter stage)
+    if "policy_finetune" in raw:
+        pf = raw["policy_finetune"]
+        data_root_dir = pf.get("data_root_dir")
+        config.policy_finetune = PolicyFinetuneConfig(
+            enabled=pf.get("enabled", False),
+            openvla_repo=_resolve_path(pf.get("openvla_repo", "/opt/openvla"), base_dir),
+            finetune_script=pf.get("finetune_script", "vla-scripts/finetune.py"),
+            data_root_dir=(
+                _resolve_path(data_root_dir, base_dir)
+                if data_root_dir
+                else None
+            ),
+            dataset_name=pf.get("dataset_name", "bridge_orig"),
+            run_root_dir=_resolve_path(
+                pf.get("run_root_dir", "./data/outputs/policy_finetune/runs"),
+                base_dir,
+            ),
+            adapter_tmp_dir=_resolve_path(
+                pf.get("adapter_tmp_dir", "./data/outputs/policy_finetune/adapters"),
+                base_dir,
+            ),
+            lora_rank=pf.get("lora_rank", 32),
+            batch_size=pf.get("batch_size", 8),
+            grad_accumulation_steps=pf.get("grad_accumulation_steps", 2),
+            learning_rate=pf.get("learning_rate", 5e-4),
+            save_steps=pf.get("save_steps", 1000),
+            max_steps=pf.get("max_steps", 5000),
+            image_aug=pf.get("image_aug", True),
+            nproc_per_node=pf.get("nproc_per_node", 1),
+            wandb_project=pf.get("wandb_project"),
+            wandb_entity=pf.get("wandb_entity"),
         )
 
     # Visual fidelity

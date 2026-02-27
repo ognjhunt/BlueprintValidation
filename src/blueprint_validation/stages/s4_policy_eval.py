@@ -101,14 +101,8 @@ class PolicyEvalStage(PipelineStage):
         num_rollouts = config.eval_policy.num_rollouts
         max_steps = config.eval_policy.max_steps_per_rollout
 
-        # Load OpenVLA
-        logger.info("Loading OpenVLA model")
         device = "cuda" if _has_cuda() else "cpu"
-        openvla_model, openvla_processor = load_openvla(
-            config.eval_policy.openvla_model,
-            config.eval_policy.openvla_checkpoint,
-            device=device,
-        )
+        adapted_policy_checkpoint = _resolve_adapted_policy_checkpoint(previous_results, work_dir)
 
         all_scores: List[Dict] = []
         scoring_failures: List[str] = []
@@ -118,6 +112,16 @@ class PolicyEvalStage(PipelineStage):
             logger.info("Running %s condition rollouts", condition)
             condition_dir = eval_dir / f"{condition}_rollouts"
             condition_dir.mkdir(exist_ok=True)
+
+            # Load policy checkpoint for this condition.
+            policy_checkpoint = config.eval_policy.openvla_checkpoint
+            if condition == "adapted" and adapted_policy_checkpoint is not None:
+                policy_checkpoint = adapted_policy_checkpoint
+            openvla_model, openvla_processor = load_openvla(
+                config.eval_policy.openvla_model,
+                policy_checkpoint,
+                device=device,
+            )
 
             # Load world model
             adapted = adapted_dir if condition == "adapted" else None
@@ -216,6 +220,8 @@ class PolicyEvalStage(PipelineStage):
             "num_rollouts_baseline": len(baseline_scores),
             "num_rollouts_adapted": len(adapted_scores),
             "num_scoring_failures": len(scoring_failures),
+            "used_adapted_policy_checkpoint": adapted_policy_checkpoint is not None,
+            "adapted_policy_checkpoint": str(adapted_policy_checkpoint) if adapted_policy_checkpoint else None,
         }
 
         write_json(metrics, eval_dir / "policy_eval_report.json")
@@ -265,3 +271,20 @@ def _build_rollout_plan(tasks: List[str], num_rollouts: int) -> List[str]:
     if not tasks:
         return []
     return [tasks[i % len(tasks)] for i in range(num_rollouts)]
+
+
+def _resolve_adapted_policy_checkpoint(
+    previous_results: Dict[str, StageResult],
+    work_dir: Path,
+) -> Path | None:
+    prev = previous_results.get("s3b_policy_finetune")
+    if prev:
+        candidate = prev.outputs.get("adapted_openvla_checkpoint")
+        if candidate:
+            path = Path(candidate)
+            if path.exists():
+                return path
+    fallback = work_dir / "policy_finetune" / "adapters"
+    if fallback.exists() and any(fallback.iterdir()):
+        return fallback
+    return None
