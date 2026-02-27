@@ -1,0 +1,74 @@
+[project]
+name = "blueprint-validation"
+version = "0.1.0"
+description = "Gaussian splat to robot world model validation pipeline"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Blueprint Team"}]
+keywords = [
+    "gaussian-splatting",
+    "world-model",
+    "robotics",
+    "validation",
+    "dreamdojo",
+    "cosmos-transfer",
+]
+
+dependencies = [
+    "click>=8.0",
+    "pyyaml>=6.0",
+    "numpy>=1.24.0",
+    "Pillow>=10.0.0",
+    "torch>=2.2.0",
+    "torchvision>=0.17.0",
+    "gsplat>=1.0.0",
+    "torchmetrics[image]>=1.0.0",
+    "lpips>=0.1.4",
+    "scipy>=1.11.0",
+    "plyfile>=1.0",
+    "tqdm>=4.60.0",
+    "google-genai>=1.0.0",
+    "transformers>=4.40.0",
+    "accelerate>=1.0.0",
+    "peft>=0.7.0",
+    "matplotlib>=3.8.0",
+    "jinja2>=3.1.0",
+    "opencv-python>=4.8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "ruff>=0.6.0",
+    "mypy>=1.8.0",
+]
+
+[project.scripts]
+blueprint-validate = "blueprint_validation.cli:main"
+
+[project.urls]
+Repository = "https://github.com/ognjhunt/BlueprintValidation"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/blueprint_validation"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = ["-v", "--tb=short", "--strict-markers"]
+markers = [
+    "gpu: marks tests requiring GPU",
+    "integration: marks integration tests",
+    "slow: marks slow tests",
+]

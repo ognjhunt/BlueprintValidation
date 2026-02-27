@@ -1,0 +1,275 @@
+"""CLI entry point for blueprint-validate."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+from typing import Optional
+
+import click
+
+from .common import get_logger, setup_logging
+from .config import load_config
+
+logger = get_logger("cli")
+
+
+@click.group()
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(exists=True),
+    default="validation.yaml",
+    help="Path to validation YAML config.",
+)
+@click.option(
+    "--work-dir",
+    type=click.Path(),
+    default="./data/outputs",
+    help="Working directory for pipeline outputs.",
+)
+@click.option("--verbose/--quiet", default=True, help="Logging verbosity.")
+@click.option("--dry-run", is_flag=True, default=False, help="Print actions without executing.")
+@click.pass_context
+def cli(ctx: click.Context, config_path: str, work_dir: str, verbose: bool, dry_run: bool) -> None:
+    """BlueprintValidation: Gaussian splat to robot world model validation pipeline."""
+    setup_logging(verbose)
+    ctx.ensure_object(dict)
+    ctx.obj["config"] = load_config(Path(config_path))
+    ctx.obj["work_dir"] = Path(work_dir)
+    ctx.obj["verbose"] = verbose
+    ctx.obj["dry_run"] = dry_run
+
+
+@cli.command()
+@click.pass_context
+def preflight(ctx: click.Context) -> None:
+    """Run preflight checks for GPU, dependencies, and model weights."""
+    from .preflight import run_preflight
+
+    config = ctx.obj["config"]
+    checks = run_preflight(config)
+    failed = [c for c in checks if not c.passed]
+    if failed:
+        click.echo(f"\n{len(failed)} preflight check(s) failed:", err=True)
+        for c in failed:
+            click.echo(f"  FAIL: {c.name} — {c.detail}", err=True)
+        sys.exit(1)
+    click.echo(f"All {len(checks)} preflight checks passed.")
+
+
+def _get_facility(ctx: click.Context, facility_id: str):
+    config = ctx.obj["config"]
+    if facility_id not in config.facilities:
+        available = ", ".join(config.facilities.keys()) or "(none)"
+        click.echo(f"Unknown facility '{facility_id}'. Available: {available}", err=True)
+        sys.exit(1)
+    return config.facilities[facility_id]
+
+
+def _get_stage_work_dir(ctx: click.Context, facility_id: str) -> Path:
+    work_dir = ctx.obj["work_dir"] / facility_id
+    work_dir.mkdir(parents=True, exist_ok=True)
+    return work_dir
+
+
+@cli.command()
+@click.option("--facility", required=True, help="Facility ID to render.")
+@click.option("--ply-path", type=click.Path(exists=True), default=None, help="Override PLY path.")
+@click.pass_context
+def render(ctx: click.Context, facility: str, ply_path: Optional[str]) -> None:
+    """Stage 1: Render PLY to video clips via gsplat."""
+    from .stages.s1_render import RenderStage
+
+    config = ctx.obj["config"]
+    fac = _get_facility(ctx, facility)
+    if ply_path:
+        fac.ply_path = Path(ply_path)
+    work_dir = _get_stage_work_dir(ctx, facility)
+
+    stage = RenderStage()
+    result = stage.execute(config, fac, work_dir, {})
+    result.save(work_dir / "s1_render_result.json")
+    click.echo(f"Render complete: {result.status} ({result.elapsed_seconds:.1f}s)")
+
+
+@cli.command()
+@click.option("--facility", required=True, help="Facility ID.")
+@click.pass_context
+def enrich(ctx: click.Context, facility: str) -> None:
+    """Stage 2: Cosmos Transfer 2.5 enrichment."""
+    from .stages.s2_enrich import EnrichStage
+
+    config = ctx.obj["config"]
+    fac = _get_facility(ctx, facility)
+    work_dir = _get_stage_work_dir(ctx, facility)
+
+    stage = EnrichStage()
+    result = stage.execute(config, fac, work_dir, {})
+    result.save(work_dir / "s2_enrich_result.json")
+    click.echo(f"Enrich complete: {result.status} ({result.elapsed_seconds:.1f}s)")
+
+
+@cli.command()
+@click.option("--facility", required=True, help="Facility ID.")
+@click.pass_context
+def finetune(ctx: click.Context, facility: str) -> None:
+    """Stage 3: DreamDojo LoRA fine-tuning."""
+    from .stages.s3_finetune import FinetuneStage
+
+    config = ctx.obj["config"]
+    fac = _get_facility(ctx, facility)
+    work_dir = _get_stage_work_dir(ctx, facility)
+
+    stage = FinetuneStage()
+    result = stage.execute(config, fac, work_dir, {})
+    result.save(work_dir / "s3_finetune_result.json")
+    click.echo(f"Finetune complete: {result.status} ({result.elapsed_seconds:.1f}s)")
+
+
+@cli.command("eval-policy")
+@click.option("--facility", required=True, help="Facility ID.")
+@click.pass_context
+def eval_policy(ctx: click.Context, facility: str) -> None:
+    """Stage 4: OpenVLA policy evaluation with VLM judge scoring."""
+    from .stages.s4_policy_eval import PolicyEvalStage
+
+    config = ctx.obj["config"]
+    fac = _get_facility(ctx, facility)
+    work_dir = _get_stage_work_dir(ctx, facility)
+
+    stage = PolicyEvalStage()
+    result = stage.execute(config, fac, work_dir, {})
+    result.save(work_dir / "s4_policy_eval_result.json")
+    click.echo(f"Policy eval complete: {result.status} ({result.elapsed_seconds:.1f}s)")
+
+
+@cli.command("eval-visual")
+@click.option("--facility", required=True, help="Facility ID.")
+@click.pass_context
+def eval_visual(ctx: click.Context, facility: str) -> None:
+    """Stage 5: Visual fidelity metrics (PSNR/SSIM/LPIPS)."""
+    from .stages.s5_visual_fidelity import VisualFidelityStage
+
+    config = ctx.obj["config"]
+    fac = _get_facility(ctx, facility)
+    work_dir = _get_stage_work_dir(ctx, facility)
+
+    stage = VisualFidelityStage()
+    result = stage.execute(config, fac, work_dir, {})
+    result.save(work_dir / "s5_visual_fidelity_result.json")
+    click.echo(f"Visual fidelity complete: {result.status} ({result.elapsed_seconds:.1f}s)")
+
+
+@cli.command("eval-spatial")
+@click.option("--facility", required=True, help="Facility ID.")
+@click.pass_context
+def eval_spatial(ctx: click.Context, facility: str) -> None:
+    """Stage 6: Spatial accuracy verification."""
+    from .stages.s6_spatial_accuracy import SpatialAccuracyStage
+
+    config = ctx.obj["config"]
+    fac = _get_facility(ctx, facility)
+    work_dir = _get_stage_work_dir(ctx, facility)
+
+    stage = SpatialAccuracyStage()
+    result = stage.execute(config, fac, work_dir, {})
+    result.save(work_dir / "s6_spatial_accuracy_result.json")
+    click.echo(f"Spatial accuracy complete: {result.status} ({result.elapsed_seconds:.1f}s)")
+
+
+@cli.command("eval-crosssite")
+@click.pass_context
+def eval_crosssite(ctx: click.Context) -> None:
+    """Stage 7: Cross-site discrimination test (requires 2 facilities)."""
+    from .stages.s7_cross_site import CrossSiteStage
+
+    config = ctx.obj["config"]
+    if len(config.facilities) < 2:
+        click.echo("Cross-site test requires at least 2 facilities in config.", err=True)
+        sys.exit(1)
+
+    work_dir = ctx.obj["work_dir"]
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    stage = CrossSiteStage()
+    # Cross-site uses all facilities, pass first as primary
+    fac_ids = list(config.facilities.keys())
+    fac = config.facilities[fac_ids[0]]
+    result = stage.execute(config, fac, work_dir, {})
+    result.save(work_dir / "s7_cross_site_result.json")
+    click.echo(f"Cross-site complete: {result.status} ({result.elapsed_seconds:.1f}s)")
+
+
+@cli.command("run-all")
+@click.pass_context
+def run_all(ctx: click.Context) -> None:
+    """Run the full validation pipeline, all stages sequentially."""
+    from .pipeline import ValidationPipeline
+
+    config = ctx.obj["config"]
+    work_dir = ctx.obj["work_dir"]
+
+    pipeline = ValidationPipeline(config, work_dir)
+    summary = pipeline.run_all()
+
+    click.echo("\n=== Pipeline Summary ===")
+    for stage_name, result in summary.items():
+        click.echo(f"  {stage_name}: {result.status} ({result.elapsed_seconds:.1f}s)")
+
+
+@cli.command()
+@click.option("--format", "fmt", type=click.Choice(["markdown", "json"]), default="markdown")
+@click.option("--output", "output_path", type=click.Path(), default="validation_report.md")
+@click.pass_context
+def report(ctx: click.Context, fmt: str, output_path: str) -> None:
+    """Generate final validation report from existing pipeline outputs."""
+    from .reporting.report_builder import build_report
+
+    config = ctx.obj["config"]
+    work_dir = ctx.obj["work_dir"]
+
+    report_path = build_report(config, work_dir, fmt=fmt, output_path=Path(output_path))
+    click.echo(f"Report written to {report_path}")
+
+
+@cli.command()
+@click.pass_context
+def status(ctx: click.Context) -> None:
+    """Show current pipeline status for all facilities."""
+    from .common import read_json
+
+    config = ctx.obj["config"]
+    work_dir = ctx.obj["work_dir"]
+
+    stages = [
+        "s1_render", "s2_enrich", "s3_finetune", "s4_policy_eval",
+        "s5_visual_fidelity", "s6_spatial_accuracy",
+    ]
+
+    for fid in config.facilities:
+        click.echo(f"\nFacility: {fid}")
+        fdir = work_dir / fid
+        for sname in stages:
+            result_file = fdir / f"{sname}_result.json"
+            if result_file.exists():
+                data = read_json(result_file)
+                click.echo(f"  {sname}: {data['status']} ({data['elapsed_seconds']:.1f}s)")
+            else:
+                click.echo(f"  {sname}: not started")
+
+    # Cross-site
+    cs_file = work_dir / "s7_cross_site_result.json"
+    if cs_file.exists():
+        data = read_json(cs_file)
+        click.echo(f"\nCross-site: {data['status']} ({data['elapsed_seconds']:.1f}s)")
+    else:
+        click.echo("\nCross-site: not started")
+
+
+def main() -> None:
+    cli()
+
+
+if __name__ == "__main__":
+    main()

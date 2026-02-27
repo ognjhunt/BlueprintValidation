@@ -1,0 +1,115 @@
+schema_version: v1
+project_name: "Blueprint Validation Pilot"
+
+# ---- Facilities ----
+facilities:
+  facility_a:
+    name: "Warehouse A - Durham"
+    ply_path: ./data/facilities/facility_a/splat.ply
+    description: "Large warehouse with shelving racks, loading dock, concrete floors"
+    landmarks:
+      - "loading dock on east wall"
+      - "shelving racks in center"
+      - "break room in northwest corner"
+    floor_height_m: 0.0
+    ceiling_height_m: 6.0
+
+  facility_b:
+    name: "Warehouse B - Raleigh"
+    ply_path: ./data/facilities/facility_b/splat.ply
+    description: "Smaller warehouse with conveyor system, narrow aisles"
+    landmarks:
+      - "conveyor belt along south wall"
+      - "narrow aisles between racks"
+      - "office area on second floor"
+    floor_height_m: 0.0
+    ceiling_height_m: 5.0
+
+# ---- Stage 1: Render ----
+render:
+  resolution: [480, 640]
+  fps: 10
+  num_frames: 49
+  camera_height_m: 1.2
+  camera_look_down_deg: 15
+  camera_paths:
+    - type: orbit
+      radius_m: 3.0
+      num_orbits: 2
+    - type: sweep
+      length_m: 10.0
+  num_clips_per_path: 3
+
+# ---- Stage 2: Enrich ----
+enrich:
+  cosmos_model: nvidia/Cosmos-Transfer2.5-2B
+  cosmos_checkpoint: ./data/checkpoints/cosmos-transfer-2.5-2b/
+  controlnet_inputs: [rgb, depth]
+  num_variants_per_render: 5
+  guidance: 7.0
+  variants:
+    - name: daylight_empty
+      prompt: "Bright daylight, empty clean industrial space, polished concrete floors"
+    - name: daylight_busy
+      prompt: "Bright daylight, workers in safety vests, forklifts moving"
+    - name: evening_dim
+      prompt: "Dim evening lighting, overhead fluorescents casting shadows"
+    - name: wet_floor
+      prompt: "Wet reflective concrete floor, caution signs, overhead lighting"
+    - name: cluttered
+      prompt: "Boxes and pallets scattered, busy workspace, equipment visible"
+
+# ---- Stage 3: Fine-tune ----
+finetune:
+  dreamdojo_repo: /opt/DreamDojo
+  dreamdojo_checkpoint: ./data/checkpoints/DreamDojo/2B_pretrain/
+  model_size: 2B
+  lora_rank: 16
+  lora_alpha: 32
+  learning_rate: 1.0e-4
+  num_epochs: 50
+  batch_size: 1
+  gradient_accumulation_steps: 4
+  warmup_steps: 100
+  save_every_n_epochs: 10
+  max_training_hours: 72
+
+# ---- Stage 4: Policy Eval ----
+eval_policy:
+  openvla_model: openvla/openvla-7b
+  openvla_checkpoint: ./data/checkpoints/openvla-7b/
+  num_rollouts: 50
+  max_steps_per_rollout: 100
+  tasks:
+    - "Navigate forward through the corridor"
+    - "Turn left at the intersection"
+    - "Approach the shelving rack"
+    - "Pick up the box from the floor"
+    - "Navigate around the obstacle"
+  vlm_judge:
+    model: gemini-3-flash
+    api_key_env: GOOGLE_GENAI_API_KEY
+    enable_agentic_vision: true
+
+# ---- Stage 5: Visual Fidelity ----
+eval_visual:
+  metrics: [psnr, ssim, lpips]
+  lpips_backbone: alex
+
+# ---- Stage 6: Spatial Accuracy ----
+eval_spatial:
+  num_sample_frames: 20
+  vlm_model: gemini-3-flash
+
+# ---- Stage 7: Cross-Site ----
+eval_crosssite:
+  num_clips_per_model: 30
+  vlm_model: gemini-3-flash
+
+# ---- Hardware / Cloud ----
+cloud:
+  provider: runpod
+  gpu_type: H100
+  num_gpus: 1
+  max_cost_usd: 500
+  auto_shutdown: true

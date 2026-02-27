@@ -1,0 +1,9 @@
+{
+  "description": "Linear forward sweep at robot height (1.2m), 10m length, 49 frames",
+  "camera_path": [
+    {"camera_to_world": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1.2, 0, 0, 0, 1], "fov": 60},
+    {"camera_to_world": [1, 0, 0, 0.208, 0, 1, 0, 0, 0, 0, 1, 1.2, 0, 0, 0, 1], "fov": 60},
+    {"camera_to_world": [1, 0, 0, 0.417, 0, 1, 0, 0, 0, 0, 1, 1.2, 0, 0, 0, 1], "fov": 60},
+    {"camera_to_world": [1, 0, 0, 0.625, 0, 1, 0, 0, 0, 0, 1, 1.2, 0, 0, 0, 1], "fov": 60}
+  ]
+}
