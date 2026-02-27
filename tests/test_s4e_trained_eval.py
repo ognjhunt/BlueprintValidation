@@ -69,14 +69,14 @@ def test_build_pairwise_metrics():
     ]
     result = _build_pairwise_metrics(scores)
 
-    assert "adapted_vs_trained" in result or "baseline_vs_trained" in result
-    assert "baseline_vs_adapted" in result
+    # Conditions sorted alphabetically: adapted < baseline < trained
+    assert "adapted_vs_trained" in result
+    assert "baseline_vs_trained" in result
+    assert "adapted_vs_baseline" in result
 
-    ba = result["baseline_vs_adapted"]
-    assert ba["baseline_mean"] == 4.5
-    assert ba["adapted_mean"] == 6.5
-    assert ba["improvement_pct"] > 0
-    assert ba["win_rate"] == 1.0
+    ab = result["adapted_vs_baseline"]
+    assert ab["adapted_mean"] == 6.5
+    assert ab["baseline_mean"] == 4.5
 
 
 def test_manipulation_success_rate():

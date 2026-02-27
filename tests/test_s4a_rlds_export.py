@@ -64,24 +64,27 @@ def test_rlds_export_stage_succeeds_with_rollouts(sample_config, tmp_path):
     sample_config.rollout_dataset.task_score_threshold = 5.0
     sample_config.rollout_dataset.min_steps_per_rollout = 2
 
-    # Create mock S4 scores
+    # Create mock S4 scores — need multiple adapted rollouts for train/eval split
     video = tmp_path / "rollout.mp4"
     _write_tiny_video(video)
 
+    adapted_rollouts = []
+    for i in range(5):
+        adapted_rollouts.append({
+            "condition": "adapted",
+            "task": "Pick tote",
+            "task_score": 8.0,
+            "rollout_index": i,
+            "video_path": str(video),
+            "action_sequence": [[0.0] * 7 for _ in range(5)],
+            "is_manipulation_task": True,
+            "grasp_acquired": True,
+            "lifted_clear": True,
+            "placed_in_target": True,
+        })
+
     scores = {
-        "scores": [
-            {
-                "condition": "adapted",
-                "task": "Pick tote",
-                "task_score": 8.0,
-                "rollout_index": 0,
-                "video_path": str(video),
-                "action_sequence": [[0.0] * 7 for _ in range(5)],
-                "is_manipulation_task": True,
-                "grasp_acquired": True,
-                "lifted_clear": True,
-                "placed_in_target": True,
-            },
+        "scores": adapted_rollouts + [
             {
                 "condition": "baseline",
                 "task": "Pick tote",
