@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
-import torch
-from plyfile import PlyData
 
 from ..common import get_logger
 
@@ -18,14 +17,14 @@ logger = get_logger("rendering.ply_loader")
 class GaussianSplatData:
     """Gaussian splat data loaded from a PLY file."""
 
-    means: torch.Tensor  # (N, 3) — xyz positions
-    scales: torch.Tensor  # (N, 3) — log-space scales
-    quats: torch.Tensor  # (N, 4) — rotations as quaternions (wxyz)
-    opacities: torch.Tensor  # (N,) — sigmoid-space opacities
-    sh_coeffs: torch.Tensor  # (N, K, 3) — spherical harmonics
+    means: Any  # (N, 3) — xyz positions
+    scales: Any  # (N, 3) — log-space scales
+    quats: Any  # (N, 4) — rotations as quaternions (wxyz)
+    opacities: Any  # (N,) — sigmoid-space opacities
+    sh_coeffs: Any  # (N, K, 3) — spherical harmonics
     num_points: int
 
-    def to(self, device: str | torch.device) -> GaussianSplatData:
+    def to(self, device: str | Any) -> GaussianSplatData:
         return GaussianSplatData(
             means=self.means.to(device),
             scales=self.scales.to(device),
@@ -36,15 +35,15 @@ class GaussianSplatData:
         )
 
     @property
-    def bounds_min(self) -> torch.Tensor:
+    def bounds_min(self):
         return self.means.min(dim=0).values
 
     @property
-    def bounds_max(self) -> torch.Tensor:
+    def bounds_max(self):
         return self.means.max(dim=0).values
 
     @property
-    def center(self) -> torch.Tensor:
+    def center(self):
         return self.means.mean(dim=0)
 
 
@@ -54,6 +53,9 @@ def load_splat(ply_path: Path, device: str = "cpu") -> GaussianSplatData:
     Supports the standard 3DGS PLY format with properties:
     x, y, z, scale_0..2, rot_0..3, opacity, f_dc_0..2, f_rest_0..N
     """
+    import torch
+    from plyfile import PlyData
+
     logger.info("Loading PLY: %s", ply_path)
     plydata = PlyData.read(str(ply_path))
     vertex = plydata["vertex"]

@@ -4,11 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import numpy as np
-import torch
-from PIL import Image
 
 from ..common import get_logger
 from .camera_paths import CameraPose
@@ -30,12 +28,13 @@ class RenderOutput:
 def render_frame(
     splat: GaussianSplatData,
     pose: CameraPose,
-    background: Optional[torch.Tensor] = None,
+    background: Optional[Any] = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Render a single frame from the Gaussian splat.
 
     Returns (rgb, depth) where rgb is (H, W, 3) uint8 and depth is (H, W) float32.
     """
+    import torch
     from gsplat import rasterization
 
     device = splat.means.device
@@ -95,6 +94,8 @@ def render_video(
         depth_frames.append(depth)
 
         if save_frames:
+            from PIL import Image
+
             frame_dir = output_dir / f"{clip_name}_frames"
             frame_dir.mkdir(parents=True, exist_ok=True)
             Image.fromarray(rgb).save(frame_dir / f"{i:05d}.png")

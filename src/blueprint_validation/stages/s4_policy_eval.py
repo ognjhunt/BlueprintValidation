@@ -10,7 +10,6 @@ import numpy as np
 from ..common import StageResult, get_logger, read_json, write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..evaluation.openvla_runner import (
-    RolloutResult,
     load_dreamdojo_world_model,
     load_openvla,
     run_rollout,
@@ -40,14 +39,33 @@ class PolicyEvalStage(PipelineStage):
         eval_dir = work_dir / "policy_eval"
         eval_dir.mkdir(parents=True, exist_ok=True)
 
-        # Check for fine-tuned LoRA weights
-        lora_dir = work_dir / "finetune" / "lora_weights"
-        if not lora_dir.exists():
+        # Check for fine-tuned checkpoint produced by Stage 3.
+        adapted_dir = None
+        prev_stage = previous_results.get("s3_finetune")
+        if prev_stage:
+            adapted_candidate = (
+                prev_stage.outputs.get("adapted_checkpoint_path")
+                or prev_stage.outputs.get("lora_weights_path")
+            )
+            if adapted_candidate:
+                adapted_dir = Path(adapted_candidate)
+        if adapted_dir is None:
+            # Backward-compatible fallbacks.
+            for candidate in [
+                work_dir / "finetune" / "adapted_checkpoint",
+                work_dir / "finetune" / "lora_weights",
+            ]:
+                if candidate.exists():
+                    adapted_dir = candidate
+                    break
+        if adapted_dir is None:
+            adapted_dir = work_dir / "finetune" / "adapted_checkpoint"
+        if not adapted_dir.exists():
             return StageResult(
                 stage_name=self.name,
                 status="failed",
                 elapsed_seconds=0,
-                detail=f"LoRA weights not found at {lora_dir}. Run Stage 3 first.",
+                detail=f"Adapted checkpoint not found at {adapted_dir}. Run Stage 3 first.",
             )
 
         # Load render manifest for initial frames
@@ -93,6 +111,8 @@ class PolicyEvalStage(PipelineStage):
         )
 
         all_scores: List[Dict] = []
+        scoring_failures: List[str] = []
+        rollout_plan = _build_rollout_plan(tasks, num_rollouts)
 
         for condition in ["baseline", "adapted"]:
             logger.info("Running %s condition rollouts", condition)
@@ -100,58 +120,61 @@ class PolicyEvalStage(PipelineStage):
             condition_dir.mkdir(exist_ok=True)
 
             # Load world model
-            lora = lora_dir if condition == "adapted" else None
+            adapted = adapted_dir if condition == "adapted" else None
             world_model = load_dreamdojo_world_model(
                 checkpoint_path=config.finetune.dreamdojo_checkpoint,
-                lora_path=lora,
+                adapted_checkpoint=adapted,
                 device=device,
             )
 
-            rollout_idx = 0
-            for task in tasks:
-                for i in range(num_rollouts // len(tasks)):
-                    # Pick initial frame (cycle through available)
-                    init_frame = initial_frames[rollout_idx % len(initial_frames)]
+            for rollout_idx, task in enumerate(rollout_plan):
+                # Pick initial frame (cycle through available)
+                init_frame = initial_frames[rollout_idx % len(initial_frames)]
+                clip_name = f"{condition}_{task[:20].replace(' ', '_')}_{rollout_idx:03d}"
 
-                    clip_name = f"{condition}_{task[:20].replace(' ', '_')}_{i:03d}"
-                    rollout = run_rollout(
-                        world_model=world_model,
-                        openvla_model=openvla_model,
-                        openvla_processor=openvla_processor,
-                        initial_frame=init_frame,
+                rollout = run_rollout(
+                    world_model=world_model,
+                    openvla_model=openvla_model,
+                    openvla_processor=openvla_processor,
+                    initial_frame=init_frame,
+                    task_prompt=task,
+                    max_steps=max_steps,
+                    unnorm_key=config.eval_policy.unnorm_key,
+                    output_dir=condition_dir,
+                    clip_name=clip_name,
+                    device=device,
+                )
+
+                if not rollout.video_path or not rollout.video_path.exists():
+                    msg = f"Rollout video missing for {clip_name}"
+                    scoring_failures.append(msg)
+                    logger.warning(msg)
+                    continue
+
+                try:
+                    score = score_rollout(
+                        video_path=rollout.video_path,
                         task_prompt=task,
-                        max_steps=max_steps,
-                        output_dir=condition_dir,
-                        clip_name=clip_name,
-                        device=device,
+                        config=config.eval_policy.vlm_judge,
+                        facility_description=facility.description,
                     )
+                except Exception as e:
+                    msg = f"VLM scoring failed for {clip_name}: {e}"
+                    logger.warning(msg)
+                    scoring_failures.append(msg)
+                    score = JudgeScore(0, 0, 0, str(e), "")
 
-                    # VLM judge scoring
-                    if rollout.video_path and rollout.video_path.exists():
-                        try:
-                            score = score_rollout(
-                                video_path=rollout.video_path,
-                                task_prompt=task,
-                                config=config.eval_policy.vlm_judge,
-                                facility_description=facility.description,
-                            )
-                        except Exception as e:
-                            logger.warning("VLM scoring failed for %s: %s", clip_name, e)
-                            score = JudgeScore(0, 0, 0, str(e), "")
-
-                        all_scores.append({
-                            "condition": condition,
-                            "task": task,
-                            "rollout_index": rollout_idx,
-                            "task_score": score.task_score,
-                            "visual_score": score.visual_score,
-                            "spatial_score": score.spatial_score,
-                            "reasoning": score.reasoning,
-                            "video_path": str(rollout.video_path),
-                            "num_steps": rollout.num_steps,
-                        })
-
-                    rollout_idx += 1
+                all_scores.append({
+                    "condition": condition,
+                    "task": task,
+                    "rollout_index": rollout_idx,
+                    "task_score": score.task_score,
+                    "visual_score": score.visual_score,
+                    "spatial_score": score.spatial_score,
+                    "reasoning": score.reasoning,
+                    "video_path": str(rollout.video_path),
+                    "num_steps": rollout.num_steps,
+                })
 
         # Compute aggregate metrics
         baseline_scores = [s for s in all_scores if s["condition"] == "baseline"]
@@ -172,11 +195,14 @@ class PolicyEvalStage(PipelineStage):
         # Statistical significance (paired t-test)
         p_value = None
         if min_len >= 2:
-            from scipy import stats
-            b_vals = [s["task_score"] for s in baseline_scores[:min_len]]
-            a_vals = [s["task_score"] for s in adapted_scores[:min_len]]
-            _, p_value = stats.ttest_rel(b_vals, a_vals)
-            p_value = float(p_value)
+            try:
+                from scipy import stats
+                b_vals = [s["task_score"] for s in baseline_scores[:min_len]]
+                a_vals = [s["task_score"] for s in adapted_scores[:min_len]]
+                _, p_value = stats.ttest_rel(b_vals, a_vals)
+                p_value = float(p_value)
+            except ImportError:
+                logger.warning("scipy not available; skipping p-value computation")
 
         # Save scores
         write_json({"scores": all_scores}, eval_dir / "vlm_scores.json")
@@ -189,13 +215,14 @@ class PolicyEvalStage(PipelineStage):
             "p_value": round(p_value, 6) if p_value is not None else None,
             "num_rollouts_baseline": len(baseline_scores),
             "num_rollouts_adapted": len(adapted_scores),
+            "num_scoring_failures": len(scoring_failures),
         }
 
         write_json(metrics, eval_dir / "policy_eval_report.json")
 
         return StageResult(
             stage_name=self.name,
-            status="success",
+            status="success" if all_scores else "failed",
             elapsed_seconds=0,
             outputs={
                 "eval_dir": str(eval_dir),
@@ -203,6 +230,7 @@ class PolicyEvalStage(PipelineStage):
                 "report_path": str(eval_dir / "policy_eval_report.json"),
             },
             metrics=metrics,
+            detail="\n".join(scoring_failures[:5]),
         )
 
 
@@ -228,3 +256,12 @@ def _has_cuda() -> bool:
         return torch.cuda.is_available()
     except ImportError:
         return False
+
+
+def _build_rollout_plan(tasks: List[str], num_rollouts: int) -> List[str]:
+    """Build exactly num_rollouts task prompts in round-robin order."""
+    if num_rollouts <= 0:
+        return []
+    if not tasks:
+        return []
+    return [tasks[i % len(tasks)] for i in range(num_rollouts)]

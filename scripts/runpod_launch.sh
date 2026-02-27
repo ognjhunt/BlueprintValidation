@@ -6,10 +6,19 @@ set -euo pipefail
 echo "=== BlueprintValidation RunPod Setup ==="
 
 # Activate venv
+if [ ! -f "/app/.venv/bin/activate" ]; then
+    echo "Virtual environment not found at /app/.venv/bin/activate"
+    exit 1
+fi
 source /app/.venv/bin/activate
 
+if ! command -v blueprint-validate >/dev/null 2>&1; then
+    echo "blueprint-validate CLI is not installed in /app/.venv"
+    exit 1
+fi
+
 # Verify GPU
-python -c "import torch; print(f'GPU: {torch.cuda.get_device_name(0)} ({torch.cuda.get_device_properties(0).total_mem / 1024**3:.0f}GB)')"
+python -c "import torch; props=torch.cuda.get_device_properties(0); mem=getattr(props,'total_memory',None) or getattr(props,'total_mem',0); print(f'GPU: {torch.cuda.get_device_name(0)} ({mem / 1024**3:.0f}GB)')"
 
 # Set up HuggingFace auth (interactive)
 if [ -z "${HF_TOKEN:-}" ]; then
@@ -27,12 +36,12 @@ fi
 # Run preflight
 echo ""
 echo "Running preflight checks..."
-blueprint-validate preflight --config /app/configs/example_validation.yaml || true
+blueprint-validate --config /app/configs/example_validation.yaml preflight || true
 
 echo ""
 echo "=== Setup complete ==="
 echo "To run the full pipeline:"
-echo "  blueprint-validate run-all --config /app/configs/example_validation.yaml --work-dir /app/data/outputs"
+echo "  blueprint-validate --config /app/configs/example_validation.yaml --work-dir /app/data/outputs run-all"
 echo ""
 echo "Or run stages individually:"
-echo "  blueprint-validate render --facility facility_a --config /app/configs/example_validation.yaml"
+echo "  blueprint-validate --config /app/configs/example_validation.yaml render --facility facility_a"

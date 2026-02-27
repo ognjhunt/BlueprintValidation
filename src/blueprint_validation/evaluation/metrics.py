@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 import numpy as np
-import torch
 
 from ..common import get_logger
 
@@ -50,6 +49,7 @@ def compute_ssim_batch(
     frames1: List[np.ndarray], frames2: List[np.ndarray]
 ) -> List[float]:
     """Compute SSIM for a batch of frame pairs using torchmetrics."""
+    import torch
     from torchmetrics.image import StructuralSimilarityIndexMeasure
 
     ssim_metric = StructuralSimilarityIndexMeasure(data_range=1.0)
@@ -70,6 +70,7 @@ def compute_lpips_batch(
     backbone: str = "alex",
 ) -> List[float]:
     """Compute LPIPS for a batch of frame pairs."""
+    import torch
     import lpips
 
     loss_fn = lpips.LPIPS(net=backbone)

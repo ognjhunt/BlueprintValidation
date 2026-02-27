@@ -38,59 +38,71 @@ def load_openvla(model_name: str, checkpoint_path: Optional[Path] = None, device
         low_cpu_mem_usage=True,
         trust_remote_code=True,
     ).to(device)
+    if not hasattr(model, "predict_action"):
+        raise RuntimeError(
+            f"Loaded OpenVLA model from {model_id} does not expose predict_action(). "
+            "Ensure you are using an OpenVLA-compatible checkpoint."
+        )
 
     return model, processor
 
 
 def load_dreamdojo_world_model(
     checkpoint_path: Path,
-    lora_path: Optional[Path] = None,
+    adapted_checkpoint: Optional[Path] = None,
     device: str = "cuda",
 ):
-    """Load DreamDojo world model, optionally with LoRA adapter.
+    """Load DreamDojo world model for action-conditioned video prediction.
 
-    Returns a callable that takes (current_frame, action) and returns next_frame.
+    DreamDojo is built on cosmos_predict2 and uses the action-conditioned
+    inference API. If adapted_checkpoint is provided, loads the fine-tuned
+    model instead of the baseline.
+
+    Returns an object with a predict_next_frame(frame, action) method.
     """
-    import torch
     import sys
 
-    # Add DreamDojo to path
+    effective_checkpoint = adapted_checkpoint if adapted_checkpoint else checkpoint_path
+
+    if not effective_checkpoint.exists():
+        raise RuntimeError(
+            f"DreamDojo checkpoint path does not exist: {effective_checkpoint}"
+        )
+
+    # Add DreamDojo repo to path for cosmos_predict2 imports
     dreamdojo_root = checkpoint_path.parent.parent
     if str(dreamdojo_root) not in sys.path:
         sys.path.insert(0, str(dreamdojo_root))
 
-    logger.info("Loading DreamDojo from %s", checkpoint_path)
-    if lora_path:
-        logger.info("Applying LoRA adapter from %s", lora_path)
-
-    # This is a placeholder for the actual DreamDojo loading API.
-    # The exact loading code depends on DreamDojo's Python API.
-    # Common pattern: load base model, then merge LoRA weights via PEFT.
+    logger.info("Loading DreamDojo from %s", effective_checkpoint)
+    if adapted_checkpoint:
+        logger.info("Using adapted (fine-tuned) checkpoint")
+    else:
+        logger.info("Using baseline (pretrained) checkpoint")
 
     try:
-        # Try DreamDojo's native loading
-        from dreamdojo import DreamDojoModel
-        model = DreamDojoModel.from_pretrained(str(checkpoint_path))
-        if lora_path and lora_path.exists():
-            model.load_lora(str(lora_path))
+        from cosmos_predict2.action_conditioned import inference as ac_inference
+        from cosmos_predict2.action_conditioned.inference import (
+            ActionConditionedInferenceArguments,
+        )
+    except ImportError as e:
+        raise RuntimeError(
+            "DreamDojo/cosmos_predict2 is not importable. Install DreamDojo and ensure "
+            f"its Python package is available (attempted root: {dreamdojo_root})."
+        ) from e
+
+    args = ActionConditionedInferenceArguments(
+        checkpoint_dir=str(effective_checkpoint),
+    )
+    model = ac_inference.setup(args)
+    if hasattr(model, "to"):
         model = model.to(device)
-        return model
-    except ImportError:
-        logger.warning("DreamDojo module not found, using stub world model")
-        return _StubWorldModel(device)
-
-
-class _StubWorldModel:
-    """Stub world model for testing without DreamDojo installed."""
-
-    def __init__(self, device: str = "cuda"):
-        self.device = device
-
-    def predict_next_frame(self, current_frame, action):
-        """Return a slightly modified version of current frame (stub)."""
-        # Add small noise to simulate frame progression
-        noise = np.random.normal(0, 5, current_frame.shape).astype(np.uint8)
-        return np.clip(current_frame.astype(int) + noise, 0, 255).astype(np.uint8)
+    if not hasattr(model, "predict_next_frame"):
+        raise RuntimeError(
+            "DreamDojo model does not expose predict_next_frame(). "
+            "Update adapter to match the installed DreamDojo API."
+        )
+    return model
 
 
 def run_rollout(
@@ -100,15 +112,25 @@ def run_rollout(
     initial_frame: np.ndarray,
     task_prompt: str,
     max_steps: int = 100,
+    unnorm_key: Optional[str] = "bridge_orig",
     output_dir: Optional[Path] = None,
     clip_name: str = "rollout",
     device: str = "cuda",
 ) -> RolloutResult:
     """Run a single policy rollout: OpenVLA predicts actions, DreamDojo generates frames."""
-    import torch
-    from PIL import Image
+    try:
+        from PIL import Image
+    except ImportError:  # pragma: no cover - exercised in lightweight test envs
+        Image = None
 
-    frames = [initial_frame]
+    try:
+        import torch
+        torch_dtype = torch.bfloat16
+    except ImportError:  # pragma: no cover - exercised in lightweight test envs
+        torch = None
+        torch_dtype = None
+
+    frames = [initial_frame.copy()]
     actions = []
     current_frame = initial_frame
 
@@ -116,20 +138,44 @@ def run_rollout(
 
     for step in range(max_steps):
         # OpenVLA predicts action from current observation
-        image = Image.fromarray(current_frame)
+        image = Image.fromarray(current_frame) if Image else current_frame
         prompt = f"In: What action should the robot take to {task_prompt}?\nOut:"
 
-        inputs = openvla_processor(prompt, image).to(device, dtype=torch.bfloat16)
-        action = openvla_model.predict_action(**inputs, do_sample=False)
+        inputs = openvla_processor(prompt, image, return_tensors="pt")
+        if hasattr(inputs, "to"):
+            if torch_dtype is not None:
+                inputs = inputs.to(device, dtype=torch_dtype)
+            else:
+                inputs = inputs.to(device)
+        else:
+            inputs = {
+                key: (
+                    value.to(device, dtype=torch_dtype)
+                    if hasattr(value, "to") and torch_dtype is not None
+                    else value.to(device)
+                    if hasattr(value, "to")
+                    else value
+                )
+                for key, value in inputs.items()
+            }
+
+        predict_kwargs = dict(inputs)
+        predict_kwargs["do_sample"] = False
+        if unnorm_key:
+            predict_kwargs["unnorm_key"] = unnorm_key
+
+        try:
+            action = openvla_model.predict_action(**predict_kwargs)
+        except TypeError:
+            predict_kwargs.pop("unnorm_key", None)
+            action = openvla_model.predict_action(**predict_kwargs)
 
         actions.append(action.tolist() if hasattr(action, "tolist") else list(action))
 
         # DreamDojo generates next frame from action
-        if hasattr(world_model, "predict_next_frame"):
-            next_frame = world_model.predict_next_frame(current_frame, action)
-        else:
-            # Fallback for stub
-            next_frame = current_frame
+        if not hasattr(world_model, "predict_next_frame"):
+            raise RuntimeError("World model missing predict_next_frame()")
+        next_frame = world_model.predict_next_frame(current_frame, action)
 
         frames.append(next_frame)
         current_frame = next_frame

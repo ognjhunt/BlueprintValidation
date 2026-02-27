@@ -93,3 +93,12 @@ def test_stage_execute_catches_errors():
     result = stage.execute(config, fac, Path("/tmp"), {})
     assert result.status == "failed"
     assert "Something broke" in result.detail
+
+
+def test_rollout_plan_honors_exact_count():
+    from blueprint_validation.stages.s4_policy_eval import _build_rollout_plan
+
+    tasks = ["a", "b", "c"]
+    plan = _build_rollout_plan(tasks, 5)
+    assert len(plan) == 5
+    assert plan == ["a", "b", "c", "a", "b"]

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import os
 import shutil
+from importlib import import_module
 from pathlib import Path
 from typing import List
 
-from .common import PreflightCheck, PreflightError, get_logger
+from .common import PreflightCheck, get_logger
 from .config import ValidationConfig
 
 logger = get_logger("preflight")
@@ -19,21 +20,31 @@ def check_gpu() -> PreflightCheck:
 
         if torch.cuda.is_available():
             gpu_name = torch.cuda.get_device_name(0)
-            vram_gb = torch.cuda.get_device_properties(0).total_mem / (1024**3)
+            props = torch.cuda.get_device_properties(0)
+            total_memory = getattr(props, "total_memory", None)
+            if total_memory is None:
+                total_memory = getattr(props, "total_mem", None)
+            if total_memory is not None:
+                vram_gb = total_memory / (1024**3)
+                detail = f"{gpu_name} ({vram_gb:.0f}GB VRAM)"
+            else:
+                detail = f"{gpu_name} (VRAM unknown)"
             return PreflightCheck(
                 name="gpu",
                 passed=True,
-                detail=f"{gpu_name} ({vram_gb:.0f}GB VRAM)",
+                detail=detail,
             )
         return PreflightCheck(name="gpu", passed=False, detail="No CUDA GPU detected")
     except ImportError:
         return PreflightCheck(name="gpu", passed=False, detail="PyTorch not installed")
+    except Exception as e:  # pragma: no cover - defensive against driver/API mismatches
+        return PreflightCheck(name="gpu", passed=False, detail=f"GPU check failed: {e}")
 
 
 def check_dependency(module_name: str, package_name: str = "") -> PreflightCheck:
     pkg = package_name or module_name
     try:
-        __import__(module_name)
+        import_module(module_name)
         return PreflightCheck(name=f"dep:{pkg}", passed=True)
     except ImportError:
         return PreflightCheck(name=f"dep:{pkg}", passed=False, detail=f"Cannot import {module_name}")

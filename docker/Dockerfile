@@ -20,12 +20,17 @@ ENV PATH="/root/.cargo/bin:$PATH"
 
 WORKDIR /app
 
+# Application code
+COPY pyproject.toml README.md ./
+COPY src/ /app/src/
+COPY configs/ /app/configs/
+COPY scripts/ /app/scripts/
+
 # Install Python dependencies
-COPY pyproject.toml ./
 RUN uv venv /app/.venv && \
     . /app/.venv/bin/activate && \
     uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 && \
-    uv pip install -e .
+    uv pip install -e /app
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Clone and install DreamDojo
@@ -35,13 +40,6 @@ ENV DREAMDOJO_ROOT=/opt/DreamDojo
 # Clone and install Cosmos Transfer 2.5
 RUN git clone --depth 1 https://github.com/nvidia-cosmos/cosmos-transfer2.5.git /opt/cosmos-transfer
 ENV COSMOS_ROOT=/opt/cosmos-transfer
-
-# Application code
-COPY src/ /app/src/
-COPY configs/ /app/configs/
-COPY scripts/ /app/scripts/
-
-RUN . /app/.venv/bin/activate && uv pip install -e /app
 
 ENTRYPOINT ["blueprint-validate"]
 CMD ["--help"]

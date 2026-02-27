@@ -1,4 +1,4 @@
-"""Stage 3: DreamDojo LoRA fine-tuning on enriched video."""
+"""Stage 3: DreamDojo fine-tuning on enriched video."""
 
 from __future__ import annotations
 
@@ -52,8 +52,8 @@ class FinetuneStage(PipelineStage):
         )
 
         # Run fine-tuning
-        logger.info("Starting LoRA fine-tuning (rank=%d, lr=%s, epochs=%d)",
-                     config.finetune.lora_rank, config.finetune.learning_rate,
+        logger.info("Starting DreamDojo fine-tuning (lr=%s, epochs=%d)",
+                     config.finetune.learning_rate,
                      config.finetune.num_epochs)
 
         # Derive facility_id from work_dir
@@ -67,7 +67,13 @@ class FinetuneStage(PipelineStage):
         )
 
         status = train_result.get("status", "failed")
-        lora_path = train_result.get("lora_weights_path", "")
+        adapted_checkpoint = (
+            train_result.get("adapted_checkpoint_path")
+            or train_result.get("checkpoint_dir")
+            or train_result.get("lora_weights_path")
+            or ""
+        )
+        lora_path = train_result.get("lora_weights_path", adapted_checkpoint)
 
         return StageResult(
             stage_name=self.name,
@@ -75,12 +81,13 @@ class FinetuneStage(PipelineStage):
             elapsed_seconds=0,
             outputs={
                 "finetune_dir": str(finetune_dir),
+                "checkpoint_dir": adapted_checkpoint,
+                "adapted_checkpoint_path": adapted_checkpoint,
                 "lora_weights_path": lora_path,
                 "dataset_dir": str(dataset_dir),
                 "train_log": str(finetune_dir / "finetune_log.json"),
             },
             metrics={
-                "lora_rank": config.finetune.lora_rank,
                 "num_epochs": config.finetune.num_epochs,
                 "learning_rate": config.finetune.learning_rate,
                 "training_seconds": train_result.get("elapsed_seconds", 0),

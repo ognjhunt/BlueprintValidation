@@ -114,7 +114,7 @@ def enrich(ctx: click.Context, facility: str) -> None:
 @click.option("--facility", required=True, help="Facility ID.")
 @click.pass_context
 def finetune(ctx: click.Context, facility: str) -> None:
-    """Stage 3: DreamDojo LoRA fine-tuning."""
+    """Stage 3: DreamDojo fine-tuning."""
     from .stages.s3_finetune import FinetuneStage
 
     config = ctx.obj["config"]

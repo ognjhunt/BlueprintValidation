@@ -24,6 +24,13 @@ class CheckpointInfo:
     def exists(self) -> bool:
         return self.path.exists()
 
+    @property
+    def effective_path(self) -> Path:
+        """The checkpoint path to use for inference (adapted if available, else baseline)."""
+        if self.lora_path and self.lora_path.exists():
+            return self.lora_path
+        return self.path
+
 
 class CheckpointManager:
     """Manage baseline and site-adapted DreamDojo checkpoints."""

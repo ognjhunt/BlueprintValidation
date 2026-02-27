@@ -8,7 +8,7 @@ Gaussian splat to robot world model validation pipeline. Proves that scanning a 
 PLY file (from BlueprintCapturePipeline)
   → Stage 1: Render video clips at robot-height via gsplat
   → Stage 2: Enrich with Cosmos Transfer 2.5 (5-10 variants per clip)
-  → Stage 3: LoRA fine-tune DreamDojo-2B on enriched video
+  → Stage 3: Fine-tune DreamDojo-2B on enriched video
   → Stage 4: OpenVLA policy eval (baseline vs adapted) + VLM judge scoring
   → Stage 5: Visual fidelity metrics (PSNR/SSIM/LPIPS)
   → Stage 6: Spatial accuracy (VLM layout verification)
@@ -60,7 +60,7 @@ docker build -f docker/runpod.Dockerfile -t blueprint-validation:latest .
 
 # On RunPod: SSH in and run
 bash /app/scripts/runpod_launch.sh
-blueprint-validate run-all --config /app/configs/example_validation.yaml
+blueprint-validate --config /app/configs/example_validation.yaml run-all
 ```
 
 ## Components
@@ -71,7 +71,7 @@ blueprint-validate run-all --config /app/configs/example_validation.yaml
 | [Cosmos Transfer 2.5](https://github.com/nvidia-cosmos/cosmos-transfer2.5) | NVIDIA | Video enrichment |
 | [OpenVLA 7B](https://github.com/openvla/openvla) | Stanford | Robot policy for evaluation |
 | [gsplat](https://github.com/nerfstudio-project/gsplat) | Nerfstudio | Gaussian splat rendering |
-| Gemini 3 Flash | Google | VLM judge with Agentic Vision |
+| Gemini 3 Flash Preview | Google | VLM judge with Agentic Vision |
 
 ## Requirements
 

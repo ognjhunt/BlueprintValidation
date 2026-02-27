@@ -6,10 +6,9 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import numpy as np
-import torch
 
 from ..common import get_logger
 from ..config import CameraPathSpec
@@ -39,17 +38,26 @@ class CameraPose:
     def forward(self) -> np.ndarray:
         return -self.c2w[:3, 2]
 
-    def viewmat(self) -> torch.Tensor:
+    def viewmat(self) -> Any:
         """Return world-to-camera (view) matrix as a (4,4) tensor."""
         w2c = np.linalg.inv(self.c2w)
+        try:
+            import torch
+        except ImportError:
+            return w2c.astype(np.float32)
         return torch.from_numpy(w2c.astype(np.float32))
 
-    def K(self) -> torch.Tensor:
+    def K(self) -> Any:
         """Return 3x3 intrinsics matrix."""
-        return torch.tensor(
+        mat = np.array(
             [[self.fx, 0, self.cx], [0, self.fy, self.cy], [0, 0, 1]],
-            dtype=torch.float32,
+            dtype=np.float32,
         )
+        try:
+            import torch
+        except ImportError:
+            return mat
+        return torch.tensor(mat, dtype=torch.float32)
 
 
 def _look_at(eye: np.ndarray, target: np.ndarray, up: np.ndarray = None) -> np.ndarray:

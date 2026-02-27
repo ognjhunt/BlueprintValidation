@@ -44,6 +44,7 @@ render:
 enrich:
   cosmos_model: nvidia/Cosmos-Transfer2.5-2B
   cosmos_checkpoint: ./data/checkpoints/cosmos-transfer-2.5-2b/
+  cosmos_repo: /opt/cosmos-transfer
   controlnet_inputs: [rgb, depth]
   num_variants_per_render: 5
   guidance: 7.0
@@ -63,9 +64,14 @@ enrich:
 finetune:
   dreamdojo_repo: /opt/DreamDojo
   dreamdojo_checkpoint: ./data/checkpoints/DreamDojo/2B_pretrain/
+  # Optional DreamDojo config script path or config name (without .sh) under dreamdojo_repo/configs.
+  # experiment_config: post-training/2b_720p_adapted_17f
   model_size: 2B
-  lora_rank: 16
+  # LoRA via Cosmos config system (model.config.train_architecture=lora)
+  use_lora: true
+  lora_rank: 32
   lora_alpha: 32
+  lora_target_modules: "q_proj,k_proj,v_proj,output_proj,mlp.layer1,mlp.layer2"
   learning_rate: 1.0e-4
   num_epochs: 50
   batch_size: 1
@@ -78,6 +84,7 @@ finetune:
 eval_policy:
   openvla_model: openvla/openvla-7b
   openvla_checkpoint: ./data/checkpoints/openvla-7b/
+  unnorm_key: bridge_orig
   num_rollouts: 50
   max_steps_per_rollout: 100
   tasks:
@@ -87,7 +94,7 @@ eval_policy:
     - "Pick up the box from the floor"
     - "Navigate around the obstacle"
   vlm_judge:
-    model: gemini-3-flash
+    model: gemini-3-flash-preview
     api_key_env: GOOGLE_GENAI_API_KEY
     enable_agentic_vision: true
 
@@ -99,12 +106,12 @@ eval_visual:
 # ---- Stage 6: Spatial Accuracy ----
 eval_spatial:
   num_sample_frames: 20
-  vlm_model: gemini-3-flash
+  vlm_model: gemini-3-flash-preview
 
 # ---- Stage 7: Cross-Site ----
 eval_crosssite:
   num_clips_per_model: 30
-  vlm_model: gemini-3-flash
+  vlm_model: gemini-3-flash-preview
 
 # ---- Hardware / Cloud ----
 cloud:

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import json
+import csv
 import shutil
 from pathlib import Path
-from typing import Dict, List
+from typing import List
 
 from ..common import get_logger, read_json, write_json
 
@@ -21,17 +21,19 @@ def build_dreamdojo_dataset(
 
     DreamDojo expects a dataset directory with:
     - videos/ directory containing .mp4 files
-    - metadata.json with video paths and descriptions
-    - dataset_info.json with dataset-level metadata
+    - metas/ directory containing .txt files (one per video, with the text prompt)
+    - metadata.csv with columns: video_path, prompt
 
     Returns the path to the dataset directory.
     """
     manifest = read_json(enriched_manifest_path)
     dataset_dir = output_dir / "dreamdojo_dataset"
     videos_dir = dataset_dir / "videos"
+    metas_dir = dataset_dir / "metas"
     videos_dir.mkdir(parents=True, exist_ok=True)
+    metas_dir.mkdir(parents=True, exist_ok=True)
 
-    video_entries: List[Dict] = []
+    csv_rows: List[dict] = []
 
     for entry in manifest.get("clips", []):
         src = Path(entry["output_video_path"])
@@ -43,31 +45,38 @@ def build_dreamdojo_dataset(
         dst = videos_dir / src.name
         shutil.copy2(src, dst)
 
-        video_entries.append({
+        # Write corresponding meta text file (prompt)
+        prompt = entry.get("prompt", "")
+        meta_name = src.stem + ".txt"
+        meta_path = metas_dir / meta_name
+        meta_path.write_text(prompt)
+
+        csv_rows.append({
             "video_path": f"videos/{src.name}",
-            "prompt": entry.get("prompt", ""),
+            "meta_path": f"metas/{meta_name}",
+            "prompt": prompt,
             "variant": entry.get("variant_name", ""),
             "source_clip": entry.get("clip_name", ""),
             "facility": facility_name,
         })
 
-    # Write metadata
-    metadata = {
-        "dataset_name": f"blueprint_{facility_name}",
-        "num_videos": len(video_entries),
-        "facility": facility_name,
-        "videos": video_entries,
-    }
-    write_json(metadata, dataset_dir / "metadata.json")
+    # Write metadata.csv
+    csv_path = dataset_dir / "metadata.csv"
+    if csv_rows:
+        fieldnames = list(csv_rows[0].keys())
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(csv_rows)
 
-    # Write dataset info
+    # Write dataset info JSON for our own tracking
     dataset_info = {
         "name": f"blueprint_{facility_name}",
         "description": f"Site-adapted training data for {facility_name}",
-        "num_videos": len(video_entries),
+        "num_videos": len(csv_rows),
         "source": "BlueprintValidation pipeline",
     }
     write_json(dataset_info, dataset_dir / "dataset_info.json")
 
-    logger.info("Built dataset with %d videos at %s", len(video_entries), dataset_dir)
+    logger.info("Built dataset with %d videos at %s", len(csv_rows), dataset_dir)
     return dataset_dir

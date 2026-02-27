@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
-from ..common import get_logger, write_json
+from ..common import get_logger
 from ..config import EnrichConfig, VariantSpec
 
 logger = get_logger("enrichment.cosmos_runner")
@@ -32,34 +34,96 @@ def build_controlnet_spec(
     guidance: float = 7.0,
     controlnet_inputs: List[str] = None,
 ) -> dict:
-    """Build a Cosmos Transfer 2.5 controlnet spec JSON."""
+    """Build an inference config matching Cosmos Transfer's JSON CLI schema."""
     if controlnet_inputs is None:
         controlnet_inputs = ["rgb", "depth"]
 
-    spec = {
-        "video_path": str(video_path),
-        "prompt_path": None,  # We'll write prompt to file
+    controls = set(controlnet_inputs)
+    spec: dict = {
+        "name": output_path.stem,
         "prompt": prompt,
-        "output_path": str(output_path),
+        "video_path": str(video_path),
+        "output_dir": str(output_path.parent),
         "guidance": guidance,
-        "controlnet_specs": [],
+        # Internal key used by our pipeline for post-run verification.
+        "output_path": str(output_path),
     }
 
-    if "rgb" in controlnet_inputs:
-        spec["controlnet_specs"].append({
-            "control_path": str(video_path),
-            "control_type": "rgb",
-            "control_weight": 0.8,
-        })
-
-    if "depth" in controlnet_inputs and depth_path and depth_path.exists():
-        spec["controlnet_specs"].append({
+    if "depth" in controls and depth_path and depth_path.exists():
+        spec["depth"] = {
             "control_path": str(depth_path),
-            "control_type": "depth",
             "control_weight": 0.6,
-        })
+        }
+    if "edge" in controls:
+        spec["edge"] = {"control_weight": 0.5}
+    if "seg" in controls:
+        spec["seg"] = {"control_weight": 0.5}
+    if "vis" in controls:
+        spec["vis"] = {"control_weight": 0.5}
+
+    if "rgb" in controls:
+        # Transfer already conditions on input RGB via `video_path`.
+        logger.debug("Ignoring explicit 'rgb' control input; Cosmos uses video_path directly")
 
     return spec
+
+
+def build_cosmos_inference_command(
+    spec_path: Path,
+    output_dir: Path,
+    num_gpus: int = 1,
+) -> list[str]:
+    """Build the Cosmos inference command."""
+    cmd = [
+        "python",
+        "examples/inference.py",
+        "-i",
+        str(spec_path),
+        "-o",
+        str(output_dir),
+    ]
+    if num_gpus > 1:
+        cmd.extend(["--num_devices", str(num_gpus)])
+    return cmd
+
+
+def resolve_cosmos_repo(cosmos_repo: Path) -> Path:
+    """Resolve Cosmos repo path and verify the inference script exists."""
+    candidates = [
+        cosmos_repo,
+        Path(os.environ["COSMOS_ROOT"]) if os.environ.get("COSMOS_ROOT") else None,
+        Path("/opt/cosmos-transfer"),
+        Path("/opt/cosmos-transfer2.5"),
+        Path.home() / "cosmos-transfer2.5",
+    ]
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        inference_script = candidate / "examples" / "inference.py"
+        if inference_script.exists():
+            return candidate
+
+    checked = ", ".join(str(c) for c in candidates if c)
+    raise RuntimeError(
+        "Cosmos Transfer inference script not found. Checked: "
+        f"{checked}. Set enrich.cosmos_repo to your cosmos-transfer2.5 checkout."
+    )
+
+
+def _resolve_generated_video(expected_path: Path) -> Path:
+    if expected_path.exists():
+        return expected_path
+
+    output_dir = expected_path.parent
+    candidates = sorted(
+        output_dir.glob("*.mp4"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not candidates:
+        raise RuntimeError(f"Cosmos inference produced no MP4 output in {output_dir}")
+    return candidates[0]
 
 
 def run_cosmos_inference(
@@ -67,77 +131,55 @@ def run_cosmos_inference(
     cosmos_checkpoint: Path,
     cosmos_model: str = "nvidia/Cosmos-Transfer2.5-2B",
     num_gpus: int = 1,
+    cosmos_repo: Optional[Path] = None,
 ) -> Path:
-    """Run Cosmos Transfer 2.5 inference via CLI.
+    """Run Cosmos Transfer 2.5 inference and return generated output video path."""
+    del cosmos_checkpoint  # checkpoint presence is preflighted; CLI resolves model assets internally.
 
-    Returns the path to the generated output video.
-    """
     output_path = Path(spec["output_path"])
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Write spec to temp file
+    repo_root = resolve_cosmos_repo(cosmos_repo or Path("/opt/cosmos-transfer"))
+    if not shutil.which("python"):
+        raise RuntimeError("Python interpreter not found in PATH for Cosmos inference")
+
+    # Write spec to temp file in output directory for traceability.
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".json", delete=False, dir=output_path.parent
+        mode="w",
+        suffix=".json",
+        delete=False,
+        dir=output_path.parent,
     ) as f:
         json.dump(spec, f, indent=2)
-        spec_path = f.name
+        spec_path = Path(f.name)
 
-    # Write prompt to file if needed
-    prompt_path = output_path.parent / f"{output_path.stem}_prompt.txt"
-    prompt_path.write_text(spec.get("prompt", ""))
-    spec["prompt_path"] = str(prompt_path)
-
-    # Re-write spec with prompt_path
-    with open(spec_path, "w") as f:
-        json.dump(spec, f, indent=2)
-
-    # Build command
-    cosmos_root = cosmos_checkpoint.parent.parent
-    inference_script = cosmos_root / "examples" / "inference.py"
-
-    if not inference_script.exists():
-        # Try finding in standard install locations
-        for candidate in [
-            Path("/opt/cosmos-transfer/examples/inference.py"),
-            Path.home() / "cosmos-transfer2.5" / "examples" / "inference.py",
-        ]:
-            if candidate.exists():
-                inference_script = candidate
-                break
-
-    if num_gpus > 1:
-        cmd = [
-            "torchrun",
-            f"--nproc_per_node={num_gpus}",
-            "--master_port=12341",
-            "-m", "examples.inference",
-            "--params_file", spec_path,
-            f"--num_gpus={num_gpus}",
-        ]
-    else:
-        cmd = [
-            "python",
-            str(inference_script),
-            "--params_file", spec_path,
-        ]
-
-    logger.info("Running Cosmos inference: %s", " ".join(cmd))
-    logger.info("Output: %s", output_path)
+    cmd = build_cosmos_inference_command(
+        spec_path=spec_path,
+        output_dir=output_path.parent,
+        num_gpus=num_gpus,
+    )
+    logger.info("Running Cosmos inference (%s): %s", cosmos_model, " ".join(cmd))
 
     result = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
-        cwd=str(cosmos_root) if cosmos_root.exists() else None,
-        timeout=1800,  # 30 min timeout
+        cwd=str(repo_root),
+        timeout=1800,
     )
 
     if result.returncode != 0:
-        logger.error("Cosmos inference failed:\nstdout: %s\nstderr: %s", result.stdout, result.stderr)
-        raise RuntimeError(f"Cosmos inference failed: {result.stderr[-500:]}")
+        stderr_tail = (result.stderr or "")[-1000:]
+        stdout_tail = (result.stdout or "")[-1000:]
+        raise RuntimeError(
+            "Cosmos inference failed "
+            f"(returncode={result.returncode}). stdout_tail={stdout_tail!r} "
+            f"stderr_tail={stderr_tail!r}"
+        )
 
-    logger.info("Cosmos inference complete: %s", output_path)
-    return output_path
+    generated = _resolve_generated_video(output_path)
+    logger.info("Cosmos inference complete: %s", generated)
+    return generated
 
 
 def enrich_clip(
@@ -152,31 +194,30 @@ def enrich_clip(
     outputs = []
 
     for variant in variants:
-        output_video = output_dir / f"{clip_name}_{variant.name}.mp4"
-
+        expected_video = output_dir / f"{clip_name}_{variant.name}.mp4"
         spec = build_controlnet_spec(
             video_path=video_path,
             depth_path=depth_path,
             prompt=variant.prompt,
-            output_path=output_video,
+            output_path=expected_video,
             guidance=config.guidance,
             controlnet_inputs=config.controlnet_inputs,
         )
 
-        try:
-            run_cosmos_inference(
-                spec=spec,
-                cosmos_checkpoint=config.cosmos_checkpoint,
-                cosmos_model=config.cosmos_model,
-            )
-            outputs.append(CosmosOutput(
+        generated_video = run_cosmos_inference(
+            spec=spec,
+            cosmos_checkpoint=config.cosmos_checkpoint,
+            cosmos_model=config.cosmos_model,
+            cosmos_repo=config.cosmos_repo,
+        )
+        outputs.append(
+            CosmosOutput(
                 variant_name=variant.name,
                 prompt=variant.prompt,
-                output_video_path=output_video,
+                output_video_path=generated_video,
                 input_video_path=video_path,
                 depth_video_path=depth_path,
-            ))
-        except Exception as e:
-            logger.error("Failed to enrich %s with variant %s: %s", clip_name, variant.name, e)
+            )
+        )
 
     return outputs

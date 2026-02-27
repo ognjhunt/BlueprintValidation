@@ -143,7 +143,6 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
         if "s3_finetune" in fac_data:
             ft = fac_data["s3_finetune"].get("metrics", {})
             lines.append(f"### Fine-tuning\n")
-            lines.append(f"- LoRA rank: {ft.get('lora_rank', 'N/A')}")
             lines.append(f"- Epochs: {ft.get('num_epochs', 'N/A')}")
             lines.append(f"- Final loss: {ft.get('final_loss', 'N/A')}")
             lines.append(f"- Training time: {ft.get('training_seconds', 'N/A')}s")
@@ -189,7 +188,8 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
     lines.append(f"- Project: {config.project_name}")
     lines.append(f"- Facilities: {', '.join(config.facilities.keys())}")
     lines.append(f"- Render resolution: {config.render.resolution}")
-    lines.append(f"- LoRA rank: {config.finetune.lora_rank}")
+    lines.append(f"- Model size: {config.finetune.model_size}")
+    lines.append(f"- LoRA: {'rank=' + str(config.finetune.lora_rank) if config.finetune.use_lora else 'disabled (full fine-tuning)'}")
     lines.append(f"- VLM judge: {config.eval_policy.vlm_judge.model}")
     lines.append(f"- Agentic Vision: {config.eval_policy.vlm_judge.enable_agentic_vision}")
 

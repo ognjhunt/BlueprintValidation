@@ -8,7 +8,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 from ..common import get_logger
 from ..config import VLMJudgeConfig
@@ -51,6 +51,67 @@ def _extract_json_from_response(text: str) -> dict:
 
     logger.warning("Could not parse JSON from VLM response: %s", text[:200])
     return {"task_score": 0, "visual_score": 0, "spatial_score": 0, "reasoning": text}
+
+
+def _extract_response_text(response) -> str:
+    text = getattr(response, "text", None)
+    if text:
+        return text
+    candidates = getattr(response, "candidates", None) or []
+    for candidate in candidates:
+        content = getattr(candidate, "content", None)
+        parts = getattr(content, "parts", None) or []
+        chunks = [getattr(p, "text", "") for p in parts if getattr(p, "text", "")]
+        if chunks:
+            return "\n".join(chunks)
+    return ""
+
+
+def _build_code_execution_tool(types):
+    # SDKs differ on whether ToolCodeExecution should be passed as a class or instance.
+    try:
+        return types.Tool(code_execution=types.ToolCodeExecution())
+    except TypeError:
+        return types.Tool(code_execution=types.ToolCodeExecution)
+
+
+def _build_generate_config(types, enable_agentic_vision: bool, temperature: float):
+    kwargs = {"temperature": temperature}
+    if enable_agentic_vision:
+        kwargs["tools"] = [_build_code_execution_tool(types)]
+    return types.GenerateContentConfig(**kwargs)
+
+
+def _validate_numeric_score(payload: dict, key: str) -> float:
+    if key not in payload:
+        raise ValueError(f"Missing required key: {key}")
+    value = float(payload[key])
+    if value < 0 or value > 10:
+        raise ValueError(f"{key} out of range [0, 10]: {value}")
+    return value
+
+
+def _parse_judge_payload(payload: dict) -> tuple[float, float, float, str]:
+    task = _validate_numeric_score(payload, "task_score")
+    visual = _validate_numeric_score(payload, "visual_score")
+    spatial = _validate_numeric_score(payload, "spatial_score")
+    reasoning = str(payload.get("reasoning", "")).strip()
+    if not reasoning:
+        raise ValueError("Missing reasoning in judge payload")
+    return task, visual, spatial, reasoning
+
+
+def _parse_classify_payload(payload: dict) -> tuple[str, float, str]:
+    predicted = str(payload.get("predicted_facility", "")).strip()
+    confidence = float(payload.get("confidence", 0))
+    reasoning = str(payload.get("reasoning", "")).strip()
+    if not predicted:
+        raise ValueError("Missing predicted_facility in classify payload")
+    if confidence < 0 or confidence > 1:
+        raise ValueError(f"confidence out of range [0, 1]: {confidence}")
+    if not reasoning:
+        raise ValueError("Missing reasoning in classify payload")
+    return predicted, confidence, reasoning
 
 
 def _get_gemini_client(config: VLMJudgeConfig):
@@ -103,7 +164,6 @@ def score_rollout(
 
     Uses the Think-Act-Observe loop to actively inspect video frames.
     """
-    from google import genai
     from google.genai import types
 
     client = _get_gemini_client(config)
@@ -130,28 +190,43 @@ def score_rollout(
         ))
 
     # Configure for Agentic Vision with code execution
-    tools = []
-    if config.enable_agentic_vision:
-        tools = [types.Tool(code_execution=types.ToolCodeExecution())]
+    errors = []
+    for attempt in range(3):
+        if attempt > 0:
+            parts.append(
+                types.Part.from_text(
+                    "Retry: return JSON only with numeric task_score/visual_score/spatial_score "
+                    "between 0 and 10 and a non-empty reasoning field."
+                )
+            )
 
-    response = client.models.generate_content(
-        model=config.model,
-        contents=[types.Content(parts=parts, role="user")],
-        config=types.GenerateContentConfig(
-            tools=tools,
-            temperature=0.1,
-        ),
-    )
+        response = client.models.generate_content(
+            model=config.model,
+            contents=[types.Content(parts=parts, role="user")],
+            config=_build_generate_config(
+                types,
+                enable_agentic_vision=config.enable_agentic_vision,
+                temperature=0.1,
+            ),
+        )
+        raw_text = _extract_response_text(response)
+        parsed = _extract_json_from_response(raw_text)
+        try:
+            task_score, visual_score, spatial_score, reasoning = _parse_judge_payload(parsed)
+            return JudgeScore(
+                task_score=task_score,
+                visual_score=visual_score,
+                spatial_score=spatial_score,
+                reasoning=reasoning,
+                raw_response=raw_text,
+            )
+        except Exception as e:
+            errors.append(f"attempt={attempt + 1}: {e}")
+            continue
 
-    raw_text = response.text or ""
-    parsed = _extract_json_from_response(raw_text)
-
-    return JudgeScore(
-        task_score=float(parsed.get("task_score", 0)),
-        visual_score=float(parsed.get("visual_score", 0)),
-        spatial_score=float(parsed.get("spatial_score", 0)),
-        reasoning=parsed.get("reasoning", ""),
-        raw_response=raw_text,
+    raise RuntimeError(
+        "VLM judge failed to return valid scoring JSON after retries: "
+        + "; ".join(errors)
     )
 
 
@@ -162,7 +237,6 @@ def score_spatial_accuracy(
     config: VLMJudgeConfig,
 ) -> JudgeScore:
     """Score spatial accuracy of generated video against facility description."""
-    from google import genai
     from google.genai import types
 
     client = _get_gemini_client(config)
@@ -187,25 +261,42 @@ def score_spatial_accuracy(
             mime_type="image/jpeg",
         ))
 
-    tools = []
-    if config.enable_agentic_vision:
-        tools = [types.Tool(code_execution=types.ToolCodeExecution())]
+    errors = []
+    for attempt in range(3):
+        if attempt > 0:
+            parts.append(
+                types.Part.from_text(
+                    "Retry: return JSON only with task_score/visual_score/spatial_score in [0,10] "
+                    "and a non-empty reasoning string."
+                )
+            )
+        response = client.models.generate_content(
+            model=config.model,
+            contents=[types.Content(parts=parts, role="user")],
+            config=_build_generate_config(
+                types,
+                enable_agentic_vision=config.enable_agentic_vision,
+                temperature=0.1,
+            ),
+        )
+        raw_text = _extract_response_text(response)
+        parsed = _extract_json_from_response(raw_text)
+        try:
+            task_score, visual_score, spatial_score, reasoning = _parse_judge_payload(parsed)
+            return JudgeScore(
+                task_score=task_score,
+                visual_score=visual_score,
+                spatial_score=spatial_score,
+                reasoning=reasoning,
+                raw_response=raw_text,
+            )
+        except Exception as e:
+            errors.append(f"attempt={attempt + 1}: {e}")
+            continue
 
-    response = client.models.generate_content(
-        model=config.model,
-        contents=[types.Content(parts=parts, role="user")],
-        config=types.GenerateContentConfig(tools=tools, temperature=0.1),
-    )
-
-    raw_text = response.text or ""
-    parsed = _extract_json_from_response(raw_text)
-
-    return JudgeScore(
-        task_score=float(parsed.get("task_score", 0)),
-        visual_score=float(parsed.get("visual_score", 0)),
-        spatial_score=float(parsed.get("spatial_score", 0)),
-        reasoning=parsed.get("reasoning", ""),
-        raw_response=raw_text,
+    raise RuntimeError(
+        "VLM spatial scorer failed to return valid JSON after retries: "
+        + "; ".join(errors)
     )
 
 
@@ -215,7 +306,6 @@ def classify_facility(
     config: VLMJudgeConfig,
 ) -> dict:
     """Classify which facility a generated video depicts (for cross-site test)."""
-    from google import genai
     from google.genai import types
 
     client = _get_gemini_client(config)
@@ -237,21 +327,43 @@ def classify_facility(
             mime_type="image/jpeg",
         ))
 
-    response = client.models.generate_content(
-        model=config.model,
-        contents=[types.Content(parts=parts, role="user")],
-        config=types.GenerateContentConfig(temperature=0.1),
+    errors = []
+    for attempt in range(3):
+        if attempt > 0:
+            parts.append(
+                types.Part.from_text(
+                    "Retry: return JSON only with predicted_facility, confidence (0-1), reasoning."
+                )
+            )
+        response = client.models.generate_content(
+            model=config.model,
+            contents=[types.Content(parts=parts, role="user")],
+            config=_build_generate_config(
+                types,
+                enable_agentic_vision=config.enable_agentic_vision,
+                temperature=0.1,
+            ),
+        )
+
+        raw_text = _extract_response_text(response)
+        try:
+            parsed = json.loads(raw_text)
+        except json.JSONDecodeError:
+            parsed = _extract_json_from_response(raw_text)
+
+        try:
+            predicted, confidence, reasoning = _parse_classify_payload(parsed)
+            return {
+                "predicted_facility": predicted,
+                "confidence": confidence,
+                "reasoning": reasoning,
+                "raw_response": raw_text,
+            }
+        except Exception as e:
+            errors.append(f"attempt={attempt + 1}: {e}")
+            continue
+
+    raise RuntimeError(
+        "VLM facility classifier failed to return valid JSON after retries: "
+        + "; ".join(errors)
     )
-
-    raw_text = response.text or ""
-    try:
-        parsed = json.loads(raw_text)
-    except json.JSONDecodeError:
-        parsed = _extract_json_from_response(raw_text)
-
-    return {
-        "predicted_facility": parsed.get("predicted_facility", "unknown"),
-        "confidence": float(parsed.get("confidence", 0)),
-        "reasoning": parsed.get("reasoning", ""),
-        "raw_response": raw_text,
-    }
