@@ -1,0 +1,7 @@
+# Copy to an untracked file (for example `scripts/runtime_env.local`) and source it:
+#   set -a && source scripts/runtime_env.local && set +a
+#
+# Never commit secrets.
+
+export GOOGLE_GENAI_API_KEY="YOUR_GEMINI_KEY"
+export HF_TOKEN="hf_..."

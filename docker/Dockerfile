@@ -36,10 +36,15 @@ ENV PATH="/app/.venv/bin:$PATH"
 # Clone and install DreamDojo
 RUN git clone --depth 1 https://github.com/NVIDIA/DreamDojo.git /opt/DreamDojo
 ENV DREAMDOJO_ROOT=/opt/DreamDojo
+RUN . /app/.venv/bin/activate && uv pip install -e /opt/DreamDojo
 
 # Clone and install Cosmos Transfer 2.5
 RUN git clone --depth 1 https://github.com/nvidia-cosmos/cosmos-transfer2.5.git /opt/cosmos-transfer
 ENV COSMOS_ROOT=/opt/cosmos-transfer
+
+# Clone OpenVLA repo for fine-tuning entrypoints (vla-scripts/finetune.py).
+RUN git clone --depth 1 https://github.com/openvla/openvla.git /opt/openvla
+ENV OPENVLA_ROOT=/opt/openvla
 
 ENTRYPOINT ["blueprint-validate"]
 CMD ["--help"]

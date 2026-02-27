@@ -46,6 +46,10 @@ blueprint-validate preflight
 # Auto-generate a fast pilot config from BlueprintCapturePipeline runs
 bash scripts/setup_first_data.sh
 
+# Optional: source runtime secrets from a local untracked file
+# cp scripts/runtime_env.example scripts/runtime_env.local
+# set -a && source scripts/runtime_env.local && set +a
+
 # Run full pipeline
 blueprint-validate run-all
 
@@ -55,7 +59,9 @@ blueprint-validate compose-robot --facility facility_a    # optional
 blueprint-validate polish-gemini --facility facility_a    # optional
 blueprint-validate enrich --facility facility_a
 blueprint-validate finetune --facility facility_a
+blueprint-validate export-rlds --facility facility_a      # optional Stage 4a
 blueprint-validate finetune-policy --facility facility_a  # optional
+blueprint-validate eval-trained-policy --facility facility_a  # optional Stage 4e
 blueprint-validate eval-policy --facility facility_a
 blueprint-validate export-rollouts --facility facility_a
 blueprint-validate train-policy-pair --facility facility_a
@@ -77,6 +83,26 @@ bash /app/scripts/runpod_launch.sh
 blueprint-validate --config /app/configs/example_validation.yaml run-all
 ```
 
+### Docker Snapshot
+
+Build a reusable runtime image snapshot (includes DreamDojo/Cosmos/OpenVLA repos):
+
+```bash
+bash scripts/build_runtime_snapshot.sh
+```
+
+Build + push to Docker Hub:
+
+```bash
+DOCKERHUB_IMAGE=<dockerhub-user>/blueprint-validation PUSH=true bash scripts/build_runtime_snapshot.sh
+```
+
+Provision local vendor repos for non-Docker runs (auto-invoked by `setup_first_data.sh`):
+
+```bash
+PROVISION_REPOS=true bash scripts/setup_first_data.sh
+```
+
 ## Components
 
 | Component | Source | Purpose |
@@ -94,6 +120,14 @@ blueprint-validate --config /app/configs/example_validation.yaml run-all
 - `uv` package manager
 - Google Gemini API key (for VLM judge)
 - HuggingFace account (for model downloads)
+- Local clones or container images with:
+  - DreamDojo repo (and importable `cosmos_predict2`)
+  - Cosmos Transfer repo (`examples/inference.py`)
+  - OpenVLA repo (`vla-scripts/finetune.py`)
+- HuggingFace auth (`huggingface-cli login` or `HF_TOKEN`) with accepted licenses for:
+  - `nvidia/DreamDojo`
+  - `nvidia/Cosmos-Transfer2.5-2B`
+  - `openvla/openvla-7b`
 
 ## Manipulation-Focused Setup
 

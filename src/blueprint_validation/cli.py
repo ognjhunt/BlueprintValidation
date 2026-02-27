@@ -195,6 +195,23 @@ def eval_policy(ctx: click.Context, facility: str) -> None:
     click.echo(f"Policy eval complete: {result.status} ({result.elapsed_seconds:.1f}s)")
 
 
+@cli.command("export-rlds")
+@click.option("--facility", required=True, help="Facility ID.")
+@click.pass_context
+def export_rlds(ctx: click.Context, facility: str) -> None:
+    """Stage 4a: Export adapted rollouts to RLDS TFRecord dataset."""
+    from .stages.s4a_rlds_export import RLDSExportStage
+
+    config = ctx.obj["config"]
+    fac = _get_facility(ctx, facility)
+    work_dir = _get_stage_work_dir(ctx, facility)
+
+    stage = RLDSExportStage()
+    result = stage.execute(config, fac, work_dir, {})
+    result.save(work_dir / "s4a_rlds_export_result.json")
+    click.echo(f"RLDS export complete: {result.status} ({result.elapsed_seconds:.1f}s)")
+
+
 @cli.command("export-rollouts")
 @click.option("--facility", required=True, help="Facility ID.")
 @click.pass_context
@@ -244,6 +261,23 @@ def eval_policy_pair(ctx: click.Context, facility: str) -> None:
     result = stage.execute(config, fac, work_dir, {})
     result.save(work_dir / "s4d_policy_pair_eval_result.json")
     click.echo(f"Policy pair eval complete: {result.status} ({result.elapsed_seconds:.1f}s)")
+
+
+@cli.command("eval-trained-policy")
+@click.option("--facility", required=True, help="Facility ID.")
+@click.pass_context
+def eval_trained_policy(ctx: click.Context, facility: str) -> None:
+    """Stage 4e: Evaluate Stage 3b fine-tuned policy in adapted world model."""
+    from .stages.s4e_trained_eval import TrainedPolicyEvalStage
+
+    config = ctx.obj["config"]
+    fac = _get_facility(ctx, facility)
+    work_dir = _get_stage_work_dir(ctx, facility)
+
+    stage = TrainedPolicyEvalStage()
+    result = stage.execute(config, fac, work_dir, {})
+    result.save(work_dir / "s4e_trained_eval_result.json")
+    click.echo(f"Trained policy eval complete: {result.status} ({result.elapsed_seconds:.1f}s)")
 
 
 @cli.command("eval-visual")
@@ -346,8 +380,9 @@ def status(ctx: click.Context) -> None:
 
     stages = [
         "s1_render", "s1b_robot_composite", "s1c_gemini_polish", "s2_enrich",
-        "s3_finetune", "s3b_policy_finetune", "s4_policy_eval", "s4b_rollout_dataset",
-        "s4c_policy_pair_train", "s4d_policy_pair_eval",
+        "s3_finetune", "s3b_policy_finetune", "s4_policy_eval", "s4a_rlds_export",
+        "s4e_trained_eval", "s4b_rollout_dataset", "s4c_policy_pair_train",
+        "s4d_policy_pair_eval",
         "s5_visual_fidelity", "s6_spatial_accuracy",
     ]
 

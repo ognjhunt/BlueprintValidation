@@ -4,9 +4,10 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 from typing import Dict, List, Tuple
+
+import yaml
 
 
 def _discover_run_candidates(runs_root: Path) -> List[Tuple[Path, Path]]:
@@ -73,7 +74,22 @@ def _facility_from_run(
     return fid, facility
 
 
-def _build_config(facilities: dict, include_cross_site: bool) -> dict:
+def _pick_repo_path(*candidates: Path) -> str:
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    # Default to last (usually local vendor path) when nothing exists yet.
+    return str(candidates[-1])
+
+
+def _build_config(
+    facilities: dict,
+    include_cross_site: bool,
+    policy_finetune_enabled: bool,
+    dreamdojo_repo: str,
+    cosmos_repo: str,
+    openvla_repo: str,
+) -> dict:
     return {
         "schema_version": "v1",
         "project_name": "Blueprint Validation Pilot (Auto)",
@@ -110,7 +126,7 @@ def _build_config(facilities: dict, include_cross_site: bool) -> dict:
         "enrich": {
             "cosmos_model": "nvidia/Cosmos-Transfer2.5-2B",
             "cosmos_checkpoint": "../data/checkpoints/cosmos-transfer-2.5-2b/",
-            "cosmos_repo": "/opt/cosmos-transfer",
+            "cosmos_repo": cosmos_repo,
             "controlnet_inputs": ["rgb", "depth"],
             "num_variants_per_render": 2,
             "guidance": 7.0,
@@ -120,7 +136,7 @@ def _build_config(facilities: dict, include_cross_site: bool) -> dict:
             ],
         },
         "finetune": {
-            "dreamdojo_repo": "/opt/DreamDojo",
+            "dreamdojo_repo": dreamdojo_repo,
             "dreamdojo_checkpoint": "../data/checkpoints/DreamDojo/2B_pretrain/",
             "model_size": "2B",
             "use_lora": True,
@@ -157,8 +173,8 @@ def _build_config(facilities: dict, include_cross_site: bool) -> dict:
             },
         },
         "policy_finetune": {
-            "enabled": True,
-            "openvla_repo": "/opt/openvla",
+            "enabled": policy_finetune_enabled,
+            "openvla_repo": openvla_repo,
             "finetune_script": "vla-scripts/finetune.py",
             "data_root_dir": "../data/openvla_datasets",
             "dataset_name": "bridge_orig",
@@ -237,6 +253,12 @@ def main() -> int:
         type=Path,
         default=Path("configs/pilot_validation.auto.yaml"),
     )
+    parser.add_argument(
+        "--policy-finetune",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable/disable policy pair training/evaluation in generated config (default: enabled).",
+    )
     args = parser.parse_args()
 
     runs_root = args.capture_pipeline_root / "runs"
@@ -258,14 +280,38 @@ def main() -> int:
         )
         facilities[fid] = facility
 
+    policy_finetune_enabled = bool(args.policy_finetune)
+    dreamdojo_repo = _pick_repo_path(
+        Path("/opt/DreamDojo"),
+        args.capture_pipeline_root / "vendor" / "DreamDojo",
+        Path.cwd() / "data" / "vendor" / "DreamDojo",
+    )
+    cosmos_repo = _pick_repo_path(
+        Path("/opt/cosmos-transfer"),
+        args.capture_pipeline_root / "vendor" / "cosmos-transfer",
+        Path.cwd() / "data" / "vendor" / "cosmos-transfer",
+    )
+    openvla_repo = _pick_repo_path(
+        Path("/opt/openvla"),
+        args.capture_pipeline_root / "vendor" / "openvla",
+        Path.cwd() / "data" / "vendor" / "openvla",
+    )
+
     include_cross_site = len(facilities) >= 2
-    config = _build_config(facilities, include_cross_site=include_cross_site)
+    config = _build_config(
+        facilities,
+        include_cross_site=include_cross_site,
+        policy_finetune_enabled=policy_finetune_enabled,
+        dreamdojo_repo=dreamdojo_repo,
+        cosmos_repo=cosmos_repo,
+        openvla_repo=openvla_repo,
+    )
 
     out = args.output_config
     if not out.is_absolute():
         out = (Path.cwd() / out).resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(config, indent=2) + "\n")
+    out.write_text(yaml.safe_dump(config, sort_keys=False))
 
     print(f"Wrote pilot config: {out}")
     for fid, fcfg in facilities.items():

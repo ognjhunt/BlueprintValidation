@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
+import sys
 from importlib import import_module
 from pathlib import Path
 from typing import List
@@ -83,6 +85,82 @@ def check_path_exists(path: Path, name: str) -> PreflightCheck:
     return PreflightCheck(name=name, passed=False, detail=f"Not found at {path}")
 
 
+def check_path_exists_under(root: Path, rel_path: str, name: str) -> PreflightCheck:
+    target = root / rel_path
+    if target.exists():
+        return PreflightCheck(name=name, passed=True, detail=str(target))
+    return PreflightCheck(name=name, passed=False, detail=f"Missing required path: {target}")
+
+
+def check_hf_auth() -> PreflightCheck:
+    """Check that Hugging Face auth is available for gated model downloads."""
+    if (os.environ.get("HF_TOKEN") or "").strip():
+        return PreflightCheck(name="hf_auth", passed=True, detail="HF_TOKEN is set")
+
+    hf_cli = shutil.which("huggingface-cli")
+    if not hf_cli:
+        return PreflightCheck(
+            name="hf_auth",
+            passed=False,
+            detail="huggingface-cli not found and HF_TOKEN not set",
+        )
+
+    try:
+        proc = subprocess.run(
+            [hf_cli, "whoami"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception as exc:
+        return PreflightCheck(name="hf_auth", passed=False, detail=f"HF auth check failed: {exc}")
+
+    if proc.returncode == 0:
+        return PreflightCheck(name="hf_auth", passed=True, detail="huggingface-cli authenticated")
+    return PreflightCheck(
+        name="hf_auth",
+        passed=False,
+        detail="Run `huggingface-cli login` or set HF_TOKEN",
+    )
+
+
+def check_python_import_from_path(module_name: str, extra_path: Path, name: str) -> PreflightCheck:
+    """Check if a module can be imported with an additional path on sys.path."""
+    if not extra_path.exists():
+        return PreflightCheck(name=name, passed=False, detail=f"Path not found: {extra_path}")
+
+    inserted = False
+    try:
+        path_text = str(extra_path)
+        if path_text not in sys.path:
+            sys.path.insert(0, path_text)
+            inserted = True
+        import_module(module_name)
+        return PreflightCheck(name=name, passed=True, detail=f"Importable from {extra_path}")
+    except Exception as exc:
+        return PreflightCheck(name=name, passed=False, detail=f"Cannot import {module_name}: {exc}")
+    finally:
+        if inserted:
+            try:
+                sys.path.remove(str(extra_path))
+            except ValueError:
+                pass
+        for key in list(sys.modules.keys()):
+            if key == module_name or key.startswith(module_name + "."):
+                sys.modules.pop(key, None)
+
+
+def check_api_key_for_scope(env_var: str, scope: str) -> PreflightCheck:
+    val = os.environ.get(env_var, "")
+    if val:
+        return PreflightCheck(name=f"api_key:{scope}", passed=True, detail=f"{env_var} set")
+    return PreflightCheck(
+        name=f"api_key:{scope}",
+        passed=False,
+        detail=f"{env_var} not set",
+    )
+
+
 def check_facility_ply(facility_id: str, ply_path: Path) -> PreflightCheck:
     if ply_path.exists() and ply_path.stat().st_size > 0:
         size_mb = ply_path.stat().st_size / (1024**2)
@@ -136,9 +214,44 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
     checks.append(check_model_weights(config.finetune.dreamdojo_checkpoint, "DreamDojo"))
     checks.append(check_model_weights(config.enrich.cosmos_checkpoint, "Cosmos-Transfer-2.5"))
     checks.append(check_model_weights(config.eval_policy.openvla_checkpoint, "OpenVLA"))
+    checks.append(check_hf_auth())
+
+    # Runtime repos and scripts required by Stage 2+.
+    checks.append(check_path_exists(config.enrich.cosmos_repo, "repo:cosmos_transfer"))
+    checks.append(
+        check_path_exists_under(
+            config.enrich.cosmos_repo,
+            "examples/inference.py",
+            "repo:cosmos_transfer:inference_script",
+        )
+    )
+    checks.append(check_path_exists(config.finetune.dreamdojo_repo, "repo:dreamdojo"))
+    checks.append(
+        check_path_exists_under(
+            config.finetune.dreamdojo_repo,
+            "launch.sh",
+            "repo:dreamdojo:launch",
+        )
+    )
+    checks.append(
+        check_path_exists_under(
+            config.finetune.dreamdojo_repo,
+            "configs",
+            "repo:dreamdojo:configs",
+        )
+    )
+    checks.append(
+        check_python_import_from_path(
+            "cosmos_predict2.action_conditioned.inference",
+            config.finetune.dreamdojo_repo,
+            "import:cosmos_predict2",
+        )
+    )
 
     # API keys
     checks.append(check_api_key(config.eval_policy.vlm_judge.api_key_env))
+    checks.append(check_api_key_for_scope(config.eval_policy.vlm_judge.api_key_env, "eval_spatial"))
+    checks.append(check_api_key_for_scope(config.eval_policy.vlm_judge.api_key_env, "eval_crosssite"))
 
     if config.robot_composite.enabled:
         if config.robot_composite.urdf_path is None:

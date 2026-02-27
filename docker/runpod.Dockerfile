@@ -46,9 +46,12 @@ ENV PATH="/app/.venv/bin:$PATH"
 # Clone DreamDojo and Cosmos Transfer 2.5
 RUN git clone --depth 1 https://github.com/NVIDIA/DreamDojo.git /opt/DreamDojo && \
     git clone --depth 1 https://github.com/nvidia-cosmos/cosmos-transfer2.5.git /opt/cosmos-transfer
+RUN . /app/.venv/bin/activate && uv pip install -e /opt/DreamDojo
+RUN git clone --depth 1 https://github.com/openvla/openvla.git /opt/openvla
 
 ENV DREAMDOJO_ROOT=/opt/DreamDojo
 ENV COSMOS_ROOT=/opt/cosmos-transfer
+ENV OPENVLA_ROOT=/opt/openvla
 
 EXPOSE 22
 

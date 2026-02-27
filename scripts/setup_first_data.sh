@@ -7,6 +7,8 @@ IOS_CAPTURE_ROOT="${IOS_CAPTURE_ROOT:-/Users/nijelhunt_1/Desktop/BlueprintCaptur
 CONFIG_PATH="${CONFIG_PATH:-$ROOT_DIR/configs/pilot_validation.auto.yaml}"
 WORK_DIR="${WORK_DIR:-$ROOT_DIR/data/outputs/pilot}"
 RUN_PREFLIGHT="${RUN_PREFLIGHT:-true}"
+PROVISION_REPOS="${PROVISION_REPOS:-true}"
+VENDOR_ROOT="${VENDOR_ROOT:-$ROOT_DIR/data/vendor}"
 
 echo "== BlueprintValidation First-Data Setup =="
 echo "BlueprintValidation root: $ROOT_DIR"
@@ -19,6 +21,42 @@ if [[ ! -d "$CAPTURE_PIPELINE_ROOT" ]]; then
 fi
 if [[ ! -d "$IOS_CAPTURE_ROOT" ]]; then
   echo "WARNING: iOS capture root not found: $IOS_CAPTURE_ROOT"
+fi
+
+ensure_repo() {
+  local target="$1"
+  local url="$2"
+  if [[ -d "$target/.git" ]]; then
+    echo "Repo already present: $target"
+    return 0
+  fi
+  echo "Cloning $url -> $target"
+  mkdir -p "$(dirname "$target")"
+  if ! git clone --depth 1 "$url" "$target"; then
+    echo "WARNING: failed to clone $url (offline/DNS or auth issue)."
+    echo "         Expected path remains: $target"
+  fi
+}
+
+if [[ "$PROVISION_REPOS" == "true" ]]; then
+  mkdir -p "$VENDOR_ROOT"
+  if [[ ! -d "/opt/DreamDojo/.git" ]]; then
+    ensure_repo "$VENDOR_ROOT/DreamDojo" "https://github.com/NVIDIA/DreamDojo.git"
+  else
+    echo "Using existing /opt/DreamDojo"
+  fi
+  if [[ ! -d "/opt/cosmos-transfer/.git" ]]; then
+    ensure_repo "$VENDOR_ROOT/cosmos-transfer" "https://github.com/nvidia-cosmos/cosmos-transfer2.5.git"
+  else
+    echo "Using existing /opt/cosmos-transfer"
+  fi
+  if [[ ! -d "/opt/openvla/.git" ]]; then
+    ensure_repo "$VENDOR_ROOT/openvla" "https://github.com/openvla/openvla.git"
+  else
+    echo "Using existing /opt/openvla"
+  fi
+else
+  echo "Skipping repo provisioning (PROVISION_REPOS=false)."
 fi
 
 python3 "$ROOT_DIR/scripts/generate_pilot_config.py" \
@@ -69,17 +107,23 @@ echo "6) Stage 3 DreamDojo finetune"
 echo "   blueprint-validate --config \"$CONFIG_PATH\" --work-dir \"$WORK_DIR\" finetune --facility facility_a"
 echo "7) Stage 4 frozen policy eval"
 echo "   blueprint-validate --config \"$CONFIG_PATH\" --work-dir \"$WORK_DIR\" eval-policy --facility facility_a"
-echo "8) Stage 4b rollout export"
+echo "8) Stage 4a RLDS export (optional TFRecord path for Stage 3b)"
+echo "   blueprint-validate --config \"$CONFIG_PATH\" --work-dir \"$WORK_DIR\" export-rlds --facility facility_a"
+echo "9) Stage 3b policy finetune (optional OpenVLA finetune from RLDS)"
+echo "   blueprint-validate --config \"$CONFIG_PATH\" --work-dir \"$WORK_DIR\" finetune-policy --facility facility_a"
+echo "10) Stage 4e trained policy eval (optional)"
+echo "   blueprint-validate --config \"$CONFIG_PATH\" --work-dir \"$WORK_DIR\" eval-trained-policy --facility facility_a"
+echo "11) Stage 4b rollout export"
 echo "   blueprint-validate --config \"$CONFIG_PATH\" --work-dir \"$WORK_DIR\" export-rollouts --facility facility_a"
-echo "9) Stage 4c paired policy training"
+echo "12) Stage 4c paired policy training"
 echo "   blueprint-validate --config \"$CONFIG_PATH\" --work-dir \"$WORK_DIR\" train-policy-pair --facility facility_a"
-echo "10) Stage 4d paired policy eval"
+echo "13) Stage 4d paired policy eval"
 echo "    blueprint-validate --config \"$CONFIG_PATH\" --work-dir \"$WORK_DIR\" eval-policy-pair --facility facility_a"
-echo "11) Stage 5 visual"
+echo "14) Stage 5 visual"
 echo "    blueprint-validate --config \"$CONFIG_PATH\" --work-dir \"$WORK_DIR\" eval-visual --facility facility_a"
-echo "12) Stage 6 spatial"
+echo "15) Stage 6 spatial"
 echo "    blueprint-validate --config \"$CONFIG_PATH\" --work-dir \"$WORK_DIR\" eval-spatial --facility facility_a"
-echo "13) Stage 7 cross-site (requires facility_b in config)"
+echo "16) Stage 7 cross-site (requires facility_b in config)"
 echo "    blueprint-validate --config \"$CONFIG_PATH\" --work-dir \"$WORK_DIR\" eval-crosssite"
-echo "14) report"
+echo "17) report"
 echo "    blueprint-validate --config \"$CONFIG_PATH\" --work-dir \"$WORK_DIR\" report --format markdown --output \"$WORK_DIR/validation_report.md\""

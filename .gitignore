@@ -44,6 +44,7 @@ data/
 .env
 .env.local
 configs/pilot_validation.auto.yaml
+scripts/runtime_env.local
 
 # Jupyter
 .ipynb_checkpoints/
