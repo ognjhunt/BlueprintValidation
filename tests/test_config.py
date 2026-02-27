@@ -31,6 +31,9 @@ def test_config_defaults():
     assert config.eval_policy.vlm_judge.model == "gemini-3-flash-preview"
     assert config.eval_policy.unnorm_key == "bridge_orig"
     assert config.eval_policy.vlm_judge.enable_agentic_vision is True
+    assert config.policy_adapter.name == "openvla"
+    assert config.rollout_dataset.enabled is True
+    assert config.policy_compare.enabled is True
     assert config.policy_finetune.enabled is False
     assert config.policy_finetune.dataset_name == "bridge_orig"
 
@@ -59,6 +62,8 @@ def test_config_with_all_sections(tmp_path):
             "b": {"name": "B", "ply_path": "/tmp/b.ply"},
         },
         "render": {"resolution": [240, 320], "num_frames": 10},
+        "robot_composite": {"enabled": True, "urdf_path": "/tmp/arm.urdf"},
+        "gemini_polish": {"enabled": True, "model": "gemini-3.1-flash-image-preview"},
         "enrich": {"cosmos_model": "test-model", "num_variants_per_render": 3},
         "finetune": {"num_epochs": 10, "lora_rank": 16},
         "eval_policy": {
@@ -73,6 +78,9 @@ def test_config_with_all_sections(tmp_path):
             "dataset_name": "bridge_orig",
             "max_steps": 100,
         },
+        "policy_adapter": {"name": "openvla"},
+        "rollout_dataset": {"seed": 99, "train_split": 0.7},
+        "policy_compare": {"heldout_num_rollouts": 8},
         "eval_visual": {"metrics": ["psnr", "ssim"]},
         "eval_crosssite": {"num_clips_per_model": 5},
     }
@@ -88,9 +96,13 @@ def test_config_with_all_sections(tmp_path):
     assert config.finetune.num_epochs == 10
     assert config.finetune.lora_rank == 16
     assert config.eval_policy.num_rollouts == 10
+    assert config.robot_composite.enabled is True
+    assert config.gemini_polish.enabled is True
     assert config.eval_policy.vlm_judge.enable_agentic_vision is True
     assert config.policy_finetune.enabled is True
     assert config.policy_finetune.max_steps == 100
+    assert config.rollout_dataset.seed == 99
+    assert config.policy_compare.heldout_num_rollouts == 8
     assert "psnr" in config.eval_visual.metrics
 
 

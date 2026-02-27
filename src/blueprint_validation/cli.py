@@ -93,6 +93,40 @@ def render(ctx: click.Context, facility: str, ply_path: Optional[str]) -> None:
     click.echo(f"Render complete: {result.status} ({result.elapsed_seconds:.1f}s)")
 
 
+@cli.command("compose-robot")
+@click.option("--facility", required=True, help="Facility ID.")
+@click.pass_context
+def compose_robot(ctx: click.Context, facility: str) -> None:
+    """Stage 1b: Composite URDF robot arm into rendered clips."""
+    from .stages.s1b_robot_composite import RobotCompositeStage
+
+    config = ctx.obj["config"]
+    fac = _get_facility(ctx, facility)
+    work_dir = _get_stage_work_dir(ctx, facility)
+
+    stage = RobotCompositeStage()
+    result = stage.execute(config, fac, work_dir, {})
+    result.save(work_dir / "s1b_robot_composite_result.json")
+    click.echo(f"Robot composite complete: {result.status} ({result.elapsed_seconds:.1f}s)")
+
+
+@cli.command("polish-gemini")
+@click.option("--facility", required=True, help="Facility ID.")
+@click.pass_context
+def polish_gemini(ctx: click.Context, facility: str) -> None:
+    """Stage 1c: Optional Gemini image polish for composited clips."""
+    from .stages.s1c_gemini_polish import GeminiPolishStage
+
+    config = ctx.obj["config"]
+    fac = _get_facility(ctx, facility)
+    work_dir = _get_stage_work_dir(ctx, facility)
+
+    stage = GeminiPolishStage()
+    result = stage.execute(config, fac, work_dir, {})
+    result.save(work_dir / "s1c_gemini_polish_result.json")
+    click.echo(f"Gemini polish complete: {result.status} ({result.elapsed_seconds:.1f}s)")
+
+
 @cli.command()
 @click.option("--facility", required=True, help="Facility ID.")
 @click.pass_context
@@ -159,6 +193,57 @@ def eval_policy(ctx: click.Context, facility: str) -> None:
     result = stage.execute(config, fac, work_dir, {})
     result.save(work_dir / "s4_policy_eval_result.json")
     click.echo(f"Policy eval complete: {result.status} ({result.elapsed_seconds:.1f}s)")
+
+
+@cli.command("export-rollouts")
+@click.option("--facility", required=True, help="Facility ID.")
+@click.pass_context
+def export_rollouts(ctx: click.Context, facility: str) -> None:
+    """Stage 4b: Export rollouts to RLDS-style datasets."""
+    from .stages.s4b_rollout_dataset import RolloutDatasetStage
+
+    config = ctx.obj["config"]
+    fac = _get_facility(ctx, facility)
+    work_dir = _get_stage_work_dir(ctx, facility)
+
+    stage = RolloutDatasetStage()
+    result = stage.execute(config, fac, work_dir, {})
+    result.save(work_dir / "s4b_rollout_dataset_result.json")
+    click.echo(f"Rollout export complete: {result.status} ({result.elapsed_seconds:.1f}s)")
+
+
+@cli.command("train-policy-pair")
+@click.option("--facility", required=True, help="Facility ID.")
+@click.pass_context
+def train_policy_pair(ctx: click.Context, facility: str) -> None:
+    """Stage 4c: Train policy_base and policy_site from paired datasets."""
+    from .stages.s4c_policy_pair_train import PolicyPairTrainStage
+
+    config = ctx.obj["config"]
+    fac = _get_facility(ctx, facility)
+    work_dir = _get_stage_work_dir(ctx, facility)
+
+    stage = PolicyPairTrainStage()
+    result = stage.execute(config, fac, work_dir, {})
+    result.save(work_dir / "s4c_policy_pair_train_result.json")
+    click.echo(f"Policy pair train complete: {result.status} ({result.elapsed_seconds:.1f}s)")
+
+
+@cli.command("eval-policy-pair")
+@click.option("--facility", required=True, help="Facility ID.")
+@click.pass_context
+def eval_policy_pair(ctx: click.Context, facility: str) -> None:
+    """Stage 4d: Evaluate policy_base vs policy_site on heldout rollouts."""
+    from .stages.s4d_policy_pair_eval import PolicyPairEvalStage
+
+    config = ctx.obj["config"]
+    fac = _get_facility(ctx, facility)
+    work_dir = _get_stage_work_dir(ctx, facility)
+
+    stage = PolicyPairEvalStage()
+    result = stage.execute(config, fac, work_dir, {})
+    result.save(work_dir / "s4d_policy_pair_eval_result.json")
+    click.echo(f"Policy pair eval complete: {result.status} ({result.elapsed_seconds:.1f}s)")
 
 
 @cli.command("eval-visual")
@@ -260,7 +345,9 @@ def status(ctx: click.Context) -> None:
     work_dir = ctx.obj["work_dir"]
 
     stages = [
-        "s1_render", "s2_enrich", "s3_finetune", "s3b_policy_finetune", "s4_policy_eval",
+        "s1_render", "s1b_robot_composite", "s1c_gemini_polish", "s2_enrich",
+        "s3_finetune", "s3b_policy_finetune", "s4_policy_eval", "s4b_rollout_dataset",
+        "s4c_policy_pair_train", "s4d_policy_pair_eval",
         "s5_visual_fidelity", "s6_spatial_accuracy",
     ]
 

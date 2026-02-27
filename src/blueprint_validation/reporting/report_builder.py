@@ -52,8 +52,10 @@ def _collect_results(config: ValidationConfig, work_dir: Path) -> Dict[str, Any]
     }
 
     stages = [
-        "s1_render", "s2_enrich", "s3_finetune", "s3b_policy_finetune",
-        "s4_policy_eval", "s5_visual_fidelity", "s6_spatial_accuracy",
+        "s1_render", "s1b_robot_composite", "s1c_gemini_polish", "s2_enrich",
+        "s3_finetune", "s4_policy_eval", "s4a_rlds_export", "s3b_policy_finetune",
+        "s4e_trained_eval", "s4b_rollout_dataset", "s4c_policy_pair_train",
+        "s4d_policy_pair_eval", "s5_visual_fidelity", "s6_spatial_accuracy",
     ]
 
     for fid in config.facilities:
@@ -106,6 +108,111 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
             lines.append(f"| Improvement | {metrics.get('improvement_pct', 'N/A')}% |")
             lines.append(f"| Win rate | {metrics.get('win_rate', 'N/A')} |")
             lines.append(f"| p-value | {metrics.get('p_value', 'N/A')} |")
+            lines.append("")
+
+            # Pairwise comparisons (N-way)
+            pairwise = metrics.get("pairwise", {})
+            if pairwise:
+                lines.append("#### Pairwise Condition Comparisons\n")
+                lines.append("| Comparison | Score A | Score B | Improvement | Win Rate | p-value |")
+                lines.append("|------------|---------|---------|-------------|----------|---------|")
+                for pair_key, pair_data in pairwise.items():
+                    parts = pair_key.split("_vs_")
+                    if len(parts) == 2:
+                        c1, c2 = parts
+                        lines.append(
+                            f"| {c1} vs {c2} "
+                            f"| {pair_data.get(f'{c1}_mean', 'N/A')} "
+                            f"| {pair_data.get(f'{c2}_mean', 'N/A')} "
+                            f"| {pair_data.get('improvement_pct', 'N/A')}% "
+                            f"| {pair_data.get('win_rate', 'N/A')} "
+                            f"| {pair_data.get('p_value', 'N/A')} |"
+                        )
+                lines.append("")
+
+            # Manipulation performance per condition
+            per_condition = metrics.get("per_condition", {})
+            has_manip = any(
+                v.get("manipulation_success_rate", 0) > 0
+                for v in per_condition.values()
+            )
+            if has_manip:
+                lines.append("#### Manipulation Performance\n")
+                lines.append("| Condition | Success Rate | Mean Task Score |")
+                lines.append("|-----------|-------------|-----------------|")
+                for cond, cdata in per_condition.items():
+                    lines.append(
+                        f"| {cond} "
+                        f"| {cdata.get('manipulation_success_rate', 'N/A')} "
+                        f"| {cdata.get('mean_task_score', 'N/A')} |"
+                    )
+                lines.append("")
+
+        # Trained policy eval (S4e)
+        if "s4e_trained_eval" in fac_data:
+            te = fac_data["s4e_trained_eval"]
+            te_metrics = te.get("metrics", {})
+            lines.append("### Trained Policy Evaluation (S4e)\n")
+            lines.append("| Metric | Value |")
+            lines.append("|--------|-------|")
+            lines.append(
+                f"| Trained mean task score | {te_metrics.get('trained_mean_task_score', 'N/A')} |"
+            )
+            lines.append(
+                f"| Trained manipulation success | "
+                f"{te_metrics.get('trained_manipulation_success_rate', 'N/A')} |"
+            )
+            lines.append(
+                f"| Num rollouts | {te_metrics.get('num_rollouts_trained', 'N/A')} |"
+            )
+            lines.append("")
+
+            te_pairwise = te_metrics.get("pairwise", {})
+            if te_pairwise:
+                lines.append("#### Trained vs Frozen Comparisons\n")
+                lines.append("| Comparison | Score A | Score B | Improvement | Win Rate | p-value |")
+                lines.append("|------------|---------|---------|-------------|----------|---------|")
+                for pair_key, pair_data in te_pairwise.items():
+                    parts = pair_key.split("_vs_")
+                    if len(parts) == 2:
+                        c1, c2 = parts
+                        lines.append(
+                            f"| {c1} vs {c2} "
+                            f"| {pair_data.get(f'{c1}_mean', 'N/A')} "
+                            f"| {pair_data.get(f'{c2}_mean', 'N/A')} "
+                            f"| {pair_data.get('improvement_pct', 'N/A')}% "
+                            f"| {pair_data.get('win_rate', 'N/A')} "
+                            f"| {pair_data.get('p_value', 'N/A')} |"
+                        )
+                lines.append("")
+
+        if "s4d_policy_pair_eval" in fac_data:
+            pe2 = fac_data["s4d_policy_pair_eval"]
+            metrics = pe2.get("metrics", {})
+            lines.append("### Policy Training A/B (Heldout)\n")
+            lines.append("| Metric | Value |")
+            lines.append("|--------|-------|")
+            lines.append(
+                f"| Policy base mean task score | {metrics.get('policy_base_mean_task_score', 'N/A')} |"
+            )
+            lines.append(
+                f"| Policy site mean task score | {metrics.get('policy_site_mean_task_score', 'N/A')} |"
+            )
+            lines.append(
+                f"| Improvement | {metrics.get('task_score_improvement_pct', 'N/A')}% |"
+            )
+            lines.append(
+                f"| Policy base success rate | {metrics.get('policy_base_success_rate', 'N/A')} |"
+            )
+            lines.append(
+                f"| Policy site success rate | {metrics.get('policy_site_success_rate', 'N/A')} |"
+            )
+            lines.append(
+                f"| Win rate (site over base) | {metrics.get('win_rate_site_over_base', 'N/A')} |"
+            )
+            lines.append(
+                f"| p-value (task score) | {metrics.get('p_value_task_score', 'N/A')} |"
+            )
             lines.append("")
 
         # Visual Fidelity
@@ -205,6 +312,7 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
     lines.append(f"- LoRA: {'rank=' + str(config.finetune.lora_rank) if config.finetune.use_lora else 'disabled (full fine-tuning)'}")
     lines.append(f"- Policy finetune enabled: {config.policy_finetune.enabled}")
     lines.append(f"- Policy dataset: {config.policy_finetune.dataset_name}")
+    lines.append(f"- Policy adapter: {config.policy_adapter.name}")
     lines.append(f"- VLM judge: {config.eval_policy.vlm_judge.model}")
     lines.append(f"- Agentic Vision: {config.eval_policy.vlm_judge.enable_agentic_vision}")
 
@@ -216,12 +324,31 @@ def _add_executive_summary(lines: list, data: dict) -> None:
     # Check if primary test passed
     primary_passed = False
     for fid, fac_data in data.get("facilities", {}).items():
-        if "s4_policy_eval" in fac_data:
+        if "s4d_policy_pair_eval" in fac_data:
+            metrics = fac_data["s4d_policy_pair_eval"].get("metrics", {})
+            improvement = metrics.get("task_score_improvement_pct", 0)
+            p_value = metrics.get("p_value_task_score")
+            if improvement > 0 and (p_value is None or p_value < 0.05):
+                primary_passed = True
+        elif "s4_policy_eval" in fac_data:
             metrics = fac_data["s4_policy_eval"].get("metrics", {})
             improvement = metrics.get("improvement_pct", 0)
             p_value = metrics.get("p_value")
             if improvement > 0 and (p_value is None or p_value < 0.05):
                 primary_passed = True
+
+    # Check if trained policy test passed (S4e)
+    trained_passed = False
+    for fid, fac_data in data.get("facilities", {}).items():
+        if "s4e_trained_eval" in fac_data:
+            te_metrics = fac_data["s4e_trained_eval"].get("metrics", {})
+            te_pairwise = te_metrics.get("pairwise", {})
+            for pair_key, pair_data in te_pairwise.items():
+                if "trained" in pair_key:
+                    imp = pair_data.get("improvement_pct", 0)
+                    pv = pair_data.get("p_value")
+                    if imp > 0 and (pv is None or pv < 0.05):
+                        trained_passed = True
 
     cross_site_passed = False
     if data.get("cross_site"):
@@ -229,9 +356,12 @@ def _add_executive_summary(lines: list, data: dict) -> None:
         if cs_metrics.get("overall_accuracy", 0) > 0.7:
             cross_site_passed = True
 
-    lines.append(f"| Test | Result |")
-    lines.append(f"|------|--------|")
-    lines.append(f"| Policy Performance | {'PASS' if primary_passed else 'PENDING/FAIL'} |")
+    lines.append("| Test | Result |")
+    lines.append("|------|--------|")
+    lines.append(f"| Frozen Policy Performance | {'PASS' if primary_passed else 'PENDING/FAIL'} |")
+    lines.append(
+        f"| Trained Policy Improvement | {'PASS' if trained_passed else 'PENDING/FAIL'} |"
+    )
     lines.append(f"| Cross-Site Discrimination | {'PASS' if cross_site_passed else 'PENDING/FAIL'} |")
     lines.append("")
 
@@ -239,5 +369,11 @@ def _add_executive_summary(lines: list, data: dict) -> None:
         lines.append(
             "**The site-adapted world model produced higher policy task scores than the "
             "baseline, with statistical significance.** This validates that facility-specific "
-            "Gaussian splat data improves the training environment for robot policies.\n"
+            "Gaussian splat data improves the evaluation environment for robot policies.\n"
+        )
+    if trained_passed:
+        lines.append(
+            "**Policies fine-tuned on site-adapted rollout data outperform frozen baselines.** "
+            "This validates the stronger claim that robot policies perform better when "
+            "**trained** in a site-adapted world model.\n"
         )

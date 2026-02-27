@@ -25,6 +25,14 @@ class JudgeScore:
     raw_response: str
 
 
+@dataclass
+class ManipulationJudgeScore(JudgeScore):
+    grasp_acquired: bool
+    lifted_clear: bool
+    placed_in_target: bool
+    stable_after_place: bool
+
+
 def _extract_json_from_response(text: str) -> dict:
     """Extract JSON from a VLM response that may contain markdown or extra text."""
     # Try direct parse first
@@ -99,6 +107,32 @@ def _parse_judge_payload(payload: dict) -> tuple[float, float, float, str]:
     if not reasoning:
         raise ValueError("Missing reasoning in judge payload")
     return task, visual, spatial, reasoning
+
+
+def _parse_bool(payload: dict, key: str) -> bool:
+    if key not in payload:
+        raise ValueError(f"Missing required key: {key}")
+    value = payload[key]
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        val = value.strip().lower()
+        if val in {"true", "yes", "y", "1"}:
+            return True
+        if val in {"false", "no", "n", "0"}:
+            return False
+    raise ValueError(f"{key} must be boolean-like, got {value!r}")
+
+
+def _parse_manipulation_payload(payload: dict) -> tuple[float, float, float, bool, bool, bool, bool, str]:
+    task, visual, spatial, reasoning = _parse_judge_payload(payload)
+    grasp = _parse_bool(payload, "grasp_acquired")
+    lifted = _parse_bool(payload, "lifted_clear")
+    placed = _parse_bool(payload, "placed_in_target")
+    stable = _parse_bool(payload, "stable_after_place")
+    return task, visual, spatial, grasp, lifted, placed, stable, reasoning
 
 
 def _parse_classify_payload(payload: dict) -> tuple[str, float, str]:
@@ -226,6 +260,96 @@ def score_rollout(
 
     raise RuntimeError(
         "VLM judge failed to return valid scoring JSON after retries: "
+        + "; ".join(errors)
+    )
+
+
+def score_rollout_manipulation(
+    video_path: Path,
+    task_prompt: str,
+    config: VLMJudgeConfig,
+    facility_description: str = "",
+) -> ManipulationJudgeScore:
+    """Score manipulation rollout with explicit grasp/lift/place/stability checks."""
+    from google.genai import types
+
+    client = _get_gemini_client(config)
+    prompt = (
+        "You are evaluating a robot manipulation rollout.\n"
+        f"Task: {task_prompt}\n"
+        "Score and return JSON with:\n"
+        '- "task_score" (0-10)\n'
+        '- "visual_score" (0-10)\n'
+        '- "spatial_score" (0-10)\n'
+        '- "grasp_acquired" (bool)\n'
+        '- "lifted_clear" (bool)\n'
+        '- "placed_in_target" (bool)\n'
+        '- "stable_after_place" (bool)\n'
+        '- "reasoning" (string)\n'
+    )
+    if facility_description:
+        prompt += f"\nFacility context: {facility_description}\n"
+
+    frames = _encode_video_frames(video_path)
+    parts = [
+        types.Part.from_text(
+            f"Manipulation rollout frames ({len(frames)}). {prompt}"
+        )
+    ]
+    for frame_data in frames:
+        parts.append(types.Part.from_bytes(
+            data=base64.b64decode(frame_data["data"]),
+            mime_type="image/jpeg",
+        ))
+
+    errors = []
+    for attempt in range(3):
+        if attempt > 0:
+            parts.append(
+                types.Part.from_text(
+                    "Retry: return strict JSON only, include all required boolean manipulation fields."
+                )
+            )
+
+        response = client.models.generate_content(
+            model=config.model,
+            contents=[types.Content(parts=parts, role="user")],
+            config=_build_generate_config(
+                types,
+                enable_agentic_vision=config.enable_agentic_vision,
+                temperature=0.1,
+            ),
+        )
+        raw_text = _extract_response_text(response)
+        parsed = _extract_json_from_response(raw_text)
+        try:
+            (
+                task_score,
+                visual_score,
+                spatial_score,
+                grasp,
+                lifted,
+                placed,
+                stable,
+                reasoning,
+            ) = _parse_manipulation_payload(parsed)
+            return ManipulationJudgeScore(
+                task_score=task_score,
+                visual_score=visual_score,
+                spatial_score=spatial_score,
+                grasp_acquired=grasp,
+                lifted_clear=lifted,
+                placed_in_target=placed,
+                stable_after_place=stable,
+                reasoning=reasoning,
+                raw_response=raw_text,
+            )
+        except Exception as e:
+            errors.append(f"attempt={attempt + 1}: {e}")
+            continue
+
+    raise RuntimeError(
+        "VLM manipulation judge failed to return valid JSON after retries: "
         + "; ".join(errors)
     )
 

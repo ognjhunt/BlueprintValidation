@@ -7,10 +7,14 @@ Gaussian splat to robot world model validation pipeline. Proves that scanning a 
 ```
 PLY file (from BlueprintCapturePipeline)
   → Stage 1: Render video clips at robot-height via gsplat
+  → Stage 1b (optional): Composite URDF robot arm with camera extrinsics
+  → Stage 1c (optional): Gemini image polish on composited clips
   → Stage 2: Enrich with Cosmos Transfer 2.5 (5-10 variants per clip)
   → Stage 3: Fine-tune DreamDojo-2B on enriched video
-  → Stage 3b (optional): Fine-tune OpenVLA policy (LoRA/OFT)
-  → Stage 4: OpenVLA policy eval (baseline vs adapted) + VLM judge scoring
+  → Stage 4: Frozen policy rollouts (baseline vs adapted world model) + VLM scoring
+  → Stage 4b: Export paired rollouts to RLDS-style train/heldout datasets
+  → Stage 4c: Train policy_base vs policy_site from same initialization/budget
+  → Stage 4d: Heldout policy A/B evaluation in same world model
   → Stage 5: Visual fidelity metrics (PSNR/SSIM/LPIPS)
   → Stage 6: Spatial accuracy (VLM layout verification)
   → Stage 7: Cross-site discrimination (requires 2 facilities)
@@ -44,10 +48,15 @@ blueprint-validate run-all
 
 # Or run stages individually
 blueprint-validate render --facility facility_a
+blueprint-validate compose-robot --facility facility_a    # optional
+blueprint-validate polish-gemini --facility facility_a    # optional
 blueprint-validate enrich --facility facility_a
 blueprint-validate finetune --facility facility_a
 blueprint-validate finetune-policy --facility facility_a  # optional
 blueprint-validate eval-policy --facility facility_a
+blueprint-validate export-rollouts --facility facility_a
+blueprint-validate train-policy-pair --facility facility_a
+blueprint-validate eval-policy-pair --facility facility_a
 blueprint-validate eval-visual --facility facility_a
 blueprint-validate eval-spatial --facility facility_a
 blueprint-validate eval-crosssite
@@ -87,8 +96,13 @@ blueprint-validate --config /app/configs/example_validation.yaml run-all
 
 - Use manipulation-centric tasks in `eval_policy.tasks` (pick/place/regrasp/tote handling).
 - Use close-range capture paths around task-relevant objects (totes, bins, shelf faces).
-- If you want policy weight updates, enable `policy_finetune.enabled=true` and point
-  `policy_finetune.data_root_dir` to an OpenVLA-compatible dataset root.
+- For synthetic robot-context data:
+  - enable `robot_composite.enabled=true` and set `robot_composite.urdf_path`
+  - optionally enable `gemini_polish.enabled=true` for photoreal blending polish
+  - keep geometry filters on (`robot_composite.min_visible_joint_ratio`, `min_consistency_score`)
+- For policy improvement claim:
+  - enable `rollout_dataset.enabled`, `policy_finetune.enabled`, and `policy_compare.enabled`
+  - run `export-rollouts`, `train-policy-pair`, `eval-policy-pair`
 - Capture checklist: `configs/capture/manipulation_capture_checklist.md`
 
 ## Testing

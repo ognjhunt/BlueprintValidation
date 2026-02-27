@@ -10,6 +10,18 @@ import yaml
 
 
 @dataclass
+class ManipulationZoneConfig:
+    """A region in the facility where manipulation tasks occur."""
+
+    name: str
+    approach_point: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    target_point: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    camera_height_m: float = 0.6
+    camera_look_down_deg: float = 45.0
+    arc_radius_m: float = 0.4
+
+
+@dataclass
 class FacilityConfig:
     name: str
     ply_path: Path
@@ -17,11 +29,12 @@ class FacilityConfig:
     landmarks: List[str] = field(default_factory=list)
     floor_height_m: float = 0.0
     ceiling_height_m: float = 5.0
+    manipulation_zones: List[ManipulationZoneConfig] = field(default_factory=list)
 
 
 @dataclass
 class CameraPathSpec:
-    type: str  # "orbit", "sweep", "file"
+    type: str  # "orbit", "sweep", "file", "manipulation"
     # orbit params
     radius_m: float = 3.0
     num_orbits: int = 2
@@ -29,6 +42,12 @@ class CameraPathSpec:
     length_m: float = 10.0
     # file params
     path: Optional[str] = None
+    # per-path overrides
+    height_override_m: Optional[float] = None
+    look_down_override_deg: Optional[float] = None
+    # manipulation arc params
+    approach_point: Optional[List[float]] = None
+    arc_radius_m: float = 0.4
 
 
 @dataclass
@@ -40,6 +59,33 @@ class RenderConfig:
     camera_look_down_deg: float = 15.0
     camera_paths: List[CameraPathSpec] = field(default_factory=list)
     num_clips_per_path: int = 3
+
+
+@dataclass
+class RobotCompositeConfig:
+    enabled: bool = False
+    urdf_path: Optional[Path] = None
+    end_effector_link: Optional[str] = None
+    base_xyz: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    base_rpy: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    start_joint_positions: List[float] = field(default_factory=list)
+    end_joint_positions: List[float] = field(default_factory=list)
+    min_visible_joint_ratio: float = 0.6
+    min_consistency_score: float = 0.6
+    line_color_bgr: List[int] = field(default_factory=lambda: [50, 180, 255])
+    line_thickness: int = 3
+
+
+@dataclass
+class GeminiPolishConfig:
+    enabled: bool = False
+    model: str = "gemini-3.1-flash-image-preview"
+    api_key_env: str = "GOOGLE_GENAI_API_KEY"
+    prompt: str = (
+        "Preserve robot arm pose and scene geometry exactly. Improve photorealism, lighting, "
+        "material coherence, and blending quality."
+    )
+    sample_every_n_frames: int = 2
 
 
 @dataclass
@@ -102,6 +148,8 @@ class PolicyEvalConfig:
     num_rollouts: int = 50
     max_steps_per_rollout: int = 100
     tasks: List[str] = field(default_factory=list)
+    manipulation_tasks: List[str] = field(default_factory=list)
+    conditions: List[str] = field(default_factory=lambda: ["baseline", "adapted"])
     vlm_judge: VLMJudgeConfig = field(default_factory=VLMJudgeConfig)
 
 
@@ -124,6 +172,50 @@ class PolicyFinetuneConfig:
     nproc_per_node: int = 1
     wandb_project: Optional[str] = None
     wandb_entity: Optional[str] = None
+
+
+@dataclass
+class PolicyAdapterConfig:
+    name: str = "openvla"
+
+
+@dataclass
+class RolloutDatasetConfig:
+    enabled: bool = True
+    seed: int = 17
+    train_split: float = 0.8
+    min_steps_per_rollout: int = 4
+    task_score_threshold: float = 7.0
+    include_failed_rollouts: bool = False
+    max_action_delta_norm: float = 5.0
+    require_consistent_action_dim: bool = True
+    baseline_dataset_name: str = "blueprint_baseline_generated"
+    adapted_dataset_name: str = "blueprint_site_generated"
+    export_dir: Path = Path("./data/outputs/policy_datasets")
+
+
+@dataclass
+class PolicyCompareConfig:
+    enabled: bool = True
+    heldout_num_rollouts: int = 20
+    heldout_seed: int = 123
+    eval_world_model: str = "adapted"
+    task_score_success_threshold: float = 7.0
+    manipulation_task_keywords: List[str] = field(
+        default_factory=lambda: [
+            "pick",
+            "grasp",
+            "lift",
+            "place",
+            "stack",
+            "regrasp",
+            "tote",
+            "bin",
+        ]
+    )
+    require_grasp_for_manipulation: bool = True
+    require_lift_for_manipulation: bool = True
+    require_place_for_manipulation: bool = True
 
 
 @dataclass
@@ -159,10 +251,15 @@ class ValidationConfig:
     project_name: str = ""
     facilities: Dict[str, FacilityConfig] = field(default_factory=dict)
     render: RenderConfig = field(default_factory=RenderConfig)
+    robot_composite: RobotCompositeConfig = field(default_factory=RobotCompositeConfig)
+    gemini_polish: GeminiPolishConfig = field(default_factory=GeminiPolishConfig)
     enrich: EnrichConfig = field(default_factory=EnrichConfig)
     finetune: FinetuneConfig = field(default_factory=FinetuneConfig)
     eval_policy: PolicyEvalConfig = field(default_factory=PolicyEvalConfig)
     policy_finetune: PolicyFinetuneConfig = field(default_factory=PolicyFinetuneConfig)
+    policy_adapter: PolicyAdapterConfig = field(default_factory=PolicyAdapterConfig)
+    rollout_dataset: RolloutDatasetConfig = field(default_factory=RolloutDatasetConfig)
+    policy_compare: PolicyCompareConfig = field(default_factory=PolicyCompareConfig)
     eval_visual: VisualFidelityConfig = field(default_factory=VisualFidelityConfig)
     eval_spatial: SpatialAccuracyConfig = field(default_factory=SpatialAccuracyConfig)
     eval_crosssite: CrossSiteConfig = field(default_factory=CrossSiteConfig)
@@ -176,6 +273,22 @@ def _resolve_path(path_value: str | Path, base_dir: Path) -> Path:
     return path
 
 
+def _parse_manipulation_zones(raw_list: List[Dict[str, Any]]) -> List[ManipulationZoneConfig]:
+    zones = []
+    for raw in raw_list:
+        zones.append(
+            ManipulationZoneConfig(
+                name=raw["name"],
+                approach_point=raw.get("approach_point", [0.0, 0.0, 0.0]),
+                target_point=raw.get("target_point", [0.0, 0.0, 0.0]),
+                camera_height_m=float(raw.get("camera_height_m", 0.6)),
+                camera_look_down_deg=float(raw.get("camera_look_down_deg", 45.0)),
+                arc_radius_m=float(raw.get("arc_radius_m", 0.4)),
+            )
+        )
+    return zones
+
+
 def _parse_facility(raw: Dict[str, Any], base_dir: Path) -> FacilityConfig:
     return FacilityConfig(
         name=raw["name"],
@@ -184,6 +297,7 @@ def _parse_facility(raw: Dict[str, Any], base_dir: Path) -> FacilityConfig:
         landmarks=raw.get("landmarks", []),
         floor_height_m=raw.get("floor_height_m", 0.0),
         ceiling_height_m=raw.get("ceiling_height_m", 5.0),
+        manipulation_zones=_parse_manipulation_zones(raw.get("manipulation_zones", [])),
     )
 
 
@@ -198,6 +312,10 @@ def _parse_camera_paths(raw_list: List[Dict[str, Any]], base_dir: Path) -> List[
                 num_orbits=raw.get("num_orbits", 2),
                 length_m=raw.get("length_m", 10.0),
                 path=str(_resolve_path(path_value, base_dir)) if path_value else None,
+                height_override_m=raw.get("height_override_m"),
+                look_down_override_deg=raw.get("look_down_override_deg"),
+                approach_point=raw.get("approach_point"),
+                arc_radius_m=raw.get("arc_radius_m", 0.4),
             )
         )
     return paths
@@ -260,6 +378,33 @@ def load_config(path: Path) -> ValidationConfig:
             guidance=e.get("guidance", 7.0),
         )
 
+    if "robot_composite" in raw:
+        rc = raw["robot_composite"]
+        urdf_value = rc.get("urdf_path")
+        config.robot_composite = RobotCompositeConfig(
+            enabled=rc.get("enabled", False),
+            urdf_path=_resolve_path(urdf_value, base_dir) if urdf_value else None,
+            end_effector_link=rc.get("end_effector_link"),
+            base_xyz=rc.get("base_xyz", [0.0, 0.0, 0.0]),
+            base_rpy=rc.get("base_rpy", [0.0, 0.0, 0.0]),
+            start_joint_positions=rc.get("start_joint_positions", []),
+            end_joint_positions=rc.get("end_joint_positions", []),
+            min_visible_joint_ratio=float(rc.get("min_visible_joint_ratio", 0.6)),
+            min_consistency_score=float(rc.get("min_consistency_score", 0.6)),
+            line_color_bgr=rc.get("line_color_bgr", [50, 180, 255]),
+            line_thickness=rc.get("line_thickness", 3),
+        )
+
+    if "gemini_polish" in raw:
+        gp = raw["gemini_polish"]
+        config.gemini_polish = GeminiPolishConfig(
+            enabled=gp.get("enabled", False),
+            model=gp.get("model", "gemini-3.1-flash-image-preview"),
+            api_key_env=gp.get("api_key_env", "GOOGLE_GENAI_API_KEY"),
+            prompt=gp.get("prompt", GeminiPolishConfig().prompt),
+            sample_every_n_frames=gp.get("sample_every_n_frames", 2),
+        )
+
     # Finetune
     if "finetune" in raw:
         ft = raw["finetune"]
@@ -308,6 +453,8 @@ def load_config(path: Path) -> ValidationConfig:
             num_rollouts=ep.get("num_rollouts", 50),
             max_steps_per_rollout=ep.get("max_steps_per_rollout", 100),
             tasks=ep.get("tasks", []),
+            manipulation_tasks=ep.get("manipulation_tasks", []),
+            conditions=ep.get("conditions", ["baseline", "adapted"]),
             vlm_judge=VLMJudgeConfig(
                 model=vlm_raw.get("model", "gemini-3-flash-preview"),
                 api_key_env=vlm_raw.get("api_key_env", "GOOGLE_GENAI_API_KEY"),
@@ -348,6 +495,65 @@ def load_config(path: Path) -> ValidationConfig:
             nproc_per_node=pf.get("nproc_per_node", 1),
             wandb_project=pf.get("wandb_project"),
             wandb_entity=pf.get("wandb_entity"),
+        )
+
+    if "policy_adapter" in raw:
+        pa = raw["policy_adapter"]
+        config.policy_adapter = PolicyAdapterConfig(
+            name=pa.get("name", "openvla"),
+        )
+
+    if "rollout_dataset" in raw:
+        rd = raw["rollout_dataset"]
+        config.rollout_dataset = RolloutDatasetConfig(
+            enabled=rd.get("enabled", True),
+            seed=rd.get("seed", 17),
+            train_split=float(rd.get("train_split", 0.8)),
+            min_steps_per_rollout=rd.get("min_steps_per_rollout", 4),
+            task_score_threshold=float(rd.get("task_score_threshold", 7.0)),
+            include_failed_rollouts=rd.get("include_failed_rollouts", False),
+            max_action_delta_norm=float(rd.get("max_action_delta_norm", 5.0)),
+            require_consistent_action_dim=rd.get("require_consistent_action_dim", True),
+            baseline_dataset_name=rd.get(
+                "baseline_dataset_name",
+                "blueprint_baseline_generated",
+            ),
+            adapted_dataset_name=rd.get(
+                "adapted_dataset_name",
+                "blueprint_site_generated",
+            ),
+            export_dir=_resolve_path(
+                rd.get("export_dir", "./data/outputs/policy_datasets"),
+                base_dir,
+            ),
+        )
+
+    if "policy_compare" in raw:
+        pc = raw["policy_compare"]
+        config.policy_compare = PolicyCompareConfig(
+            enabled=pc.get("enabled", True),
+            heldout_num_rollouts=pc.get("heldout_num_rollouts", 20),
+            heldout_seed=pc.get("heldout_seed", 123),
+            eval_world_model=pc.get("eval_world_model", "adapted"),
+            task_score_success_threshold=float(
+                pc.get("task_score_success_threshold", 7.0)
+            ),
+            manipulation_task_keywords=pc.get(
+                "manipulation_task_keywords",
+                PolicyCompareConfig().manipulation_task_keywords,
+            ),
+            require_grasp_for_manipulation=pc.get(
+                "require_grasp_for_manipulation",
+                True,
+            ),
+            require_lift_for_manipulation=pc.get(
+                "require_lift_for_manipulation",
+                True,
+            ),
+            require_place_for_manipulation=pc.get(
+                "require_place_for_manipulation",
+                True,
+            ),
         )
 
     # Visual fidelity

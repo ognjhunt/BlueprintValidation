@@ -34,13 +34,16 @@ class EnrichStage(PipelineStage):
         enrich_dir.mkdir(parents=True, exist_ok=True)
 
         # Load render manifest
-        render_manifest_path = work_dir / "renders" / "render_manifest.json"
-        if not render_manifest_path.exists():
+        render_manifest_path = _resolve_render_manifest(work_dir)
+        if render_manifest_path is None:
             return StageResult(
                 stage_name=self.name,
                 status="failed",
                 elapsed_seconds=0,
-                detail=f"Render manifest not found at {render_manifest_path}. Run Stage 1 first.",
+                detail=(
+                    "Render/composite/polish manifest not found. Run Stage 1 first "
+                    "(and Stage 1b/1c if enabled)."
+                ),
             )
 
         render_manifest = read_json(render_manifest_path)
@@ -112,3 +115,14 @@ class EnrichStage(PipelineStage):
                 "variants_used": [v.name for v in variants],
             },
         )
+
+
+def _resolve_render_manifest(work_dir: Path) -> Path | None:
+    for candidate in [
+        work_dir / "gemini_polish" / "polished_manifest.json",
+        work_dir / "robot_composite" / "composited_manifest.json",
+        work_dir / "renders" / "render_manifest.json",
+    ]:
+        if candidate.exists():
+            return candidate
+    return None

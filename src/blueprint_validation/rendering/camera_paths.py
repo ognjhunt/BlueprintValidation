@@ -145,6 +145,51 @@ def generate_sweep(
     return poses
 
 
+def generate_manipulation_arc(
+    approach_point: np.ndarray,
+    arc_radius: float,
+    height: float,
+    num_frames: int,
+    look_down_deg: float = 45.0,
+    arc_span_deg: float = 150.0,
+    resolution: tuple[int, int] = (480, 640),
+    fov_deg: float = 60.0,
+) -> List[CameraPose]:
+    """Generate a tight arc camera path around a manipulation zone.
+
+    The camera orbits at gripper height around the approach point, looking
+    steeply downward at the workspace — suitable for manipulation-task
+    initial frames where DreamDojo needs a gripper-centric viewpoint.
+    """
+    h, w = resolution
+    fx = fy = w / (2.0 * math.tan(math.radians(fov_deg / 2)))
+    cx, cy = w / 2.0, h / 2.0
+
+    approach = np.asarray(approach_point, dtype=np.float64)
+    arc_span_rad = math.radians(arc_span_deg)
+    start_angle = -arc_span_rad / 2.0
+
+    poses = []
+    for i in range(num_frames):
+        t = i / max(num_frames - 1, 1)
+        angle = start_angle + arc_span_rad * t
+        eye = np.array([
+            approach[0] + arc_radius * math.cos(angle),
+            approach[1] + arc_radius * math.sin(angle),
+            height,
+        ])
+        look_down_rad = math.radians(look_down_deg)
+        target = np.array([
+            approach[0],
+            approach[1],
+            height - arc_radius * math.tan(look_down_rad),
+        ])
+        c2w = _look_at(eye, target)
+        poses.append(CameraPose(c2w=c2w, fx=fx, fy=fy, cx=cx, cy=cy, width=w, height=h))
+
+    return poses
+
+
 def load_path_from_json(json_path: Path, resolution: tuple[int, int] = (480, 640)) -> List[CameraPose]:
     """Load a camera path from a JSON file.
 
@@ -210,6 +255,20 @@ def generate_path_from_spec(
             height=camera_height,
             num_frames=num_frames,
             look_down_deg=look_down_deg,
+            resolution=resolution,
+        )
+    elif spec.type == "manipulation":
+        center = np.array(spec.approach_point or [0.0, 0.0, 0.0], dtype=np.float64)
+        if start_offset is not None:
+            center[:2] += start_offset[:2]
+        effective_height = spec.height_override_m if spec.height_override_m is not None else camera_height
+        effective_look_down = spec.look_down_override_deg if spec.look_down_override_deg is not None else look_down_deg
+        return generate_manipulation_arc(
+            approach_point=center,
+            arc_radius=spec.arc_radius_m,
+            height=effective_height,
+            look_down_deg=effective_look_down,
+            num_frames=num_frames,
             resolution=resolution,
         )
     elif spec.type == "file":

@@ -133,6 +133,23 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
     # API keys
     checks.append(check_api_key(config.eval_policy.vlm_judge.api_key_env))
 
+    if config.robot_composite.enabled:
+        if config.robot_composite.urdf_path is None:
+            checks.append(
+                PreflightCheck(
+                    name="robot_composite:urdf_path",
+                    passed=False,
+                    detail="Set robot_composite.urdf_path when robot_composite.enabled=true",
+                )
+            )
+        else:
+            checks.append(
+                check_path_exists(config.robot_composite.urdf_path, "robot_composite:urdf_path")
+            )
+
+    if config.gemini_polish.enabled:
+        checks.append(check_api_key(config.gemini_polish.api_key_env))
+
     # Optional OpenVLA fine-tuning prerequisites
     if config.policy_finetune.enabled:
         checks.append(check_external_tool("torchrun"))

@@ -11,10 +11,15 @@ from ..common import StageResult, get_logger, read_json, write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..evaluation.openvla_runner import (
     load_dreamdojo_world_model,
-    load_openvla,
     run_rollout,
 )
-from ..evaluation.vlm_judge import JudgeScore, score_rollout
+from ..evaluation.vlm_judge import (
+    JudgeScore,
+    ManipulationJudgeScore,
+    score_rollout,
+    score_rollout_manipulation,
+)
+from ..policy_adapters import get_policy_adapter
 from .base import PipelineStage
 
 logger = get_logger("stages.s4_policy_eval")
@@ -90,7 +95,11 @@ class PolicyEvalStage(PipelineStage):
                 detail="Could not extract initial frames from rendered clips.",
             )
 
-        tasks = config.eval_policy.tasks
+        # Build task list: merge navigation tasks + manipulation tasks
+        tasks = list(config.eval_policy.tasks or [])
+        for mt in config.eval_policy.manipulation_tasks:
+            if mt not in tasks:
+                tasks.append(mt)
         if not tasks:
             tasks = [
                 "Navigate forward through the corridor",
@@ -108,7 +117,9 @@ class PolicyEvalStage(PipelineStage):
         scoring_failures: List[str] = []
         rollout_plan = _build_rollout_plan(tasks, num_rollouts)
 
-        for condition in ["baseline", "adapted"]:
+        policy_adapter = get_policy_adapter(config.policy_adapter.name)
+        conditions = list(config.eval_policy.conditions)
+        for condition in conditions:
             logger.info("Running %s condition rollouts", condition)
             condition_dir = eval_dir / f"{condition}_rollouts"
             condition_dir.mkdir(exist_ok=True)
@@ -117,9 +128,9 @@ class PolicyEvalStage(PipelineStage):
             policy_checkpoint = config.eval_policy.openvla_checkpoint
             if condition == "adapted" and adapted_policy_checkpoint is not None:
                 policy_checkpoint = adapted_policy_checkpoint
-            openvla_model, openvla_processor = load_openvla(
-                config.eval_policy.openvla_model,
-                policy_checkpoint,
+            policy_handle = policy_adapter.load_policy(
+                model_name=config.eval_policy.openvla_model,
+                checkpoint_path=policy_checkpoint,
                 device=device,
             )
 
@@ -136,18 +147,32 @@ class PolicyEvalStage(PipelineStage):
                 init_frame = initial_frames[rollout_idx % len(initial_frames)]
                 clip_name = f"{condition}_{task[:20].replace(' ', '_')}_{rollout_idx:03d}"
 
-                rollout = run_rollout(
-                    world_model=world_model,
-                    openvla_model=openvla_model,
-                    openvla_processor=openvla_processor,
-                    initial_frame=init_frame,
-                    task_prompt=task,
-                    max_steps=max_steps,
-                    unnorm_key=config.eval_policy.unnorm_key,
-                    output_dir=condition_dir,
-                    clip_name=clip_name,
-                    device=device,
-                )
+                if policy_adapter.name == "openvla":
+                    rollout = run_rollout(
+                        world_model=world_model,
+                        openvla_model=policy_handle.model,
+                        openvla_processor=policy_handle.processor,
+                        initial_frame=init_frame,
+                        task_prompt=task,
+                        max_steps=max_steps,
+                        unnorm_key=config.eval_policy.unnorm_key,
+                        output_dir=condition_dir,
+                        clip_name=clip_name,
+                        device=device,
+                    )
+                else:
+                    rollout = _run_rollout_with_adapter(
+                        world_model=world_model,
+                        policy_adapter=policy_adapter,
+                        policy_handle=policy_handle,
+                        initial_frame=init_frame,
+                        task_prompt=task,
+                        max_steps=max_steps,
+                        unnorm_key=config.eval_policy.unnorm_key,
+                        output_dir=condition_dir,
+                        clip_name=clip_name,
+                        device=device,
+                    )
 
                 if not rollout.video_path or not rollout.video_path.exists():
                     msg = f"Rollout video missing for {clip_name}"
@@ -156,12 +181,20 @@ class PolicyEvalStage(PipelineStage):
                     continue
 
                 try:
-                    score = score_rollout(
-                        video_path=rollout.video_path,
-                        task_prompt=task,
-                        config=config.eval_policy.vlm_judge,
-                        facility_description=facility.description,
-                    )
+                    if _is_manipulation_task(task):
+                        score = score_rollout_manipulation(
+                            video_path=rollout.video_path,
+                            task_prompt=task,
+                            config=config.eval_policy.vlm_judge,
+                            facility_description=facility.description,
+                        )
+                    else:
+                        score = score_rollout(
+                            video_path=rollout.video_path,
+                            task_prompt=task,
+                            config=config.eval_policy.vlm_judge,
+                            facility_description=facility.description,
+                        )
                 except Exception as e:
                     msg = f"VLM scoring failed for {clip_name}: {e}"
                     logger.warning(msg)
@@ -178,17 +211,54 @@ class PolicyEvalStage(PipelineStage):
                     "reasoning": score.reasoning,
                     "video_path": str(rollout.video_path),
                     "num_steps": rollout.num_steps,
+                    "action_sequence": getattr(rollout, "action_sequence", []),
+                    "is_manipulation_task": _is_manipulation_task(task),
+                    "grasp_acquired": (
+                        score.grasp_acquired
+                        if isinstance(score, ManipulationJudgeScore)
+                        else None
+                    ),
+                    "lifted_clear": (
+                        score.lifted_clear
+                        if isinstance(score, ManipulationJudgeScore)
+                        else None
+                    ),
+                    "placed_in_target": (
+                        score.placed_in_target
+                        if isinstance(score, ManipulationJudgeScore)
+                        else None
+                    ),
+                    "stable_after_place": (
+                        score.stable_after_place
+                        if isinstance(score, ManipulationJudgeScore)
+                        else None
+                    ),
                 })
 
-        # Compute aggregate metrics
+        # Compute aggregate metrics per condition
+        write_json({"scores": all_scores}, eval_dir / "vlm_scores.json")
+
+        per_condition: Dict[str, Dict] = {}
+        for cond in conditions:
+            cond_scores = [s for s in all_scores if s["condition"] == cond]
+            cond_manip = [s for s in cond_scores if s["is_manipulation_task"]]
+            cond_mean = float(np.mean([s["task_score"] for s in cond_scores])) if cond_scores else 0
+            per_condition[cond] = {
+                "mean_task_score": round(cond_mean, 3),
+                "num_rollouts": len(cond_scores),
+                "manipulation_success_rate": _manipulation_success_rate(cond_manip),
+            }
+
+        # Pairwise comparisons between all condition pairs
+        pairwise = _build_pairwise_metrics(all_scores, conditions)
+
+        # Backward-compatible top-level metrics (baseline vs adapted)
         baseline_scores = [s for s in all_scores if s["condition"] == "baseline"]
         adapted_scores = [s for s in all_scores if s["condition"] == "adapted"]
-
-        baseline_mean = np.mean([s["task_score"] for s in baseline_scores]) if baseline_scores else 0
-        adapted_mean = np.mean([s["task_score"] for s in adapted_scores]) if adapted_scores else 0
+        baseline_mean = per_condition.get("baseline", {}).get("mean_task_score", 0)
+        adapted_mean = per_condition.get("adapted", {}).get("mean_task_score", 0)
         improvement = ((adapted_mean - baseline_mean) / max(baseline_mean, 1e-8)) * 100
 
-        # Win rate
         min_len = min(len(baseline_scores), len(adapted_scores))
         wins = sum(
             1 for b, a in zip(baseline_scores[:min_len], adapted_scores[:min_len])
@@ -196,7 +266,6 @@ class PolicyEvalStage(PipelineStage):
         )
         win_rate = wins / max(min_len, 1)
 
-        # Statistical significance (paired t-test)
         p_value = None
         if min_len >= 2:
             try:
@@ -208,9 +277,6 @@ class PolicyEvalStage(PipelineStage):
             except ImportError:
                 logger.warning("scipy not available; skipping p-value computation")
 
-        # Save scores
-        write_json({"scores": all_scores}, eval_dir / "vlm_scores.json")
-
         metrics = {
             "baseline_mean_task_score": round(float(baseline_mean), 3),
             "adapted_mean_task_score": round(float(adapted_mean), 3),
@@ -221,7 +287,17 @@ class PolicyEvalStage(PipelineStage):
             "num_rollouts_adapted": len(adapted_scores),
             "num_scoring_failures": len(scoring_failures),
             "used_adapted_policy_checkpoint": adapted_policy_checkpoint is not None,
-            "adapted_policy_checkpoint": str(adapted_policy_checkpoint) if adapted_policy_checkpoint else None,
+            "adapted_policy_checkpoint": (
+                str(adapted_policy_checkpoint) if adapted_policy_checkpoint else None
+            ),
+            "per_condition": per_condition,
+            "pairwise": pairwise,
+            "baseline_manipulation_success_rate": per_condition.get(
+                "baseline", {}
+            ).get("manipulation_success_rate", 0.0),
+            "adapted_manipulation_success_rate": per_condition.get(
+                "adapted", {}
+            ).get("manipulation_success_rate", 0.0),
         }
 
         write_json(metrics, eval_dir / "policy_eval_report.json")
@@ -273,6 +349,30 @@ def _build_rollout_plan(tasks: List[str], num_rollouts: int) -> List[str]:
     return [tasks[i % len(tasks)] for i in range(num_rollouts)]
 
 
+def _is_manipulation_task(task: str) -> bool:
+    lowered = task.lower()
+    keywords = ["pick", "grasp", "lift", "place", "stack", "regrasp", "tote", "bin"]
+    return any(k in lowered for k in keywords)
+
+
+def _manipulation_success_rate(scores: List[Dict]) -> float:
+    if not scores:
+        return 0.0
+    successes = 0
+    for s in scores:
+        has_flags = s.get("grasp_acquired") is not None
+        if has_flags:
+            if (
+                bool(s.get("grasp_acquired"))
+                and bool(s.get("lifted_clear"))
+                and bool(s.get("placed_in_target"))
+            ):
+                successes += 1
+        elif float(s.get("task_score", 0.0)) >= 7.0:
+            successes += 1
+    return round(successes / len(scores), 3)
+
+
 def _resolve_adapted_policy_checkpoint(
     previous_results: Dict[str, StageResult],
     work_dir: Path,
@@ -288,3 +388,83 @@ def _resolve_adapted_policy_checkpoint(
     if fallback.exists() and any(fallback.iterdir()):
         return fallback
     return None
+
+
+def _build_pairwise_metrics(all_scores: List[Dict], conditions: List[str]) -> Dict:
+    """Compute improvement, win rate, and p-value for each pair of conditions."""
+    pairwise = {}
+    for i, c1 in enumerate(conditions):
+        for c2 in conditions[i + 1:]:
+            s1 = [s for s in all_scores if s["condition"] == c1]
+            s2 = [s for s in all_scores if s["condition"] == c2]
+            if not s1 or not s2:
+                continue
+            mean1 = float(np.mean([s["task_score"] for s in s1]))
+            mean2 = float(np.mean([s["task_score"] for s in s2]))
+            improvement = ((mean2 - mean1) / max(mean1, 1e-8)) * 100
+            min_len = min(len(s1), len(s2))
+            wins = sum(
+                1 for a, b in zip(s1[:min_len], s2[:min_len])
+                if b["task_score"] > a["task_score"]
+            )
+            win_rate = wins / max(min_len, 1)
+            p_value = None
+            if min_len >= 2:
+                try:
+                    from scipy import stats
+                    v1 = [s["task_score"] for s in s1[:min_len]]
+                    v2 = [s["task_score"] for s in s2[:min_len]]
+                    _, p_value = stats.ttest_rel(v1, v2)
+                    p_value = float(p_value)
+                except ImportError:
+                    pass
+            pairwise[f"{c1}_vs_{c2}"] = {
+                f"{c1}_mean": round(mean1, 3),
+                f"{c2}_mean": round(mean2, 3),
+                "improvement_pct": round(improvement, 2),
+                "win_rate": round(win_rate, 3),
+                "p_value": round(p_value, 6) if p_value is not None else None,
+            }
+    return pairwise
+
+
+def _run_rollout_with_adapter(
+    world_model,
+    policy_adapter,
+    policy_handle,
+    initial_frame: np.ndarray,
+    task_prompt: str,
+    max_steps: int,
+    unnorm_key: str,
+    output_dir: Path,
+    clip_name: str,
+    device: str,
+):
+    import cv2
+    from types import SimpleNamespace
+
+    frames = [initial_frame.copy()]
+    actions = []
+    current = initial_frame
+    for _ in range(max_steps):
+        action = policy_adapter.predict_action(
+            handle=policy_handle,
+            frame=current,
+            task_prompt=task_prompt,
+            unnorm_key=unnorm_key,
+            device=device,
+        )
+        action_list = action.tolist() if hasattr(action, "tolist") else list(action)
+        actions.append(action_list)
+        next_frame = world_model.predict_next_frame(current, action)
+        frames.append(next_frame)
+        current = next_frame
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    video_path = output_dir / f"{clip_name}.mp4"
+    h, w = frames[0].shape[:2]
+    writer = cv2.VideoWriter(str(video_path), cv2.VideoWriter_fourcc(*"mp4v"), 10, (w, h))
+    for frame in frames:
+        writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+    writer.release()
+    return SimpleNamespace(video_path=video_path, action_sequence=actions, num_steps=len(actions))

@@ -13,6 +13,16 @@ facilities:
       - "break room in northwest corner"
     floor_height_m: 0.0
     ceiling_height_m: 6.0
+    manipulation_zones:
+      - name: shelf_tote_pick
+        approach_point: [2.1, 0.5, 0.8]
+        target_point: [2.1, 1.5, 0.3]
+        camera_height_m: 0.6
+        camera_look_down_deg: 45
+        arc_radius_m: 0.4
+      - name: packing_station_place
+        approach_point: [5.0, 0.0, 0.9]
+        target_point: [5.0, 0.5, 0.9]
 
   facility_b:
     name: "Warehouse B - Raleigh"
@@ -24,6 +34,10 @@ facilities:
       - "office area on second floor"
     floor_height_m: 0.0
     ceiling_height_m: 5.0
+    manipulation_zones:
+      - name: conveyor_place
+        approach_point: [4.0, 0.0, 0.9]
+        target_point: [4.0, 0.5, 0.9]
 
 # ---- Stage 1: Render ----
 render:
@@ -38,10 +52,37 @@ render:
       num_orbits: 2
     - type: sweep
       length_m: 10.0
-    # Close-range arc around a tote/bin manipulation zone.
+    # Close-range arc around a tote/bin manipulation zone (gripper-centric view).
     - type: file
       path: ./camera_paths/manipulation_closeup_arc.json
+    # Auto-generated gripper-height arc for each manipulation zone.
+    - type: manipulation
+      height_override_m: 0.6
+      look_down_override_deg: 45
   num_clips_per_path: 3
+
+# ---- Stage 1b: Robot arm compositing (URDF + camera extrinsics) ----
+robot_composite:
+  enabled: false
+  urdf_path: ./robots/sample_6dof_arm.urdf
+  end_effector_link: wrist_3_link
+  base_xyz: [0.0, 0.0, 0.0]
+  base_rpy: [0.0, 0.0, 0.0]
+  # Example start/end joint positions (radians) for pick-to-place style sweep
+  start_joint_positions: [0.0, -1.1, 1.2, -1.0, -1.2, 0.0]
+  end_joint_positions: [0.4, -0.8, 1.0, -1.2, -1.0, 0.3]
+  min_visible_joint_ratio: 0.6
+  min_consistency_score: 0.6
+  line_color_bgr: [50, 180, 255]
+  line_thickness: 3
+
+# ---- Stage 1c: Optional Gemini image polish ----
+gemini_polish:
+  enabled: false
+  model: gemini-3.1-flash-image-preview
+  api_key_env: GOOGLE_GENAI_API_KEY
+  prompt: "Preserve robot arm pose and scene geometry exactly. Improve photorealism and blending quality."
+  sample_every_n_frames: 2
 
 # ---- Stage 2: Enrich ----
 enrich:
@@ -90,7 +131,12 @@ eval_policy:
   unnorm_key: bridge_orig
   num_rollouts: 50
   max_steps_per_rollout: 100
+  conditions: ["baseline", "adapted"]  # "trained" added automatically when S3b succeeds
   tasks:
+    - "Navigate forward through the corridor"
+    - "Turn left at the intersection"
+    - "Approach the nearest obstacle"
+  manipulation_tasks:
     - "Approach the tote on the floor pallet"
     - "Align gripper with tote handles"
     - "Lift the tote to shelf level one"
@@ -120,6 +166,36 @@ policy_finetune:
   max_steps: 5000
   image_aug: true
   nproc_per_node: 1
+
+# ---- Policy adapter (multi-policy interface) ----
+policy_adapter:
+  name: openvla
+
+# ---- Stage 4b: Rollout -> RLDS-style dataset export ----
+rollout_dataset:
+  enabled: true
+  seed: 17
+  train_split: 0.8
+  min_steps_per_rollout: 4
+  task_score_threshold: 7.0
+  include_failed_rollouts: false
+  max_action_delta_norm: 5.0
+  require_consistent_action_dim: true
+  baseline_dataset_name: blueprint_baseline_generated
+  adapted_dataset_name: blueprint_site_generated
+  export_dir: ./data/outputs/policy_datasets
+
+# ---- Stage 4d: Trained policy A/B comparison ----
+policy_compare:
+  enabled: true
+  heldout_num_rollouts: 20
+  heldout_seed: 123
+  eval_world_model: adapted
+  task_score_success_threshold: 7.0
+  manipulation_task_keywords: [pick, grasp, lift, place, stack, regrasp, tote, bin]
+  require_grasp_for_manipulation: true
+  require_lift_for_manipulation: true
+  require_place_for_manipulation: true
 
 # ---- Stage 5: Visual Fidelity ----
 eval_visual:

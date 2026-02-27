@@ -56,3 +56,22 @@ def test_judge_score_dataclass():
     )
     assert score.task_score == 7.5
     assert score.reasoning == "Solid performance"
+
+
+def test_parse_manipulation_payload():
+    from blueprint_validation.evaluation.vlm_judge import _parse_manipulation_payload
+
+    payload = {
+        "task_score": 9,
+        "visual_score": 8,
+        "spatial_score": 7,
+        "grasp_acquired": True,
+        "lifted_clear": True,
+        "placed_in_target": False,
+        "stable_after_place": True,
+        "reasoning": "close but missed placement",
+    }
+    out = _parse_manipulation_payload(payload)
+    assert out[0] == 9.0
+    assert out[3] is True
+    assert out[5] is False

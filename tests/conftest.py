@@ -93,13 +93,14 @@ def sample_config(tmp_path) -> "ValidationConfig":
         CameraPathSpec,
         FacilityConfig,
         RenderConfig,
+        RolloutDatasetConfig,
         ValidationConfig,
     )
 
     ply_path = tmp_path / "test.ply"
     ply_path.touch()
 
-    return ValidationConfig(
+    cfg = ValidationConfig(
         project_name="Test Project",
         facilities={
             "test_facility": FacilityConfig(
@@ -117,6 +118,10 @@ def sample_config(tmp_path) -> "ValidationConfig":
             num_clips_per_path=1,
         ),
     )
+    cfg.rollout_dataset = RolloutDatasetConfig(
+        export_dir=tmp_path / "policy_datasets",
+    )
+    return cfg
 
 
 @pytest.fixture
