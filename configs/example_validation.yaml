@@ -6,6 +6,9 @@ facilities:
   facility_a:
     name: "Warehouse A - Durham"
     ply_path: ./data/facilities/facility_a/splat.ply
+    # Optional: BlueprintCapturePipeline task_targets.json generated from source video.
+    # When present, Stage 4 auto-injects additional manipulation/articulation tasks.
+    # task_hints_path: /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/runs/<run>/task_targets.json
     description: "Large warehouse with shelving racks, loading dock, concrete floors"
     landmarks:
       - "loading dock on east wall"
@@ -27,6 +30,7 @@ facilities:
   facility_b:
     name: "Warehouse B - Raleigh"
     ply_path: ./data/facilities/facility_b/splat.ply
+    # task_hints_path: /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/runs/<run>/task_targets.json
     description: "Smaller warehouse with conveyor system, narrow aisles"
     landmarks:
       - "conveyor belt along south wall"
@@ -191,6 +195,10 @@ policy_compare:
   heldout_num_rollouts: 20
   heldout_seed: 123
   eval_world_model: adapted
+  # Optional explicit heldout-task set for pair evaluation.
+  heldout_tasks:
+    - "Pick up the tote from the shelf"
+    - "Place the tote onto the target shelf"
   task_score_success_threshold: 7.0
   manipulation_task_keywords: [pick, grasp, lift, place, stack, regrasp, tote, bin]
   require_grasp_for_manipulation: true

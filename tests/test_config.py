@@ -58,7 +58,7 @@ def test_config_with_all_sections(tmp_path):
         "schema_version": "v1",
         "project_name": "Full Test",
         "facilities": {
-            "a": {"name": "A", "ply_path": "/tmp/a.ply"},
+            "a": {"name": "A", "ply_path": "/tmp/a.ply", "task_hints_path": "/tmp/a_tasks.json"},
             "b": {"name": "B", "ply_path": "/tmp/b.ply"},
         },
         "render": {"resolution": [240, 320], "num_frames": 10},
@@ -80,7 +80,10 @@ def test_config_with_all_sections(tmp_path):
         },
         "policy_adapter": {"name": "openvla"},
         "rollout_dataset": {"seed": 99, "train_split": 0.7},
-        "policy_compare": {"heldout_num_rollouts": 8},
+        "policy_compare": {
+            "heldout_num_rollouts": 8,
+            "heldout_tasks": ["Pick up the tote from the shelf"],
+        },
         "eval_visual": {"metrics": ["psnr", "ssim"]},
         "eval_crosssite": {"num_clips_per_model": 5},
     }
@@ -103,6 +106,8 @@ def test_config_with_all_sections(tmp_path):
     assert config.policy_finetune.max_steps == 100
     assert config.rollout_dataset.seed == 99
     assert config.policy_compare.heldout_num_rollouts == 8
+    assert config.policy_compare.heldout_tasks == ["Pick up the tote from the shelf"]
+    assert str(config.facilities["a"].task_hints_path) == "/tmp/a_tasks.json"
     assert "psnr" in config.eval_visual.metrics
 
 
@@ -118,7 +123,11 @@ def test_config_resolves_relative_paths(tmp_path):
     config_data = {
         "project_name": "Path Resolution",
         "facilities": {
-            "a": {"name": "A", "ply_path": rel_ply},
+            "a": {
+                "name": "A",
+                "ply_path": rel_ply,
+                "task_hints_path": "./runs/latest/task_targets.json",
+            },
         },
         "enrich": {"cosmos_checkpoint": "./data/checkpoints/cosmos"},
         "finetune": {"dreamdojo_repo": "./vendor/DreamDojo"},
@@ -134,6 +143,9 @@ def test_config_resolves_relative_paths(tmp_path):
     config = load_config(config_path)
     assert config.facilities["a"].ply_path.is_absolute()
     assert str(config.facilities["a"].ply_path).endswith("cfg/data/facilities/a/splat.ply")
+    assert config.facilities["a"].task_hints_path is not None
+    assert config.facilities["a"].task_hints_path.is_absolute()
+    assert str(config.facilities["a"].task_hints_path).endswith("cfg/runs/latest/task_targets.json")
     assert config.enrich.cosmos_checkpoint.is_absolute()
     assert config.finetune.dreamdojo_repo.is_absolute()
     assert config.eval_policy.openvla_checkpoint.is_absolute()

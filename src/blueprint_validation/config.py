@@ -25,6 +25,7 @@ class ManipulationZoneConfig:
 class FacilityConfig:
     name: str
     ply_path: Path
+    task_hints_path: Optional[Path] = None
     description: str = ""
     landmarks: List[str] = field(default_factory=list)
     floor_height_m: float = 0.0
@@ -200,6 +201,7 @@ class PolicyCompareConfig:
     heldout_num_rollouts: int = 20
     heldout_seed: int = 123
     eval_world_model: str = "adapted"
+    heldout_tasks: List[str] = field(default_factory=list)
     task_score_success_threshold: float = 7.0
     manipulation_task_keywords: List[str] = field(
         default_factory=lambda: [
@@ -290,9 +292,11 @@ def _parse_manipulation_zones(raw_list: List[Dict[str, Any]]) -> List[Manipulati
 
 
 def _parse_facility(raw: Dict[str, Any], base_dir: Path) -> FacilityConfig:
+    task_hints_value = raw.get("task_hints_path")
     return FacilityConfig(
         name=raw["name"],
         ply_path=_resolve_path(raw["ply_path"], base_dir),
+        task_hints_path=_resolve_path(task_hints_value, base_dir) if task_hints_value else None,
         description=raw.get("description", ""),
         landmarks=raw.get("landmarks", []),
         floor_height_m=raw.get("floor_height_m", 0.0),
@@ -535,6 +539,7 @@ def load_config(path: Path) -> ValidationConfig:
             heldout_num_rollouts=pc.get("heldout_num_rollouts", 20),
             heldout_seed=pc.get("heldout_seed", 123),
             eval_world_model=pc.get("eval_world_model", "adapted"),
+            heldout_tasks=pc.get("heldout_tasks", []),
             task_score_success_threshold=float(
                 pc.get("task_score_success_threshold", 7.0)
             ),

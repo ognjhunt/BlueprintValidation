@@ -43,6 +43,9 @@ cp configs/example_validation.yaml validation.yaml
 # Run preflight checks
 blueprint-validate preflight
 
+# Auto-generate a fast pilot config from BlueprintCapturePipeline runs
+bash scripts/setup_first_data.sh
+
 # Run full pipeline
 blueprint-validate run-all
 
@@ -95,6 +98,8 @@ blueprint-validate --config /app/configs/example_validation.yaml run-all
 ## Manipulation-Focused Setup
 
 - Use manipulation-centric tasks in `eval_policy.tasks` (pick/place/regrasp/tote handling).
+- Reuse task inference from `BlueprintCapturePipeline` by setting `facilities.<id>.task_hints_path`
+  to that run's `task_targets.json` (Gemini+heuristic video analysis output).
 - Use close-range capture paths around task-relevant objects (totes, bins, shelf faces).
 - For synthetic robot-context data:
   - enable `robot_composite.enabled=true` and set `robot_composite.urdf_path`

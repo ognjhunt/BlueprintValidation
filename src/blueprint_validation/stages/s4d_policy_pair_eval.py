@@ -66,12 +66,18 @@ class PolicyPairEvalStage(PipelineStage):
             )
 
         episodes = _load_heldout_episodes(heldout_path)
+        if config.policy_compare.heldout_tasks:
+            allow = {t.strip() for t in config.policy_compare.heldout_tasks if t.strip()}
+            episodes = [ep for ep in episodes if ep["task"] in allow]
         if not episodes:
             return StageResult(
                 stage_name=self.name,
                 status="failed",
                 elapsed_seconds=0,
-                detail="No heldout episodes available for pair evaluation.",
+                detail=(
+                    "No heldout episodes available for pair evaluation. "
+                    "Check rollout dataset export and policy_compare.heldout_tasks."
+                ),
             )
         episodes = _sample_episodes(
             episodes,

@@ -13,6 +13,7 @@ from ..evaluation.openvla_runner import (
     load_dreamdojo_world_model,
     run_rollout,
 )
+from ..evaluation.task_hints import tasks_from_task_hints
 from ..evaluation.vlm_judge import (
     JudgeScore,
     ManipulationJudgeScore,
@@ -95,17 +96,7 @@ class PolicyEvalStage(PipelineStage):
                 detail="Could not extract initial frames from rendered clips.",
             )
 
-        # Build task list: merge navigation tasks + manipulation tasks
-        tasks = list(config.eval_policy.tasks or [])
-        for mt in config.eval_policy.manipulation_tasks:
-            if mt not in tasks:
-                tasks.append(mt)
-        if not tasks:
-            tasks = [
-                "Navigate forward through the corridor",
-                "Turn left at the intersection",
-                "Approach the nearest obstacle",
-            ]
+        tasks, hint_count = _build_task_list(config, facility)
 
         num_rollouts = config.eval_policy.num_rollouts
         max_steps = config.eval_policy.max_steps_per_rollout
@@ -298,6 +289,7 @@ class PolicyEvalStage(PipelineStage):
             "adapted_manipulation_success_rate": per_condition.get(
                 "adapted", {}
             ).get("manipulation_success_rate", 0.0),
+            "task_hints_injected": hint_count,
         }
 
         write_json(metrics, eval_dir / "policy_eval_report.json")
@@ -330,6 +322,31 @@ def _extract_initial_frames(render_manifest: dict) -> List[np.ndarray]:
             if ret:
                 frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
     return frames
+
+
+def _build_task_list(config: ValidationConfig, facility: FacilityConfig) -> tuple[List[str], int]:
+    tasks = list(config.eval_policy.tasks or [])
+    for task in config.eval_policy.manipulation_tasks:
+        if task not in tasks:
+            tasks.append(task)
+
+    hint_tasks: List[str] = []
+    if facility.task_hints_path is not None:
+        try:
+            hint_tasks = tasks_from_task_hints(facility.task_hints_path)
+        except Exception as exc:
+            logger.warning("Failed loading task hints from %s: %s", facility.task_hints_path, exc)
+    for task in hint_tasks:
+        if task not in tasks:
+            tasks.append(task)
+
+    if not tasks:
+        tasks = [
+            "Navigate forward through the corridor",
+            "Turn left at the intersection",
+            "Approach the nearest obstacle",
+        ]
+    return tasks, len(hint_tasks)
 
 
 def _has_cuda() -> bool:
