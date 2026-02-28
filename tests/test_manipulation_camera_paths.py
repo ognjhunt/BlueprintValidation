@@ -1,7 +1,6 @@
 """Tests for manipulation camera path generation."""
 
 import numpy as np
-import pytest
 
 
 def test_generate_manipulation_arc_basic():
@@ -49,9 +48,7 @@ def test_manipulation_arc_radius():
         dx = pose.position[0] - approach[0]
         dy = pose.position[1] - approach[1]
         dist_xy = np.sqrt(dx**2 + dy**2)
-        assert abs(dist_xy - radius) < 0.01, (
-            f"XY distance={dist_xy}, expected {radius}"
-        )
+        assert abs(dist_xy - radius) < 0.01, f"XY distance={dist_xy}, expected {radius}"
 
 
 def test_manipulation_arc_resolution():

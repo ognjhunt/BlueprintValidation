@@ -86,14 +86,25 @@ def cli(ctx: click.Context, config_path: str, work_dir: str, verbose: bool, dry_
 
 
 @cli.command()
+@click.option(
+    "--audit-mode",
+    is_flag=True,
+    default=False,
+    help="Treat missing GPU as expected (for pre-GPU readiness audits).",
+)
 @click.pass_context
-def preflight(ctx: click.Context) -> None:
+def preflight(ctx: click.Context, audit_mode: bool) -> None:
     """Run preflight checks for GPU, dependencies, and model weights."""
     from .preflight import run_preflight
 
     config = ctx.obj["config"]
     checks = run_preflight(config)
     failed = [c for c in checks if not c.passed]
+    if audit_mode:
+        gpu_failed = any(c.name == "gpu" for c in failed)
+        failed = [c for c in failed if c.name != "gpu"]
+        if gpu_failed:
+            click.echo("Audit mode: ignoring GPU preflight failure.")
     if failed:
         click.echo(f"\n{len(failed)} preflight check(s) failed:", err=True)
         for c in failed:
@@ -573,13 +584,23 @@ def status(ctx: click.Context) -> None:
 
     stages = [
         "s0_task_hints_bootstrap",
-        "s1_render", "s1b_robot_composite", "s1c_gemini_polish", "s1d_gaussian_augment",
+        "s1_render",
+        "s1b_robot_composite",
+        "s1c_gemini_polish",
+        "s1d_gaussian_augment",
         "s1e_splatsim_interaction",
-        "s2_enrich", "s3_finetune", "s3b_policy_finetune", "s3c_policy_rl_loop",
-        "s4_policy_eval", "s4a_rlds_export",
-        "s4e_trained_eval", "s4b_rollout_dataset", "s4c_policy_pair_train",
+        "s2_enrich",
+        "s3_finetune",
+        "s3b_policy_finetune",
+        "s3c_policy_rl_loop",
+        "s4_policy_eval",
+        "s4a_rlds_export",
+        "s4e_trained_eval",
+        "s4b_rollout_dataset",
+        "s4c_policy_pair_train",
         "s4d_policy_pair_eval",
-        "s5_visual_fidelity", "s6_spatial_accuracy",
+        "s5_visual_fidelity",
+        "s6_spatial_accuracy",
     ]
 
     for fid in config.facilities:

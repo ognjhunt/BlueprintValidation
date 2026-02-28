@@ -96,18 +96,22 @@ def generate_orbit(
     poses = []
     for i in range(num_frames):
         angle = 2.0 * math.pi * num_orbits * i / num_frames
-        eye = np.array([
-            center[0] + radius * math.cos(angle),
-            center[1] + radius * math.sin(angle),
-            height,
-        ])
+        eye = np.array(
+            [
+                center[0] + radius * math.cos(angle),
+                center[1] + radius * math.sin(angle),
+                height,
+            ]
+        )
         # Look toward center, slightly downward
         look_down_rad = math.radians(look_down_deg)
-        target = np.array([
-            center[0],
-            center[1],
-            height - radius * math.tan(look_down_rad),
-        ])
+        target = np.array(
+            [
+                center[0],
+                center[1],
+                height - radius * math.tan(look_down_rad),
+            ]
+        )
         c2w = _look_at(eye, target)
         poses.append(CameraPose(c2w=c2w, fx=fx, fy=fy, cx=cx, cy=cy, width=w, height=h))
 
@@ -173,24 +177,30 @@ def generate_manipulation_arc(
     for i in range(num_frames):
         t = i / max(num_frames - 1, 1)
         angle = start_angle + arc_span_rad * t
-        eye = np.array([
-            approach[0] + arc_radius * math.cos(angle),
-            approach[1] + arc_radius * math.sin(angle),
-            height,
-        ])
+        eye = np.array(
+            [
+                approach[0] + arc_radius * math.cos(angle),
+                approach[1] + arc_radius * math.sin(angle),
+                height,
+            ]
+        )
         look_down_rad = math.radians(look_down_deg)
-        target = np.array([
-            approach[0],
-            approach[1],
-            height - arc_radius * math.tan(look_down_rad),
-        ])
+        target = np.array(
+            [
+                approach[0],
+                approach[1],
+                height - arc_radius * math.tan(look_down_rad),
+            ]
+        )
         c2w = _look_at(eye, target)
         poses.append(CameraPose(c2w=c2w, fx=fx, fy=fy, cx=cx, cy=cy, width=w, height=h))
 
     return poses
 
 
-def load_path_from_json(json_path: Path, resolution: tuple[int, int] = (480, 640)) -> List[CameraPose]:
+def load_path_from_json(
+    json_path: Path, resolution: tuple[int, int] = (480, 640)
+) -> List[CameraPose]:
     """Load a camera path from a JSON file.
 
     Expected format:
@@ -261,8 +271,14 @@ def generate_path_from_spec(
         center = np.array(spec.approach_point or [0.0, 0.0, 0.0], dtype=np.float64)
         if start_offset is not None:
             center[:2] += start_offset[:2]
-        effective_height = spec.height_override_m if spec.height_override_m is not None else camera_height
-        effective_look_down = spec.look_down_override_deg if spec.look_down_override_deg is not None else look_down_deg
+        effective_height = (
+            spec.height_override_m if spec.height_override_m is not None else camera_height
+        )
+        effective_look_down = (
+            spec.look_down_override_deg
+            if spec.look_down_override_deg is not None
+            else look_down_deg
+        )
         return generate_manipulation_arc(
             approach_point=center,
             arc_radius=spec.arc_radius_m,
@@ -283,10 +299,12 @@ def save_path_to_json(poses: List[CameraPose], output_path: Path) -> None:
     """Save a camera path to JSON."""
     frames = []
     for pose in poses:
-        frames.append({
-            "camera_to_world": pose.c2w.flatten().tolist(),
-            "fov": 2.0 * math.degrees(math.atan2(pose.width / 2.0, pose.fx)),
-        })
+        frames.append(
+            {
+                "camera_to_world": pose.c2w.flatten().tolist(),
+                "fov": 2.0 * math.degrees(math.atan2(pose.width / 2.0, pose.fx)),
+            }
+        )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w") as f:
         json.dump({"camera_path": frames}, f, indent=2)

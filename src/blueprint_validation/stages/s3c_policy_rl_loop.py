@@ -101,9 +101,8 @@ def _resolve_initial_policy_checkpoint(
     # Prefer Stage 3b fine-tuned checkpoint.
     s3b = previous_results.get("s3b_policy_finetune")
     if s3b and s3b.status == "success":
-        candidate = (
-            s3b.outputs.get("adapted_policy_checkpoint")
-            or s3b.outputs.get("adapted_openvla_checkpoint")
+        candidate = s3b.outputs.get("adapted_policy_checkpoint") or s3b.outputs.get(
+            "adapted_openvla_checkpoint"
         )
         if candidate:
             path = Path(candidate)

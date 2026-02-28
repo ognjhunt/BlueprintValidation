@@ -13,7 +13,7 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from ..common import StageResult, get_logger, read_json, write_json
-from ..config import CameraPathSpec, FacilityConfig, ValidationConfig
+from ..config import FacilityConfig, ValidationConfig
 from ..rendering.scene_geometry import (
     compute_scene_transform,
     detect_up_axis,
@@ -22,7 +22,6 @@ from ..rendering.scene_geometry import (
 )
 from ..rendering.vlm_scene_detector import (
     DetectedRegion,
-    SceneDetectionResult,
     detect_and_generate_specs,
 )
 from ..warmup import load_ply_means_and_colors_numpy
@@ -375,7 +374,11 @@ def _build_interiorgs_prompt_tasks(
         )
     if articulation_hints:
         tasks.append(
-            {"task_id": "open_close_access_points", "source": "interiorgs", "scene_type": scene_type}
+            {
+                "task_id": "open_close_access_points",
+                "source": "interiorgs",
+                "scene_type": scene_type,
+            }
         )
     if not tasks:
         tasks.append(
@@ -497,13 +500,21 @@ def ingest_interiorgs(
     if isinstance(labels_data, list):
         # Format A: actual InteriorGS file
         raw_objects: List[dict] = labels_data
-        _get_iid = lambda o: str(o.get("ins_id", "")).strip()
-        _get_label = lambda o: str(o.get("label", "unknown")).strip()
+
+        def _get_iid(obj: dict) -> str:
+            return str(obj.get("ins_id", "")).strip()
+
+        def _get_label(obj: dict) -> str:
+            return str(obj.get("label", "unknown")).strip()
     else:
         # Format B: normalised / test dict
         raw_objects = labels_data.get("objects", [])
-        _get_iid = lambda o: str(o.get("instance_id", "")).strip()
-        _get_label = lambda o: str(o.get("semantic_label", "unknown")).strip()
+
+        def _get_iid(obj: dict) -> str:
+            return str(obj.get("instance_id", "")).strip()
+
+        def _get_label(obj: dict) -> str:
+            return str(obj.get("semantic_label", "unknown")).strip()
 
     for obj in raw_objects:
         iid = _get_iid(obj)
@@ -624,9 +635,7 @@ def ingest_interiorgs(
     )
 
     if num_m + num_a + num_n == 0:
-        raise ValueError(
-            "InteriorGS metadata present but produced no usable object hints"
-        )
+        raise ValueError("InteriorGS metadata present but produced no usable object hints")
 
     # InteriorGS is Z-up — scene_transform is identity.
     return {
@@ -686,12 +695,16 @@ def _derive_tasks_from_detections(
         if not task_id:
             continue
         if task_id not in seen:
-            tasks.append({"task_id": task_id, "source": "category_inference", "scene_type": scene_type})
+            tasks.append(
+                {"task_id": task_id, "source": "category_inference", "scene_type": scene_type}
+            )
             seen.add(task_id)
 
     # 3. Fallback
     if not tasks:
-        tasks.append({"task_id": "pick_place_manipulation", "source": "fallback", "scene_type": scene_type})
+        tasks.append(
+            {"task_id": "pick_place_manipulation", "source": "fallback", "scene_type": scene_type}
+        )
 
     return tasks
 
@@ -840,9 +853,7 @@ class TaskHintsBootstrapStage(PipelineStage):
         labels_path = facility.ply_path.parent / "labels.json"
         structure_path = facility.ply_path.parent / "structure.json"
         if labels_path.exists():
-            logger.info(
-                "InteriorGS labels.json found at %s — using direct ingestion", labels_path
-            )
+            logger.info("InteriorGS labels.json found at %s — using direct ingestion", labels_path)
             try:
                 payload = ingest_interiorgs(
                     labels_path=labels_path,
@@ -959,9 +970,7 @@ class TaskHintsBootstrapStage(PipelineStage):
         specs = vlm_result.specs
 
         approach_points_corr: List[List[float]] = [
-            list(spec.approach_point)
-            for spec in specs
-            if spec.approach_point is not None
+            list(spec.approach_point) for spec in specs if spec.approach_point is not None
         ]
         if not approach_points_corr:
             return StageResult(
@@ -1000,7 +1009,9 @@ class TaskHintsBootstrapStage(PipelineStage):
             centers_original = _to_original_frame(centers_corrected, scene_T)
 
         if obj_extents is not None and has_transform:
-            obj_extents = _extents_to_original_frame(np.asarray(obj_extents, dtype=np.float64), scene_T)
+            obj_extents = _extents_to_original_frame(
+                np.asarray(obj_extents, dtype=np.float64), scene_T
+            )
 
         payload = _build_synthetic_task_hints(
             centers_original=centers_original,

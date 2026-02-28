@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 
 def test_build_task_start_assignments_prefers_task_relevant_clip(tmp_path):
@@ -90,4 +89,3 @@ def test_shared_manifest_compatibility(tmp_path):
         facility_name="Kitchen B",
         render_manifest_path=render_manifest_path,
     )
-

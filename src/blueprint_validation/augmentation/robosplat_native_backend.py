@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Sequence
 
 import numpy as np
 
@@ -66,11 +66,15 @@ def run_native_backend(
         source_clip_name = str(clip.get("clip_name", "clip"))
         camera_path_raw = str(clip.get("camera_path", ""))
         if not camera_path_raw:
-            logger.warning("Skipping native augmentation for %s: missing camera_path", source_clip_name)
+            logger.warning(
+                "Skipping native augmentation for %s: missing camera_path", source_clip_name
+            )
             continue
         camera_path = Path(camera_path_raw)
         if not camera_path.exists():
-            logger.warning("Skipping native augmentation for %s: camera path not found", source_clip_name)
+            logger.warning(
+                "Skipping native augmentation for %s: camera path not found", source_clip_name
+            )
             continue
 
         resolution_raw = clip.get("resolution", [480, 640])
@@ -111,7 +115,9 @@ def run_native_backend(
                     "resolution": list(resolution),
                     "fps": fps,
                     "video_path": str(output.video_path),
-                    "depth_video_path": str(output.depth_video_path) if output.depth_video_path else "",
+                    "depth_video_path": str(output.depth_video_path)
+                    if output.depth_video_path
+                    else "",
                     "source_clip_name": source_clip_name,
                     "source_video_path": str(clip.get("video_path", "")),
                     "source_depth_video_path": str(clip.get("depth_video_path", "")),

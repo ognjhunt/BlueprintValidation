@@ -137,7 +137,9 @@ def test_bootstrap_writes_centers_in_original_frame_for_y_up(sample_ply, tmp_pat
     stage = TaskHintsBootstrapStage()
 
     vlm_result = SceneDetectionResult(
-        specs=[CameraPathSpec(type="manipulation", approach_point=[0.0, 0.0, 5.0], arc_radius_m=0.8)],
+        specs=[
+            CameraPathSpec(type="manipulation", approach_point=[0.0, 0.0, 5.0], arc_radius_m=0.8)
+        ],
         detections=[
             DetectedRegion(
                 label="target",
@@ -246,9 +248,9 @@ def test_obb_from_corners_accepts_dict_points():
 
 
 def test_obb_from_corners_returns_none_for_malformed():
-    assert _obb_from_corners([[1, 2]]) is None          # not 3D
-    assert _obb_from_corners([[1, 2, 3]]) is None       # only 1 point
-    assert _obb_from_corners("bad") is None             # wrong type
+    assert _obb_from_corners([[1, 2]]) is None  # not 3D
+    assert _obb_from_corners([[1, 2, 3]]) is None  # only 1 point
+    assert _obb_from_corners("bad") is None  # wrong type
 
 
 def test_ingest_interiorgs_actual_file_format(tmp_path):
@@ -271,8 +273,16 @@ def test_ingest_interiorgs_actual_file_format(tmp_path):
 
     # A list (not dict) with ins_id / label keys
     labels = [
-        {"ins_id": "42", "label": "coffee_mug", "bounding_box": _dict_corners([1.0, 2.0, 0.5], [0.12, 0.12, 0.15])},
-        {"ins_id": "43", "label": "window", "bounding_box": _dict_corners([3.0, 0.0, 1.2], [1.2, 0.1, 0.8])},
+        {
+            "ins_id": "42",
+            "label": "coffee_mug",
+            "bounding_box": _dict_corners([1.0, 2.0, 0.5], [0.12, 0.12, 0.15]),
+        },
+        {
+            "ins_id": "43",
+            "label": "window",
+            "bounding_box": _dict_corners([3.0, 0.0, 1.2], [1.2, 0.1, 0.8]),
+        },
     ]
     labels_path = tmp_path / "labels.json"
     labels_path.write_text(json.dumps(labels))
@@ -458,7 +468,9 @@ def test_ingest_interiorgs_ins_not_duplicated_when_label_covered(tmp_path):
     assert "Table" in manip_labels
 
 
-def test_bootstrap_stage_fails_when_interiorgs_has_no_usable_hints(sample_ply, tmp_path, monkeypatch):
+def test_bootstrap_stage_fails_when_interiorgs_has_no_usable_hints(
+    sample_ply, tmp_path, monkeypatch
+):
     """labels.json present but empty/malformed should fail with manual guidance."""
     (sample_ply.parent / "labels.json").write_text(json.dumps({"objects": []}))
 
@@ -479,7 +491,9 @@ def test_bootstrap_stage_fails_when_interiorgs_has_no_usable_hints(sample_ply, t
     assert "manual analysis is required" in (result.detail or "").lower()
 
 
-def test_bootstrap_stage_uses_interiorgs_when_labels_json_present(sample_ply, tmp_path, monkeypatch):
+def test_bootstrap_stage_uses_interiorgs_when_labels_json_present(
+    sample_ply, tmp_path, monkeypatch
+):
     """Stage should use InteriorGS ingestion and never call VLM when labels.json exists."""
     # Place labels.json in same directory as the PLY
     labels = {
@@ -525,15 +539,21 @@ def test_bootstrap_stage_uses_interiorgs_when_labels_json_present(sample_ply, tm
     assert payload["articulation_hints"][0]["label"] == "cabinet_door"
 
 
-def test_bootstrap_stage_falls_through_to_vlm_without_labels_json(sample_ply, tmp_path, monkeypatch):
+def test_bootstrap_stage_falls_through_to_vlm_without_labels_json(
+    sample_ply, tmp_path, monkeypatch
+):
     """Without labels.json the stage should proceed to VLM as before."""
     # Ensure no labels.json is present
     assert not (sample_ply.parent / "labels.json").exists()
 
     vlm_result = SceneDetectionResult(
-        specs=[CameraPathSpec(type="manipulation", approach_point=[1.0, 1.0, 0.5], arc_radius_m=0.6)],
+        specs=[
+            CameraPathSpec(type="manipulation", approach_point=[1.0, 1.0, 0.5], arc_radius_m=0.6)
+        ],
         detections=[
-            DetectedRegion(label="box", center_3d=np.array([1.0, 1.0, 0.5]), category="manipulation")
+            DetectedRegion(
+                label="box", center_3d=np.array([1.0, 1.0, 0.5]), category="manipulation"
+            )
         ],
         scene_type="warehouse",
         suggested_tasks=[],

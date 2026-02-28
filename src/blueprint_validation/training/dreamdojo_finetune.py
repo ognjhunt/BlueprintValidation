@@ -38,7 +38,11 @@ def resolve_dreamdojo_experiment_name(dreamdojo_root: Path, configured: str | No
         token = configured.strip()
         maybe_path = Path(token)
         if maybe_path.is_absolute() or "/" in token or token.endswith(".yaml"):
-            candidate = maybe_path if maybe_path.is_absolute() else (dreamdojo_root / "configs" / maybe_path)
+            candidate = (
+                maybe_path
+                if maybe_path.is_absolute()
+                else (dreamdojo_root / "configs" / maybe_path)
+            )
             if candidate.suffix != ".yaml":
                 candidate_yaml = candidate.with_suffix(".yaml")
                 if candidate_yaml.exists():

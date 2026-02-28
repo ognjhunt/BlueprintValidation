@@ -234,9 +234,7 @@ def convert_jsonl_to_tfrecord(
                         "observation/image": tf.train.Feature(
                             bytes_list=tf.train.BytesList(value=[image_bytes])
                         ),
-                        "action": tf.train.Feature(
-                            float_list=tf.train.FloatList(value=action)
-                        ),
+                        "action": tf.train.Feature(float_list=tf.train.FloatList(value=action)),
                         "language_instruction": tf.train.Feature(
                             bytes_list=tf.train.BytesList(
                                 value=[step["language_instruction"].encode("utf-8")]
@@ -246,14 +244,10 @@ def convert_jsonl_to_tfrecord(
                             float_list=tf.train.FloatList(value=[step.get("reward", 0.0)])
                         ),
                         "is_first": tf.train.Feature(
-                            int64_list=tf.train.Int64List(
-                                value=[int(step.get("is_first", False))]
-                            )
+                            int64_list=tf.train.Int64List(value=[int(step.get("is_first", False))])
                         ),
                         "is_last": tf.train.Feature(
-                            int64_list=tf.train.Int64List(
-                                value=[int(step.get("is_last", False))]
-                            )
+                            int64_list=tf.train.Int64List(value=[int(step.get("is_last", False))])
                         ),
                         "is_terminal": tf.train.Feature(
                             int64_list=tf.train.Int64List(
@@ -261,9 +255,7 @@ def convert_jsonl_to_tfrecord(
                             )
                         ),
                     }
-                    example = tf.train.Example(
-                        features=tf.train.Features(feature=feature)
-                    )
+                    example = tf.train.Example(features=tf.train.Features(feature=feature))
                     writer.write(example.SerializeToString())
 
         logger.info("Wrote TFRecord split '%s' to %s", split_name, tfrecord_path)

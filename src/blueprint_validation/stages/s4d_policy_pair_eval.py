@@ -98,6 +98,7 @@ class PolicyPairEvalStage(PipelineStage):
         world_model = load_dreamdojo_world_model(
             checkpoint_path=config.finetune.dreamdojo_checkpoint,
             adapted_checkpoint=eval_world_checkpoint,
+            dreamdojo_repo=config.finetune.dreamdojo_repo,
             device=device,
         )
         adapter = get_policy_adapter(config.policy_adapter)
@@ -232,7 +233,6 @@ def _resolve_eval_world_checkpoint(config: ValidationConfig, work_dir: Path) -> 
     return None
 
 
-
 def _read_rgb_image(path: Path) -> np.ndarray:
     import cv2
 
@@ -284,8 +284,12 @@ def _compute_pair_metrics(rows: List[dict]) -> dict:
         except Exception:
             p_value = None
 
-    base_manip = [p[0]["manipulation_success"] for p in paired if p[0]["manipulation_success"] is not None]
-    site_manip = [p[1]["manipulation_success"] for p in paired if p[1]["manipulation_success"] is not None]
+    base_manip = [
+        p[0]["manipulation_success"] for p in paired if p[0]["manipulation_success"] is not None
+    ]
+    site_manip = [
+        p[1]["manipulation_success"] for p in paired if p[1]["manipulation_success"] is not None
+    ]
     base_manip_rate = float(np.mean(base_manip)) if base_manip else None
     site_manip_rate = float(np.mean(site_manip)) if site_manip else None
 
@@ -294,7 +298,10 @@ def _compute_pair_metrics(rows: List[dict]) -> dict:
         "policy_base_mean_task_score": round(float(np.mean(base_scores)), 3),
         "policy_site_mean_task_score": round(float(np.mean(site_scores)), 3),
         "task_score_improvement_pct": round(
-            ((float(np.mean(site_scores)) - float(np.mean(base_scores))) / max(float(np.mean(base_scores)), 1e-8))
+            (
+                (float(np.mean(site_scores)) - float(np.mean(base_scores)))
+                / max(float(np.mean(base_scores)), 1e-8)
+            )
             * 100.0,
             2,
         ),

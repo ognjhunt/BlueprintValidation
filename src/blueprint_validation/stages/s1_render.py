@@ -86,7 +86,9 @@ class RenderStage(PipelineStage):
                         obbs=obbs,
                         tasks=task_pool,
                         max_specs=max(1, int(config.render.task_scoped_max_specs)),
-                        context_per_target=max(0, int(config.render.task_scoped_context_per_target)),
+                        context_per_target=max(
+                            0, int(config.render.task_scoped_context_per_target)
+                        ),
                         overview_specs=max(0, int(config.render.task_scoped_overview_specs)),
                         fallback_specs=max(1, int(config.render.task_scoped_fallback_specs)),
                     )
@@ -136,7 +138,9 @@ class RenderStage(PipelineStage):
                 return result
             return list(getattr(result, "specs", []))
         except Exception:
-            logger.warning("VLM fallback detection failed; continuing with naive paths", exc_info=True)
+            logger.warning(
+                "VLM fallback detection failed; continuing with naive paths", exc_info=True
+            )
             return []
 
     def run(
@@ -191,7 +195,11 @@ class RenderStage(PipelineStage):
             )
             extra_specs_count = (warmup_cache or {}).get("scene_aware_specs", 0)
             manifest_entries = self._render_from_cache(
-                cached_clips, splat, render_dir, resolution, fps,
+                cached_clips,
+                splat,
+                render_dir,
+                resolution,
+                fps,
                 scene_T if has_transform else None,
             )
         else:
@@ -220,9 +228,17 @@ class RenderStage(PipelineStage):
                 )
 
             manifest_entries = self._generate_and_render(
-                config, splat, all_path_specs, scene_center,
-                occupancy, render_dir, num_frames, camera_height,
-                look_down_deg, resolution, fps,
+                config,
+                splat,
+                all_path_specs,
+                scene_center,
+                occupancy,
+                render_dir,
+                num_frames,
+                camera_height,
+                look_down_deg,
+                resolution,
+                fps,
                 scene_T if has_transform else None,
             )
 
@@ -279,8 +295,12 @@ class RenderStage(PipelineStage):
                 poses = [
                     CameraPose(
                         c2w=transform_c2w(p.c2w, scene_T),
-                        fx=p.fx, fy=p.fy, cx=p.cx, cy=p.cy,
-                        width=p.width, height=p.height,
+                        fx=p.fx,
+                        fy=p.fy,
+                        cx=p.cx,
+                        cy=p.cy,
+                        width=p.width,
+                        height=p.height,
                     )
                     for p in poses
                 ]
@@ -297,19 +317,21 @@ class RenderStage(PipelineStage):
                 fps=fps,
             )
             initial_camera = _camera_pose_metadata(poses[0]) if poses else None
-            manifest_entries.append({
-                "clip_name": clip_name,
-                "path_type": clip_data["path_type"],
-                "clip_index": clip_data["clip_index"],
-                "num_frames": len(poses),
-                "resolution": list(resolution),
-                "fps": fps,
-                "video_path": str(output.video_path),
-                "depth_video_path": str(output.depth_video_path),
-                "camera_path": str(render_dir / f"{clip_name}_camera_path.json"),
-                "initial_camera": initial_camera,
-                "path_context": {"source": "warmup_cache"},
-            })
+            manifest_entries.append(
+                {
+                    "clip_name": clip_name,
+                    "path_type": clip_data["path_type"],
+                    "clip_index": clip_data["clip_index"],
+                    "num_frames": len(poses),
+                    "resolution": list(resolution),
+                    "fps": fps,
+                    "video_path": str(output.video_path),
+                    "depth_video_path": str(output.depth_video_path),
+                    "camera_path": str(render_dir / f"{clip_name}_camera_path.json"),
+                    "initial_camera": initial_camera,
+                    "path_context": {"source": "warmup_cache"},
+                }
+            )
         return manifest_entries
 
     def _generate_and_render(
@@ -374,8 +396,12 @@ class RenderStage(PipelineStage):
                     poses = [
                         CameraPose(
                             c2w=transform_c2w(p.c2w, scene_T),
-                            fx=p.fx, fy=p.fy, cx=p.cx, cy=p.cy,
-                            width=p.width, height=p.height,
+                            fx=p.fx,
+                            fy=p.fy,
+                            cx=p.cx,
+                            cy=p.cy,
+                            width=p.width,
+                            height=p.height,
                         )
                         for p in poses
                     ]
@@ -398,19 +424,21 @@ class RenderStage(PipelineStage):
                 )
                 initial_camera = _camera_pose_metadata(poses[0]) if poses else None
 
-                manifest_entries.append({
-                    "clip_name": clip_name,
-                    "path_type": path_spec.type,
-                    "clip_index": clip_index,
-                    "num_frames": len(poses),
-                    "resolution": list(resolution),
-                    "fps": fps,
-                    "video_path": str(output.video_path),
-                    "depth_video_path": str(output.depth_video_path),
-                    "camera_path": str(render_dir / f"{clip_name}_camera_path.json"),
-                    "initial_camera": initial_camera,
-                    "path_context": _path_context_from_spec(path_spec),
-                })
+                manifest_entries.append(
+                    {
+                        "clip_name": clip_name,
+                        "path_type": path_spec.type,
+                        "clip_index": clip_index,
+                        "num_frames": len(poses),
+                        "resolution": list(resolution),
+                        "fps": fps,
+                        "video_path": str(output.video_path),
+                        "depth_video_path": str(output.depth_video_path),
+                        "camera_path": str(render_dir / f"{clip_name}_camera_path.json"),
+                        "initial_camera": initial_camera,
+                        "path_context": _path_context_from_spec(path_spec),
+                    }
+                )
                 clip_index += 1
 
         return manifest_entries
@@ -443,9 +471,7 @@ def _path_context_from_spec(path_spec: CameraPathSpec) -> dict:
         "type": path_spec.type,
         "source_tag": path_spec.source_tag or "default",
         "height_override_m": (
-            float(path_spec.height_override_m)
-            if path_spec.height_override_m is not None
-            else None
+            float(path_spec.height_override_m) if path_spec.height_override_m is not None else None
         ),
         "look_down_override_deg": (
             float(path_spec.look_down_override_deg)
@@ -471,7 +497,9 @@ def _build_task_prompt_pool(
     profile: str,
 ) -> List[str]:
     tasks: List[str] = []
-    for t in list(config.eval_policy.tasks or []) + list(config.eval_policy.manipulation_tasks or []):
+    for t in list(config.eval_policy.tasks or []) + list(
+        config.eval_policy.manipulation_tasks or []
+    ):
         task = str(t).strip()
         if task:
             tasks.append(task)
@@ -651,7 +679,9 @@ def _resolve_task_target_index(
             return resolved
 
     # navigation/object phrase with spaces
-    nav_match = re.search(r"(?:navigate to|approach|go to|move toward)\s+(?:the\s+)?([a-z0-9_ ]+)", lowered)
+    nav_match = re.search(
+        r"(?:navigate to|approach|go to|move toward)\s+(?:the\s+)?([a-z0-9_ ]+)", lowered
+    )
     if nav_match:
         label_key = _label_key(nav_match.group(1))
         options = by_label.get(label_key, [])
@@ -704,6 +734,7 @@ def _fallback_obb_indices(obbs: List[OrientedBoundingBox], limit: int) -> List[i
 def _has_cuda() -> bool:
     try:
         import torch
+
         return torch.cuda.is_available()
     except ImportError:
         return False

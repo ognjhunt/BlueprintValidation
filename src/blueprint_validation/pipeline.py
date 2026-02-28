@@ -69,23 +69,23 @@ class ValidationPipeline:
         # Per-facility stages (1-6)
         per_facility_stages = [
             TaskHintsBootstrapStage(),  # S0: bootstrap synthetic task hints if missing
-            RenderStage(),              # S1: splat -> video clips
-            RobotCompositeStage(),      # S1b: URDF robot arm composite
-            GeminiPolishStage(),        # S1c: optional Gemini photorealism polish
-            GaussianAugmentStage(),     # S1d: Full RoboSplat-default augmentation
+            RenderStage(),  # S1: splat -> video clips
+            RobotCompositeStage(),  # S1b: URDF robot arm composite
+            GeminiPolishStage(),  # S1c: optional Gemini photorealism polish
+            GaussianAugmentStage(),  # S1d: Full RoboSplat-default augmentation
             SplatSimInteractionStage(),  # S1e: Optional PyBullet interaction augmentation
-            EnrichStage(),              # S2: Cosmos Transfer variants
-            FinetuneStage(),            # S3: DreamDojo LoRA fine-tune
-            PolicyEvalStage(),          # S4: frozen policy eval (baseline + adapted)
-            RLDSExportStage(),          # S4a: export adapted rollouts -> RLDS TFRecords
-            PolicyFinetuneStage(),      # S3b: OpenVLA-OFT fine-tune on pipeline-generated data
-            PolicyRLLoopStage(),        # S3c: iterative RL loop + world-model refresh
-            TrainedPolicyEvalStage(),   # S4e: evaluate trained vs frozen baselines
-            RolloutDatasetStage(),      # S4b: export paired rollouts -> JSONL datasets
-            PolicyPairTrainStage(),     # S4c: train policy_base + policy_site
-            PolicyPairEvalStage(),      # S4d: heldout paired evaluation
-            VisualFidelityStage(),      # S5: PSNR/SSIM/LPIPS metrics
-            SpatialAccuracyStage(),     # S6: VLM spatial scoring
+            EnrichStage(),  # S2: Cosmos Transfer variants
+            FinetuneStage(),  # S3: DreamDojo LoRA fine-tune
+            PolicyEvalStage(),  # S4: frozen policy eval (baseline + adapted)
+            RLDSExportStage(),  # S4a: export adapted rollouts -> RLDS TFRecords
+            PolicyFinetuneStage(),  # S3b: OpenVLA-OFT fine-tune on pipeline-generated data
+            PolicyRLLoopStage(),  # S3c: iterative RL loop + world-model refresh
+            TrainedPolicyEvalStage(),  # S4e: evaluate trained vs frozen baselines
+            RolloutDatasetStage(),  # S4b: export paired rollouts -> JSONL datasets
+            PolicyPairTrainStage(),  # S4c: train policy_base + policy_site
+            PolicyPairEvalStage(),  # S4d: heldout paired evaluation
+            VisualFidelityStage(),  # S5: PSNR/SSIM/LPIPS metrics
+            SpatialAccuracyStage(),  # S6: VLM spatial scoring
         ]
 
         for fid, fconfig in self.config.facilities.items():
@@ -113,7 +113,9 @@ class ValidationPipeline:
                     failed_stage_keys.append(failed_key)
                     logger.error(
                         "Stage %s failed for %s: %s.",
-                        stage.name, fid, result.detail,
+                        stage.name,
+                        fid,
+                        result.detail,
                     )
                     if fail_fast:
                         logger.error(

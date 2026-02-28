@@ -1,7 +1,5 @@
 """Tests for VLM judge scoring (with mocked responses)."""
 
-import pytest
-
 
 def test_extract_json_from_clean():
     from blueprint_validation.evaluation.vlm_judge import _extract_json_from_response

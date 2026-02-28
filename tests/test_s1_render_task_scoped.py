@@ -5,7 +5,13 @@ from __future__ import annotations
 import numpy as np
 
 
-def _obb(instance_id: str, label: str, center: tuple[float, float, float], category: str, confidence: float = 1.0):
+def _obb(
+    instance_id: str,
+    label: str,
+    center: tuple[float, float, float],
+    category: str,
+    confidence: float = 1.0,
+):
     from blueprint_validation.rendering.scene_geometry import OrientedBoundingBox
 
     return OrientedBoundingBox(

@@ -139,8 +139,7 @@ def run_pi05_finetune(
         raise RuntimeError(f"Dataset root does not exist: {dataset_root}")
     if not (dataset_root / dataset_name).exists():
         raise RuntimeError(
-            "pi05 dataset directory missing. Expected "
-            f"{dataset_root / dataset_name}."
+            f"pi05 dataset directory missing. Expected {dataset_root / dataset_name}."
         )
 
     train_script = _resolve_script(backend.openpi_repo, backend.train_script)

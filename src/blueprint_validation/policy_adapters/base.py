@@ -38,8 +38,7 @@ class PolicyAdapter(ABC):
 
     @property
     @abstractmethod
-    def name(self) -> str:
-        ...
+    def name(self) -> str: ...
 
     @abstractmethod
     def base_model_ref(self, eval_config: PolicyEvalConfig) -> tuple[str, Optional[Path]]:
@@ -52,8 +51,7 @@ class PolicyAdapter(ABC):
         model_name: str,
         checkpoint_path: Optional[Path],
         device: str,
-    ) -> PolicyHandle:
-        ...
+    ) -> PolicyHandle: ...
 
     @abstractmethod
     def predict_action(
@@ -63,8 +61,7 @@ class PolicyAdapter(ABC):
         task_prompt: str,
         unnorm_key: Optional[str],
         device: str,
-    ):
-        ...
+    ): ...
 
     @abstractmethod
     def dataset_transform(
@@ -72,8 +69,7 @@ class PolicyAdapter(ABC):
         source_dataset_dir: Path,
         output_root: Path,
         dataset_name: str,
-    ) -> Path:
-        ...
+    ) -> Path: ...
 
     @abstractmethod
     def train_policy(
@@ -84,8 +80,7 @@ class PolicyAdapter(ABC):
         dataset_name: str,
         output_dir: Path,
         finetune_config: PolicyFinetuneConfig,
-    ) -> PolicyTrainingResult:
-        ...
+    ) -> PolicyTrainingResult: ...
 
     @abstractmethod
     def resolve_latest_checkpoint(self, run_root_dir: Path) -> Optional[Path]:

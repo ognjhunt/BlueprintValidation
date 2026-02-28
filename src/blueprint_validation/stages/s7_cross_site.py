@@ -45,9 +45,7 @@ class CrossSiteStage(PipelineStage):
             )
 
         # Build facility descriptions map
-        facility_descriptions = {
-            fid: config.facilities[fid].description for fid in facility_ids
-        }
+        facility_descriptions = {fid: config.facilities[fid].description for fid in facility_ids}
 
         vlm_config = VLMJudgeConfig(
             model=config.eval_crosssite.vlm_model,
@@ -88,21 +86,21 @@ class CrossSiteStage(PipelineStage):
                         facility_descriptions=facility_descriptions,
                         config=vlm_config,
                     )
-                    classifications.append({
-                        "source_model": source_fid,
-                        "predicted_facility": result["predicted_facility"],
-                        "confidence": result["confidence"],
-                        "reasoning": result["reasoning"],
-                        "video_path": str(video_path),
-                    })
+                    classifications.append(
+                        {
+                            "source_model": source_fid,
+                            "predicted_facility": result["predicted_facility"],
+                            "confidence": result["confidence"],
+                            "reasoning": result["reasoning"],
+                            "video_path": str(video_path),
+                        }
+                    )
                 except Exception as e:
                     logger.warning("Classification failed for %s: %s", video_path.name, e)
 
         # Compute LPIPS distances (simplified — using frame-level comparison)
         # In practice, extract frames from each model's outputs and compute pairwise LPIPS
-        _compute_lpips_distances(
-            config, work_dir, facility_ids, lpips_inter, lpips_intra
-        )
+        _compute_lpips_distances(config, work_dir, facility_ids, lpips_inter, lpips_intra)
 
         # Compute metrics
         cs_metrics = compute_cross_site_metrics(

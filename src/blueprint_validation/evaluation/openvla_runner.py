@@ -50,6 +50,7 @@ def load_openvla(model_name: str, checkpoint_path: Optional[Path] = None, device
 def load_dreamdojo_world_model(
     checkpoint_path: Path,
     adapted_checkpoint: Optional[Path] = None,
+    dreamdojo_repo: Optional[Path] = None,
     device: str = "cuda",
 ):
     """Load DreamDojo world model for action-conditioned video prediction.
@@ -60,19 +61,10 @@ def load_dreamdojo_world_model(
 
     Returns an object with a predict_next_frame(frame, action) method.
     """
-    import sys
-
     effective_checkpoint = adapted_checkpoint if adapted_checkpoint else checkpoint_path
 
     if not effective_checkpoint.exists():
-        raise RuntimeError(
-            f"DreamDojo checkpoint path does not exist: {effective_checkpoint}"
-        )
-
-    # Add DreamDojo repo to path for cosmos_predict2 imports
-    dreamdojo_root = checkpoint_path.parent.parent
-    if str(dreamdojo_root) not in sys.path:
-        sys.path.insert(0, str(dreamdojo_root))
+        raise RuntimeError(f"DreamDojo checkpoint path does not exist: {effective_checkpoint}")
 
     logger.info("Loading DreamDojo from %s", effective_checkpoint)
     if adapted_checkpoint:
@@ -80,16 +72,38 @@ def load_dreamdojo_world_model(
     else:
         logger.info("Using baseline (pretrained) checkpoint")
 
+    import sys
+
+    # Prefer already-installed cosmos_predict2 first, then explicit repo fallback.
     try:
         from cosmos_predict2.action_conditioned import inference as ac_inference
         from cosmos_predict2.action_conditioned.inference import (
             ActionConditionedInferenceArguments,
         )
     except ImportError as e:
-        raise RuntimeError(
-            "DreamDojo/cosmos_predict2 is not importable. Install DreamDojo and ensure "
-            f"its Python package is available (attempted root: {dreamdojo_root})."
-        ) from e
+        if dreamdojo_repo is None:
+            raise RuntimeError(
+                "DreamDojo/cosmos_predict2 is not importable. Install DreamDojo in the current "
+                "environment or pass finetune.dreamdojo_repo to enable repo-path fallback."
+            ) from e
+        if not dreamdojo_repo.exists():
+            raise RuntimeError(
+                "DreamDojo/cosmos_predict2 is not importable and finetune.dreamdojo_repo "
+                f"does not exist: {dreamdojo_repo}"
+            ) from e
+        dreamdojo_repo_str = str(dreamdojo_repo)
+        if dreamdojo_repo_str not in sys.path:
+            sys.path.insert(0, dreamdojo_repo_str)
+        try:
+            from cosmos_predict2.action_conditioned import inference as ac_inference
+            from cosmos_predict2.action_conditioned.inference import (
+                ActionConditionedInferenceArguments,
+            )
+        except ImportError as inner:
+            raise RuntimeError(
+                "DreamDojo/cosmos_predict2 is not importable after repo-path fallback. "
+                f"Attempted finetune.dreamdojo_repo={dreamdojo_repo}"
+            ) from inner
 
     args = ActionConditionedInferenceArguments(
         checkpoint_dir=str(effective_checkpoint),
@@ -125,6 +139,7 @@ def run_rollout(
 
     try:
         import torch
+
         torch_dtype = torch.bfloat16
     except ImportError:  # pragma: no cover - exercised in lightweight test envs
         torch = None
@@ -187,6 +202,7 @@ def run_rollout(
         video_path = output_dir / f"{clip_name}.mp4"
 
         import cv2
+
         h, w = frames[0].shape[:2]
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         writer = cv2.VideoWriter(str(video_path), fourcc, 10, (w, h))

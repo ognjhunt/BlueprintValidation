@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,23 @@ from .enrichment.cosmos_runner import build_controlnet_spec
 from .training.dreamdojo_finetune import resolve_dreamdojo_experiment_name
 
 logger = get_logger("preflight")
+
+_PI05_REQUIRED_TRAIN_FLAGS = {
+    "--exp_name",
+    "--run_root_dir",
+    "--dataset_root",
+    "--dataset_name",
+    "--base_model",
+    "--batch_size",
+    "--learning_rate",
+    "--max_steps",
+}
+
+_PI05_REQUIRED_NORM_STATS_FLAGS = {
+    "--dataset_root",
+    "--dataset_name",
+    "--profile",
+}
 
 
 def check_gpu() -> PreflightCheck:
@@ -52,7 +70,9 @@ def check_dependency(module_name: str, package_name: str = "") -> PreflightCheck
         import_module(module_name)
         return PreflightCheck(name=f"dep:{pkg}", passed=True)
     except ImportError:
-        return PreflightCheck(name=f"dep:{pkg}", passed=False, detail=f"Cannot import {module_name}")
+        return PreflightCheck(
+            name=f"dep:{pkg}", passed=False, detail=f"Cannot import {module_name}"
+        )
 
 
 def check_model_weights(path: Path, name: str) -> PreflightCheck:
@@ -127,6 +147,56 @@ def check_policy_base_reference(model_name: str, checkpoint_path: Path) -> Prefl
         name="policy:base_model",
         passed=False,
         detail="Neither eval_policy.model_name nor eval_policy.checkpoint_path is usable.",
+    )
+
+
+def _is_openvla_like_reference(model_name: str, checkpoint_path: Path) -> bool:
+    model_text = (model_name or "").strip().lower()
+    ckpt_text = str(checkpoint_path).strip().lower()
+    return "openvla" in model_text or "openvla" in ckpt_text
+
+
+def check_policy_base_reference_for_adapter(
+    adapter_name: str,
+    model_name: str,
+    checkpoint_path: Path,
+) -> PreflightCheck:
+    if adapter_name != "pi05":
+        return check_policy_base_reference(model_name=model_name, checkpoint_path=checkpoint_path)
+
+    ckpt_exists = checkpoint_path.exists() and (
+        checkpoint_path.is_file() or (checkpoint_path.is_dir() and any(checkpoint_path.iterdir()))
+    )
+    if ckpt_exists:
+        if _is_openvla_like_reference("", checkpoint_path):
+            return PreflightCheck(
+                name="policy:base_reference",
+                passed=False,
+                detail=(
+                    "pi05 adapter selected but eval_policy.checkpoint_path points to an OpenVLA-like "
+                    f"artifact: {checkpoint_path}. Set a pi05/OpenPI checkpoint instead."
+                ),
+            )
+        return PreflightCheck(
+            name="policy:base_reference",
+            passed=True,
+            detail=f"pi05 checkpoint reference: {checkpoint_path}",
+        )
+
+    if model_name and not _is_openvla_like_reference(model_name, Path("")):
+        return PreflightCheck(
+            name="policy:base_reference",
+            passed=True,
+            detail=f"pi05 model reference: {model_name}",
+        )
+
+    return PreflightCheck(
+        name="policy:base_reference",
+        passed=False,
+        detail=(
+            "pi05 adapter selected but eval_policy reference is missing or OpenVLA-like. "
+            "Set eval_policy.model_name and/or eval_policy.checkpoint_path to a pi05/OpenPI reference."
+        ),
     )
 
 
@@ -246,13 +316,134 @@ def _extract_dict_keys(path: Path, dict_name: str) -> set[str]:
         if not isinstance(node, ast.Assign):
             continue
         for target in node.targets:
-            if isinstance(target, ast.Name) and target.id == dict_name and isinstance(node.value, ast.Dict):
+            if (
+                isinstance(target, ast.Name)
+                and target.id == dict_name
+                and isinstance(node.value, ast.Dict)
+            ):
                 keys: set[str] = set()
                 for key in node.value.keys:
                     if isinstance(key, ast.Constant) and isinstance(key.value, str):
                         keys.add(key.value)
                 return keys
     return set()
+
+
+def _resolve_script_path(repo_root: Path, script_value: str) -> Path:
+    script_path = Path(script_value)
+    if script_path.is_absolute():
+        return script_path
+    return repo_root / script_path
+
+
+def _extract_argparse_option_flags(path: Path) -> set[str]:
+    try:
+        module = ast.parse(path.read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+    flags: set[str] = set()
+    for node in ast.walk(module):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not isinstance(func, ast.Attribute) or func.attr != "add_argument":
+            continue
+        for arg in node.args:
+            if (
+                isinstance(arg, ast.Constant)
+                and isinstance(arg.value, str)
+                and arg.value.startswith("--")
+            ):
+                flags.add(arg.value)
+    return flags
+
+
+def _extract_help_flags(script_path: Path, cwd: Path) -> set[str]:
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(script_path), "--help"],
+            capture_output=True,
+            text=True,
+            timeout=12,
+            cwd=str(cwd),
+        )
+    except Exception:
+        return set()
+    help_text = f"{proc.stdout or ''}\n{proc.stderr or ''}"
+    return set(re.findall(r"--[a-zA-Z0-9][a-zA-Z0-9_-]*", help_text))
+
+
+def _check_script_cli_contract(
+    *,
+    check_name: str,
+    script_path: Path,
+    required_flags: set[str],
+    cwd: Path,
+    remediation: str,
+) -> PreflightCheck:
+    if not script_path.exists():
+        return PreflightCheck(
+            name=check_name,
+            passed=False,
+            detail=f"Script not found: {script_path}",
+        )
+
+    ast_flags = _extract_argparse_option_flags(script_path)
+    combined_flags = set(ast_flags)
+    source = "AST"
+    if not required_flags.issubset(combined_flags):
+        help_flags = _extract_help_flags(script_path, cwd=cwd)
+        if help_flags:
+            combined_flags |= help_flags
+            source = "AST+--help" if ast_flags else "--help"
+
+    if not combined_flags:
+        return PreflightCheck(
+            name=check_name,
+            passed=False,
+            detail=f"Could not determine CLI options for {script_path}",
+        )
+
+    missing = sorted(required_flags - combined_flags)
+    if missing:
+        return PreflightCheck(
+            name=check_name,
+            passed=False,
+            detail=(
+                f"Missing required CLI flags in {script_path}: {', '.join(missing)}. {remediation}"
+            ),
+        )
+    return PreflightCheck(
+        name=check_name,
+        passed=True,
+        detail=f"Validated CLI contract via {source}: {script_path}",
+    )
+
+
+def check_pi05_train_contract(openpi_repo: Path, train_script: str) -> PreflightCheck:
+    script_path = _resolve_script_path(openpi_repo, train_script)
+    return _check_script_cli_contract(
+        check_name="policy_adapter:pi05:train_contract",
+        script_path=script_path,
+        required_flags=_PI05_REQUIRED_TRAIN_FLAGS,
+        cwd=openpi_repo,
+        remediation=(
+            "Update policy_adapter.pi05.train_script or use a compatible OpenPI train entrypoint."
+        ),
+    )
+
+
+def check_pi05_norm_stats_contract(openpi_repo: Path, norm_stats_script: str) -> PreflightCheck:
+    script_path = _resolve_script_path(openpi_repo, norm_stats_script)
+    return _check_script_cli_contract(
+        check_name="policy_adapter:pi05:norm_stats_contract",
+        script_path=script_path,
+        required_flags=_PI05_REQUIRED_NORM_STATS_FLAGS,
+        cwd=openpi_repo,
+        remediation=(
+            "Update policy_adapter.pi05.norm_stats_script or use a compatible OpenPI norm-stats entrypoint."
+        ),
+    )
 
 
 def check_openvla_finetune_contract(openvla_repo: Path, finetune_script: str) -> PreflightCheck:
@@ -301,15 +492,7 @@ def check_openvla_finetune_contract(openvla_repo: Path, finetune_script: str) ->
 
 
 def check_openvla_dataset_registry(openvla_repo: Path, dataset_names: set[str]) -> PreflightCheck:
-    registry_path = (
-        openvla_repo
-        / "prismatic"
-        / "vla"
-        / "datasets"
-        / "rlds"
-        / "oxe"
-        / "configs.py"
-    )
+    registry_path = openvla_repo / "prismatic" / "vla" / "datasets" / "rlds" / "oxe" / "configs.py"
     if not registry_path.exists():
         return PreflightCheck(
             name="policy_finetune:dataset_registry",
@@ -382,7 +565,9 @@ def check_cosmos_wrapper_contract(cosmos_repo: Path) -> PreflightCheck:
     )
 
 
-def check_dreamdojo_contract(dreamdojo_repo: Path, configured_experiment: str | None) -> PreflightCheck:
+def check_dreamdojo_contract(
+    dreamdojo_repo: Path, configured_experiment: str | None
+) -> PreflightCheck:
     train_script = dreamdojo_repo / "scripts" / "train.py"
     if not train_script.exists():
         return PreflightCheck(
@@ -492,7 +677,8 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
     checks.append(check_model_weights(config.finetune.dreamdojo_checkpoint, "DreamDojo"))
     checks.append(check_model_weights(config.enrich.cosmos_checkpoint, "Cosmos-Transfer-2.5"))
     checks.append(
-        check_policy_base_reference(
+        check_policy_base_reference_for_adapter(
+            adapter_name=adapter_name,
             model_name=config.eval_policy.model_name,
             checkpoint_path=config.eval_policy.checkpoint_path,
         )
@@ -541,7 +727,9 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
     # API keys
     checks.append(check_api_key(config.eval_policy.vlm_judge.api_key_env))
     checks.append(check_api_key_for_scope(config.eval_policy.vlm_judge.api_key_env, "eval_spatial"))
-    checks.append(check_api_key_for_scope(config.eval_policy.vlm_judge.api_key_env, "eval_crosssite"))
+    checks.append(
+        check_api_key_for_scope(config.eval_policy.vlm_judge.api_key_env, "eval_crosssite")
+    )
 
     if config.robot_composite.enabled:
         if config.robot_composite.urdf_path is None:
@@ -603,9 +791,8 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
                 )
             )
         vendor_exists = config.robosplat.vendor_repo_path.exists()
-        vendor_required = (
-            config.robosplat.backend == "vendor"
-            or (config.robosplat.parity_mode == "strict" and config.robosplat.backend == "auto")
+        vendor_required = config.robosplat.backend == "vendor" or (
+            config.robosplat.parity_mode == "strict" and config.robosplat.backend == "auto"
         )
         checks.append(
             PreflightCheck(
@@ -756,6 +943,8 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
                 norm_script = pi05.openpi_repo / norm_script
             checks.append(check_path_exists(train_script, "policy_adapter:pi05:train_script"))
             checks.append(check_path_exists(norm_script, "policy_adapter:pi05:norm_stats_script"))
+            checks.append(check_pi05_train_contract(pi05.openpi_repo, pi05.train_script))
+            checks.append(check_pi05_norm_stats_contract(pi05.openpi_repo, pi05.norm_stats_script))
             checks.append(
                 check_python_import_from_path(
                     "openpi",
@@ -787,6 +976,15 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
                         "policy_finetune:data_root_dir",
                     )
                 )
+                dataset_dir = (
+                    config.policy_finetune.data_root_dir / config.policy_finetune.dataset_name
+                )
+                checks.append(
+                    check_path_exists(
+                        dataset_dir,
+                        "policy_finetune:dataset_dir",
+                    )
+                )
         else:
             checks.append(
                 PreflightCheck(
@@ -813,7 +1011,8 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
         checks.append(
             PreflightCheck(
                 name="policy_rl_loop:reward_mode",
-                passed=config.policy_rl_loop.reward_mode in {
+                passed=config.policy_rl_loop.reward_mode
+                in {
                     "hybrid",
                     "vlm_only",
                     "heuristic_only",

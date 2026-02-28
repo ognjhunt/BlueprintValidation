@@ -74,7 +74,9 @@ class RolloutDatasetStage(PipelineStage):
             seed=config.rollout_dataset.seed,
             train_split=config.rollout_dataset.train_split,
         )
-        baseline_train, baseline_heldout = _split_by_ids(baseline, split_train_ids, split_heldout_ids)
+        baseline_train, baseline_heldout = _split_by_ids(
+            baseline, split_train_ids, split_heldout_ids
+        )
         adapted_train, adapted_heldout = _split_by_ids(adapted, split_train_ids, split_heldout_ids)
 
         dataset_root = config.rollout_dataset.export_dir / work_dir.name
@@ -179,7 +181,9 @@ def _split_pairs(pair_ids: List[str], seed: int, train_split: float) -> Tuple[se
     return train_ids, heldout_ids
 
 
-def _split_by_ids(entries: List[dict], train_ids: set[str], heldout_ids: set[str]) -> Tuple[List[dict], List[dict]]:
+def _split_by_ids(
+    entries: List[dict], train_ids: set[str], heldout_ids: set[str]
+) -> Tuple[List[dict], List[dict]]:
     train = []
     heldout = []
     for e in entries:

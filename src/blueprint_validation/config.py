@@ -676,11 +676,7 @@ def load_config(path: Path) -> ValidationConfig:
             enabled=pf.get("enabled", True),
             openvla_repo=_resolve_path(pf.get("openvla_repo", "/opt/openvla-oft"), base_dir),
             finetune_script=pf.get("finetune_script", "vla-scripts/finetune.py"),
-            data_root_dir=(
-                _resolve_path(data_root_dir, base_dir)
-                if data_root_dir
-                else None
-            ),
+            data_root_dir=(_resolve_path(data_root_dir, base_dir) if data_root_dir else None),
             dataset_name=pf.get("dataset_name", "bridge_orig"),
             run_root_dir=_resolve_path(
                 pf.get("run_root_dir", "./data/outputs/policy_finetune/runs"),
@@ -788,9 +784,7 @@ def load_config(path: Path) -> ValidationConfig:
             bootstrap_horizon_steps=int(rs_full.get("bootstrap_horizon_steps", 24)),
             bootstrap_tasks_limit=int(rs_full.get("bootstrap_tasks_limit", 4)),
             quality_gate_enabled=rs_full.get("quality_gate_enabled", True),
-            min_variants_required_per_clip=int(
-                rs_full.get("min_variants_required_per_clip", 1)
-            ),
+            min_variants_required_per_clip=int(rs_full.get("min_variants_required_per_clip", 1)),
             fallback_to_legacy_scan=rs_full.get("fallback_to_legacy_scan", True),
             fallback_on_backend_error=rs_full.get("fallback_on_backend_error", True),
             persist_scene_variants=rs_full.get("persist_scene_variants", False),
@@ -812,9 +806,7 @@ def load_config(path: Path) -> ValidationConfig:
             relight_gain_min=float(rs.get("relight_gain_min", 0.85)),
             relight_gain_max=float(rs.get("relight_gain_max", 1.20)),
             color_temp_shift=rs.get("color_temp_shift", True),
-            temporal_speed_factors=[
-                float(v) for v in rs.get("temporal_speed_factors", [0.9, 1.1])
-            ],
+            temporal_speed_factors=[float(v) for v in rs.get("temporal_speed_factors", [0.9, 1.1])],
         )
         if "robosplat" not in raw:
             # Legacy compatibility mapping for one release cycle.
@@ -862,9 +854,7 @@ def load_config(path: Path) -> ValidationConfig:
             mode=str(ss.get("mode", "hybrid")),
             per_zone_rollouts=int(ss.get("per_zone_rollouts", 2)),
             horizon_steps=int(ss.get("horizon_steps", 30)),
-            min_successful_rollouts_per_zone=int(
-                ss.get("min_successful_rollouts_per_zone", 1)
-            ),
+            min_successful_rollouts_per_zone=int(ss.get("min_successful_rollouts_per_zone", 1)),
             fallback_to_prior_manifest=ss.get("fallback_to_prior_manifest", True),
         )
 
@@ -922,9 +912,7 @@ def load_config(path: Path) -> ValidationConfig:
             heldout_seed=pc.get("heldout_seed", 123),
             eval_world_model=pc.get("eval_world_model", "adapted"),
             heldout_tasks=pc.get("heldout_tasks", []),
-            task_score_success_threshold=float(
-                pc.get("task_score_success_threshold", 7.0)
-            ),
+            task_score_success_threshold=float(pc.get("task_score_success_threshold", 7.0)),
             manipulation_task_keywords=pc.get(
                 "manipulation_task_keywords",
                 PolicyCompareConfig().manipulation_task_keywords,

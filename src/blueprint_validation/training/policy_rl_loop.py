@@ -75,6 +75,7 @@ def run_policy_rl_iterations(
         world_model = load_dreamdojo_world_model(
             checkpoint_path=config.finetune.dreamdojo_checkpoint,
             adapted_checkpoint=current_world_checkpoint,
+            dreamdojo_repo=config.finetune.dreamdojo_repo,
             device=device,
         )
 
@@ -266,14 +267,20 @@ def _score_rollout_reward(
         except Exception as exc:
             logger.warning("VLM reward scoring failed for %s: %s", video_path.name, exc)
 
-    action_arr = np.asarray(action_sequence, dtype=np.float32) if action_sequence else np.zeros((0, 1))
+    action_arr = (
+        np.asarray(action_sequence, dtype=np.float32) if action_sequence else np.zeros((0, 1))
+    )
     smooth_reward = 0.0
     stability_penalty = 0.0
     if len(action_arr) >= 2:
         deltas = np.diff(action_arr, axis=0)
         mean_delta = float(np.mean(np.linalg.norm(deltas, axis=1)))
-        smooth_reward = float(max(0.0, 1.0 - (mean_delta / max(config.rollout_dataset.max_action_delta_norm, 1e-6))))
-        stability_penalty = float(min(1.0, mean_delta / max(config.rollout_dataset.max_action_delta_norm, 1e-6)))
+        smooth_reward = float(
+            max(0.0, 1.0 - (mean_delta / max(config.rollout_dataset.max_action_delta_norm, 1e-6)))
+        )
+        stability_penalty = float(
+            min(1.0, mean_delta / max(config.rollout_dataset.max_action_delta_norm, 1e-6))
+        )
     elif len(action_arr) == 1:
         smooth_reward = 0.5
 
@@ -336,7 +343,7 @@ def _select_rollouts(
         rows = sorted(rows, key=lambda r: float(r["rl_reward"]), reverse=True)
         # Group-relative advantage (GRPO-style normalization by group mean).
         for i in range(0, len(rows), max(1, group_size)):
-            group = rows[i:i + max(1, group_size)]
+            group = rows[i : i + max(1, group_size)]
             g_mean = float(np.mean([float(r["rl_reward"]) for r in group]))
             for row in group:
                 row["advantage"] = round(float(row["rl_reward"]) - g_mean, 6)
@@ -513,12 +520,15 @@ def _build_task_list(config: ValidationConfig) -> List[str]:
 
 def _is_manipulation_task(task: str) -> bool:
     lowered = task.lower()
-    return any(k in lowered for k in ["pick", "grasp", "lift", "place", "stack", "regrasp", "tote", "bin"])
+    return any(
+        k in lowered for k in ["pick", "grasp", "lift", "place", "stack", "regrasp", "tote", "bin"]
+    )
 
 
 def _has_cuda() -> bool:
     try:
         import torch
+
         return torch.cuda.is_available()
     except Exception:
         return False

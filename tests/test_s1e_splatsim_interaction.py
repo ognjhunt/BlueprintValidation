@@ -121,4 +121,3 @@ def test_stage_s1e_hybrid_fallback(sample_config, tmp_path, monkeypatch):
     manifest = read_json(tmp_path / "splatsim" / "interaction_manifest.json")
     assert manifest["fallback_used"] is True
     assert len(manifest["clips"]) == 1
-

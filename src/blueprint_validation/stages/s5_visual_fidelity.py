@@ -31,7 +31,6 @@ class VisualFidelityStage(PipelineStage):
         work_dir: Path,
         previous_results: Dict[str, StageResult],
     ) -> StageResult:
-        import cv2
 
         fidelity_dir = work_dir / "visual_fidelity"
         fidelity_dir.mkdir(parents=True, exist_ok=True)
@@ -81,11 +80,13 @@ class VisualFidelityStage(PipelineStage):
                 lpips_backbone=config.eval_visual.lpips_backbone,
             )
 
-            all_metrics.append({
-                "clip_name": clip_name,
-                "variant": enriched_clip.get("variant_name", ""),
-                **video_metrics.to_dict(),
-            })
+            all_metrics.append(
+                {
+                    "clip_name": clip_name,
+                    "variant": enriched_clip.get("variant_name", ""),
+                    **video_metrics.to_dict(),
+                }
+            )
 
         # Aggregate
         if all_metrics:

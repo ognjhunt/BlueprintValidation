@@ -5,3 +5,5 @@
 
 export GOOGLE_GENAI_API_KEY="YOUR_GEMINI_KEY"
 export HF_TOKEN="hf_..."
+export BLUEPRINT_GPU_HOURLY_RATE_USD="2.95"
+export BLUEPRINT_AUTO_SHUTDOWN_CMD="sudo poweroff"

@@ -69,14 +69,8 @@ def tasks_from_task_hints(
             tasks.append(task_raw)
 
     lowered_existing = [t.lower() for t in tasks]
-    has_explicit_manip = any(
-        t.startswith("pick up ") and "_" in t
-        for t in lowered_existing
-    )
-    has_explicit_artic = any(
-        t.startswith("open and close ") and "_" in t
-        for t in lowered_existing
-    )
+    has_explicit_manip = any(t.startswith("pick up ") and "_" in t for t in lowered_existing)
+    has_explicit_artic = any(t.startswith("open and close ") and "_" in t for t in lowered_existing)
 
     # Add object-specific manipulation prompts using candidate labels.
     if not has_explicit_manip:

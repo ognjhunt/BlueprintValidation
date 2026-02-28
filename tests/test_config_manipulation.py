@@ -1,9 +1,6 @@
 """Tests for manipulation-related config extensions."""
 
-import json
 from pathlib import Path
-
-import pytest
 
 
 def test_manipulation_zone_config_defaults():

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -20,7 +19,6 @@ def _write_tiny_video(path: Path) -> None:
 
 
 def test_rlds_export_stage_skips_when_disabled(sample_config, tmp_path):
-    from blueprint_validation.common import StageResult
     from blueprint_validation.stages.s4a_rlds_export import RLDSExportStage
 
     sample_config.rollout_dataset.enabled = False
@@ -31,7 +29,6 @@ def test_rlds_export_stage_skips_when_disabled(sample_config, tmp_path):
 
 
 def test_rlds_export_stage_skips_when_policy_finetune_disabled(sample_config, tmp_path):
-    from blueprint_validation.common import StageResult
     from blueprint_validation.stages.s4a_rlds_export import RLDSExportStage
 
     sample_config.rollout_dataset.enabled = True
@@ -43,7 +40,6 @@ def test_rlds_export_stage_skips_when_policy_finetune_disabled(sample_config, tm
 
 
 def test_rlds_export_stage_fails_without_s4(sample_config, tmp_path):
-    from blueprint_validation.common import StageResult
     from blueprint_validation.stages.s4a_rlds_export import RLDSExportStage
 
     sample_config.rollout_dataset.enabled = True
@@ -70,21 +66,24 @@ def test_rlds_export_stage_succeeds_with_rollouts(sample_config, tmp_path):
 
     adapted_rollouts = []
     for i in range(5):
-        adapted_rollouts.append({
-            "condition": "adapted",
-            "task": "Pick tote",
-            "task_score": 8.0,
-            "rollout_index": i,
-            "video_path": str(video),
-            "action_sequence": [[0.0] * 7 for _ in range(5)],
-            "is_manipulation_task": True,
-            "grasp_acquired": True,
-            "lifted_clear": True,
-            "placed_in_target": True,
-        })
+        adapted_rollouts.append(
+            {
+                "condition": "adapted",
+                "task": "Pick tote",
+                "task_score": 8.0,
+                "rollout_index": i,
+                "video_path": str(video),
+                "action_sequence": [[0.0] * 7 for _ in range(5)],
+                "is_manipulation_task": True,
+                "grasp_acquired": True,
+                "lifted_clear": True,
+                "placed_in_target": True,
+            }
+        )
 
     scores = {
-        "scores": adapted_rollouts + [
+        "scores": adapted_rollouts
+        + [
             {
                 "condition": "baseline",
                 "task": "Pick tote",
@@ -108,9 +107,7 @@ def test_rlds_export_stage_succeeds_with_rollouts(sample_config, tmp_path):
 
     stage = RLDSExportStage()
     fac = list(sample_config.facilities.values())[0]
-    result = stage.run(
-        sample_config, fac, tmp_path, {"s4_policy_eval": s4_result}
-    )
+    result = stage.run(sample_config, fac, tmp_path, {"s4_policy_eval": s4_result})
     assert result.status == "success"
     assert "rlds_dataset_dir" in result.outputs
     assert result.metrics["num_train_episodes"] >= 1

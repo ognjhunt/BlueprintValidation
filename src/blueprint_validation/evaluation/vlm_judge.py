@@ -127,7 +127,9 @@ def _parse_bool(payload: dict, key: str) -> bool:
     raise ValueError(f"{key} must be boolean-like, got {value!r}")
 
 
-def _parse_manipulation_payload(payload: dict) -> tuple[float, float, float, bool, bool, bool, bool, str]:
+def _parse_manipulation_payload(
+    payload: dict,
+) -> tuple[float, float, float, bool, bool, bool, bool, str]:
     task, visual, spatial, reasoning = _parse_judge_payload(payload)
     grasp = _parse_bool(payload, "grasp_acquired")
     lifted = _parse_bool(payload, "lifted_clear")
@@ -166,7 +168,9 @@ def _generate_with_retry(client, *, model, contents, config, max_retries: int = 
     for attempt in range(max_retries):
         try:
             return client.models.generate_content(
-                model=model, contents=contents, config=config,
+                model=model,
+                contents=contents,
+                config=config,
             )
         except Exception as exc:
             exc_text = str(exc).lower()
@@ -176,10 +180,13 @@ def _generate_with_retry(client, *, model, contents, config, max_retries: int = 
             )
             if not transient or attempt == max_retries - 1:
                 raise
-            wait = 2 ** attempt
+            wait = 2**attempt
             logger.warning(
                 "Transient API error (attempt %d/%d), retrying in %ds: %s",
-                attempt + 1, max_retries, wait, exc,
+                attempt + 1,
+                max_retries,
+                wait,
+                exc,
             )
             time.sleep(wait)
 
@@ -201,10 +208,12 @@ def _encode_video_frames(video_path: Path, max_frames: int = 16) -> List[dict]:
         # Encode as JPEG
         _, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
         b64 = base64.b64encode(buffer).decode("utf-8")
-        frames.append({
-            "mime_type": "image/jpeg",
-            "data": b64,
-        })
+        frames.append(
+            {
+                "mime_type": "image/jpeg",
+                "data": b64,
+            }
+        )
         if len(frames) >= max_frames:
             break
 
@@ -236,16 +245,20 @@ def score_rollout(
 
     # Build content parts
     parts = []
-    parts.append(types.Part.from_text(
-        f"I'm providing {len(frames)} frames from a robot policy rollout video. "
-        f"The robot was given the task: \"{task_prompt}\"\n\n{prompt}"
-    ))
+    parts.append(
+        types.Part.from_text(
+            f"I'm providing {len(frames)} frames from a robot policy rollout video. "
+            f'The robot was given the task: "{task_prompt}"\n\n{prompt}'
+        )
+    )
 
     for i, frame_data in enumerate(frames):
-        parts.append(types.Part.from_bytes(
-            data=base64.b64decode(frame_data["data"]),
-            mime_type="image/jpeg",
-        ))
+        parts.append(
+            types.Part.from_bytes(
+                data=base64.b64decode(frame_data["data"]),
+                mime_type="image/jpeg",
+            )
+        )
 
     # Configure for Agentic Vision with code execution
     errors = []
@@ -284,8 +297,7 @@ def score_rollout(
             continue
 
     raise RuntimeError(
-        "VLM judge failed to return valid scoring JSON after retries: "
-        + "; ".join(errors)
+        "VLM judge failed to return valid scoring JSON after retries: " + "; ".join(errors)
     )
 
 
@@ -316,16 +328,14 @@ def score_rollout_manipulation(
         prompt += f"\nFacility context: {facility_description}\n"
 
     frames = _encode_video_frames(video_path)
-    parts = [
-        types.Part.from_text(
-            f"Manipulation rollout frames ({len(frames)}). {prompt}"
-        )
-    ]
+    parts = [types.Part.from_text(f"Manipulation rollout frames ({len(frames)}). {prompt}")]
     for frame_data in frames:
-        parts.append(types.Part.from_bytes(
-            data=base64.b64decode(frame_data["data"]),
-            mime_type="image/jpeg",
-        ))
+        parts.append(
+            types.Part.from_bytes(
+                data=base64.b64decode(frame_data["data"]),
+                mime_type="image/jpeg",
+            )
+        )
 
     errors = []
     for attempt in range(3):
@@ -375,8 +385,7 @@ def score_rollout_manipulation(
             continue
 
     raise RuntimeError(
-        "VLM manipulation judge failed to return valid JSON after retries: "
-        + "; ".join(errors)
+        "VLM manipulation judge failed to return valid JSON after retries: " + "; ".join(errors)
     )
 
 
@@ -406,10 +415,12 @@ def score_spatial_accuracy(
     frames = _encode_video_frames(video_path, max_frames=8)
     parts = [types.Part.from_text(prompt)]
     for frame_data in frames:
-        parts.append(types.Part.from_bytes(
-            data=base64.b64decode(frame_data["data"]),
-            mime_type="image/jpeg",
-        ))
+        parts.append(
+            types.Part.from_bytes(
+                data=base64.b64decode(frame_data["data"]),
+                mime_type="image/jpeg",
+            )
+        )
 
     errors = []
     for attempt in range(3):
@@ -446,8 +457,7 @@ def score_spatial_accuracy(
             continue
 
     raise RuntimeError(
-        "VLM spatial scorer failed to return valid JSON after retries: "
-        + "; ".join(errors)
+        "VLM spatial scorer failed to return valid JSON after retries: " + "; ".join(errors)
     )
 
 
@@ -461,22 +471,22 @@ def classify_facility(
 
     client = _get_gemini_client(config)
 
-    desc_str = "\n".join(
-        f"- Facility {fid}: {desc}" for fid, desc in facility_descriptions.items()
-    )
+    desc_str = "\n".join(f"- Facility {fid}: {desc}" for fid, desc in facility_descriptions.items())
     prompt = (
         f"Look at these video frames from a generated environment.\n"
         f"Which facility does this most closely match?\n\n{desc_str}\n\n"
-        f"Return JSON: {{\"predicted_facility\": \"<facility_id>\", \"confidence\": 0.0-1.0, \"reasoning\": \"...\"}}"
+        f'Return JSON: {{"predicted_facility": "<facility_id>", "confidence": 0.0-1.0, "reasoning": "..."}}'
     )
 
     frames = _encode_video_frames(video_path, max_frames=8)
     parts = [types.Part.from_text(prompt)]
     for frame_data in frames:
-        parts.append(types.Part.from_bytes(
-            data=base64.b64decode(frame_data["data"]),
-            mime_type="image/jpeg",
-        ))
+        parts.append(
+            types.Part.from_bytes(
+                data=base64.b64decode(frame_data["data"]),
+                mime_type="image/jpeg",
+            )
+        )
 
     errors = []
     for attempt in range(3):
@@ -516,6 +526,5 @@ def classify_facility(
             continue
 
     raise RuntimeError(
-        "VLM facility classifier failed to return valid JSON after retries: "
-        + "; ".join(errors)
+        "VLM facility classifier failed to return valid JSON after retries: " + "; ".join(errors)
     )

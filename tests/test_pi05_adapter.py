@@ -99,3 +99,15 @@ def test_pi05_dataset_transform_converts_rlds(tmp_path):
         dataset_name="bridge_orig",
     )
     assert (dataset_dir / "train" / "episodes.jsonl").exists()
+
+
+def test_pi05_load_policy_rejects_openvla_like_reference(tmp_path):
+    import pytest
+
+    adapter = _make_pi05_adapter(tmp_path)
+    with pytest.raises(RuntimeError, match="OpenVLA-like"):
+        adapter.load_policy(
+            model_name="openvla/openvla-7b",
+            checkpoint_path=None,
+            device="cpu",
+        )

@@ -142,4 +142,3 @@ def _resolve_source_manifest(work_dir: Path) -> Path | None:
         if candidate.exists():
             return candidate
     return None
-

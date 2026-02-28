@@ -162,11 +162,13 @@ def test_is_free_with_clearance():
 
     # Create a dense wall at x=0 (many points to exceed density threshold)
     rng = np.random.default_rng(42)
-    wall = np.column_stack([
-        rng.uniform(-0.05, 0.05, 5000),
-        rng.uniform(-1, 1, 5000),
-        rng.uniform(0, 2, 5000),
-    ])
+    wall = np.column_stack(
+        [
+            rng.uniform(-0.05, 0.05, 5000),
+            rng.uniform(-1, 1, 5000),
+            rng.uniform(0, 2, 5000),
+        ]
+    )
     grid = build_occupancy_grid(wall, voxel_size=0.1, density_threshold=2)
 
     # Right at the wall should not be free with clearance
@@ -311,11 +313,13 @@ def test_nudge_to_free_space():
 
     # Dense wall at x=0
     rng = np.random.default_rng(7)
-    wall = np.column_stack([
-        rng.uniform(-0.05, 0.05, 200),
-        rng.uniform(-3, 3, 200),
-        rng.uniform(0, 3, 200),
-    ])
+    wall = np.column_stack(
+        [
+            rng.uniform(-0.05, 0.05, 200),
+            rng.uniform(-3, 3, 200),
+            rng.uniform(0, 3, 200),
+        ]
+    )
     grid = build_occupancy_grid(wall, voxel_size=0.1, density_threshold=2)
 
     # Camera inside the wall, target behind it
@@ -337,11 +341,13 @@ def test_filter_and_fix_poses():
 
     # Wall at x=0
     rng = np.random.default_rng(99)
-    wall = np.column_stack([
-        rng.uniform(-0.05, 0.05, 200),
-        rng.uniform(-3, 3, 200),
-        rng.uniform(0, 3, 200),
-    ])
+    wall = np.column_stack(
+        [
+            rng.uniform(-0.05, 0.05, 200),
+            rng.uniform(-3, 3, 200),
+            rng.uniform(0, 3, 200),
+        ]
+    )
     grid = build_occupancy_grid(wall, voxel_size=0.1, density_threshold=2)
 
     # One pose in free space, one inside wall

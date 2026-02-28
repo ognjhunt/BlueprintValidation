@@ -66,18 +66,20 @@ def _zones_from_task_targets(task_targets_path: Path) -> List[dict]:
         standoff = min(max(0.6, max_xy * 1.5), 3.0)
         cam_height = max(0.4, center[2] + 0.3)
 
-        zones.append({
-            "name": f"{label}_{len(zones)}",
-            "approach_point": [round(c, 3) for c in center],
-            "target_point": [
-                round(center[0] + standoff * 0.5, 3),
-                round(center[1], 3),
-                round(center[2], 3),
-            ],
-            "camera_height_m": round(cam_height, 2),
-            "camera_look_down_deg": 45.0,
-            "arc_radius_m": round(standoff, 2),
-        })
+        zones.append(
+            {
+                "name": f"{label}_{len(zones)}",
+                "approach_point": [round(c, 3) for c in center],
+                "target_point": [
+                    round(center[0] + standoff * 0.5, 3),
+                    round(center[1], 3),
+                    round(center[2], 3),
+                ],
+                "camera_height_m": round(cam_height, 2),
+                "camera_look_down_deg": 45.0,
+                "arc_radius_m": round(standoff, 2),
+            }
+        )
     return zones
 
 
@@ -140,6 +142,9 @@ def _build_config(
     cosmos_repo: str,
     openvla_repo: str,
     openpi_repo: str,
+    policy_adapter_name: str,
+    eval_model_name: str,
+    eval_checkpoint_path: str,
 ) -> dict:
     return {
         "schema_version": "v1",
@@ -239,8 +244,8 @@ def _build_config(
             "max_training_hours": 4,
         },
         "eval_policy": {
-            "model_name": "openvla/openvla-7b",
-            "checkpoint_path": "../data/checkpoints/openvla-7b/",
+            "model_name": eval_model_name,
+            "checkpoint_path": eval_checkpoint_path,
             "unnorm_key": "bridge_orig",
             "num_rollouts": 8,
             "max_steps_per_rollout": 60,
@@ -294,7 +299,7 @@ def _build_config(
             "world_model_refresh_learning_rate": 5e-5,
         },
         "policy_adapter": {
-            "name": "openvla_oft",
+            "name": policy_adapter_name,
             "openvla": {
                 "openvla_repo": openvla_repo,
                 "finetune_script": "vla-scripts/finetune.py",
@@ -386,6 +391,29 @@ def main() -> int:
             "(default: enabled)."
         ),
     )
+    parser.add_argument(
+        "--policy-adapter",
+        choices=["openvla_oft", "pi05"],
+        default="openvla_oft",
+        help="Select policy adapter defaults in generated config (default: openvla_oft).",
+    )
+    parser.add_argument(
+        "--pi05-model-ref",
+        default="",
+        help=(
+            "Explicit pi05 base model reference for eval_policy.model_name. "
+            "Required when --policy-adapter=pi05 unless --pi05-checkpoint-path is provided."
+        ),
+    )
+    parser.add_argument(
+        "--pi05-checkpoint-path",
+        type=Path,
+        default=None,
+        help=(
+            "Explicit pi05 checkpoint path for eval_policy.checkpoint_path. "
+            "Required when --policy-adapter=pi05 unless --pi05-model-ref is provided."
+        ),
+    )
     args = parser.parse_args()
 
     runs_root = args.capture_pipeline_root / "runs"
@@ -430,6 +458,24 @@ def main() -> int:
     )
 
     include_cross_site = len(facilities) >= 2
+    policy_adapter_name = str(args.policy_adapter)
+    if policy_adapter_name == "pi05" and not (
+        str(args.pi05_model_ref).strip() or args.pi05_checkpoint_path
+    ):
+        raise SystemExit(
+            "When --policy-adapter=pi05, provide --pi05-model-ref and/or --pi05-checkpoint-path."
+        )
+
+    if policy_adapter_name == "pi05":
+        eval_model_name = str(args.pi05_model_ref).strip() or "openpi/pi05"
+        if args.pi05_checkpoint_path is not None:
+            eval_checkpoint_path = str(args.pi05_checkpoint_path)
+        else:
+            eval_checkpoint_path = "../data/checkpoints/pi05/"
+    else:
+        eval_model_name = "openvla/openvla-7b"
+        eval_checkpoint_path = "../data/checkpoints/openvla-7b/"
+
     config = _build_config(
         facilities,
         include_cross_site=include_cross_site,
@@ -438,6 +484,9 @@ def main() -> int:
         cosmos_repo=cosmos_repo,
         openvla_repo=openvla_repo,
         openpi_repo=openpi_repo,
+        policy_adapter_name=policy_adapter_name,
+        eval_model_name=eval_model_name,
+        eval_checkpoint_path=eval_checkpoint_path,
     )
 
     out = args.output_config
@@ -451,6 +500,9 @@ def main() -> int:
         print(f"  {fid}: {fcfg['ply_path']}")
         if "task_hints_path" in fcfg:
             print(f"    task_hints_path: {fcfg['task_hints_path']}")
+    print(f"  policy_adapter: {policy_adapter_name}")
+    print(f"  eval_policy.model_name: {eval_model_name}")
+    print(f"  eval_policy.checkpoint_path: {eval_checkpoint_path}")
     if not include_cross_site:
         print("Cross-site stage will be skipped until a second facility scan is available.")
     return 0

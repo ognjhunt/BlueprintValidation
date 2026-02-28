@@ -5,8 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 import json
 
-import pytest
-
 
 def test_trained_eval_skips_without_s3b(sample_config, tmp_path):
     from blueprint_validation.stages.s4e_trained_eval import TrainedPolicyEvalStage

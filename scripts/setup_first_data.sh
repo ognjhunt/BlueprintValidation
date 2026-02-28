@@ -9,6 +9,7 @@ WORK_DIR="${WORK_DIR:-$ROOT_DIR/data/outputs/pilot}"
 RUN_PREFLIGHT="${RUN_PREFLIGHT:-true}"
 PROVISION_REPOS="${PROVISION_REPOS:-true}"
 PROVISION_OPENPI="${PROVISION_OPENPI:-true}"
+INSTALL_OPENPI_DEPS="${INSTALL_OPENPI_DEPS:-false}"
 VENDOR_ROOT="${VENDOR_ROOT:-$ROOT_DIR/data/vendor}"
 
 echo "== BlueprintValidation First-Data Setup =="
@@ -72,6 +73,74 @@ fi
 python3 "$ROOT_DIR/scripts/generate_pilot_config.py" \
   --capture-pipeline-root "$CAPTURE_PIPELINE_ROOT" \
   --output-config "$CONFIG_PATH"
+
+CONFIG_POLICY_ADAPTER="$(python3 - "$CONFIG_PATH" <<'PY'
+import sys
+from pathlib import Path
+import yaml
+
+cfg_path = Path(sys.argv[1])
+raw = yaml.safe_load(cfg_path.read_text()) or {}
+adapter = (((raw.get("policy_adapter") or {}).get("name")) or "openvla_oft").strip()
+print(adapter)
+PY
+)"
+
+CONFIG_OPENPI_REPO="$(python3 - "$CONFIG_PATH" <<'PY'
+import sys
+from pathlib import Path
+import yaml
+
+cfg_path = Path(sys.argv[1])
+raw = yaml.safe_load(cfg_path.read_text()) or {}
+repo = (((raw.get("policy_adapter") or {}).get("pi05") or {}).get("openpi_repo") or "").strip()
+print(repo)
+PY
+)"
+if [[ -z "$CONFIG_OPENPI_REPO" ]]; then
+  CONFIG_OPENPI_REPO="$VENDOR_ROOT/openpi"
+fi
+
+if [[ "$INSTALL_OPENPI_DEPS" == "true" ]]; then
+  echo "Installing pi05 runtime dependency (lerobot) and verifying imports..."
+  python3 -m pip install -U lerobot
+  OPENPI_REPO="$CONFIG_OPENPI_REPO" python3 - <<'PY'
+import importlib
+import os
+import sys
+from pathlib import Path
+
+repo = Path(os.environ["OPENPI_REPO"])
+for candidate in (repo, repo / "src"):
+    text = str(candidate)
+    if candidate.exists() and text not in sys.path:
+        sys.path.insert(0, text)
+
+importlib.import_module("openpi")
+importlib.import_module("lerobot")
+print("Verified openpi + lerobot imports.")
+PY
+elif [[ "$CONFIG_POLICY_ADAPTER" == "pi05" ]]; then
+  if ! OPENPI_REPO="$CONFIG_OPENPI_REPO" python3 - <<'PY'
+import importlib
+import os
+import sys
+from pathlib import Path
+
+repo = Path(os.environ["OPENPI_REPO"])
+for candidate in (repo, repo / "src"):
+    text = str(candidate)
+    if candidate.exists() and text not in sys.path:
+        sys.path.insert(0, text)
+
+importlib.import_module("openpi")
+importlib.import_module("lerobot")
+PY
+  then
+    echo "WARNING: policy_adapter=pi05 but openpi/lerobot imports are unavailable."
+    echo "         Re-run with INSTALL_OPENPI_DEPS=true or install: python3 -m pip install -U lerobot"
+  fi
+fi
 
 echo
 echo "Pilot config generated at:"

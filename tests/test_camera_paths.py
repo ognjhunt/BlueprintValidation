@@ -1,10 +1,8 @@
 """Tests for camera path generation."""
 
 import json
-import math
 
 import numpy as np
-import pytest
 
 
 def test_generate_orbit():

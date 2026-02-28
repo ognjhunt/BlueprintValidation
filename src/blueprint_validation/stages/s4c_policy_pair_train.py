@@ -87,7 +87,11 @@ class PolicyPairTrainStage(PipelineStage):
             finetune_config=config.policy_finetune,
         )
 
-        status = "success" if base_result.status == "success" and site_result.status == "success" else "failed"
+        status = (
+            "success"
+            if base_result.status == "success" and site_result.status == "success"
+            else "failed"
+        )
         summary = {
             "policy_base": {
                 "status": base_result.status,

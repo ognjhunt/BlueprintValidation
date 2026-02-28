@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -80,7 +80,8 @@ def detect_up_axis(means: np.ndarray, confidence_ratio: float = 1.5) -> str:
 
     if extents.min() < 1e-6:
         logger.warning(
-            "Near-zero extent detected (%.4f); defaulting to Z-up", extents.min(),
+            "Near-zero extent detected (%.4f); defaulting to Z-up",
+            extents.min(),
         )
         return "z"
 
@@ -92,7 +93,10 @@ def detect_up_axis(means: np.ndarray, confidence_ratio: float = 1.5) -> str:
         logger.info(
             "Scene extents roughly equal (X=%.2f Y=%.2f Z=%.2f, ratio=%.1f); "
             "defaulting to Z-up. Set up_axis manually if needed.",
-            extents[0], extents[1], extents[2], ratio,
+            extents[0],
+            extents[1],
+            extents[2],
+            ratio,
         )
         return "z"
 
@@ -115,7 +119,13 @@ def detect_up_axis(means: np.ndarray, confidence_ratio: float = 1.5) -> str:
     logger.info(
         "Auto-detected up_axis='%s' (extents: X=%.2f Y=%.2f Z=%.2f, "
         "ratio=%.1f, lo_density=%d, hi_density=%d)",
-        axis_name, extents[0], extents[1], extents[2], ratio, n_lo, n_hi,
+        axis_name,
+        extents[0],
+        extents[1],
+        extents[2],
+        ratio,
+        n_lo,
+        n_hi,
     )
     return axis_name
 
@@ -694,6 +704,8 @@ def cluster_scene_points_with_extents(
 
     logger.info(
         "Clustered %d points into %d clusters (sizes: %s)",
-        len(pts), k, counts.tolist(),
+        len(pts),
+        k,
+        counts.tolist(),
     )
     return ClusterResult(centers=centers, extents=ext, point_counts=counts)

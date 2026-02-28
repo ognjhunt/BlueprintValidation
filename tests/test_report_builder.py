@@ -2,8 +2,6 @@
 
 import json
 
-import pytest
-
 
 def test_report_builder_markdown(tmp_path, sample_config):
     from blueprint_validation.common import write_json
@@ -76,7 +74,6 @@ def test_report_builder_markdown(tmp_path, sample_config):
 
 
 def test_report_builder_json(tmp_path, sample_config):
-    from blueprint_validation.common import write_json
     from blueprint_validation.reporting.report_builder import build_report
 
     work_dir = tmp_path / "outputs"

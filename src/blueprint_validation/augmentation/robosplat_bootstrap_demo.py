@@ -28,7 +28,10 @@ def resolve_or_create_demo_manifest(
     # Prefer prior rollout artifacts when available.
     prior = _build_from_prior_rollouts(work_dir, config.robosplat.bootstrap_tasks_limit)
     if prior:
-        write_json({"facility": facility.name, "demo_source": "synthetic_prior", "entries": prior}, demo_manifest_path)
+        write_json(
+            {"facility": facility.name, "demo_source": "synthetic_prior", "entries": prior},
+            demo_manifest_path,
+        )
         return demo_manifest_path
 
     if not config.robosplat.bootstrap_if_missing_demo:
@@ -118,9 +121,10 @@ def _build_bootstrap_tasks(
                 if task not in tasks:
                     tasks.append(task)
         except Exception as exc:
-            logger.warning("Task-hints bootstrap load failed from %s: %s", facility.task_hints_path, exc)
+            logger.warning(
+                "Task-hints bootstrap load failed from %s: %s", facility.task_hints_path, exc
+            )
 
     if limit > 0:
         return tasks[:limit]
     return tasks
-

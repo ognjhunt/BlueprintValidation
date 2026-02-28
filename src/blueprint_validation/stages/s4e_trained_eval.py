@@ -72,6 +72,7 @@ def _build_rollout_plan(tasks: List[str], num_rollouts: int) -> List[str]:
 def _has_cuda() -> bool:
     try:
         import torch
+
         return torch.cuda.is_available()
     except ImportError:
         return False
@@ -126,10 +127,9 @@ class TrainedPolicyEvalStage(PipelineStage):
         adapted_dir = None
         prev_s3 = previous_results.get("s3_finetune")
         if prev_s3:
-            adapted_candidate = (
-                prev_s3.outputs.get("adapted_checkpoint_path")
-                or prev_s3.outputs.get("lora_weights_path")
-            )
+            adapted_candidate = prev_s3.outputs.get(
+                "adapted_checkpoint_path"
+            ) or prev_s3.outputs.get("lora_weights_path")
             if adapted_candidate:
                 adapted_dir = Path(adapted_candidate)
         if adapted_dir is None:
@@ -228,6 +228,7 @@ class TrainedPolicyEvalStage(PipelineStage):
         world_model = load_dreamdojo_world_model(
             checkpoint_path=config.finetune.dreamdojo_checkpoint,
             adapted_checkpoint=adapted_dir,
+            dreamdojo_repo=config.finetune.dreamdojo_repo,
             device=device,
         )
 
@@ -245,11 +246,7 @@ class TrainedPolicyEvalStage(PipelineStage):
                 )
                 continue
             clip_stub = str(assignment.get("clip_name", f"clip_{clip_index:03d}"))
-            clip_name = (
-                f"trained_{clip_stub}_{rollout_idx:03d}"
-                .replace("/", "_")
-                .replace(" ", "_")
-            )
+            clip_name = f"trained_{clip_stub}_{rollout_idx:03d}".replace("/", "_").replace(" ", "_")
 
             rollout = run_rollout_with_adapter(
                 world_model=world_model,
@@ -287,44 +284,42 @@ class TrainedPolicyEvalStage(PipelineStage):
                 scoring_failures.append(f"VLM scoring failed for {clip_name}: {e}")
                 score = JudgeScore(0, 0, 0, str(e), "")
 
-            trained_scores.append({
-                "condition": "trained",
-                "task": task,
-                "rollout_index": rollout_idx,
-                "task_score": score.task_score,
-                "visual_score": score.visual_score,
-                "spatial_score": score.spatial_score,
-                "reasoning": score.reasoning,
-                "video_path": str(rollout.video_path),
-                "num_steps": rollout.num_steps,
-                "action_sequence": rollout.action_sequence,
-                "start_clip_index": clip_index,
-                "start_clip_name": clip_stub,
-                "start_path_type": str(assignment.get("path_type", "unknown")),
-                "target_instance_id": assignment.get("target_instance_id"),
-                "target_label": assignment.get("target_label"),
-                "is_manipulation_task": _is_manipulation_task(task),
-                "grasp_acquired": (
-                    score.grasp_acquired
-                    if isinstance(score, ManipulationJudgeScore)
-                    else None
-                ),
-                "lifted_clear": (
-                    score.lifted_clear
-                    if isinstance(score, ManipulationJudgeScore)
-                    else None
-                ),
-                "placed_in_target": (
-                    score.placed_in_target
-                    if isinstance(score, ManipulationJudgeScore)
-                    else None
-                ),
-                "stable_after_place": (
-                    score.stable_after_place
-                    if isinstance(score, ManipulationJudgeScore)
-                    else None
-                ),
-            })
+            trained_scores.append(
+                {
+                    "condition": "trained",
+                    "task": task,
+                    "rollout_index": rollout_idx,
+                    "task_score": score.task_score,
+                    "visual_score": score.visual_score,
+                    "spatial_score": score.spatial_score,
+                    "reasoning": score.reasoning,
+                    "video_path": str(rollout.video_path),
+                    "num_steps": rollout.num_steps,
+                    "action_sequence": rollout.action_sequence,
+                    "start_clip_index": clip_index,
+                    "start_clip_name": clip_stub,
+                    "start_path_type": str(assignment.get("path_type", "unknown")),
+                    "target_instance_id": assignment.get("target_instance_id"),
+                    "target_label": assignment.get("target_label"),
+                    "is_manipulation_task": _is_manipulation_task(task),
+                    "grasp_acquired": (
+                        score.grasp_acquired if isinstance(score, ManipulationJudgeScore) else None
+                    ),
+                    "lifted_clear": (
+                        score.lifted_clear if isinstance(score, ManipulationJudgeScore) else None
+                    ),
+                    "placed_in_target": (
+                        score.placed_in_target
+                        if isinstance(score, ManipulationJudgeScore)
+                        else None
+                    ),
+                    "stable_after_place": (
+                        score.stable_after_place
+                        if isinstance(score, ManipulationJudgeScore)
+                        else None
+                    ),
+                }
+            )
 
         # Load Stage 4 scores for pairwise comparison
         prev_s4 = previous_results.get("s4_policy_eval")
@@ -344,9 +339,7 @@ class TrainedPolicyEvalStage(PipelineStage):
         # Compute pairwise metrics
         pairwise = _build_pairwise_metrics(all_scores)
 
-        trained_mean = (
-            np.mean([s["task_score"] for s in trained_scores]) if trained_scores else 0
-        )
+        trained_mean = np.mean([s["task_score"] for s in trained_scores]) if trained_scores else 0
         trained_manip = [s for s in trained_scores if s["is_manipulation_task"]]
 
         metrics = {
@@ -443,9 +436,8 @@ def _resolve_trained_checkpoint(
     # Prefer RL loop output.
     s3c = previous_results.get("s3c_policy_rl_loop")
     if s3c and s3c.status == "success":
-        candidate = (
-            s3c.outputs.get("adapted_policy_checkpoint_rl")
-            or s3c.outputs.get("adapted_openvla_checkpoint_rl")
+        candidate = s3c.outputs.get("adapted_policy_checkpoint_rl") or s3c.outputs.get(
+            "adapted_openvla_checkpoint_rl"
         )
         if candidate:
             path = Path(candidate)
@@ -455,9 +447,8 @@ def _resolve_trained_checkpoint(
     # Fallback to supervised policy fine-tune output.
     s3b = previous_results.get("s3b_policy_finetune")
     if s3b and s3b.status == "success":
-        candidate = (
-            s3b.outputs.get("adapted_policy_checkpoint")
-            or s3b.outputs.get("adapted_openvla_checkpoint")
+        candidate = s3b.outputs.get("adapted_policy_checkpoint") or s3b.outputs.get(
+            "adapted_openvla_checkpoint"
         )
         if candidate:
             path = Path(candidate)
@@ -494,7 +485,7 @@ def _build_pairwise_metrics(all_scores: List[Dict]) -> Dict:
     pairwise = {}
 
     for i, c1 in enumerate(conditions):
-        for c2 in conditions[i + 1:]:
+        for c2 in conditions[i + 1 :]:
             s1 = [s for s in all_scores if s["condition"] == c1]
             s2 = [s for s in all_scores if s["condition"] == c2]
             if not s1 or not s2:
@@ -507,9 +498,7 @@ def _build_pairwise_metrics(all_scores: List[Dict]) -> Dict:
 
             min_len = min(len(s1), len(s2))
             wins = sum(
-                1
-                for a, b in zip(s1[:min_len], s2[:min_len])
-                if b["task_score"] > a["task_score"]
+                1 for a, b in zip(s1[:min_len], s2[:min_len]) if b["task_score"] > a["task_score"]
             )
             win_rate = wins / max(min_len, 1)
 

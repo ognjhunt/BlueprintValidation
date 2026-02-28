@@ -2,59 +2,68 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 
-
-def test_resolve_experiment_config_by_name(tmp_path):
-    from blueprint_validation.training.dreamdojo_finetune import _resolve_experiment_config
+def test_resolve_experiment_name_by_short_name(tmp_path):
+    from blueprint_validation.training.dreamdojo_finetune import resolve_dreamdojo_experiment_name
 
     root = tmp_path / "DreamDojo"
-    cfg = root / "configs" / "post-training" / "site_adapt.sh"
-    cfg.parent.mkdir(parents=True)
-    cfg.write_text("EXP_NAME=test\n")
+    config_file = root / "configs" / "site_adapt.yaml"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text("name: test\n")
 
-    resolved = _resolve_experiment_config(root, "post-training/site_adapt")
-    assert resolved == cfg.resolve()
+    resolved = resolve_dreamdojo_experiment_name(root, "site_adapt")
+    assert resolved == "dreamdojo_site_adapt"
 
 
-def test_render_dreamdojo_config_script(tmp_path):
-    from blueprint_validation.config import FinetuneConfig
-    from blueprint_validation.training.dreamdojo_finetune import render_dreamdojo_config_script
+def test_resolve_experiment_name_by_yaml_path(tmp_path):
+    from blueprint_validation.training.dreamdojo_finetune import resolve_dreamdojo_experiment_name
 
-    base_cfg = tmp_path / "base.sh"
-    base_cfg.write_text("EXP_NAME=base\n")
-    dataset = tmp_path / "dataset"
-    dataset.mkdir()
-    out = tmp_path / "out"
-    out.mkdir()
+    root = tmp_path / "DreamDojo"
+    config_file = root / "configs" / "site_adapt.yaml"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text("name: test\n")
 
-    script = render_dreamdojo_config_script(
-        base_config=base_cfg,
-        dataset_dir=dataset,
-        output_dir=out,
-        config=FinetuneConfig(),
-        facility_id="facility_a",
-    )
-    text = script.read_text()
-    assert f'source "{base_cfg}"' in text
-    assert "LEARNING_RATE" in text
-    assert "DATASET_PATH" in text
-    assert "LORA_RANK" in text
-    assert "USE_LORA" in text
-    assert "TRAIN_ARCHITECTURE" in text
+    resolved = resolve_dreamdojo_experiment_name(root, "site_adapt.yaml")
+    assert resolved == "dreamdojo_site_adapt"
 
 
 def test_build_dreamdojo_launch_command(tmp_path):
+    from blueprint_validation.config import FinetuneConfig
     from blueprint_validation.training.dreamdojo_finetune import build_dreamdojo_launch_command
 
     root = tmp_path / "DreamDojo"
-    launch = root / "launch.sh"
-    launch.parent.mkdir(parents=True)
-    launch.write_text("#!/usr/bin/env bash\n")
-    cfg = tmp_path / "config.sh"
-    cfg.write_text("EXP_NAME=test\n")
+    train_script = root / "scripts" / "train.py"
+    train_script.parent.mkdir(parents=True)
+    train_script.write_text("print('ok')\n")
 
-    cmd = build_dreamdojo_launch_command(root, cfg)
-    assert cmd[0] == "bash"
-    assert cmd[1] == str(launch)
-    assert cmd[2] == str(cfg)
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir()
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    cfg = FinetuneConfig(
+        dreamdojo_checkpoint=tmp_path / "checkpoints" / "2B_pretrain",
+        batch_size=2,
+        gradient_accumulation_steps=3,
+        learning_rate=1e-4,
+        num_epochs=4,
+        use_lora=True,
+        lora_rank=16,
+        lora_alpha=32,
+        lora_target_modules="q_proj,v_proj",
+    )
+
+    cmd = build_dreamdojo_launch_command(
+        dreamdojo_root=root,
+        experiment_name="dreamdojo_site_adapt",
+        dataset_dir=dataset_dir,
+        output_dir=output_dir,
+        config=cfg,
+        facility_id="facility_a",
+    )
+    text = " ".join(cmd)
+    assert cmd[:2] == ["torchrun", "--standalone"]
+    assert "experiment=dreamdojo_site_adapt" in text
+    assert f"dataloader_train.dataset.dataset_path={dataset_dir}" in text
+    assert f"checkpoint.load_path={cfg.dreamdojo_checkpoint}" in text
+    assert "model.config.use_lora=true" in text

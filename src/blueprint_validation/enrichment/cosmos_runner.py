@@ -136,7 +136,9 @@ def run_cosmos_inference(
     cosmos_repo: Optional[Path] = None,
 ) -> Path:
     """Run Cosmos Transfer 2.5 inference and return generated output video path."""
-    del cosmos_checkpoint  # checkpoint presence is preflighted; CLI resolves model assets internally.
+    del (
+        cosmos_checkpoint
+    )  # checkpoint presence is preflighted; CLI resolves model assets internally.
 
     expected_output_path.parent.mkdir(parents=True, exist_ok=True)
 

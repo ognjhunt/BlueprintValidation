@@ -92,13 +92,15 @@ class EnrichStage(PipelineStage):
             )
 
             for out in outputs:
-                manifest_entries.append({
-                    "clip_name": clip_name,
-                    "variant_name": out.variant_name,
-                    "prompt": out.prompt,
-                    "output_video_path": str(out.output_video_path),
-                    "input_video_path": str(out.input_video_path),
-                })
+                manifest_entries.append(
+                    {
+                        "clip_name": clip_name,
+                        "variant_name": out.variant_name,
+                        "prompt": out.prompt,
+                        "output_video_path": str(out.output_video_path),
+                        "input_video_path": str(out.input_video_path),
+                    }
+                )
                 total_enriched += 1
 
             expected = len(variants)

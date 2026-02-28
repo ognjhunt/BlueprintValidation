@@ -62,6 +62,15 @@ class Pi05PolicyAdapter(PolicyAdapter):
             f"Errors: {errors[:2]}"
         )
 
+    def _looks_openvla_like_reference(
+        self,
+        model_name: str,
+        checkpoint_path: Optional[Path],
+    ) -> bool:
+        if checkpoint_path and checkpoint_path.exists():
+            return "openvla" in str(checkpoint_path).strip().lower()
+        return "openvla" in (model_name or "").strip().lower()
+
     def load_policy(
         self,
         model_name: str,
@@ -74,10 +83,15 @@ class Pi05PolicyAdapter(PolicyAdapter):
                 f"Unsupported pi05 runtime_mode={self.backend.runtime_mode}. "
                 "Only 'inprocess' is implemented."
             )
+        if self._looks_openvla_like_reference(
+            model_name=model_name, checkpoint_path=checkpoint_path
+        ):
+            raise RuntimeError(
+                "pi05 adapter selected, but eval_policy reference appears OpenVLA-like. "
+                "Set eval_policy.model_name/checkpoint_path to a pi05/OpenPI model reference."
+            )
         checkpoint_ref = (
-            str(checkpoint_path)
-            if checkpoint_path and checkpoint_path.exists()
-            else model_name
+            str(checkpoint_path) if checkpoint_path and checkpoint_path.exists() else model_name
         )
         policy = self._load_openpi_policy(checkpoint_ref)
         return PolicyHandle(
@@ -143,7 +157,9 @@ class Pi05PolicyAdapter(PolicyAdapter):
                 except TypeError as exc:
                     attempts.append(f"__call__:{exc}")
                     continue
-        raise RuntimeError(f"pi05 policy does not expose a usable inference method ({attempts[:2]})")
+        raise RuntimeError(
+            f"pi05 policy does not expose a usable inference method ({attempts[:2]})"
+        )
 
     def predict_action(
         self,

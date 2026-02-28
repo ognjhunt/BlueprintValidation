@@ -220,10 +220,13 @@ def _generate_with_retry(client, *, model, contents, max_retries: int = 3):
             )
             if not transient or attempt == max_retries - 1:
                 raise
-            wait = 2 ** attempt
+            wait = 2**attempt
             logger.warning(
                 "Transient VLM API error (attempt %d/%d), retrying in %ds: %s",
-                attempt + 1, max_retries, wait, exc,
+                attempt + 1,
+                max_retries,
+                wait,
+                exc,
             )
             _time.sleep(wait)
 
@@ -275,7 +278,10 @@ def _call_gemini_detect(
 
     try:
         response = _generate_with_retry(
-            client, model=model, contents=[_VLM_SCENE_PROMPT, image], max_retries=max_retries,
+            client,
+            model=model,
+            contents=[_VLM_SCENE_PROMPT, image],
+            max_retries=max_retries,
         )
     except Exception:
         logger.warning("VLM detection API call failed", exc_info=True)
@@ -516,7 +522,11 @@ def detect_and_generate_specs(
     camera specs, 3D detections, scene classification, and suggested tasks.
     """
     from .camera_paths import generate_orbit
-    from .scene_geometry import OrientedBoundingBox, compute_camera_height, compute_standoff_distance
+    from .scene_geometry import (
+        OrientedBoundingBox,
+        compute_camera_height,
+        compute_standoff_distance,
+    )
 
     orbit_poses = generate_orbit(
         center=scene_center,
@@ -533,7 +543,10 @@ def detect_and_generate_specs(
 
     for pose in orbit_poses:
         rgb, depth = _render_colored_point_cloud(
-            splat_means_np, splat_colors, pose, resolution,
+            splat_means_np,
+            splat_colors,
+            pose,
+            resolution,
         )
         rgb_frames.append(rgb)
         depth_frames.append(depth)
@@ -542,7 +555,11 @@ def detect_and_generate_specs(
         return SceneDetectionResult(specs=[], detections=[])
 
     detections, scene_type, suggested_tasks = detect_objects_in_scene(
-        rgb_frames, depth_frames, orbit_poses, model=model, max_retries=max_retries,
+        rgb_frames,
+        depth_frames,
+        orbit_poses,
+        model=model,
+        max_retries=max_retries,
     )
 
     # Convert detections to camera path specs

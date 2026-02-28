@@ -109,9 +109,7 @@ def load_splat(ply_path: Path, device: str = "cpu") -> GaussianSplatData:
     ).unsqueeze(1)  # (N, 1, 3)
 
     # Higher-order SH coefficients
-    sh_rest_names = sorted(
-        [p.name for p in vertex.properties if p.name.startswith("f_rest_")]
-    )
+    sh_rest_names = sorted([p.name for p in vertex.properties if p.name.startswith("f_rest_")])
     if sh_rest_names:
         sh_rest_raw = np.stack(
             [np.array(vertex[name], dtype=np.float32) for name in sh_rest_names],

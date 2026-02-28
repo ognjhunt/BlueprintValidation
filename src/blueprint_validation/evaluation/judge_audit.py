@@ -59,4 +59,3 @@ def write_judge_audit_csv(rows: Iterable[dict], output_path: Path) -> None:
                     "reviewer_notes": "",
                 }
             )
-

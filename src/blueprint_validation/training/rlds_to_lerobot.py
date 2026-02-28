@@ -105,7 +105,9 @@ def convert_rlds_to_lerobot_dataset(
                             f"Missing observation.image_path in episode {payload.get('episode_id')}"
                         )
                     if not Path(image_path).exists():
-                        raise RuntimeError(f"Missing frame image referenced by dataset: {image_path}")
+                        raise RuntimeError(
+                            f"Missing frame image referenced by dataset: {image_path}"
+                        )
 
                     action = _normalize_action(step.get("action"), policy_action_dim)
                     state = [0.0] * policy_state_dim

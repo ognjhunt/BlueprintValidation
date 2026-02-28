@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 
 def test_select_rollouts_returns_top_and_near_miss():
     from blueprint_validation.training.policy_rl_loop import _select_rollouts

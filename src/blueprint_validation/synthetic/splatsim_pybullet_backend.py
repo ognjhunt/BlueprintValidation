@@ -78,7 +78,9 @@ def run_splatsim_pybullet_backend(
 
     for zone_idx, zone in enumerate(zones):
         for rollout_idx in range(rollouts_per_zone):
-            source_clip = source_clips[(zone_idx * rollouts_per_zone + rollout_idx) % len(source_clips)]
+            source_clip = source_clips[
+                (zone_idx * rollouts_per_zone + rollout_idx) % len(source_clips)
+            ]
             source_video = Path(str(source_clip.get("video_path", "")))
             if not source_video.exists():
                 continue
@@ -201,7 +203,11 @@ def _simulate_episode(
             rgbaColor=[0.9, 0.3, 0.2, 1.0],
             physicsClientId=client,
         )
-        obj_start = [float(approach_point[0]), float(approach_point[1]), max(0.08, float(approach_point[2]))]
+        obj_start = [
+            float(approach_point[0]),
+            float(approach_point[1]),
+            max(0.08, float(approach_point[2])),
+        ]
         obj_id = pb.createMultiBody(
             baseMass=1.0,
             baseCollisionShapeIndex=col_obj,
@@ -254,7 +260,9 @@ def _simulate_episode(
             trace.append([float(op[0]), float(op[1]), float(op[2])])
 
         final = trace[-1] if trace else obj_start
-        dxy = ((final[0] - float(target_point[0])) ** 2 + (final[1] - float(target_point[1])) ** 2) ** 0.5
+        dxy = (
+            (final[0] - float(target_point[0])) ** 2 + (final[1] - float(target_point[1])) ** 2
+        ) ** 0.5
         success = dxy <= 0.08 and final[2] >= max(0.05, float(target_point[2]) - 0.05)
         return {"success": bool(success), "object_positions": trace}
     finally:
@@ -301,8 +309,14 @@ def _annotate_interaction_video(
         ok, frame = cap.read()
         if not ok:
             break
-        t_idx = min(n - 1, int((frame_idx / max(1, int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) - 1)) * (n - 1)))
-        obj = trajectory[t_idx] if trajectory else [float(target_point[0]), float(target_point[1]), 0.0]
+        t_idx = min(
+            n - 1, int((frame_idx / max(1, int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) - 1)) * (n - 1))
+        )
+        obj = (
+            trajectory[t_idx]
+            if trajectory
+            else [float(target_point[0]), float(target_point[1]), 0.0]
+        )
         px, py = _project_to_frame(
             width=width,
             height=height,
@@ -344,4 +358,3 @@ def _project_to_frame(
     px = max(0, min(width - 1, px))
     py = max(0, min(height - 1, py))
     return px, py
-

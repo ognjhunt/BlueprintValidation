@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List
 
 from ..common import get_logger, read_json, write_json
 from ..config import FacilityConfig, ValidationConfig
@@ -57,7 +57,11 @@ def run_robosplat_augmentation(
         )
 
     demo_source = "none"
-    if config.robosplat.parity_mode != "scan_only" and config.robosplat.demo_source in {"synthetic", "real", "required_real"}:
+    if config.robosplat.parity_mode != "scan_only" and config.robosplat.demo_source in {
+        "synthetic",
+        "real",
+        "required_real",
+    }:
         demo_manifest = resolve_or_create_demo_manifest(
             config=config,
             facility=facility,
@@ -155,7 +159,10 @@ def run_robosplat_augmentation(
                 break
 
         if backend == "legacy_scan":
-            if not config.robosplat.fallback_to_legacy_scan and config.robosplat.backend != "legacy_scan":
+            if (
+                not config.robosplat.fallback_to_legacy_scan
+                and config.robosplat.backend != "legacy_scan"
+            ):
                 continue
             fallback_backend = "legacy_scan"
             generated = _run_legacy_scan_backend(config, stage_dir, source_clips)

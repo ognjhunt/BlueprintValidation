@@ -75,11 +75,13 @@ def _axis_angle_transform(axis: np.ndarray, angle: float) -> np.ndarray:
     c = math.cos(angle)
     s = math.sin(angle)
     C = 1.0 - c
-    rot = np.array([
-        [c + x * x * C, x * y * C - z * s, x * z * C + y * s],
-        [y * x * C + z * s, c + y * y * C, y * z * C - x * s],
-        [z * x * C - y * s, z * y * C + x * s, c + z * z * C],
-    ])
+    rot = np.array(
+        [
+            [c + x * x * C, x * y * C - z * s, x * z * C + y * s],
+            [y * x * C + z * s, c + y * y * C, y * z * C - x * s],
+            [z * x * C - y * s, z * y * C + x * s, c + z * z * C],
+        ]
+    )
     out = np.eye(4, dtype=np.float64)
     out[:3, :3] = rot
     return out
@@ -274,9 +276,13 @@ def composite_robot_arm_into_clip(
         ret, frame = cap.read()
         if not ret:
             break
-        pose = camera_poses[min(frame_idx, len(camera_poses) - 1)] if camera_poses else CameraPose(
-            c2w=np.eye(4),
-            fov_deg=60.0,
+        pose = (
+            camera_poses[min(frame_idx, len(camera_poses) - 1)]
+            if camera_poses
+            else CameraPose(
+                c2w=np.eye(4),
+                fov_deg=60.0,
+            )
         )
         joints_world = _forward_kinematics_world_points(
             chain=chain,
@@ -312,8 +318,7 @@ def composite_robot_arm_into_clip(
     # Reward frames with enough visible joints and non-degenerate projected geometry.
     consistency = min(
         1.0,
-        (mean_visible / max(min_visible_joint_ratio, 1e-6))
-        * min(1.0, mean_seg_len / 12.0),
+        (mean_visible / max(min_visible_joint_ratio, 1e-6)) * min(1.0, mean_seg_len / 12.0),
     )
     passed = (mean_visible >= min_visible_joint_ratio) and (consistency >= min_consistency_score)
     return CompositeMetrics(

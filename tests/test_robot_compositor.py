@@ -21,7 +21,9 @@ def _write_test_video(path: Path, n: int = 5):
 def test_load_urdf_chain():
     from blueprint_validation.synthetic.robot_compositor import load_urdf_chain
 
-    urdf = Path("/Users/nijelhunt_1/workspace/BlueprintValidation/configs/robots/sample_6dof_arm.urdf")
+    urdf = Path(
+        "/Users/nijelhunt_1/workspace/BlueprintValidation/configs/robots/sample_6dof_arm.urdf"
+    )
     chain = load_urdf_chain(urdf)
     assert len(chain) >= 3
     assert chain[0].name == "joint_1"
@@ -37,14 +39,19 @@ def test_composite_robot_arm_into_clip(tmp_path):
         json.dumps(
             {
                 "camera_path": [
-                    {"camera_to_world": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1.0, 0, 0, 0, 1], "fov": 60}
+                    {
+                        "camera_to_world": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1.0, 0, 0, 0, 1],
+                        "fov": 60,
+                    }
                     for _ in range(5)
                 ]
             }
         )
     )
     out_video = tmp_path / "out.mp4"
-    urdf = Path("/Users/nijelhunt_1/workspace/BlueprintValidation/configs/robots/sample_6dof_arm.urdf")
+    urdf = Path(
+        "/Users/nijelhunt_1/workspace/BlueprintValidation/configs/robots/sample_6dof_arm.urdf"
+    )
     metrics = composite_robot_arm_into_clip(
         input_video=video,
         output_video=out_video,

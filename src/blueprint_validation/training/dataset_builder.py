@@ -51,14 +51,16 @@ def build_dreamdojo_dataset(
         meta_path = metas_dir / meta_name
         meta_path.write_text(prompt)
 
-        csv_rows.append({
-            "video_path": f"videos/{src.name}",
-            "meta_path": f"metas/{meta_name}",
-            "prompt": prompt,
-            "variant": entry.get("variant_name", ""),
-            "source_clip": entry.get("clip_name", ""),
-            "facility": facility_name,
-        })
+        csv_rows.append(
+            {
+                "video_path": f"videos/{src.name}",
+                "meta_path": f"metas/{meta_name}",
+                "prompt": prompt,
+                "variant": entry.get("variant_name", ""),
+                "source_clip": entry.get("clip_name", ""),
+                "facility": facility_name,
+            }
+        )
 
     # Write metadata.csv
     csv_path = dataset_dir / "metadata.csv"

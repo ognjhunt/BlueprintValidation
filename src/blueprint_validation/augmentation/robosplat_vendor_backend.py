@@ -93,4 +93,3 @@ def run_vendor_backend(
         "generated_manifest_path": str(output_manifest_path),
         "generated": [],
     }
-

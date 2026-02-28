@@ -1,2 +1,1 @@
 """Synthetic data generation utilities."""
-

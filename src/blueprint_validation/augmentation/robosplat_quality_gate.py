@@ -76,4 +76,3 @@ def validate_augmented_clip(
         num_frames=frame_count,
         resolution=(height, width),
     )
-

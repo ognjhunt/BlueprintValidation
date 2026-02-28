@@ -222,7 +222,9 @@ def _task_kind(task: str) -> str:
     lowered = task.lower()
     if any(k in lowered for k in ("pick up", "grasp", "lift", "place", "regrasp")):
         return "manipulation"
-    if any(k in lowered for k in ("open and close", "open ", "close ", "turn on", "turn off", "toggle")):
+    if any(
+        k in lowered for k in ("open and close", "open ", "close ", "turn on", "turn off", "toggle")
+    ):
         return "articulation"
     if any(k in lowered for k in ("navigate", "approach", "go to", "move toward")):
         return "navigation"

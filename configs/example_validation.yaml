@@ -271,6 +271,17 @@ policy_adapter:
     policy_state_dim: 7
     extra_train_args: []
 
+# pi0.5 switch example (required refs; preflight will fail if OpenVLA-like refs remain):
+# policy_adapter:
+#   name: pi05
+#   pi05:
+#     openpi_repo: /opt/openpi
+#     profile: pi05_libero
+# eval_policy:
+#   model_name: openpi/pi05
+#   checkpoint_path: ../data/checkpoints/pi05/
+# Also install: `uv sync --extra pi05` (or `pip install -U lerobot`)
+
 # ---- Stage 4b: Rollout -> RLDS-style dataset export ----
 rollout_dataset:
   enabled: true

@@ -52,9 +52,11 @@ class FinetuneStage(PipelineStage):
         )
 
         # Run fine-tuning
-        logger.info("Starting DreamDojo fine-tuning (lr=%s, epochs=%d)",
-                     config.finetune.learning_rate,
-                     config.finetune.num_epochs)
+        logger.info(
+            "Starting DreamDojo fine-tuning (lr=%s, epochs=%d)",
+            config.finetune.learning_rate,
+            config.finetune.num_epochs,
+        )
 
         # Derive facility_id from work_dir
         facility_id = work_dir.name

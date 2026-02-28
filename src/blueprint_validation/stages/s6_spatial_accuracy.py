@@ -74,14 +74,16 @@ class SpatialAccuracyStage(PipelineStage):
                     landmarks=facility.landmarks,
                     config=vlm_config,
                 )
-                scores.append({
-                    "clip_name": clip.get("clip_name", ""),
-                    "variant": clip.get("variant_name", ""),
-                    "spatial_score": score.spatial_score,
-                    "visual_score": score.visual_score,
-                    "task_score": score.task_score,
-                    "reasoning": score.reasoning,
-                })
+                scores.append(
+                    {
+                        "clip_name": clip.get("clip_name", ""),
+                        "variant": clip.get("variant_name", ""),
+                        "spatial_score": score.spatial_score,
+                        "visual_score": score.visual_score,
+                        "task_score": score.task_score,
+                        "reasoning": score.reasoning,
+                    }
+                )
             except Exception as e:
                 logger.warning("Spatial scoring failed for %s: %s", video_path.name, e)
 

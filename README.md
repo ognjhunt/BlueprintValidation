@@ -48,6 +48,8 @@ cp configs/example_validation.yaml validation.yaml
 
 # Run preflight checks
 blueprint-validate preflight
+# For pre-GPU audits (no CUDA yet):
+blueprint-validate preflight --audit-mode
 
 # Auto-generate a fast pilot config from BlueprintCapturePipeline runs
 bash scripts/setup_first_data.sh
@@ -55,6 +57,7 @@ bash scripts/setup_first_data.sh
 # Optional: source runtime secrets from a local untracked file
 # cp scripts/runtime_env.example scripts/runtime_env.local
 # set -a && source scripts/runtime_env.local && set +a
+# (includes GOOGLE_GENAI_API_KEY, HF_TOKEN, BLUEPRINT_GPU_HOURLY_RATE_USD, BLUEPRINT_AUTO_SHUTDOWN_CMD)
 
 # Run full pipeline
 blueprint-validate run-all
@@ -102,10 +105,23 @@ Notes:
 
 ### Docker Snapshot
 
-Build a reusable runtime image snapshot (includes DreamDojo/Cosmos/OpenVLA-OFT/OpenPI repos):
+Build a reusable runtime image snapshot (DreamDojo/Cosmos/OpenVLA-OFT are vendored-if-present, otherwise cloned at pinned refs):
 
 ```bash
 bash scripts/build_runtime_snapshot.sh
+```
+
+Vendor strategy options:
+
+```bash
+# auto (default): use data/vendor/* if present, else clone pinned refs
+VENDOR_STRATEGY=auto bash scripts/build_runtime_snapshot.sh
+
+# require local vendored repos
+VENDOR_STRATEGY=vendored bash scripts/build_runtime_snapshot.sh
+
+# always clone pinned refs
+VENDOR_STRATEGY=clone bash scripts/build_runtime_snapshot.sh
 ```
 
 Build + push to Docker Hub:
@@ -118,6 +134,22 @@ Provision local vendor repos for non-Docker runs (auto-invoked by `setup_first_d
 
 ```bash
 PROVISION_REPOS=true bash scripts/setup_first_data.sh
+```
+
+### Pre-GPU Audit
+
+Run the non-GPU readiness gate before paying for GPU time:
+
+```bash
+bash scripts/pre_gpu_audit.sh
+```
+
+Secret scan command used by the audit script:
+
+```bash
+rg -n "AIza|hf_[A-Za-z0-9]{10,}" -S . --hidden --no-ignore \
+  --glob '!.git/**' --glob '!.venv/**' --glob '!data/vendor/**' \
+  --glob '!README.md' --glob '!scripts/pre_gpu_audit.sh'
 ```
 
 ## Components
@@ -148,6 +180,7 @@ PROVISION_REPOS=true bash scripts/setup_first_data.sh
   - Cosmos Transfer repo (`examples/inference.py`)
   - OpenVLA-OFT repo (`vla-scripts/finetune.py` compatible entrypoint)
   - OpenPI repo (`scripts/train_pytorch.py`, `scripts/compute_norm_stats.py`)
+- For pi0.5 adapter path: `lerobot` dependency (`uv sync --extra pi05` or `pip install -U lerobot`)
 - HuggingFace auth (`huggingface-cli login` or `HF_TOKEN`) with accepted licenses for:
   - `nvidia/DreamDojo`
   - `nvidia/Cosmos-Transfer2.5-2B`
@@ -163,9 +196,30 @@ Adapter switching is config-only:
 Required config for pi0.5:
 
 - `policy_adapter.pi05.openpi_repo`
+- at least one explicit pi0.5 base reference:
+  - `eval_policy.model_name` (non-OpenVLA ref), and/or
+  - `eval_policy.checkpoint_path` (non-OpenVLA checkpoint path)
 - optional overrides:
   - `policy_adapter.pi05.profile` (`pi05_libero` default, or `pi05_droid`)
-  - `eval_policy.model_name` / `eval_policy.checkpoint_path`
+
+### pi05 Pre-GPU Gate
+
+Before allocating GPU, run:
+
+```bash
+blueprint-validate --config <config.yaml> --work-dir <work_dir> preflight
+```
+
+For `policy_adapter.name: pi05`, preflight now hard-fails unless all of the following pass:
+
+- `policy:base_reference` (must not be OpenVLA-like)
+- `policy_adapter:pi05:openpi_repo`
+- `policy_adapter:pi05:train_script`
+- `policy_adapter:pi05:norm_stats_script`
+- `policy_adapter:pi05:train_contract`
+- `policy_adapter:pi05:norm_stats_contract`
+- `dep:lerobot`
+- `policy_finetune:dataset_dir` (when `rollout_dataset.enabled=false`)
 
 Backward compatibility:
 

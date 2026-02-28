@@ -22,10 +22,10 @@ def test_build_controlnet_spec_depth(tmp_path):
         controlnet_inputs=["rgb", "depth"],
     )
 
+    assert spec["name"] == "out"
     assert spec["video_path"] == str(video)
-    assert spec["output_dir"] == str(out.parent)
-    assert "depth" in spec
     assert spec["depth"]["control_path"] == str(depth)
+    assert "edge" not in spec
 
 
 def test_build_cosmos_inference_command():
@@ -34,11 +34,8 @@ def test_build_cosmos_inference_command():
     cmd = build_cosmos_inference_command(
         spec_path=Path("/tmp/spec.json"),
         output_dir=Path("/tmp/out"),
-        num_gpus=2,
     )
-    assert cmd[:3] == ["python", "examples/inference.py", "-i"]
-    assert "-o" in cmd
-    assert "--num_devices" in cmd
+    assert cmd == ["python", "examples/inference.py", "-i", "/tmp/spec.json", "-o", "/tmp/out"]
 
 
 def test_resolve_cosmos_repo(tmp_path):

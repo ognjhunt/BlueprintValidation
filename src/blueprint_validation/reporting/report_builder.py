@@ -53,12 +53,23 @@ def _collect_results(config: ValidationConfig, work_dir: Path) -> Dict[str, Any]
 
     stages = [
         "s0_task_hints_bootstrap",
-        "s1_render", "s1b_robot_composite", "s1c_gemini_polish", "s1d_gaussian_augment",
+        "s1_render",
+        "s1b_robot_composite",
+        "s1c_gemini_polish",
+        "s1d_gaussian_augment",
         "s1e_splatsim_interaction",
-        "s2_enrich", "s3_finetune", "s4_policy_eval", "s4a_rlds_export", "s3b_policy_finetune",
+        "s2_enrich",
+        "s3_finetune",
+        "s4_policy_eval",
+        "s4a_rlds_export",
+        "s3b_policy_finetune",
         "s3c_policy_rl_loop",
-        "s4e_trained_eval", "s4b_rollout_dataset", "s4c_policy_pair_train",
-        "s4d_policy_pair_eval", "s5_visual_fidelity", "s6_spatial_accuracy",
+        "s4e_trained_eval",
+        "s4b_rollout_dataset",
+        "s4c_policy_pair_train",
+        "s4d_policy_pair_eval",
+        "s5_visual_fidelity",
+        "s6_spatial_accuracy",
     ]
 
     for fid in config.facilities:
@@ -106,8 +117,12 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
             lines.append("### Policy Performance (Primary Test)\n")
             lines.append("| Metric | Value |")
             lines.append("|--------|-------|")
-            lines.append(f"| Baseline mean task score | {metrics.get('baseline_mean_task_score', 'N/A')} |")
-            lines.append(f"| Adapted mean task score | {metrics.get('adapted_mean_task_score', 'N/A')} |")
+            lines.append(
+                f"| Baseline mean task score | {metrics.get('baseline_mean_task_score', 'N/A')} |"
+            )
+            lines.append(
+                f"| Adapted mean task score | {metrics.get('adapted_mean_task_score', 'N/A')} |"
+            )
             lines.append(f"| Absolute difference | {metrics.get('absolute_difference', 'N/A')} |")
             lines.append(f"| Improvement | {metrics.get('improvement_pct', 'N/A')}% |")
             lines.append(f"| Win rate | {metrics.get('win_rate', 'N/A')} |")
@@ -118,8 +133,12 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
             pairwise = metrics.get("pairwise", {})
             if pairwise:
                 lines.append("#### Pairwise Condition Comparisons\n")
-                lines.append("| Comparison | Score A | Score B | Abs Diff | Improvement | Win Rate | p-value |")
-                lines.append("|------------|---------|---------|----------|-------------|----------|---------|")
+                lines.append(
+                    "| Comparison | Score A | Score B | Abs Diff | Improvement | Win Rate | p-value |"
+                )
+                lines.append(
+                    "|------------|---------|---------|----------|-------------|----------|---------|"
+                )
                 for pair_key, pair_data in pairwise.items():
                     parts = pair_key.split("_vs_")
                     if len(parts) == 2:
@@ -138,8 +157,7 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
             # Manipulation performance per condition
             per_condition = metrics.get("per_condition", {})
             has_manip = any(
-                v.get("manipulation_success_rate", 0) > 0
-                for v in per_condition.values()
+                v.get("manipulation_success_rate", 0) > 0 for v in per_condition.values()
             )
             if has_manip:
                 lines.append("#### Manipulation Performance\n")
@@ -167,16 +185,18 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
                 f"| Trained manipulation success | "
                 f"{te_metrics.get('trained_manipulation_success_rate', 'N/A')} |"
             )
-            lines.append(
-                f"| Num rollouts | {te_metrics.get('num_rollouts_trained', 'N/A')} |"
-            )
+            lines.append(f"| Num rollouts | {te_metrics.get('num_rollouts_trained', 'N/A')} |")
             lines.append("")
 
             te_pairwise = te_metrics.get("pairwise", {})
             if te_pairwise:
                 lines.append("#### Trained vs Frozen Comparisons\n")
-                lines.append("| Comparison | Score A | Score B | Abs Diff | Improvement | Win Rate | p-value |")
-                lines.append("|------------|---------|---------|----------|-------------|----------|---------|")
+                lines.append(
+                    "| Comparison | Score A | Score B | Abs Diff | Improvement | Win Rate | p-value |"
+                )
+                lines.append(
+                    "|------------|---------|---------|----------|-------------|----------|---------|"
+                )
                 for pair_key, pair_data in te_pairwise.items():
                     parts = pair_key.split("_vs_")
                     if len(parts) == 2:
@@ -207,9 +227,7 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
             lines.append(
                 f"| Absolute difference | {metrics.get('task_score_absolute_difference', 'N/A')} |"
             )
-            lines.append(
-                f"| Improvement | {metrics.get('task_score_improvement_pct', 'N/A')}% |"
-            )
+            lines.append(f"| Improvement | {metrics.get('task_score_improvement_pct', 'N/A')}% |")
             lines.append(
                 f"| Policy base success rate | {metrics.get('policy_base_success_rate', 'N/A')} |"
             )
@@ -219,9 +237,7 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
             lines.append(
                 f"| Win rate (site over base) | {metrics.get('win_rate_site_over_base', 'N/A')} |"
             )
-            lines.append(
-                f"| p-value (task score) | {metrics.get('p_value_task_score', 'N/A')} |"
-            )
+            lines.append(f"| p-value (task score) | {metrics.get('p_value_task_score', 'N/A')} |")
             lines.append("")
 
         # Visual Fidelity
@@ -251,7 +267,7 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
         # Render & Enrich stats
         if "s1_render" in fac_data:
             r = fac_data["s1_render"].get("metrics", {})
-            lines.append(f"### Render Stats\n")
+            lines.append("### Render Stats\n")
             lines.append(f"- Clips rendered: {r.get('num_clips', 'N/A')}")
             lines.append(f"- Total frames: {r.get('total_frames', 'N/A')}")
             lines.append("")
@@ -270,7 +286,7 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
 
         if "s3_finetune" in fac_data:
             ft = fac_data["s3_finetune"].get("metrics", {})
-            lines.append(f"### Fine-tuning\n")
+            lines.append("### Fine-tuning\n")
             lines.append(f"- Epochs: {ft.get('num_epochs', 'N/A')}")
             lines.append(f"- Final loss: {ft.get('final_loss', 'N/A')}")
             lines.append(f"- Training time: {ft.get('training_seconds', 'N/A')}s")
@@ -349,7 +365,9 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
     lines.append(f"- Facilities: {', '.join(config.facilities.keys())}")
     lines.append(f"- Render resolution: {config.render.resolution}")
     lines.append(f"- Model size: {config.finetune.model_size}")
-    lines.append(f"- LoRA: {'rank=' + str(config.finetune.lora_rank) if config.finetune.use_lora else 'disabled (full fine-tuning)'}")
+    lines.append(
+        f"- LoRA: {'rank=' + str(config.finetune.lora_rank) if config.finetune.use_lora else 'disabled (full fine-tuning)'}"
+    )
     lines.append(f"- Policy finetune enabled: {config.policy_finetune.enabled}")
     lines.append(f"- Policy RL loop enabled: {config.policy_rl_loop.enabled}")
     lines.append(f"- Policy dataset: {config.policy_finetune.dataset_name}")
@@ -404,10 +422,10 @@ def _add_executive_summary(lines: list, data: dict, config: ValidationConfig = N
     lines.append("| Test | Result |")
     lines.append("|------|--------|")
     lines.append(f"| Frozen Policy Performance | {'PASS' if primary_passed else 'PENDING/FAIL'} |")
+    lines.append(f"| Trained Policy Improvement | {'PASS' if trained_passed else 'PENDING/FAIL'} |")
     lines.append(
-        f"| Trained Policy Improvement | {'PASS' if trained_passed else 'PENDING/FAIL'} |"
+        f"| Cross-Site Discrimination | {'PASS' if cross_site_passed else 'PENDING/FAIL'} |"
     )
-    lines.append(f"| Cross-Site Discrimination | {'PASS' if cross_site_passed else 'PENDING/FAIL'} |")
     lines.append("")
 
     if primary_passed:

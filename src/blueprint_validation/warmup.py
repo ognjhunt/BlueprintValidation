@@ -524,14 +524,16 @@ def warmup_facility(
             path_dir.mkdir(parents=True, exist_ok=True)
             save_path_to_json(poses, path_dir / f"{clip_name}_camera_path.json")
 
-            all_clips.append({
-                "clip_name": clip_name,
-                "path_type": path_spec.type,
-                "clip_index": clip_index,
-                "num_frames": len(poses),
-                "camera_path_file": str(path_dir / f"{clip_name}_camera_path.json"),
-                "poses": _serialize_camera_poses(poses),
-            })
+            all_clips.append(
+                {
+                    "clip_name": clip_name,
+                    "path_type": path_spec.type,
+                    "clip_index": clip_index,
+                    "num_frames": len(poses),
+                    "camera_path_file": str(path_dir / f"{clip_name}_camera_path.json"),
+                    "poses": _serialize_camera_poses(poses),
+                }
+            )
             clip_index += 1
 
     # Save clips manifest
@@ -606,10 +608,7 @@ def load_cached_variants(work_dir: Path) -> Optional[List[VariantSpec]]:
         return None
     try:
         data = json.loads(Path(variants_path).read_text())
-        return [
-            VariantSpec(name=v["name"], prompt=v["prompt"])
-            for v in data.get("variants", [])
-        ]
+        return [VariantSpec(name=v["name"], prompt=v["prompt"]) for v in data.get("variants", [])]
     except Exception:
         logger.debug("Failed to load cached variants", exc_info=True)
         return None

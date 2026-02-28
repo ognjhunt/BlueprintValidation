@@ -169,7 +169,9 @@ def test_stage4_policy_eval_deterministic_metrics(sample_config, tmp_path, monke
         "blueprint_validation.stages.s4_policy_eval.run_rollout_with_adapter",
         fake_run_rollout_with_adapter,
     )
-    monkeypatch.setattr("blueprint_validation.stages.s4_policy_eval.score_rollout", fake_score_rollout)
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4_policy_eval.score_rollout", fake_score_rollout
+    )
 
     previous = {
         "s3b_policy_finetune": StageResult(

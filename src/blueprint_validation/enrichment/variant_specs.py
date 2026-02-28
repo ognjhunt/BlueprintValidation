@@ -87,6 +87,7 @@ def generate_dynamic_variants(
             image = Image.open(sample_frame_path)
         elif sample_frame_rgb is not None:
             import numpy as np
+
             image = Image.fromarray(np.asarray(sample_frame_rgb))
         else:
             logger.warning("No sample frame available; using builtin variants")

@@ -113,9 +113,7 @@ def run_openvla_finetune(
             "policy_finetune.data_root_dir must be set when policy_finetune.enabled=true."
         )
     if not config.data_root_dir.exists():
-        raise RuntimeError(
-            f"policy_finetune.data_root_dir does not exist: {config.data_root_dir}"
-        )
+        raise RuntimeError(f"policy_finetune.data_root_dir does not exist: {config.data_root_dir}")
     if not (config.data_root_dir / config.dataset_name).exists():
         raise RuntimeError(
             "OpenVLA-OFT dataset directory missing. Expected "

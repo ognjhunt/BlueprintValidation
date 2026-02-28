@@ -1,7 +1,6 @@
 """Tests for image quality metrics."""
 
 import numpy as np
-import pytest
 
 
 def test_psnr_identical():

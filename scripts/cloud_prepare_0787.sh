@@ -11,6 +11,7 @@ CHECKPOINT_DIR="${CHECKPOINT_DIR:-/models/checkpoints}"
 DOWNLOAD_MODELS="${DOWNLOAD_MODELS:-true}"
 INSTALL_DREAMDOJO_EXTRA="${INSTALL_DREAMDOJO_EXTRA:-true}"
 DREAMDOJO_EXTRA="${DREAMDOJO_EXTRA:-cu128}"
+INSTALL_OPENPI_DEPS="${INSTALL_OPENPI_DEPS:-true}"
 FACILITY_ID="${FACILITY_ID:-}"
 
 if [ -f "$ROOT_DIR/scripts/runtime_env.local" ]; then
@@ -73,6 +74,31 @@ ensure_repo "$ROOT_DIR/data/vendor/DreamDojo" "/opt/DreamDojo" "https://github.c
 ensure_repo "$ROOT_DIR/data/vendor/cosmos-transfer" "/opt/cosmos-transfer" "https://github.com/nvidia-cosmos/cosmos-transfer2.5.git"
 ensure_repo "$ROOT_DIR/data/vendor/openvla-oft" "/opt/openvla-oft" "https://github.com/moojink/openvla-oft.git"
 ensure_repo "$ROOT_DIR/data/vendor/openpi" "/opt/openpi" "https://github.com/Physical-Intelligence/openpi.git"
+
+if [ "$INSTALL_OPENPI_DEPS" = "true" ]; then
+  OPENPI_REPO="$ROOT_DIR/data/vendor/openpi"
+  echo "Installing pi05 runtime dependency (lerobot)..."
+  python -m pip install -U lerobot
+  echo "Verifying openpi + lerobot imports..."
+  OPENPI_REPO="$OPENPI_REPO" python - <<'PY'
+import importlib
+import os
+import sys
+from pathlib import Path
+
+repo = Path(os.environ["OPENPI_REPO"])
+for candidate in (repo, repo / "src"):
+    text = str(candidate)
+    if candidate.exists() and text not in sys.path:
+        sys.path.insert(0, text)
+
+importlib.import_module("openpi")
+importlib.import_module("lerobot")
+print("Verified openpi + lerobot imports.")
+PY
+else
+  echo "Skipping openpi dependency install/verification (INSTALL_OPENPI_DEPS=false)."
+fi
 
 echo "Authenticating with Hugging Face..."
 if ! "${HF_AUTH_CMD[@]}" whoami >/dev/null 2>&1; then

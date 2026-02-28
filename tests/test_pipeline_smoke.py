@@ -1,9 +1,6 @@
 """Smoke test for the full pipeline with mocked stages."""
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
 
 
 def test_pipeline_instantiation(sample_config, tmp_path):

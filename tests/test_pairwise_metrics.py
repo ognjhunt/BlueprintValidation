@@ -1,7 +1,5 @@
 """Tests for pairwise metric computation in S4 policy eval."""
 
-import pytest
-
 
 def test_build_pairwise_metrics_two_conditions():
     from blueprint_validation.stages.s4_policy_eval import _build_pairwise_metrics

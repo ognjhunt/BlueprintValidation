@@ -49,12 +49,8 @@ def run_rollout_with_adapter(
     output_dir.mkdir(parents=True, exist_ok=True)
     video_path = output_dir / f"{clip_name}.mp4"
     h, w = frames[0].shape[:2]
-    writer = cv2.VideoWriter(
-        str(video_path), cv2.VideoWriter_fourcc(*"mp4v"), 10, (w, h)
-    )
+    writer = cv2.VideoWriter(str(video_path), cv2.VideoWriter_fourcc(*"mp4v"), 10, (w, h))
     for frame in frames:
         writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
     writer.release()
-    return SimpleNamespace(
-        video_path=video_path, action_sequence=actions, num_steps=len(actions)
-    )
+    return SimpleNamespace(video_path=video_path, action_sequence=actions, num_steps=len(actions))

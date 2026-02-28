@@ -77,11 +77,25 @@ end_header
             # SH DC coefficients
             dc0, dc1, dc2 = rng.uniform(-1, 1, size=3)
 
-            f.write(struct.pack(
-                "<14f",
-                x, y, z, s0, s1, s2, q[0], q[1], q[2], q[3],
-                opacity, dc0, dc1, dc2,
-            ))
+            f.write(
+                struct.pack(
+                    "<14f",
+                    x,
+                    y,
+                    z,
+                    s0,
+                    s1,
+                    s2,
+                    q[0],
+                    q[1],
+                    q[2],
+                    q[3],
+                    opacity,
+                    dc0,
+                    dc1,
+                    dc2,
+                )
+            )
 
     return ply_path
 
@@ -118,7 +132,7 @@ end_header
 
 
 @pytest.fixture
-def sample_config(tmp_path) -> "ValidationConfig":
+def sample_config(tmp_path):
     """Create a minimal config for testing."""
     from blueprint_validation.config import (
         CameraPathSpec,

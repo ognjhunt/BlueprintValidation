@@ -39,7 +39,9 @@ class OpenVLAOFTPolicyAdapter(PolicyAdapter):
         from transformers import AutoModelForVision2Seq, AutoProcessor
         import torch
 
-        model_id = str(checkpoint_path) if checkpoint_path and checkpoint_path.exists() else model_name
+        model_id = (
+            str(checkpoint_path) if checkpoint_path and checkpoint_path.exists() else model_name
+        )
         logger.info("Loading OpenVLA-OFT policy from %s", model_id)
 
         processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
@@ -79,6 +81,7 @@ class OpenVLAOFTPolicyAdapter(PolicyAdapter):
 
         try:
             import torch
+
             torch_dtype = torch.bfloat16
         except ImportError:  # pragma: no cover
             torch_dtype = None
@@ -195,7 +198,9 @@ class OpenVLAOFTPolicyAdapter(PolicyAdapter):
         local_cfg.extra_args = list(local_cfg.extra_args) + list(self.backend.extra_train_args)
 
         checkpoint_str = (
-            str(base_checkpoint) if base_checkpoint and base_checkpoint.exists() else base_model_name
+            str(base_checkpoint)
+            if base_checkpoint and base_checkpoint.exists()
+            else base_model_name
         )
         result = run_openvla_finetune(
             config=local_cfg,

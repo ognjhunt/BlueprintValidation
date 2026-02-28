@@ -1,6 +1,5 @@
 """Tests for configuration loading and validation."""
 
-import json
 from pathlib import Path
 
 import pytest
@@ -122,6 +121,7 @@ def test_config_with_all_sections(tmp_path):
 
     config_path = tmp_path / "full.yaml"
     import yaml
+
     config_path.write_text(yaml.dump(config_data))
 
     config = load_config(config_path)
@@ -275,17 +275,21 @@ def test_config_parses_scene_orientation_fields(tmp_path):
     import yaml
 
     config_path = tmp_path / "scene_orientation.yaml"
-    config_path.write_text(yaml.dump({
-        "project_name": "Scene Orientation",
-        "facilities": {
-            "a": {
-                "name": "A",
-                "ply_path": "/tmp/a.ply",
-                "up_axis": "y",
-                "scene_rotation_deg": [10, 20, 30],
-            },
-        },
-    }))
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Scene Orientation",
+                "facilities": {
+                    "a": {
+                        "name": "A",
+                        "ply_path": "/tmp/a.ply",
+                        "up_axis": "y",
+                        "scene_rotation_deg": [10, 20, 30],
+                    },
+                },
+            }
+        )
+    )
 
     config = load_config(config_path)
     fac = config.facilities["a"]
@@ -298,16 +302,20 @@ def test_config_rejects_invalid_scene_rotation_length(tmp_path):
     import yaml
 
     config_path = tmp_path / "bad_scene_orientation.yaml"
-    config_path.write_text(yaml.dump({
-        "project_name": "Bad Scene Orientation",
-        "facilities": {
-            "a": {
-                "name": "A",
-                "ply_path": "/tmp/a.ply",
-                "scene_rotation_deg": [0, 90],
-            },
-        },
-    }))
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Scene Orientation",
+                "facilities": {
+                    "a": {
+                        "name": "A",
+                        "ply_path": "/tmp/a.ply",
+                        "scene_rotation_deg": [0, 90],
+                    },
+                },
+            }
+        )
+    )
 
     with pytest.raises(ValueError, match="scene_rotation_deg"):
         load_config(config_path)

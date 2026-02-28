@@ -181,7 +181,7 @@ def _augment_rgb_frame(
     out = np.clip(warped.astype(np.float32) * relight_gain, 0, 255)
     if color_temp_shift:
         # Warm/cool tone shift: balance red and blue channels while preserving mean luminance.
-        out[..., 0] *= (2.0 - color_temp_scale)  # blue
+        out[..., 0] *= 2.0 - color_temp_scale  # blue
         out[..., 2] *= color_temp_scale  # red
         out = np.clip(out, 0, 255)
     return out.astype(np.uint8)

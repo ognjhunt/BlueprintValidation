@@ -45,9 +45,7 @@ def compute_psnr(img1: np.ndarray, img2: np.ndarray) -> float:
     return float(10 * np.log10(255.0**2 / mse))
 
 
-def compute_ssim_batch(
-    frames1: List[np.ndarray], frames2: List[np.ndarray]
-) -> List[float]:
+def compute_ssim_batch(frames1: List[np.ndarray], frames2: List[np.ndarray]) -> List[float]:
     """Compute SSIM for a batch of frame pairs using torchmetrics."""
     import torch
     from torchmetrics.image import StructuralSimilarityIndexMeasure
@@ -106,7 +104,9 @@ def compute_video_metrics(
         min_len = min(len(frames1), len(frames2))
         logger.warning(
             "Frame count mismatch (%d vs %d), truncating to %d",
-            len(frames1), len(frames2), min_len,
+            len(frames1),
+            len(frames2),
+            min_len,
         )
         frames1 = frames1[:min_len]
         frames2 = frames2[:min_len]
