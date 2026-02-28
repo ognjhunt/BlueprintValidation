@@ -47,6 +47,11 @@ else
     DOWNLOAD_CMD=(huggingface-cli download)
 fi
 
+RESUME_FLAG=()
+if "${DOWNLOAD_CMD[@]}" --help 2>/dev/null | rg -q -- '--resume-download'; then
+    RESUME_FLAG=(--resume-download)
+fi
+
 if ! "${WHOAMI_CMD[@]}" &> /dev/null; then
     if [ -n "${HF_TOKEN:-}" ]; then
         echo "Using HF_TOKEN for non-interactive HuggingFace login..."
@@ -74,20 +79,20 @@ fi
 echo "[1/3] Downloading DreamDojo-2B pretrained..."
 "${DOWNLOAD_CMD[@]}" nvidia/DreamDojo \
     --local-dir "$DATA_DIR/DreamDojo/2B_pretrain/" \
-    --resume-download \
+    "${RESUME_FLAG[@]}" \
     --include "2B_pretrain/*"
 
 echo ""
 echo "[2/3] Downloading Cosmos Transfer 2.5 (2B)..."
 "${DOWNLOAD_CMD[@]}" nvidia/Cosmos-Transfer2.5-2B \
     --local-dir "$DATA_DIR/cosmos-transfer-2.5-2b/" \
-    --resume-download
+    "${RESUME_FLAG[@]}"
 
 echo ""
 echo "[3/3] Downloading OpenVLA-OFT base 7B weights..."
 "${DOWNLOAD_CMD[@]}" openvla/openvla-7b \
     --local-dir "$DATA_DIR/openvla-7b/" \
-    --resume-download
+    "${RESUME_FLAG[@]}"
 
 echo ""
 echo "=== All models downloaded ==="

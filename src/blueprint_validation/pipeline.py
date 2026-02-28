@@ -5,10 +5,11 @@ from __future__ import annotations
 import os
 import subprocess
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict
 
-from .common import StageResult, get_logger, write_json
+from .common import StageResult, get_logger, read_json, write_json
 from .config import ValidationConfig
 from .stages.s0_task_hints_bootstrap import TaskHintsBootstrapStage
 from .stages.s1_render import RenderStage
@@ -41,7 +42,11 @@ class ValidationPipeline:
         self.work_dir = work_dir
         self.work_dir.mkdir(parents=True, exist_ok=True)
 
-    def run_all(self, fail_fast: bool = True) -> Dict[str, StageResult]:
+    def run_all(
+        self,
+        fail_fast: bool = True,
+        resume_from_results: bool = False,
+    ) -> Dict[str, StageResult]:
         """Run all stages for all facilities, then cross-site test."""
         all_results: Dict[str, StageResult] = {}
         failed_stage_keys: list[str] = []
@@ -98,18 +103,45 @@ class ValidationPipeline:
             facility_results: Dict[str, StageResult] = {}
 
             for stage in per_facility_stages:
+                stage_key = f"{fid}/{stage.name}"
+                result_path = fac_dir / f"{stage.name}_result.json"
+
+                if resume_from_results:
+                    existing = self._load_existing_stage_result(result_path)
+                    if existing is not None and existing.status in {"success", "skipped"}:
+                        logger.info(
+                            "Resume mode: reusing %s result from %s (status=%s)",
+                            stage_key,
+                            result_path,
+                            existing.status,
+                        )
+                        facility_results[stage.name] = existing
+                        all_results[stage_key] = existing
+                        continue
+
                 result = stage.execute(
                     config=self.config,
                     facility=fconfig,
                     work_dir=fac_dir,
                     previous_results=facility_results,
                 )
-                result.save(fac_dir / f"{stage.name}_result.json")
+                # Save stage outputs first so sync hooks can rely on this file existing.
+                result.save(result_path)
+                post_sync_result = self._maybe_run_post_stage_sync_hook(
+                    result=result,
+                    stage_key=stage_key,
+                    facility_id=fid,
+                    facility_work_dir=fac_dir,
+                    result_path=result_path,
+                )
+                if post_sync_result != result:
+                    post_sync_result.save(result_path)
+                result = post_sync_result
                 facility_results[stage.name] = result
-                all_results[f"{fid}/{stage.name}"] = result
+                all_results[stage_key] = result
 
                 if result.status == "failed":
-                    failed_key = f"{fid}/{stage.name}"
+                    failed_key = stage_key
                     failed_stage_keys.append(failed_key)
                     logger.error(
                         "Stage %s failed for %s: %s.",
@@ -158,7 +190,18 @@ class ValidationPipeline:
                 work_dir=self.work_dir,
                 previous_results=all_results,
             )
-            cs_result.save(self.work_dir / "s7_cross_site_result.json")
+            cross_site_result_path = self.work_dir / "s7_cross_site_result.json"
+            cs_result.save(cross_site_result_path)
+            post_sync_cs_result = self._maybe_run_post_stage_sync_hook(
+                result=cs_result,
+                stage_key="cross_site/s7_cross_site",
+                facility_id="cross_site",
+                facility_work_dir=self.work_dir,
+                result_path=cross_site_result_path,
+            )
+            if post_sync_cs_result != cs_result:
+                post_sync_cs_result.save(cross_site_result_path)
+            cs_result = post_sync_cs_result
             all_results["cross_site/s7_cross_site"] = cs_result
             if cs_result.status == "failed":
                 failed_stage_keys.append("cross_site/s7_cross_site")
@@ -172,6 +215,7 @@ class ValidationPipeline:
             "stages": {k: v.to_dict() for k, v in all_results.items()},
             "overall_status": "failed" if failed_stage_keys else "success",
             "fail_fast": fail_fast,
+            "resume_from_results": resume_from_results,
             "aborted_early": aborted_early,
             "failed_stage_keys": failed_stage_keys,
         }
@@ -179,6 +223,103 @@ class ValidationPipeline:
 
         logger.info("Pipeline complete. Summary at %s", self.work_dir / "pipeline_summary.json")
         return all_results
+
+    def _load_existing_stage_result(self, result_path: Path) -> StageResult | None:
+        if not result_path.exists():
+            return None
+        try:
+            payload = read_json(result_path)
+        except Exception:
+            logger.warning("Failed reading existing stage result: %s", result_path, exc_info=True)
+            return None
+
+        try:
+            return StageResult(
+                stage_name=str(
+                    payload.get("stage_name") or result_path.stem.replace("_result", "")
+                ),
+                status=str(payload.get("status", "failed")),
+                elapsed_seconds=float(payload.get("elapsed_seconds", 0.0)),
+                outputs=dict(payload.get("outputs") or {}),
+                metrics=dict(payload.get("metrics") or {}),
+                detail=str(payload.get("detail") or ""),
+                timestamp=str(payload.get("timestamp") or datetime.now(timezone.utc).isoformat()),
+            )
+        except Exception:
+            logger.warning("Malformed stage result payload at %s", result_path, exc_info=True)
+            return None
+
+    def _maybe_run_post_stage_sync_hook(
+        self,
+        *,
+        result: StageResult,
+        stage_key: str,
+        facility_id: str,
+        facility_work_dir: Path,
+        result_path: Path,
+    ) -> StageResult:
+        hook_cmd = (os.environ.get("BLUEPRINT_POST_STAGE_SYNC_CMD") or "").strip()
+        if not hook_cmd:
+            return result
+
+        env = os.environ.copy()
+        env.update(
+            {
+                "BLUEPRINT_SYNC_STAGE_KEY": stage_key,
+                "BLUEPRINT_SYNC_STAGE_NAME": result.stage_name,
+                "BLUEPRINT_SYNC_STAGE_STATUS": result.status,
+                "BLUEPRINT_SYNC_STAGE_DETAIL": result.detail,
+                "BLUEPRINT_SYNC_FACILITY_ID": facility_id,
+                "BLUEPRINT_SYNC_FACILITY_WORK_DIR": str(facility_work_dir),
+                "BLUEPRINT_SYNC_RESULT_PATH": str(result_path),
+                "BLUEPRINT_SYNC_PIPELINE_WORK_DIR": str(self.work_dir),
+            }
+        )
+
+        strict = os.environ.get("BLUEPRINT_POST_STAGE_SYNC_STRICT", "0") == "1"
+        try:
+            proc = subprocess.run(
+                hook_cmd,
+                shell=True,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+        except Exception as exc:
+            msg = f"Post-stage sync hook exception for {stage_key}: {exc}"
+            logger.error(msg)
+            if not strict:
+                return result
+            return StageResult(
+                stage_name=result.stage_name,
+                status="failed",
+                elapsed_seconds=result.elapsed_seconds,
+                outputs=result.outputs,
+                metrics=result.metrics,
+                detail=_append_detail(result.detail, msg),
+            )
+
+        if proc.returncode == 0:
+            logger.info("Post-stage sync hook succeeded for %s", stage_key)
+            return result
+
+        stderr_tail = (proc.stderr or "")[-300:].strip()
+        msg = (
+            f"Post-stage sync hook failed for {stage_key} (exit={proc.returncode}). {stderr_tail}"
+        ).strip()
+        if strict:
+            logger.error(msg)
+            return StageResult(
+                stage_name=result.stage_name,
+                status="failed",
+                elapsed_seconds=result.elapsed_seconds,
+                outputs=result.outputs,
+                metrics=result.metrics,
+                detail=_append_detail(result.detail, msg),
+            )
+        logger.warning(msg)
+        return result
 
     def _hourly_rate_usd(self) -> float | None:
         raw = (os.environ.get("BLUEPRINT_GPU_HOURLY_RATE_USD") or "").strip()
@@ -239,3 +380,11 @@ class ValidationPipeline:
             )
         except Exception as exc:
             logger.error("Failed to execute auto-shutdown command (%s): %s", shutdown_cmd, exc)
+
+
+def _append_detail(detail: str, msg: str) -> str:
+    detail = str(detail or "").strip()
+    msg = str(msg or "").strip()
+    if detail and msg:
+        return f"{detail}\n{msg}"
+    return detail or msg

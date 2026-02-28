@@ -535,8 +535,19 @@ def bootstrap_task_hints(ctx: click.Context, facility: str | None) -> None:
     default=False,
     help="Continue after stage failures (default is fail-fast).",
 )
+@click.option(
+    "--resume",
+    "resume_from_results",
+    is_flag=True,
+    default=False,
+    help="Reuse successful/skipped *_result.json files and continue from incomplete stages.",
+)
 @click.pass_context
-def run_all(ctx: click.Context, continue_on_failure: bool) -> None:
+def run_all(
+    ctx: click.Context,
+    continue_on_failure: bool,
+    resume_from_results: bool,
+) -> None:
     """Run the full validation pipeline, all stages sequentially."""
     from .pipeline import ValidationPipeline
 
@@ -544,7 +555,10 @@ def run_all(ctx: click.Context, continue_on_failure: bool) -> None:
     work_dir = ctx.obj["work_dir"]
 
     pipeline = ValidationPipeline(config, work_dir)
-    summary = pipeline.run_all(fail_fast=not continue_on_failure)
+    summary = pipeline.run_all(
+        fail_fast=not continue_on_failure,
+        resume_from_results=resume_from_results,
+    )
 
     click.echo("\n=== Pipeline Summary ===")
     for stage_name, result in summary.items():

@@ -20,6 +20,8 @@ Optional env:
   STRICT_SYNC=false          # true: fail fast on first copy error
   SSH_HOST=<instance ssh host>  # auto-resolved from vastai if omitted
   SSH_PORT=<instance ssh port>  # auto-resolved from vastai if omitted
+  ENABLE_B2_SYNC=auto        # auto|true|false
+  B2_SYNC_MODE=auto          # auto|push|pull|off
 EOF
 }
 
@@ -27,6 +29,12 @@ MODE="${1:-pull}"
 if [[ "$MODE" != "pull" && "$MODE" != "push" ]]; then
   usage
   exit 1
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "${SCRIPT_DIR}/runtime_env.local" ]]; then
+  # shellcheck disable=SC1091
+  source "${SCRIPT_DIR}/runtime_env.local"
 fi
 
 INSTANCE_ID="${INSTANCE_ID:-}"
@@ -41,6 +49,8 @@ REMOTE_WORK_DIR="${REMOTE_WORK_DIR:-/models/outputs}"
 LOCAL_BACKUP_ROOT="${LOCAL_BACKUP_ROOT:-$HOME/BlueprintValidationBackups/vast/$INSTANCE_ID}"
 SNAPSHOT_TAG="${SNAPSHOT_TAG:-latest}"
 STRICT_SYNC="${STRICT_SYNC:-false}"
+ENABLE_B2_SYNC="${ENABLE_B2_SYNC:-auto}"
+B2_SYNC_MODE="${B2_SYNC_MODE:-auto}"
 
 if [[ "$SNAPSHOT_TAG" == "timestamp" ]]; then
   SNAPSHOT_TAG="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -59,6 +69,28 @@ SYNC_ITEMS=(
 
 failures=0
 
+resolve_enable_b2_sync() {
+  case "$ENABLE_B2_SYNC" in
+    true) echo "true" ;;
+    false) echo "false" ;;
+    auto)
+      if [[ -n "${RCLONE_REMOTE_PATH:-}" ]]; then
+        echo "true"
+      elif [[ -n "${B2_APPLICATION_KEY_ID:-}" && -n "${B2_APPLICATION_KEY:-}" ]]; then
+        echo "true"
+      elif [[ -n "${B2_BUCKET:-}" ]]; then
+        echo "true"
+      else
+        echo "false"
+      fi
+      ;;
+    *)
+      echo "Invalid ENABLE_B2_SYNC='${ENABLE_B2_SYNC}'. Expected auto|true|false." >&2
+      exit 1
+      ;;
+  esac
+}
+
 resolve_ssh_target() {
   if [[ -n "${SSH_HOST:-}" && -n "${SSH_PORT:-}" ]]; then
     return 0
@@ -76,6 +108,28 @@ resolve_ssh_target() {
     echo "Failed to resolve SSH host/port for instance ${INSTANCE_ID}."
     exit 1
   fi
+}
+
+resolve_b2_mode() {
+  case "$B2_SYNC_MODE" in
+    auto)
+      if [[ "$MODE" == "pull" ]]; then
+        echo "push"
+      else
+        echo "pull"
+      fi
+      ;;
+    push|pull)
+      echo "$B2_SYNC_MODE"
+      ;;
+    off)
+      echo ""
+      ;;
+    *)
+      echo "Invalid B2_SYNC_MODE='${B2_SYNC_MODE}'. Expected auto|push|pull|off." >&2
+      exit 1
+      ;;
+  esac
 }
 
 ssh_opts=()
@@ -145,6 +199,22 @@ ssh_opts=(-o StrictHostKeyChecking=no -o BatchMode=yes -p "$SSH_PORT")
 ssh_target="root@${SSH_HOST}"
 ssh_rsync_cmd="ssh -o StrictHostKeyChecking=no -o BatchMode=yes -p ${SSH_PORT}"
 
+b2_enabled="$(resolve_enable_b2_sync)"
+b2_mode=""
+b2_pre_sync_ran="false"
+if [[ "$b2_enabled" == "true" ]]; then
+  b2_mode="$(resolve_b2_mode)"
+  if [[ "$MODE" == "push" && "$b2_mode" == "pull" ]]; then
+    echo "Pre-sync B2 restore (pull) before remote push..."
+    INSTANCE_ID="$INSTANCE_ID" \
+      SNAPSHOT_TAG="$SNAPSHOT_TAG" \
+      LOCAL_BACKUP_ROOT="$LOCAL_BACKUP_ROOT" \
+      LOCAL_SNAPSHOT_DIR="$LOCAL_SNAPSHOT_DIR" \
+      bash "${SCRIPT_DIR}/b2_checkpoint_sync.sh" pull
+    b2_pre_sync_ran="true"
+  fi
+fi
+
 for item in "${SYNC_ITEMS[@]}"; do
   remote_path="${item%%|*}"
   local_rel="${item#*|}"
@@ -176,3 +246,14 @@ if [[ "$failures" -gt 0 ]]; then
 fi
 
 echo "Sync complete. Manifest: $manifest_path"
+
+if [[ "$b2_enabled" == "true" ]]; then
+  if [[ -n "${b2_mode:-}" && "$b2_pre_sync_ran" != "true" ]]; then
+    echo "Chaining B2 sync (${b2_mode})..."
+    INSTANCE_ID="$INSTANCE_ID" \
+      SNAPSHOT_TAG="$SNAPSHOT_TAG" \
+      LOCAL_BACKUP_ROOT="$LOCAL_BACKUP_ROOT" \
+      LOCAL_SNAPSHOT_DIR="$LOCAL_SNAPSHOT_DIR" \
+      bash "${SCRIPT_DIR}/b2_checkpoint_sync.sh" "$b2_mode"
+  fi
+fi

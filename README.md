@@ -61,6 +61,8 @@ bash scripts/setup_first_data.sh
 
 # Run full pipeline
 blueprint-validate run-all
+# Resume mode: skip stages with successful/skipped *_result.json files
+blueprint-validate run-all --resume
 
 # Or run stages individually
 blueprint-validate render --facility facility_a
@@ -170,6 +172,26 @@ INSTANCE_ID=<vast_instance_id> bash scripts/vast_pause_safe.sh
 INSTANCE_ID=<vast_instance_id> RESTORE_AFTER_START=true bash scripts/vast_resume_safe.sh
 ```
 
+Enable automatic Backblaze B2 mirroring during these sync operations:
+
+```bash
+export ENABLE_B2_SYNC=true
+# Optional (default is already blueprint-validation-checkpoints)
+export B2_BUCKET=blueprint-validation-checkpoints
+export B2_PREFIX=blueprint-validation/vast
+export B2_APPLICATION_KEY_ID=<scoped_app_key_id>
+export B2_APPLICATION_KEY=<scoped_app_key_secret>
+# If your key lacks delete permissions:
+export RCLONE_OPERATION=copy
+INSTANCE_ID=<vast_instance_id> bash scripts/vast_checkpoint_sync.sh pull
+```
+
+Notes:
+- Use a dedicated private bucket.
+- Use a scoped application key limited to that bucket (avoid Master key usage).
+- Install `rclone` locally for B2 sync.
+- `scripts/vast_checkpoint_sync.sh` and `scripts/b2_checkpoint_sync.sh` auto-source `scripts/runtime_env.local` when present.
+
 Backup scope includes:
 
 - `/models/outputs` (primary cloud work dir)
@@ -183,6 +205,25 @@ Default local snapshot location:
 ```bash
 $HOME/BlueprintValidationBackups/vast/<instance_id>/
 ```
+
+### Post-Stage Sync Hook (Optional)
+
+`run-all` can execute a custom command after each stage (for example, upload stage snapshots to B2 directly from the VM):
+
+```bash
+export BLUEPRINT_POST_STAGE_SYNC_CMD='bash /app/scripts/b2_checkpoint_sync.sh push'
+# Optional: fail the stage if sync hook fails
+export BLUEPRINT_POST_STAGE_SYNC_STRICT=1
+blueprint-validate --config /app/configs/interiorgs_kitchen_0787.cloud.yaml --work-dir /models/outputs run-all
+```
+
+Hook env vars passed per stage:
+- `BLUEPRINT_SYNC_STAGE_KEY`
+- `BLUEPRINT_SYNC_STAGE_NAME`
+- `BLUEPRINT_SYNC_STAGE_STATUS`
+- `BLUEPRINT_SYNC_FACILITY_ID`
+- `BLUEPRINT_SYNC_FACILITY_WORK_DIR`
+- `BLUEPRINT_SYNC_RESULT_PATH`
 
 ## Components
 
