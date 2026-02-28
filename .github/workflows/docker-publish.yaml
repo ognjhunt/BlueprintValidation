@@ -1,4 +1,5 @@
 name: Docker Publish
+# trigger-note: workflow trigger refresh
 
 on:
   push:
