@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 import numpy as np
 
 from ..common import StageResult, get_logger, read_json, write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..evaluation.openvla_runner import load_dreamdojo_world_model
+from ..evaluation.rollout_utils import run_rollout_with_adapter
 from ..evaluation.vlm_judge import score_rollout, score_rollout_manipulation
 from ..policy_adapters import get_policy_adapter
 from .base import PipelineStage
@@ -121,18 +122,21 @@ class PolicyPairEvalStage(PipelineStage):
             for policy_name, handle in [("policy_base", base_handle), ("policy_site", site_handle)]:
                 video_dir = eval_dir / f"{policy_name}_rollouts"
                 video_dir.mkdir(parents=True, exist_ok=True)
-                rollout_video = video_dir / f"heldout_{i:03d}.mp4"
-                actions, num_steps = _run_rollout_with_adapter(
-                    adapter=adapter,
-                    handle=handle,
+                rollout_result = run_rollout_with_adapter(
                     world_model=world_model,
+                    policy_adapter=adapter,
+                    policy_handle=handle,
                     initial_frame=init_frame,
                     task_prompt=task,
-                    unnorm_key=config.eval_policy.unnorm_key,
                     max_steps=config.eval_policy.max_steps_per_rollout,
+                    unnorm_key=config.eval_policy.unnorm_key,
+                    output_dir=video_dir,
+                    clip_name=f"heldout_{i:03d}",
                     device=device,
-                    output_video=rollout_video,
                 )
+                rollout_video = rollout_result.video_path
+                actions = rollout_result.action_sequence
+                num_steps = rollout_result.num_steps
                 if _is_manipulation_task(task, config):
                     score = score_rollout_manipulation(
                         video_path=rollout_video,
@@ -226,49 +230,6 @@ def _resolve_eval_world_checkpoint(config: ValidationConfig, work_dir: Path) -> 
             return c
     return None
 
-
-def _run_rollout_with_adapter(
-    adapter,
-    handle,
-    world_model,
-    initial_frame: np.ndarray,
-    task_prompt: str,
-    unnorm_key: str,
-    max_steps: int,
-    device: str,
-    output_video: Path,
-) -> Tuple[List[list], int]:
-    import cv2
-
-    frames = [initial_frame.copy()]
-    actions: List[list] = []
-    current = initial_frame
-    for _ in range(max_steps):
-        action = adapter.predict_action(
-            handle=handle,
-            frame=current,
-            task_prompt=task_prompt,
-            unnorm_key=unnorm_key,
-            device=device,
-        )
-        action_list = action.tolist() if hasattr(action, "tolist") else list(action)
-        actions.append(action_list)
-        next_frame = world_model.predict_next_frame(current, action)
-        frames.append(next_frame)
-        current = next_frame
-
-    output_video.parent.mkdir(parents=True, exist_ok=True)
-    h, w = frames[0].shape[:2]
-    writer = cv2.VideoWriter(
-        str(output_video),
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        10,
-        (w, h),
-    )
-    for f in frames:
-        writer.write(cv2.cvtColor(f, cv2.COLOR_RGB2BGR))
-    writer.release()
-    return actions, len(actions)
 
 
 def _read_rgb_image(path: Path) -> np.ndarray:
