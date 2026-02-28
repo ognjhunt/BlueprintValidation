@@ -66,11 +66,32 @@ fi
 
 if command -v hf >/dev/null 2>&1; then
   HF_AUTH_CMD=(hf auth)
-  HF_DOWNLOAD_CMD=(hf download)
 else
   HF_AUTH_CMD=(huggingface-cli)
-  HF_DOWNLOAD_CMD=(huggingface-cli download)
 fi
+
+download_interiorgs_assets() {
+  python - "$HF_TOKEN" "$ROOT_DIR/data/interiorgs" <<'PY'
+import sys
+from huggingface_hub import snapshot_download
+
+token = sys.argv[1]
+local_dir = sys.argv[2]
+snapshot_download(
+    repo_id="spatialverse/InteriorGS",
+    repo_type="dataset",
+    token=token,
+    local_dir=local_dir,
+    allow_patterns=[
+        "0787_841244/3dgs_compressed.ply",
+        "0787_841244/labels.json",
+        "0787_841244/structure.json",
+    ],
+    local_dir_use_symlinks=False,
+)
+print("Downloaded InteriorGS scene assets.")
+PY
+}
 
 mkdir -p "$SCENE_DIR" "$WORK_DIR" "$CHECKPOINT_DIR" "$DATASET_DIR"
 
@@ -158,13 +179,7 @@ if ! "${HF_AUTH_CMD[@]}" whoami >/dev/null 2>&1; then
 fi
 
 echo "Ensuring canonical InteriorGS scene assets..."
-"${HF_DOWNLOAD_CMD[@]}" spatialverse/InteriorGS \
-  --repo-type dataset \
-  --local-dir "$ROOT_DIR/data/interiorgs" \
-  0787_841244/3dgs_compressed.ply \
-  0787_841244/labels.json \
-  0787_841244/structure.json \
-  --token "$HF_TOKEN" >/dev/null
+download_interiorgs_assets >/dev/null
 
 if [ ! -f "$SCENE_DIR/task_targets.synthetic.json" ]; then
   echo "Generating task hints from labels/structure..."
