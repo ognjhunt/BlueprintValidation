@@ -5,9 +5,10 @@ set -euo pipefail
 
 ROOT_DIR="${ROOT_DIR:-/app}"
 CONFIG_PATH="${CONFIG_PATH:-$ROOT_DIR/configs/interiorgs_kitchen_0787.cloud.yaml}"
-WORK_DIR="${WORK_DIR:-$ROOT_DIR/data/outputs}"
+WORK_DIR="${WORK_DIR:-/models/outputs}"
 SCENE_DIR="${SCENE_DIR:-$ROOT_DIR/data/interiorgs/0787_841244}"
 CHECKPOINT_DIR="${CHECKPOINT_DIR:-/models/checkpoints}"
+DATASET_DIR="${DATASET_DIR:-/models/openvla_datasets}"
 DOWNLOAD_MODELS="${DOWNLOAD_MODELS:-true}"
 INSTALL_DREAMDOJO_EXTRA="${INSTALL_DREAMDOJO_EXTRA:-true}"
 DREAMDOJO_EXTRA="${DREAMDOJO_EXTRA:-cu128}"
@@ -24,9 +25,33 @@ if ! command -v blueprint-validate >/dev/null 2>&1; then
   exit 1
 fi
 
+pip_install() {
+  if command -v uv >/dev/null 2>&1; then
+    uv pip install "$@"
+  else
+    python -m pip install "$@"
+  fi
+}
+
+verify_dreamdojo_import() {
+  DREAMDOJO_REPO="$ROOT_DIR/data/vendor/DreamDojo" python - <<'PY'
+import os
+import sys
+from pathlib import Path
+
+repo = Path(os.environ["DREAMDOJO_REPO"])
+text = str(repo)
+if text not in sys.path:
+    sys.path.insert(0, text)
+
+from cosmos_predict2.action_conditioned import inference as _ac_inference  # noqa: F401
+print("Verified cosmos_predict2.action_conditioned.inference import.")
+PY
+}
+
 if ! command -v hf >/dev/null 2>&1 && ! command -v huggingface-cli >/dev/null 2>&1; then
   echo "HF CLI missing; installing huggingface_hub..."
-  python -m pip install -U huggingface_hub
+  pip_install -U huggingface_hub
 fi
 
 if [ -z "${HF_TOKEN:-}" ]; then
@@ -46,12 +71,22 @@ else
   HF_DOWNLOAD_CMD=(huggingface-cli download)
 fi
 
-mkdir -p "$SCENE_DIR" "$WORK_DIR" "$CHECKPOINT_DIR"
+mkdir -p "$SCENE_DIR" "$WORK_DIR" "$CHECKPOINT_DIR" "$DATASET_DIR"
 
 # Keep legacy path available for tools that still expect /app/data/checkpoints.
 mkdir -p "$ROOT_DIR/data"
 if [ ! -e "$ROOT_DIR/data/checkpoints" ]; then
   ln -s "$CHECKPOINT_DIR" "$ROOT_DIR/data/checkpoints"
+fi
+
+# Keep legacy outputs path available for tools that still expect /app/data/outputs.
+if [ ! -e "$ROOT_DIR/data/outputs" ]; then
+  ln -s "$WORK_DIR" "$ROOT_DIR/data/outputs"
+fi
+
+# Keep legacy OpenVLA dataset path available.
+if [ ! -e "$ROOT_DIR/data/openvla_datasets" ]; then
+  ln -s "$DATASET_DIR" "$ROOT_DIR/data/openvla_datasets"
 fi
 
 ensure_repo() {
@@ -78,7 +113,7 @@ ensure_repo "$ROOT_DIR/data/vendor/openpi" "/opt/openpi" "https://github.com/Phy
 if [ "$INSTALL_OPENPI_DEPS" = "true" ]; then
   OPENPI_REPO="$ROOT_DIR/data/vendor/openpi"
   echo "Installing pi05 runtime dependency (lerobot)..."
-  python -m pip install -U lerobot
+  pip_install -U lerobot
   echo "Verifying openpi + lerobot imports..."
   OPENPI_REPO="$OPENPI_REPO" python - <<'PY'
 import importlib
@@ -152,7 +187,14 @@ fi
 
 if [ "$INSTALL_DREAMDOJO_EXTRA" = "true" ]; then
   echo "Installing DreamDojo CUDA extra ($DREAMDOJO_EXTRA) into active environment..."
-  python -m pip install -e "$ROOT_DIR/data/vendor/DreamDojo[$DREAMDOJO_EXTRA]"
+  pip_install -e "$ROOT_DIR/data/vendor/DreamDojo[$DREAMDOJO_EXTRA]"
+
+  if ! verify_dreamdojo_import; then
+    echo "DreamDojo import failed; installing supplemental dependencies (piq, pytorch3d)..."
+    pip_install -U piq
+    pip_install --no-build-isolation "git+https://github.com/facebookresearch/pytorch3d.git"
+    verify_dreamdojo_import
+  fi
 fi
 
 echo "Running preflight..."

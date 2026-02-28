@@ -105,3 +105,46 @@ def setup(_args):
         device="cpu",
     )
     assert hasattr(model, "predict_next_frame")
+
+
+def test_load_dreamdojo_world_model_repo_path_module_style(monkeypatch, tmp_path):
+    from blueprint_validation.evaluation.openvla_runner import load_dreamdojo_world_model
+
+    checkpoint = tmp_path / "checkpoints" / "DreamDojo" / "2B_pretrain"
+    checkpoint.mkdir(parents=True)
+
+    repo = tmp_path / "DreamDojo"
+    pkg = repo / "cosmos_predict2"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    (pkg / "action_conditioned.py").write_text(
+        """
+class ActionConditionedInferenceArguments:
+    def __init__(self, checkpoint_dir):
+        self.checkpoint_dir = checkpoint_dir
+
+
+class _DummyModel:
+    def to(self, _device):
+        return self
+
+    def predict_next_frame(self, frame, action):
+        return frame
+
+
+def setup(_args):
+    return _DummyModel()
+""".strip()
+    )
+
+    for key in list(sys.modules):
+        if key == "cosmos_predict2" or key.startswith("cosmos_predict2."):
+            monkeypatch.delitem(sys.modules, key, raising=False)
+
+    model = load_dreamdojo_world_model(
+        checkpoint_path=checkpoint,
+        adapted_checkpoint=None,
+        dreamdojo_repo=repo,
+        device="cpu",
+    )
+    assert hasattr(model, "predict_next_frame")

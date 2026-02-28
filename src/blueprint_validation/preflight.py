@@ -236,30 +236,56 @@ def check_hf_auth() -> PreflightCheck:
     )
 
 
-def check_python_import_from_path(module_name: str, extra_path: Path, name: str) -> PreflightCheck:
-    """Check if a module can be imported with an additional path on sys.path."""
+def check_python_import_from_path(
+    module_name: str | tuple[str, ...] | list[str], extra_path: Path, name: str
+) -> PreflightCheck:
+    """Check if one (or any) module name can be imported with an extra sys.path entry."""
     if not extra_path.exists():
         return PreflightCheck(name=name, passed=False, detail=f"Path not found: {extra_path}")
 
+    if isinstance(module_name, str):
+        module_candidates = [module_name]
+    else:
+        module_candidates = list(module_name)
+
+    if not module_candidates:
+        return PreflightCheck(name=name, passed=False, detail="No module candidates provided")
+
     inserted = False
+    errors: list[str] = []
     try:
         path_text = str(extra_path)
         if path_text not in sys.path:
             sys.path.insert(0, path_text)
             inserted = True
-        import_module(module_name)
-        return PreflightCheck(name=name, passed=True, detail=f"Importable from {extra_path}")
-    except Exception as exc:
-        return PreflightCheck(name=name, passed=False, detail=f"Cannot import {module_name}: {exc}")
+
+        for candidate in module_candidates:
+            try:
+                import_module(candidate)
+                return PreflightCheck(
+                    name=name,
+                    passed=True,
+                    detail=f"Importable as '{candidate}' from {extra_path}",
+                )
+            except Exception as exc:
+                errors.append(f"{candidate}: {exc}")
+            finally:
+                for key in list(sys.modules.keys()):
+                    if key == candidate or key.startswith(candidate + "."):
+                        sys.modules.pop(key, None)
+
+        joined = "; ".join(errors)
+        return PreflightCheck(
+            name=name,
+            passed=False,
+            detail=f"Cannot import any candidate ({', '.join(module_candidates)}): {joined}",
+        )
     finally:
         if inserted:
             try:
                 sys.path.remove(str(extra_path))
             except ValueError:
                 pass
-        for key in list(sys.modules.keys()):
-            if key == module_name or key.startswith(module_name + "."):
-                sys.modules.pop(key, None)
 
 
 def check_api_key_for_scope(env_var: str, scope: str) -> PreflightCheck:
@@ -712,7 +738,10 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
     )
     checks.append(
         check_python_import_from_path(
-            "cosmos_predict2.action_conditioned.inference",
+            (
+                "cosmos_predict2.action_conditioned.inference",
+                "cosmos_predict2.action_conditioned",
+            ),
             config.finetune.dreamdojo_repo,
             "import:cosmos_predict2",
         )

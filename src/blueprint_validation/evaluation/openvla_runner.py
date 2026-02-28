@@ -74,13 +74,26 @@ def load_dreamdojo_world_model(
 
     import sys
 
+    def _load_action_conditioned_api():
+        # DreamDojo has shipped both:
+        # 1) cosmos_predict2.action_conditioned.inference (package style)
+        # 2) cosmos_predict2.action_conditioned (module style)
+        try:
+            from cosmos_predict2.action_conditioned import inference as ac_inference
+            from cosmos_predict2.action_conditioned.inference import (
+                ActionConditionedInferenceArguments,
+            )
+            return ac_inference, ActionConditionedInferenceArguments
+        except Exception:
+            from cosmos_predict2 import action_conditioned as ac_inference
+            from cosmos_predict2.action_conditioned import ActionConditionedInferenceArguments
+
+            return ac_inference, ActionConditionedInferenceArguments
+
     # Prefer already-installed cosmos_predict2 first, then explicit repo fallback.
     try:
-        from cosmos_predict2.action_conditioned import inference as ac_inference
-        from cosmos_predict2.action_conditioned.inference import (
-            ActionConditionedInferenceArguments,
-        )
-    except ImportError as e:
+        ac_inference, ActionConditionedInferenceArguments = _load_action_conditioned_api()
+    except Exception as e:
         if dreamdojo_repo is None:
             raise RuntimeError(
                 "DreamDojo/cosmos_predict2 is not importable. Install DreamDojo in the current "
@@ -95,11 +108,8 @@ def load_dreamdojo_world_model(
         if dreamdojo_repo_str not in sys.path:
             sys.path.insert(0, dreamdojo_repo_str)
         try:
-            from cosmos_predict2.action_conditioned import inference as ac_inference
-            from cosmos_predict2.action_conditioned.inference import (
-                ActionConditionedInferenceArguments,
-            )
-        except ImportError as inner:
+            ac_inference, ActionConditionedInferenceArguments = _load_action_conditioned_api()
+        except Exception as inner:
             raise RuntimeError(
                 "DreamDojo/cosmos_predict2 is not importable after repo-path fallback. "
                 f"Attempted finetune.dreamdojo_repo={dreamdojo_repo}"

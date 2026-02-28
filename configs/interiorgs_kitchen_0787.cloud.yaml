@@ -144,7 +144,7 @@ policy_finetune:
   enabled: true
   openvla_repo: /app/data/vendor/openvla-oft
   finetune_script: vla-scripts/finetune.py
-  data_root_dir: /app/data/openvla_datasets
+  data_root_dir: /models/openvla_datasets
   dataset_name: bridge_orig
   recipe: oft
   action_chunk_size: 8
@@ -215,7 +215,7 @@ rollout_dataset:
   require_consistent_action_dim: true
   baseline_dataset_name: bridge_dataset
   adapted_dataset_name: bridge_orig
-  export_dir: /app/data/outputs/policy_datasets
+  export_dir: /models/outputs/policy_datasets
 
 policy_compare:
   enabled: false
@@ -245,7 +245,7 @@ eval_crosssite:
 
 cloud:
   provider: generic
-  gpu_type: H100
+  gpu_type: H200
   num_gpus: 1
   max_cost_usd: 500
   auto_shutdown: true

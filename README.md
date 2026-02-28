@@ -152,6 +152,38 @@ rg -n "AIza|hf_[A-Za-z0-9]{10,}" -S . --hidden --no-ignore \
   --glob '!README.md' --glob '!scripts/pre_gpu_audit.sh'
 ```
 
+### Vast Pause/Resume Checkpoint Safety
+
+Use these local scripts to keep resumable run state off-instance while training:
+
+```bash
+# One-shot backup pull from instance -> local
+INSTANCE_ID=<vast_instance_id> bash scripts/vast_checkpoint_sync.sh pull
+
+# Periodic backup every 30 minutes during long runs
+INSTANCE_ID=<vast_instance_id> INTERVAL_MINUTES=30 bash scripts/vast_checkpoint_watch.sh
+
+# Pause-safe stop (runs final sync, then stops instance)
+INSTANCE_ID=<vast_instance_id> bash scripts/vast_pause_safe.sh
+
+# Resume later (optional restore from local snapshot)
+INSTANCE_ID=<vast_instance_id> RESTORE_AFTER_START=true bash scripts/vast_resume_safe.sh
+```
+
+Backup scope includes:
+
+- `/models/outputs` (primary cloud work dir)
+- `/models/openvla_datasets` (policy finetune dataset root)
+- `/workspace/BlueprintValidation/data/outputs` (legacy path)
+- `/workspace/BlueprintValidation/data/openvla_datasets`
+- task hints file for scene `0787_841244`
+
+Default local snapshot location:
+
+```bash
+$HOME/BlueprintValidationBackups/vast/<instance_id>/
+```
+
 ## Components
 
 | Component | Source | Purpose |
