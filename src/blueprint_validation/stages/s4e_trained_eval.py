@@ -12,10 +12,18 @@ from ..config import FacilityConfig, ValidationConfig
 from ..evaluation.openvla_runner import (
     load_dreamdojo_world_model,
 )
+from ..evaluation.judge_audit import write_judge_audit_csv
 from ..evaluation.task_hints import (
     balance_eval_tasks,
     recommended_rollouts_per_condition,
     tasks_from_task_hints,
+)
+from ..evaluation.task_start_selector import (
+    build_task_start_assignments,
+    load_initial_frames_for_assignments,
+    load_shared_task_start_manifest,
+    save_shared_task_start_manifest,
+    shared_manifest_is_compatible,
 )
 from ..evaluation.vlm_judge import (
     JudgeScore,
@@ -55,6 +63,7 @@ def _manipulation_success_rate(scores: List[Dict]) -> float:
 
 
 def _build_rollout_plan(tasks: List[str], num_rollouts: int) -> List[str]:
+    """Backward-compatible helper retained for existing tests and callers."""
     if num_rollouts <= 0 or not tasks:
         return []
     return [tasks[i % len(tasks)] for i in range(num_rollouts)]
@@ -145,20 +154,12 @@ class TrainedPolicyEvalStage(PipelineStage):
             )
 
         render_manifest = read_json(render_manifest_path)
-        initial_frames = _extract_initial_frames(render_manifest)
-        if not initial_frames:
-            return StageResult(
-                stage_name=self.name,
-                status="failed",
-                elapsed_seconds=0,
-                detail="Could not extract initial frames from rendered clips.",
-            )
 
         # Build task list (merge config + task hints)
         tasks, hint_count = _build_task_list(config, facility)
 
         requested_rollouts = int(config.eval_policy.num_rollouts)
-        num_rollouts = recommended_rollouts_per_condition(
+        planned_rollouts = recommended_rollouts_per_condition(
             num_unique_tasks=len(tasks),
             requested=requested_rollouts,
             profile="policy",
@@ -171,6 +172,46 @@ class TrainedPolicyEvalStage(PipelineStage):
         condition_dir = eval_dir / "trained_rollouts"
         condition_dir.mkdir(exist_ok=True)
 
+        shared_manifest_path = work_dir / "policy_eval" / "shared_task_start_manifest.json"
+        shared_manifest = load_shared_task_start_manifest(shared_manifest_path)
+        reused_shared_manifest = False
+        rollout_assignments: List[dict] = []
+        if shared_manifest and shared_manifest_is_compatible(
+            shared_manifest,
+            facility_name=facility.name,
+            render_manifest_path=render_manifest_path,
+        ):
+            rollout_assignments = list(shared_manifest.get("assignments", []))
+            reused_shared_manifest = bool(rollout_assignments)
+
+        if not rollout_assignments:
+            rollout_assignments = build_task_start_assignments(
+                tasks=tasks,
+                num_rollouts=planned_rollouts,
+                render_manifest=render_manifest,
+                task_hints_path=facility.task_hints_path,
+            )
+            save_shared_task_start_manifest(
+                path=shared_manifest_path,
+                facility_name=facility.name,
+                render_manifest_path=render_manifest_path,
+                task_profile="policy",
+                requested_rollouts=requested_rollouts,
+                planned_rollouts=planned_rollouts,
+                tasks=tasks,
+                assignments=rollout_assignments,
+            )
+
+        frame_cache = load_initial_frames_for_assignments(rollout_assignments)
+        if not frame_cache:
+            return StageResult(
+                stage_name=self.name,
+                status="failed",
+                elapsed_seconds=0,
+                detail="Could not extract initial frames for rollout assignments.",
+            )
+
+        num_rollouts = len(rollout_assignments)
         policy_adapter = get_policy_adapter(config.policy_adapter.name)
         policy_handle = policy_adapter.load_policy(
             model_name=config.eval_policy.openvla_model,
@@ -185,13 +226,25 @@ class TrainedPolicyEvalStage(PipelineStage):
             device=device,
         )
 
-        rollout_plan = _build_rollout_plan(tasks, num_rollouts)
         trained_scores: List[Dict] = []
         scoring_failures: List[str] = []
 
-        for rollout_idx, task in enumerate(rollout_plan):
-            init_frame = initial_frames[rollout_idx % len(initial_frames)]
-            clip_name = f"trained_{task[:20].replace(' ', '_')}_{rollout_idx:03d}"
+        for assignment in rollout_assignments:
+            rollout_idx = int(assignment.get("rollout_index", 0))
+            task = str(assignment.get("task", ""))
+            clip_index = int(assignment.get("clip_index", -1))
+            init_frame = frame_cache.get(clip_index)
+            if init_frame is None:
+                scoring_failures.append(
+                    f"Initial frame missing for clip_index={clip_index} task='{task}'"
+                )
+                continue
+            clip_stub = str(assignment.get("clip_name", f"clip_{clip_index:03d}"))
+            clip_name = (
+                f"trained_{clip_stub}_{rollout_idx:03d}"
+                .replace("/", "_")
+                .replace(" ", "_")
+            )
 
             rollout = run_rollout_with_adapter(
                 world_model=world_model,
@@ -240,6 +293,11 @@ class TrainedPolicyEvalStage(PipelineStage):
                 "video_path": str(rollout.video_path),
                 "num_steps": rollout.num_steps,
                 "action_sequence": rollout.action_sequence,
+                "start_clip_index": clip_index,
+                "start_clip_name": clip_stub,
+                "start_path_type": str(assignment.get("path_type", "unknown")),
+                "target_instance_id": assignment.get("target_instance_id"),
+                "target_label": assignment.get("target_label"),
                 "is_manipulation_task": _is_manipulation_task(task),
                 "grasp_acquired": (
                     score.grasp_acquired
@@ -275,6 +333,8 @@ class TrainedPolicyEvalStage(PipelineStage):
 
         # Save combined scores
         write_json({"scores": all_scores}, eval_dir / "vlm_scores_combined.json")
+        audit_csv_path = eval_dir / "judge_audit.csv"
+        write_judge_audit_csv(all_scores, audit_csv_path)
 
         # Compute pairwise metrics
         pairwise = _build_pairwise_metrics(all_scores)
@@ -291,10 +351,14 @@ class TrainedPolicyEvalStage(PipelineStage):
             "num_scoring_failures": len(scoring_failures),
             "task_hints_injected": hint_count,
             "requested_rollouts_trained": requested_rollouts,
-            "planned_rollouts_trained": num_rollouts,
+            "planned_rollouts_trained": planned_rollouts,
+            "executed_rollouts_trained": num_rollouts,
             "num_unique_task_templates": len(tasks),
+            "shared_task_start_manifest": str(shared_manifest_path),
+            "shared_task_start_manifest_reused": reused_shared_manifest,
             "trained_checkpoint": str(trained_checkpoint),
             "pairwise": pairwise,
+            "judge_audit_csv": str(audit_csv_path),
         }
 
         write_json(metrics, eval_dir / "trained_eval_report.json")
@@ -307,6 +371,8 @@ class TrainedPolicyEvalStage(PipelineStage):
                 "eval_dir": str(eval_dir),
                 "scores_path": str(eval_dir / "vlm_scores_combined.json"),
                 "report_path": str(eval_dir / "trained_eval_report.json"),
+                "shared_task_start_manifest": str(shared_manifest_path),
+                "judge_audit_csv": str(audit_csv_path),
             },
             metrics=metrics,
             detail="\n".join(scoring_failures[:5]),

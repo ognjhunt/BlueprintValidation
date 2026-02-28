@@ -259,24 +259,27 @@ class RenderStage(PipelineStage):
             save_path_to_json(poses, render_dir / f"{clip_name}_camera_path.json")
 
             # Render (GPU)
-            output = render_video(
-                splat=splat,
-                poses=poses,
-                output_dir=render_dir,
-                clip_name=clip_name,
-                fps=fps,
-            )
-            manifest_entries.append({
-                "clip_name": clip_name,
-                "path_type": clip_data["path_type"],
-                "clip_index": clip_data["clip_index"],
-                "num_frames": len(poses),
+                output = render_video(
+                    splat=splat,
+                    poses=poses,
+                    output_dir=render_dir,
+                    clip_name=clip_name,
+                    fps=fps,
+                )
+                initial_camera = _camera_pose_metadata(poses[0]) if poses else None
+                manifest_entries.append({
+                    "clip_name": clip_name,
+                    "path_type": clip_data["path_type"],
+                    "clip_index": clip_data["clip_index"],
+                    "num_frames": len(poses),
                 "resolution": list(resolution),
-                "fps": fps,
-                "video_path": str(output.video_path),
-                "depth_video_path": str(output.depth_video_path),
-                "camera_path": str(render_dir / f"{clip_name}_camera_path.json"),
-            })
+                    "fps": fps,
+                    "video_path": str(output.video_path),
+                    "depth_video_path": str(output.depth_video_path),
+                    "camera_path": str(render_dir / f"{clip_name}_camera_path.json"),
+                    "initial_camera": initial_camera,
+                    "path_context": {"source": "warmup_cache"},
+                })
         return manifest_entries
 
     def _generate_and_render(
@@ -358,6 +361,7 @@ class RenderStage(PipelineStage):
                     clip_name=clip_name,
                     fps=fps,
                 )
+                initial_camera = _camera_pose_metadata(poses[0]) if poses else None
 
                 manifest_entries.append({
                     "clip_name": clip_name,
@@ -369,10 +373,60 @@ class RenderStage(PipelineStage):
                     "video_path": str(output.video_path),
                     "depth_video_path": str(output.depth_video_path),
                     "camera_path": str(render_dir / f"{clip_name}_camera_path.json"),
+                    "initial_camera": initial_camera,
+                    "path_context": _path_context_from_spec(path_spec),
                 })
                 clip_index += 1
 
         return manifest_entries
+
+
+def _camera_pose_metadata(pose) -> dict:
+    """Serialize key camera pose fields for downstream task-conditioned selection."""
+    c2w = np.asarray(pose.c2w, dtype=np.float64)
+    forward = -c2w[:3, 2]
+    right = c2w[:3, 0]
+    up = c2w[:3, 1]
+    return {
+        "position": c2w[:3, 3].astype(float).tolist(),
+        "forward": forward.astype(float).tolist(),
+        "right": right.astype(float).tolist(),
+        "up": up.astype(float).tolist(),
+        "c2w": c2w.astype(float).tolist(),
+        "fx": float(pose.fx),
+        "fy": float(pose.fy),
+        "cx": float(pose.cx),
+        "cy": float(pose.cy),
+        "width": int(pose.width),
+        "height": int(pose.height),
+    }
+
+
+def _path_context_from_spec(path_spec: CameraPathSpec) -> dict:
+    """Serialize minimal path-spec context into render manifest entries."""
+    context = {
+        "type": path_spec.type,
+        "height_override_m": (
+            float(path_spec.height_override_m)
+            if path_spec.height_override_m is not None
+            else None
+        ),
+        "look_down_override_deg": (
+            float(path_spec.look_down_override_deg)
+            if path_spec.look_down_override_deg is not None
+            else None
+        ),
+    }
+    if path_spec.approach_point is not None:
+        context["approach_point"] = [float(v) for v in path_spec.approach_point]
+    if path_spec.type == "orbit":
+        context["radius_m"] = float(path_spec.radius_m)
+        context["num_orbits"] = int(path_spec.num_orbits)
+    if path_spec.type == "sweep":
+        context["length_m"] = float(path_spec.length_m)
+    if path_spec.type == "manipulation":
+        context["arc_radius_m"] = float(path_spec.arc_radius_m)
+    return context
 
 
 def _has_cuda() -> bool:

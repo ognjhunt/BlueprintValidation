@@ -12,10 +12,18 @@ from ..config import FacilityConfig, ValidationConfig
 from ..evaluation.openvla_runner import (
     load_dreamdojo_world_model,
 )
+from ..evaluation.judge_audit import write_judge_audit_csv
 from ..evaluation.task_hints import (
     balance_eval_tasks,
     recommended_rollouts_per_condition,
     tasks_from_task_hints,
+)
+from ..evaluation.task_start_selector import (
+    build_task_start_assignments,
+    load_initial_frames_for_assignments,
+    load_shared_task_start_manifest,
+    save_shared_task_start_manifest,
+    shared_manifest_is_compatible,
 )
 from ..evaluation.vlm_judge import (
     JudgeScore,
@@ -90,24 +98,55 @@ class PolicyEvalStage(PipelineStage):
 
         render_manifest = read_json(render_manifest_path)
 
-        # Extract initial frames from rendered clips
-        initial_frames = _extract_initial_frames(render_manifest)
-        if not initial_frames:
-            return StageResult(
-                stage_name=self.name,
-                status="failed",
-                elapsed_seconds=0,
-                detail="Could not extract initial frames from rendered clips.",
-            )
-
         tasks, hint_count = _build_task_list(config, facility)
 
         requested_rollouts = int(config.eval_policy.num_rollouts)
-        num_rollouts = recommended_rollouts_per_condition(
+        planned_rollouts = recommended_rollouts_per_condition(
             num_unique_tasks=len(tasks),
             requested=requested_rollouts,
             profile="dreamdojo",
         )
+
+        shared_manifest_path = eval_dir / "shared_task_start_manifest.json"
+        shared_manifest = load_shared_task_start_manifest(shared_manifest_path)
+        reused_shared_manifest = False
+        rollout_assignments: List[dict] = []
+        if shared_manifest and shared_manifest_is_compatible(
+            shared_manifest,
+            facility_name=facility.name,
+            render_manifest_path=render_manifest_path,
+        ):
+            rollout_assignments = list(shared_manifest.get("assignments", []))
+            reused_shared_manifest = bool(rollout_assignments)
+
+        if not rollout_assignments:
+            rollout_assignments = build_task_start_assignments(
+                tasks=tasks,
+                num_rollouts=planned_rollouts,
+                render_manifest=render_manifest,
+                task_hints_path=facility.task_hints_path,
+            )
+            save_shared_task_start_manifest(
+                path=shared_manifest_path,
+                facility_name=facility.name,
+                render_manifest_path=render_manifest_path,
+                task_profile="dreamdojo",
+                requested_rollouts=requested_rollouts,
+                planned_rollouts=planned_rollouts,
+                tasks=tasks,
+                assignments=rollout_assignments,
+            )
+
+        frame_cache = load_initial_frames_for_assignments(rollout_assignments)
+        if not frame_cache:
+            return StageResult(
+                stage_name=self.name,
+                status="failed",
+                elapsed_seconds=0,
+                detail="Could not extract initial frames for rollout assignments.",
+            )
+
+        num_rollouts = len(rollout_assignments)
         max_steps = config.eval_policy.max_steps_per_rollout
 
         device = "cuda" if _has_cuda() else "cpu"
@@ -115,7 +154,6 @@ class PolicyEvalStage(PipelineStage):
 
         all_scores: List[Dict] = []
         scoring_failures: List[str] = []
-        rollout_plan = _build_rollout_plan(tasks, num_rollouts)
 
         policy_adapter = get_policy_adapter(config.policy_adapter.name)
         conditions = list(config.eval_policy.conditions)
@@ -142,10 +180,22 @@ class PolicyEvalStage(PipelineStage):
                 device=device,
             )
 
-            for rollout_idx, task in enumerate(rollout_plan):
-                # Pick initial frame (cycle through available)
-                init_frame = initial_frames[rollout_idx % len(initial_frames)]
-                clip_name = f"{condition}_{task[:20].replace(' ', '_')}_{rollout_idx:03d}"
+            for assignment in rollout_assignments:
+                rollout_idx = int(assignment.get("rollout_index", 0))
+                task = str(assignment.get("task", ""))
+                clip_index = int(assignment.get("clip_index", -1))
+                init_frame = frame_cache.get(clip_index)
+                if init_frame is None:
+                    msg = f"Initial frame missing for clip_index={clip_index} task='{task}'"
+                    scoring_failures.append(msg)
+                    logger.warning(msg)
+                    continue
+                clip_stub = str(assignment.get("clip_name", f"clip_{clip_index:03d}"))
+                clip_name = (
+                    f"{condition}_{clip_stub}_{rollout_idx:03d}"
+                    .replace("/", "_")
+                    .replace(" ", "_")
+                )
 
                 rollout = run_rollout_with_adapter(
                     world_model=world_model,
@@ -198,6 +248,11 @@ class PolicyEvalStage(PipelineStage):
                     "video_path": str(rollout.video_path),
                     "num_steps": rollout.num_steps,
                     "action_sequence": getattr(rollout, "action_sequence", []),
+                    "start_clip_index": clip_index,
+                    "start_clip_name": clip_stub,
+                    "start_path_type": str(assignment.get("path_type", "unknown")),
+                    "target_instance_id": assignment.get("target_instance_id"),
+                    "target_label": assignment.get("target_label"),
                     "is_manipulation_task": _is_manipulation_task(task),
                     "grasp_acquired": (
                         score.grasp_acquired
@@ -223,6 +278,8 @@ class PolicyEvalStage(PipelineStage):
 
         # Compute aggregate metrics per condition
         write_json({"scores": all_scores}, eval_dir / "vlm_scores.json")
+        audit_csv_path = eval_dir / "judge_audit.csv"
+        write_judge_audit_csv(all_scores, audit_csv_path)
 
         per_condition: Dict[str, Dict] = {}
         for cond in conditions:
@@ -279,8 +336,11 @@ class PolicyEvalStage(PipelineStage):
                 str(adapted_policy_checkpoint) if adapted_policy_checkpoint else None
             ),
             "requested_rollouts_per_condition": requested_rollouts,
-            "planned_rollouts_per_condition": num_rollouts,
+            "planned_rollouts_per_condition": planned_rollouts,
+            "executed_rollouts_per_condition": num_rollouts,
             "num_unique_task_templates": len(tasks),
+            "shared_task_start_manifest": str(shared_manifest_path),
+            "shared_task_start_manifest_reused": reused_shared_manifest,
             "per_condition": per_condition,
             "pairwise": pairwise,
             "baseline_manipulation_success_rate": per_condition.get(
@@ -290,6 +350,7 @@ class PolicyEvalStage(PipelineStage):
                 "adapted", {}
             ).get("manipulation_success_rate", 0.0),
             "task_hints_injected": hint_count,
+            "judge_audit_csv": str(audit_csv_path),
         }
 
         write_json(metrics, eval_dir / "policy_eval_report.json")
@@ -302,6 +363,8 @@ class PolicyEvalStage(PipelineStage):
                 "eval_dir": str(eval_dir),
                 "scores_path": str(eval_dir / "vlm_scores.json"),
                 "report_path": str(eval_dir / "policy_eval_report.json"),
+                "shared_task_start_manifest": str(shared_manifest_path),
+                "judge_audit_csv": str(audit_csv_path),
             },
             metrics=metrics,
             detail="\n".join(scoring_failures[:5]),
