@@ -40,6 +40,21 @@ def test_report_builder_markdown(tmp_path, sample_config):
     )
     write_json(
         {
+            "stage_name": "s1d_gaussian_augment",
+            "status": "success",
+            "elapsed_seconds": 40.0,
+            "metrics": {
+                "backend_used": "native",
+                "fallback_backend": "none",
+                "num_source_clips": 6,
+                "num_augmented_clips": 24,
+                "num_rejected_quality": 2,
+            },
+        },
+        fac_dir / "s1d_gaussian_augment_result.json",
+    )
+    write_json(
+        {
             "stage_name": "s3c_policy_rl_loop",
             "status": "success",
             "elapsed_seconds": 200.0,
@@ -55,6 +70,7 @@ def test_report_builder_markdown(tmp_path, sample_config):
     content = result.read_text()
     assert "Validation Report" in content
     assert "Policy Performance" in content
+    assert "RoboSplat Augmentation" in content
     assert "Policy RL Loop" in content
     assert "61.9%" in content
 

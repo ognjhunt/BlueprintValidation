@@ -270,6 +270,65 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
     if config.gemini_polish.enabled:
         checks.append(check_api_key(config.gemini_polish.api_key_env))
 
+    if config.robosplat.enabled:
+        valid_backend = config.robosplat.backend in {"auto", "vendor", "native", "legacy_scan"}
+        checks.append(
+            PreflightCheck(
+                name="robosplat:backend",
+                passed=valid_backend,
+                detail=config.robosplat.backend,
+            )
+        )
+        valid_mode = config.robosplat.parity_mode in {"hybrid", "strict", "scan_only"}
+        checks.append(
+            PreflightCheck(
+                name="robosplat:parity_mode",
+                passed=valid_mode,
+                detail=config.robosplat.parity_mode,
+            )
+        )
+        checks.append(
+            PreflightCheck(
+                name="robosplat:variants_per_input",
+                passed=int(config.robosplat.variants_per_input) > 0,
+                detail=str(config.robosplat.variants_per_input),
+            )
+        )
+        checks.append(
+            PreflightCheck(
+                name="robosplat:demo_source",
+                passed=config.robosplat.demo_source in {"synthetic", "real", "required_real"},
+                detail=config.robosplat.demo_source,
+            )
+        )
+        if config.robosplat.demo_source == "required_real":
+            checks.append(
+                PreflightCheck(
+                    name="robosplat:required_real_demo",
+                    passed=False,
+                    detail=(
+                        "demo_source=required_real requires a real demo manifest; "
+                        "not configured in current schema"
+                    ),
+                )
+            )
+        vendor_exists = config.robosplat.vendor_repo_path.exists()
+        vendor_required = (
+            config.robosplat.backend == "vendor"
+            or (config.robosplat.parity_mode == "strict" and config.robosplat.backend == "auto")
+        )
+        checks.append(
+            PreflightCheck(
+                name="robosplat:vendor_repo",
+                passed=vendor_exists if vendor_required else True,
+                detail=(
+                    str(config.robosplat.vendor_repo_path)
+                    if vendor_exists
+                    else f"missing (optional): {config.robosplat.vendor_repo_path}"
+                ),
+            )
+        )
+
     if config.robosplat_scan.enabled:
         checks.append(
             PreflightCheck(

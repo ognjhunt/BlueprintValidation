@@ -37,6 +37,8 @@ def test_config_defaults():
     assert config.policy_finetune.enabled is True
     assert config.policy_finetune.dataset_name == "bridge_orig"
     assert config.policy_finetune.recipe == "oft"
+    assert config.robosplat.enabled is True
+    assert config.robosplat.backend == "auto"
     assert config.robosplat_scan.enabled is True
     assert config.policy_rl_loop.enabled is True
 
@@ -112,6 +114,27 @@ def test_config_with_all_sections(tmp_path):
     assert config.policy_compare.heldout_tasks == ["Pick up the tote from the shelf"]
     assert str(config.facilities["a"].task_hints_path) == "/tmp/a_tasks.json"
     assert "psnr" in config.eval_visual.metrics
+
+
+def test_legacy_robosplat_scan_maps_to_robosplat(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_data = {
+        "schema_version": "v1",
+        "project_name": "Legacy RoboSplat",
+        "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+        "robosplat_scan": {
+            "enabled": True,
+            "num_augmented_clips_per_input": 3,
+        },
+    }
+    config_path = tmp_path / "legacy.yaml"
+    config_path.write_text(yaml.dump(config_data))
+    config = load_config(config_path)
+    assert config.robosplat.enabled is True
+    assert config.robosplat.backend == "legacy_scan"
+    assert config.robosplat.variants_per_input == 3
 
 
 def test_config_resolves_relative_paths(tmp_path):

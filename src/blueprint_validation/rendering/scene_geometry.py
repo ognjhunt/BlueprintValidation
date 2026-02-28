@@ -363,3 +363,53 @@ def auto_populate_manipulation_zones(
 
     logger.info("Auto-populated %d manipulation zones from task_targets.json", len(new_zones))
     return new_zones
+
+
+# ---------------------------------------------------------------------------
+# Gaussian subset utilities for RoboSplat-style edits
+# ---------------------------------------------------------------------------
+
+
+def select_gaussians_in_sphere(
+    means: np.ndarray,
+    center: np.ndarray,
+    radius_m: float,
+    max_points: int = 12000,
+) -> np.ndarray:
+    """Return indices of Gaussian centers inside a spherical region."""
+    if means.size == 0:
+        return np.asarray([], dtype=np.int64)
+    center = np.asarray(center, dtype=np.float32).reshape(1, 3)
+    dist = np.linalg.norm(means - center, axis=1)
+    idx = np.flatnonzero(dist <= max(0.01, float(radius_m)))
+    if len(idx) > max_points:
+        idx = idx[:max_points]
+    return idx.astype(np.int64)
+
+
+def cluster_scene_points(
+    means: np.ndarray,
+    num_clusters: int = 8,
+    max_points: int = 30000,
+    seed: int = 13,
+) -> np.ndarray:
+    """Cluster scene points and return approximate object anchor centers."""
+    if means.size == 0:
+        return np.zeros((0, 3), dtype=np.float32)
+    pts = means
+    if len(pts) > max_points:
+        rng = np.random.default_rng(seed)
+        choice = rng.choice(len(pts), size=max_points, replace=False)
+        pts = pts[choice]
+    k = max(1, min(int(num_clusters), len(pts)))
+    # Lightweight k-means (fixed iterations) to avoid external deps.
+    rng = np.random.default_rng(seed)
+    centers = pts[rng.choice(len(pts), size=k, replace=False)].astype(np.float32)
+    for _ in range(12):
+        d = np.linalg.norm(pts[:, None, :] - centers[None, :, :], axis=2)
+        assign = np.argmin(d, axis=1)
+        for ci in range(k):
+            members = pts[assign == ci]
+            if len(members) > 0:
+                centers[ci] = members.mean(axis=0)
+    return centers.astype(np.float32)

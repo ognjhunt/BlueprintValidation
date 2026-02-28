@@ -1,12 +1,12 @@
-"""Stage 1d: RoboSplat-inspired scan-only Gaussian clip augmentation."""
+"""Stage 1d: Full RoboSplat-default Gaussian augmentation."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict
 
-from ..augmentation.robosplat_scan import augment_scan_only_clip
-from ..common import StageResult, get_logger, read_json, write_json
+from ..augmentation.robosplat_engine import run_robosplat_augmentation
+from ..common import StageResult, get_logger
 from ..config import FacilityConfig, ValidationConfig
 from .base import PipelineStage
 
@@ -20,7 +20,7 @@ class GaussianAugmentStage(PipelineStage):
 
     @property
     def description(self) -> str:
-        return "RoboSplat-inspired scan-only augmentation over rendered clips"
+        return "Full RoboSplat-default augmentation over rendered clips"
 
     def run(
         self,
@@ -30,12 +30,12 @@ class GaussianAugmentStage(PipelineStage):
         previous_results: Dict[str, StageResult],
     ) -> StageResult:
         del previous_results
-        if not config.robosplat_scan.enabled:
+        if not config.robosplat.enabled:
             return StageResult(
                 stage_name=self.name,
                 status="skipped",
                 elapsed_seconds=0,
-                detail="robosplat_scan.enabled=false",
+                detail="robosplat.enabled=false",
             )
 
         source_manifest_path = _resolve_source_manifest(work_dir)
@@ -50,117 +50,36 @@ class GaussianAugmentStage(PipelineStage):
                 ),
             )
 
-        source_manifest = read_json(source_manifest_path)
-        source_clips: List[Dict] = list(source_manifest.get("clips", []))
-        if not source_clips:
-            return StageResult(
-                stage_name=self.name,
-                status="failed",
-                elapsed_seconds=0,
-                detail=f"No clips found in source manifest: {source_manifest_path}",
-            )
-
         stage_dir = work_dir / "gaussian_augment"
         stage_dir.mkdir(parents=True, exist_ok=True)
-
-        manifest_clips: List[Dict] = []
-        augmented = 0
-        failed = 0
-
-        # Keep original clips in manifest to preserve baseline coverage.
-        for clip in source_clips:
-            manifest_clips.append(dict(clip))
-
-        for clip in source_clips:
-            source_clip_name = str(clip.get("clip_name", "clip"))
-            rgb_path = Path(str(clip.get("video_path", "")))
-            depth_val = clip.get("depth_video_path")
-            depth_path = Path(str(depth_val)) if depth_val else None
-
-            if not rgb_path.exists():
-                logger.warning("Skipping augmentation for missing clip: %s", rgb_path)
-                failed += config.robosplat_scan.num_augmented_clips_per_input
-                continue
-
-            for augment_idx in range(config.robosplat_scan.num_augmented_clips_per_input):
-                try:
-                    out = augment_scan_only_clip(
-                        video_path=rgb_path,
-                        depth_video_path=depth_path if depth_path and depth_path.exists() else None,
-                        output_dir=stage_dir,
-                        source_clip_name=source_clip_name,
-                        augment_index=augment_idx,
-                        config=config.robosplat_scan,
-                    )
-                    manifest_clips.append(
-                        {
-                            "clip_name": out.clip_name,
-                            "path_type": clip.get("path_type", "augmented"),
-                            "clip_index": clip.get("clip_index", -1),
-                            "num_frames": clip.get("num_frames"),
-                            "resolution": clip.get("resolution"),
-                            "fps": clip.get("fps"),
-                            "video_path": str(out.output_video_path),
-                            "depth_video_path": (
-                                str(out.output_depth_video_path)
-                                if out.output_depth_video_path
-                                else ""
-                            ),
-                            "source_clip_name": out.source_clip_name,
-                            "source_video_path": str(out.source_video_path),
-                            "source_depth_video_path": (
-                                str(out.source_depth_video_path)
-                                if out.source_depth_video_path
-                                else ""
-                            ),
-                            "augment_ops": out.augment_ops,
-                            "augmentation_type": "robosplat_scan_only",
-                        }
-                    )
-                    augmented += 1
-                except Exception as exc:
-                    failed += 1
-                    logger.warning(
-                        "Failed scan-only augmentation for clip=%s idx=%d: %s",
-                        source_clip_name,
-                        augment_idx,
-                        exc,
-                    )
-
-        manifest_path = stage_dir / "augmented_manifest.json"
-        write_json(
-            {
-                "facility": facility.name,
-                "source_manifest": str(source_manifest_path),
-                "augmentation_type": "robosplat_scan_only",
-                "num_source_clips": len(source_clips),
-                "num_augmented_clips": augmented,
-                "num_total_clips": len(manifest_clips),
-                "clips": manifest_clips,
-            },
-            manifest_path,
+        result = run_robosplat_augmentation(
+            config=config,
+            facility=facility,
+            work_dir=work_dir,
+            stage_dir=stage_dir,
+            source_manifest_path=source_manifest_path,
         )
 
-        status = "success" if augmented > 0 else "failed"
+        status = result.status
         return StageResult(
             stage_name=self.name,
             status=status,
             elapsed_seconds=0,
             outputs={
                 "augment_dir": str(stage_dir),
-                "manifest_path": str(manifest_path),
+                "manifest_path": str(result.manifest_path),
             },
             metrics={
-                "num_source_clips": len(source_clips),
-                "num_augmented_clips": augmented,
-                "num_failed": failed,
-                "num_total_clips": len(manifest_clips),
+                "num_source_clips": result.num_source_clips,
+                "num_augmented_clips": result.num_augmented_clips,
+                "num_total_clips": result.num_total_clips,
+                "num_rejected_quality": result.num_rejected_quality,
+                "backend_used": result.backend_used,
+                "fallback_backend": result.fallback_backend,
+                "object_source": result.object_source,
+                "demo_source": result.demo_source,
             },
-            detail=(
-                f"Generated {augmented} augmented clips from {len(source_clips)} sources"
-                if status == "success"
-                else "No augmented clips generated"
-            ),
+            detail=result.detail,
         )
 
 

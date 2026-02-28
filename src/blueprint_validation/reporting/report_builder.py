@@ -248,6 +248,18 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
             lines.append(f"- Total frames: {r.get('total_frames', 'N/A')}")
             lines.append("")
 
+        if "s1d_gaussian_augment" in fac_data:
+            ga = fac_data["s1d_gaussian_augment"]
+            gm = ga.get("metrics", {})
+            lines.append("### RoboSplat Augmentation (S1d)\n")
+            lines.append(f"- Status: {ga.get('status', 'N/A')}")
+            lines.append(f"- Backend used: {gm.get('backend_used', 'N/A')}")
+            lines.append(f"- Fallback backend: {gm.get('fallback_backend', 'N/A')}")
+            lines.append(f"- Source clips: {gm.get('num_source_clips', 'N/A')}")
+            lines.append(f"- Augmented clips accepted: {gm.get('num_augmented_clips', 'N/A')}")
+            lines.append(f"- Rejected by quality gate: {gm.get('num_rejected_quality', 'N/A')}")
+            lines.append("")
+
         if "s3_finetune" in fac_data:
             ft = fac_data["s3_finetune"].get("metrics", {})
             lines.append(f"### Fine-tuning\n")

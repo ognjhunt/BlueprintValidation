@@ -9,7 +9,7 @@ PLY file (from BlueprintCapturePipeline)
   → Stage 1: Render video clips at robot-height via gsplat
   → Stage 1b (optional): Composite URDF robot arm with camera extrinsics
   → Stage 1c (optional): Gemini image polish on composited clips
-  → Stage 1d (optional): RoboSplat-inspired scan-only augmentation
+  → Stage 1d (optional): Full RoboSplat-default 3D Gaussian augmentation (hybrid fallback)
   → Stage 2: Enrich with Cosmos Transfer 2.5 (5-10 variants per clip)
   → Stage 3: Fine-tune DreamDojo-2B on enriched video
   → Stage 4: Frozen policy rollouts (baseline vs adapted world model) + VLM scoring
@@ -62,7 +62,8 @@ blueprint-validate run-all
 blueprint-validate render --facility facility_a
 blueprint-validate compose-robot --facility facility_a    # optional
 blueprint-validate polish-gemini --facility facility_a    # optional
-blueprint-validate augment-gaussian --facility facility_a # optional Stage 1d
+blueprint-validate augment-gaussian --facility facility_a # optional Stage 1d (full RoboSplat default)
+blueprint-validate augment-robosplat --facility facility_a # alias
 blueprint-validate enrich --facility facility_a
 blueprint-validate finetune --facility facility_a
 blueprint-validate eval-policy --facility facility_a
@@ -116,6 +117,7 @@ PROVISION_REPOS=true bash scripts/setup_first_data.sh
 |-----------|--------|---------|
 | [DreamDojo 2B](https://github.com/NVIDIA/DreamDojo) | NVIDIA | World model for fine-tuning |
 | [Cosmos Transfer 2.5](https://github.com/nvidia-cosmos/cosmos-transfer2.5) | NVIDIA | Video enrichment |
+| RoboSplat (pinned vendor + native completion) | SHOWLab + local | Default S1d 3D Gaussian augmentation backend |
 | [OpenVLA-OFT](https://github.com/moojink/openvla-oft) | OpenVLA team | Default policy adapter/fine-tuning recipe |
 | [OpenVLA 7B](https://github.com/openvla/openvla) | Stanford | Backward-compatible baseline policy path |
 | [gsplat](https://github.com/nerfstudio-project/gsplat) | Nerfstudio | Gaussian splat rendering |
@@ -126,6 +128,7 @@ PROVISION_REPOS=true bash scripts/setup_first_data.sh
 - Python 3.10+
 - CUDA GPU (H100 recommended for full pipeline)
 - `uv` package manager
+- (Optional) pinned RoboSplat vendor repo at `./vendor/robosplat` for vendor backend path
 - Google Gemini API key (for VLM judge)
 - HuggingFace account (for model downloads)
 - Local clones or container images with:

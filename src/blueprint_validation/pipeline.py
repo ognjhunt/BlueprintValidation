@@ -45,7 +45,7 @@ class ValidationPipeline:
             RenderStage(),              # S1: splat -> video clips
             RobotCompositeStage(),      # S1b: URDF robot arm composite
             GeminiPolishStage(),        # S1c: optional Gemini photorealism polish
-            GaussianAugmentStage(),     # S1d: RoboSplat-style scan-only augmentation
+            GaussianAugmentStage(),     # S1d: Full RoboSplat-default augmentation
             EnrichStage(),              # S2: Cosmos Transfer variants
             FinetuneStage(),            # S3: DreamDojo LoRA fine-tune
             PolicyEvalStage(),          # S4: frozen policy eval (baseline + adapted)

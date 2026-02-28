@@ -131,7 +131,7 @@ def polish_gemini(ctx: click.Context, facility: str) -> None:
 @click.option("--facility", required=True, help="Facility ID.")
 @click.pass_context
 def augment_gaussian(ctx: click.Context, facility: str) -> None:
-    """Stage 1d: RoboSplat-inspired scan-only augmentation."""
+    """Stage 1d: Full RoboSplat-default augmentation."""
     from .stages.s1d_gaussian_augment import GaussianAugmentStage
 
     config = ctx.obj["config"]
@@ -142,6 +142,23 @@ def augment_gaussian(ctx: click.Context, facility: str) -> None:
     result = stage.execute(config, fac, work_dir, {})
     result.save(work_dir / "s1d_gaussian_augment_result.json")
     click.echo(f"Gaussian augment complete: {result.status} ({result.elapsed_seconds:.1f}s)")
+
+
+@cli.command("augment-robosplat")
+@click.option("--facility", required=True, help="Facility ID.")
+@click.pass_context
+def augment_robosplat(ctx: click.Context, facility: str) -> None:
+    """Alias for Stage 1d full RoboSplat augmentation."""
+    from .stages.s1d_gaussian_augment import GaussianAugmentStage
+
+    config = ctx.obj["config"]
+    fac = _get_facility(ctx, facility)
+    work_dir = _get_stage_work_dir(ctx, facility)
+
+    stage = GaussianAugmentStage()
+    result = stage.execute(config, fac, work_dir, {})
+    result.save(work_dir / "s1d_gaussian_augment_result.json")
+    click.echo(f"RoboSplat augment complete: {result.status} ({result.elapsed_seconds:.1f}s)")
 
 
 @cli.command()

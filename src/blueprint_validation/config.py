@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import warnings
 
 import yaml
 
@@ -212,6 +213,30 @@ class RoboSplatScanConfig:
 
 
 @dataclass
+class RoboSplatConfig:
+    enabled: bool = True
+    backend: str = "auto"  # auto|vendor|native|legacy_scan
+    parity_mode: str = "hybrid"  # hybrid|strict|scan_only
+    runtime_preset: str = "balanced"  # balanced|high_quality|fast
+    variants_per_input: int = 4
+    object_source_priority: List[str] = field(
+        default_factory=lambda: ["task_hints_obb", "vlm_detect", "cluster"]
+    )
+    demo_source: str = "synthetic"  # synthetic|real|required_real
+    bootstrap_if_missing_demo: bool = True
+    bootstrap_num_rollouts: int = 6
+    bootstrap_horizon_steps: int = 24
+    bootstrap_tasks_limit: int = 4
+    quality_gate_enabled: bool = True
+    min_variants_required_per_clip: int = 1
+    fallback_to_legacy_scan: bool = True
+    fallback_on_backend_error: bool = True
+    persist_scene_variants: bool = False
+    vendor_repo_path: Path = Path("./vendor/robosplat")
+    vendor_ref: str = ""
+
+
+@dataclass
 class PolicyRLLoopConfig:
     enabled: bool = True
     iterations: int = 2
@@ -309,6 +334,7 @@ class ValidationConfig:
     eval_policy: PolicyEvalConfig = field(default_factory=PolicyEvalConfig)
     policy_finetune: PolicyFinetuneConfig = field(default_factory=PolicyFinetuneConfig)
     policy_adapter: PolicyAdapterConfig = field(default_factory=PolicyAdapterConfig)
+    robosplat: RoboSplatConfig = field(default_factory=RoboSplatConfig)
     robosplat_scan: RoboSplatScanConfig = field(default_factory=RoboSplatScanConfig)
     policy_rl_loop: PolicyRLLoopConfig = field(default_factory=PolicyRLLoopConfig)
     rollout_dataset: RolloutDatasetConfig = field(default_factory=RolloutDatasetConfig)
@@ -574,6 +600,40 @@ def load_config(path: Path) -> ValidationConfig:
             name=pa.get("name", "openvla_oft"),
         )
 
+    if "robosplat" in raw:
+        rs_full = raw["robosplat"]
+        config.robosplat = RoboSplatConfig(
+            enabled=rs_full.get("enabled", True),
+            backend=str(rs_full.get("backend", "auto")),
+            parity_mode=str(rs_full.get("parity_mode", "hybrid")),
+            runtime_preset=str(rs_full.get("runtime_preset", "balanced")),
+            variants_per_input=int(rs_full.get("variants_per_input", 4)),
+            object_source_priority=[
+                str(v)
+                for v in rs_full.get(
+                    "object_source_priority",
+                    ["task_hints_obb", "vlm_detect", "cluster"],
+                )
+            ],
+            demo_source=str(rs_full.get("demo_source", "synthetic")),
+            bootstrap_if_missing_demo=rs_full.get("bootstrap_if_missing_demo", True),
+            bootstrap_num_rollouts=int(rs_full.get("bootstrap_num_rollouts", 6)),
+            bootstrap_horizon_steps=int(rs_full.get("bootstrap_horizon_steps", 24)),
+            bootstrap_tasks_limit=int(rs_full.get("bootstrap_tasks_limit", 4)),
+            quality_gate_enabled=rs_full.get("quality_gate_enabled", True),
+            min_variants_required_per_clip=int(
+                rs_full.get("min_variants_required_per_clip", 1)
+            ),
+            fallback_to_legacy_scan=rs_full.get("fallback_to_legacy_scan", True),
+            fallback_on_backend_error=rs_full.get("fallback_on_backend_error", True),
+            persist_scene_variants=rs_full.get("persist_scene_variants", False),
+            vendor_repo_path=_resolve_path(
+                rs_full.get("vendor_repo_path", "./vendor/robosplat"),
+                base_dir,
+            ),
+            vendor_ref=str(rs_full.get("vendor_ref", "")),
+        )
+
     if "robosplat_scan" in raw:
         rs = raw["robosplat_scan"]
         config.robosplat_scan = RoboSplatScanConfig(
@@ -589,6 +649,37 @@ def load_config(path: Path) -> ValidationConfig:
                 float(v) for v in rs.get("temporal_speed_factors", [0.9, 1.1])
             ],
         )
+        if "robosplat" not in raw:
+            # Legacy compatibility mapping for one release cycle.
+            warnings.warn(
+                (
+                    "Config uses legacy `robosplat_scan`. Mapping to `robosplat` "
+                    "with backend=legacy_scan for compatibility; migrate to "
+                    "`robosplat` block."
+                ),
+                UserWarning,
+                stacklevel=2,
+            )
+            config.robosplat = RoboSplatConfig(
+                enabled=config.robosplat_scan.enabled,
+                backend="legacy_scan",
+                parity_mode="scan_only",
+                runtime_preset="fast",
+                variants_per_input=max(1, int(config.robosplat_scan.num_augmented_clips_per_input)),
+                object_source_priority=["cluster"],
+                demo_source="synthetic",
+                bootstrap_if_missing_demo=False,
+                bootstrap_num_rollouts=0,
+                bootstrap_horizon_steps=0,
+                bootstrap_tasks_limit=0,
+                quality_gate_enabled=True,
+                min_variants_required_per_clip=1,
+                fallback_to_legacy_scan=True,
+                fallback_on_backend_error=True,
+                persist_scene_variants=False,
+                vendor_repo_path=_resolve_path("./vendor/robosplat", base_dir),
+                vendor_ref="",
+            )
 
     if "policy_rl_loop" in raw:
         pr = raw["policy_rl_loop"]
