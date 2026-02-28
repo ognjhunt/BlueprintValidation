@@ -40,6 +40,8 @@ def test_config_defaults():
     assert config.robosplat.enabled is True
     assert config.robosplat.backend == "auto"
     assert config.robosplat_scan.enabled is True
+    assert config.splatsim.enabled is False
+    assert config.splatsim.mode == "hybrid"
     assert config.policy_rl_loop.enabled is True
 
 
@@ -84,6 +86,14 @@ def test_config_with_all_sections(tmp_path):
             "max_steps": 100,
         },
         "policy_adapter": {"name": "openvla"},
+        "splatsim": {
+            "enabled": True,
+            "mode": "strict",
+            "per_zone_rollouts": 3,
+            "horizon_steps": 40,
+            "min_successful_rollouts_per_zone": 2,
+            "fallback_to_prior_manifest": False,
+        },
         "rollout_dataset": {"seed": 99, "train_split": 0.7},
         "policy_compare": {
             "heldout_num_rollouts": 8,
@@ -109,6 +119,9 @@ def test_config_with_all_sections(tmp_path):
     assert config.eval_policy.vlm_judge.enable_agentic_vision is True
     assert config.policy_finetune.enabled is True
     assert config.policy_finetune.max_steps == 100
+    assert config.splatsim.enabled is True
+    assert config.splatsim.mode == "strict"
+    assert config.splatsim.per_zone_rollouts == 3
     assert config.rollout_dataset.seed == 99
     assert config.policy_compare.heldout_num_rollouts == 8
     assert config.policy_compare.heldout_tasks == ["Pick up the tote from the shelf"]

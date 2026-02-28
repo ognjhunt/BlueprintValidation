@@ -10,6 +10,7 @@ PLY file (from BlueprintCapturePipeline)
   → Stage 1b (optional): Composite URDF robot arm with camera extrinsics
   → Stage 1c (optional): Gemini image polish on composited clips
   → Stage 1d (optional): Full RoboSplat-default 3D Gaussian augmentation (hybrid fallback)
+  → Stage 1e (optional): Minimal SplatSim interaction clips (PyBullet, fallback-safe)
   → Stage 2: Enrich with Cosmos Transfer 2.5 (5-10 variants per clip)
   → Stage 3: Fine-tune DreamDojo-2B on enriched video
   → Stage 4: Frozen policy rollouts (baseline vs adapted world model) + VLM scoring
@@ -64,6 +65,7 @@ blueprint-validate compose-robot --facility facility_a    # optional
 blueprint-validate polish-gemini --facility facility_a    # optional
 blueprint-validate augment-gaussian --facility facility_a # optional Stage 1d (full RoboSplat default)
 blueprint-validate augment-robosplat --facility facility_a # alias
+blueprint-validate simulate-interaction --facility facility_a # optional Stage 1e
 blueprint-validate enrich --facility facility_a
 blueprint-validate finetune --facility facility_a
 blueprint-validate eval-policy --facility facility_a
@@ -128,6 +130,7 @@ PROVISION_REPOS=true bash scripts/setup_first_data.sh
 - Python 3.10+
 - CUDA GPU (H100 recommended for full pipeline)
 - `uv` package manager
+- (Optional) `pybullet` for Stage 1e SplatSim interaction generation (`pip install "blueprint-validation[manipulation]"`)
 - (Optional) pinned RoboSplat vendor repo at `./vendor/robosplat` for vendor backend path
 - Google Gemini API key (for VLM judge)
 - HuggingFace account (for model downloads)

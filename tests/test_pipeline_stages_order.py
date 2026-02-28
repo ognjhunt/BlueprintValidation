@@ -14,11 +14,13 @@ def test_pipeline_stage_order(sample_config, tmp_path):
     # Access the per_facility_stages list by inspecting run_all
     # We test the import works correctly for all new stages
     from blueprint_validation.stages.s4a_rlds_export import RLDSExportStage
+    from blueprint_validation.stages.s1e_splatsim_interaction import SplatSimInteractionStage
     from blueprint_validation.stages.s3b_policy_finetune import PolicyFinetuneStage
     from blueprint_validation.stages.s3c_policy_rl_loop import PolicyRLLoopStage
     from blueprint_validation.stages.s4e_trained_eval import TrainedPolicyEvalStage
 
     assert RLDSExportStage().name == "s4a_rlds_export"
+    assert SplatSimInteractionStage().name == "s1e_splatsim_interaction"
     assert PolicyFinetuneStage().name == "s3b_policy_finetune"
     assert PolicyRLLoopStage().name == "s3c_policy_rl_loop"
     assert TrainedPolicyEvalStage().name == "s4e_trained_eval"
@@ -30,6 +32,7 @@ def test_all_stages_importable():
     from blueprint_validation.stages.s1b_robot_composite import RobotCompositeStage
     from blueprint_validation.stages.s1c_gemini_polish import GeminiPolishStage
     from blueprint_validation.stages.s1d_gaussian_augment import GaussianAugmentStage
+    from blueprint_validation.stages.s1e_splatsim_interaction import SplatSimInteractionStage
     from blueprint_validation.stages.s2_enrich import EnrichStage
     from blueprint_validation.stages.s3_finetune import FinetuneStage
     from blueprint_validation.stages.s3b_policy_finetune import PolicyFinetuneStage
@@ -74,6 +77,7 @@ def test_stage_names_are_unique():
     from blueprint_validation.stages.s1b_robot_composite import RobotCompositeStage
     from blueprint_validation.stages.s1c_gemini_polish import GeminiPolishStage
     from blueprint_validation.stages.s1d_gaussian_augment import GaussianAugmentStage
+    from blueprint_validation.stages.s1e_splatsim_interaction import SplatSimInteractionStage
     from blueprint_validation.stages.s2_enrich import EnrichStage
     from blueprint_validation.stages.s3_finetune import FinetuneStage
     from blueprint_validation.stages.s3b_policy_finetune import PolicyFinetuneStage
@@ -92,6 +96,7 @@ def test_stage_names_are_unique():
         RobotCompositeStage(),
         GeminiPolishStage(),
         GaussianAugmentStage(),
+        SplatSimInteractionStage(),
         EnrichStage(),
         FinetuneStage(),
         PolicyEvalStage(),

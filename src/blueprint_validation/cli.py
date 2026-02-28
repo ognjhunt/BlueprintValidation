@@ -161,6 +161,23 @@ def augment_robosplat(ctx: click.Context, facility: str) -> None:
     click.echo(f"RoboSplat augment complete: {result.status} ({result.elapsed_seconds:.1f}s)")
 
 
+@cli.command("simulate-interaction")
+@click.option("--facility", required=True, help="Facility ID.")
+@click.pass_context
+def simulate_interaction(ctx: click.Context, facility: str) -> None:
+    """Stage 1e: Optional PyBullet interaction-validated clip generation."""
+    from .stages.s1e_splatsim_interaction import SplatSimInteractionStage
+
+    config = ctx.obj["config"]
+    fac = _get_facility(ctx, facility)
+    work_dir = _get_stage_work_dir(ctx, facility)
+
+    stage = SplatSimInteractionStage()
+    result = stage.execute(config, fac, work_dir, {})
+    result.save(work_dir / "s1e_splatsim_interaction_result.json")
+    click.echo(f"SplatSim interaction complete: {result.status} ({result.elapsed_seconds:.1f}s)")
+
+
 @cli.command()
 @click.option("--facility", required=True, help="Facility ID.")
 @click.pass_context
@@ -431,6 +448,7 @@ def status(ctx: click.Context) -> None:
 
     stages = [
         "s1_render", "s1b_robot_composite", "s1c_gemini_polish", "s1d_gaussian_augment",
+        "s1e_splatsim_interaction",
         "s2_enrich", "s3_finetune", "s3b_policy_finetune", "s3c_policy_rl_loop",
         "s4_policy_eval", "s4a_rlds_export",
         "s4e_trained_eval", "s4b_rollout_dataset", "s4c_policy_pair_train",

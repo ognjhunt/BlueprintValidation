@@ -223,6 +223,11 @@ class RoboSplatConfig:
         default_factory=lambda: ["task_hints_obb", "vlm_detect", "cluster"]
     )
     demo_source: str = "synthetic"  # synthetic|real|required_real
+    demo_manifest_path: Optional[Path] = None
+    min_successful_demos: int = 4
+    demo_success_task_score_threshold: float = 7.0
+    require_manipulation_success_flags: bool = True
+    world_model_bootstrap_enabled: bool = False
     bootstrap_if_missing_demo: bool = True
     bootstrap_num_rollouts: int = 6
     bootstrap_horizon_steps: int = 24
@@ -234,6 +239,16 @@ class RoboSplatConfig:
     persist_scene_variants: bool = False
     vendor_repo_path: Path = Path("./vendor/robosplat")
     vendor_ref: str = ""
+
+
+@dataclass
+class SplatSimConfig:
+    enabled: bool = False
+    mode: str = "hybrid"  # hybrid|strict
+    per_zone_rollouts: int = 2
+    horizon_steps: int = 30
+    min_successful_rollouts_per_zone: int = 1
+    fallback_to_prior_manifest: bool = True
 
 
 @dataclass
@@ -336,6 +351,7 @@ class ValidationConfig:
     policy_adapter: PolicyAdapterConfig = field(default_factory=PolicyAdapterConfig)
     robosplat: RoboSplatConfig = field(default_factory=RoboSplatConfig)
     robosplat_scan: RoboSplatScanConfig = field(default_factory=RoboSplatScanConfig)
+    splatsim: SplatSimConfig = field(default_factory=SplatSimConfig)
     policy_rl_loop: PolicyRLLoopConfig = field(default_factory=PolicyRLLoopConfig)
     rollout_dataset: RolloutDatasetConfig = field(default_factory=RolloutDatasetConfig)
     policy_compare: PolicyCompareConfig = field(default_factory=PolicyCompareConfig)
@@ -616,6 +632,19 @@ def load_config(path: Path) -> ValidationConfig:
                 )
             ],
             demo_source=str(rs_full.get("demo_source", "synthetic")),
+            demo_manifest_path=(
+                _resolve_path(rs_full.get("demo_manifest_path"), base_dir)
+                if rs_full.get("demo_manifest_path")
+                else None
+            ),
+            min_successful_demos=int(rs_full.get("min_successful_demos", 4)),
+            demo_success_task_score_threshold=float(
+                rs_full.get("demo_success_task_score_threshold", 7.0)
+            ),
+            require_manipulation_success_flags=rs_full.get(
+                "require_manipulation_success_flags", True
+            ),
+            world_model_bootstrap_enabled=rs_full.get("world_model_bootstrap_enabled", False),
             bootstrap_if_missing_demo=rs_full.get("bootstrap_if_missing_demo", True),
             bootstrap_num_rollouts=int(rs_full.get("bootstrap_num_rollouts", 6)),
             bootstrap_horizon_steps=int(rs_full.get("bootstrap_horizon_steps", 24)),
@@ -668,6 +697,13 @@ def load_config(path: Path) -> ValidationConfig:
                 variants_per_input=max(1, int(config.robosplat_scan.num_augmented_clips_per_input)),
                 object_source_priority=["cluster"],
                 demo_source="synthetic",
+                demo_manifest_path=None,
+                min_successful_demos=max(
+                    1, int(config.robosplat_scan.num_augmented_clips_per_input)
+                ),
+                demo_success_task_score_threshold=7.0,
+                require_manipulation_success_flags=True,
+                world_model_bootstrap_enabled=False,
                 bootstrap_if_missing_demo=False,
                 bootstrap_num_rollouts=0,
                 bootstrap_horizon_steps=0,
@@ -680,6 +716,19 @@ def load_config(path: Path) -> ValidationConfig:
                 vendor_repo_path=_resolve_path("./vendor/robosplat", base_dir),
                 vendor_ref="",
             )
+
+    if "splatsim" in raw:
+        ss = raw["splatsim"]
+        config.splatsim = SplatSimConfig(
+            enabled=ss.get("enabled", False),
+            mode=str(ss.get("mode", "hybrid")),
+            per_zone_rollouts=int(ss.get("per_zone_rollouts", 2)),
+            horizon_steps=int(ss.get("horizon_steps", 30)),
+            min_successful_rollouts_per_zone=int(
+                ss.get("min_successful_rollouts_per_zone", 1)
+            ),
+            fallback_to_prior_manifest=ss.get("fallback_to_prior_manifest", True),
+        )
 
     if "policy_rl_loop" in raw:
         pr = raw["policy_rl_loop"]

@@ -90,3 +90,18 @@ def test_s2_enrich_reads_robosplat_manifest(sample_config, tmp_path, monkeypatch
     assert manifest["num_clips"] == 1
     assert manifest["clips"][0]["clip_name"] == "clip_000_rb00"
 
+
+def test_s2_manifest_resolution_prefers_s1e(tmp_path):
+    from blueprint_validation.stages.s2_enrich import _resolve_render_manifest
+
+    splat = tmp_path / "splatsim" / "interaction_manifest.json"
+    gauss = tmp_path / "gaussian_augment" / "augmented_manifest.json"
+    render = tmp_path / "renders" / "render_manifest.json"
+    splat.parent.mkdir(parents=True, exist_ok=True)
+    gauss.parent.mkdir(parents=True, exist_ok=True)
+    render.parent.mkdir(parents=True, exist_ok=True)
+    splat.write_text("{}")
+    gauss.write_text("{}")
+    render.write_text("{}")
+
+    assert _resolve_render_manifest(tmp_path) == splat

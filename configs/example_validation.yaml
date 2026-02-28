@@ -122,6 +122,15 @@ robosplat:
   vendor_repo_path: ./vendor/robosplat
   vendor_ref: ""
 
+# ---- Stage 1e: Minimal SplatSim interaction (opt-in) ----
+splatsim:
+  enabled: false
+  mode: hybrid                   # hybrid|strict
+  per_zone_rollouts: 2
+  horizon_steps: 30
+  min_successful_rollouts_per_zone: 1
+  fallback_to_prior_manifest: true
+
 # ---- Legacy Stage 1d compatibility (one release cycle) ----
 robosplat_scan:
   enabled: true

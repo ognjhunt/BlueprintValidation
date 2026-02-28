@@ -130,6 +130,7 @@ class EnrichStage(PipelineStage):
 
 def _resolve_render_manifest(work_dir: Path) -> Path | None:
     for candidate in [
+        work_dir / "splatsim" / "interaction_manifest.json",
         work_dir / "gaussian_augment" / "augmented_manifest.json",
         work_dir / "gemini_polish" / "polished_manifest.json",
         work_dir / "robot_composite" / "composited_manifest.json",
