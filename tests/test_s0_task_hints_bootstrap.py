@@ -226,10 +226,69 @@ def test_obb_from_corners_computes_center_and_extents():
     assert np.allclose(result["axes"], np.eye(3).tolist())
 
 
+def test_obb_from_corners_accepts_dict_points():
+    """Actual InteriorGS labels.json uses {x,y,z} dicts, not [x,y,z] lists."""
+    cx, cy, cz, hw, hl, hh = 1.0, 2.0, 0.5, 0.2, 0.15, 0.3
+    corners = [
+        {"x": cx - hw, "y": cy - hl, "z": cz - hh},
+        {"x": cx + hw, "y": cy - hl, "z": cz - hh},
+        {"x": cx + hw, "y": cy + hl, "z": cz - hh},
+        {"x": cx - hw, "y": cy + hl, "z": cz - hh},
+        {"x": cx - hw, "y": cy - hl, "z": cz + hh},
+        {"x": cx + hw, "y": cy - hl, "z": cz + hh},
+        {"x": cx + hw, "y": cy + hl, "z": cz + hh},
+        {"x": cx - hw, "y": cy + hl, "z": cz + hh},
+    ]
+    result = _obb_from_corners(corners)
+    assert result is not None
+    np.testing.assert_allclose(result["center"], [cx, cy, cz], atol=1e-6)
+    np.testing.assert_allclose(result["extents"], [hw * 2, hl * 2, hh * 2], atol=1e-6)
+
+
 def test_obb_from_corners_returns_none_for_malformed():
     assert _obb_from_corners([[1, 2]]) is None          # not 3D
     assert _obb_from_corners([[1, 2, 3]]) is None       # only 1 point
     assert _obb_from_corners("bad") is None             # wrong type
+
+
+def test_ingest_interiorgs_actual_file_format(tmp_path):
+    """labels.json as a list (actual InteriorGS on-disk format, not normalised dict)."""
+    fac = FacilityConfig(name="Test", ply_path=tmp_path / "scene.ply")
+
+    def _dict_corners(center, size):
+        cx, cy, cz = center
+        hw, hl, hh = size[0] / 2, size[1] / 2, size[2] / 2
+        return [
+            {"x": cx - hw, "y": cy - hl, "z": cz - hh},
+            {"x": cx + hw, "y": cy - hl, "z": cz - hh},
+            {"x": cx + hw, "y": cy + hl, "z": cz - hh},
+            {"x": cx - hw, "y": cy + hl, "z": cz - hh},
+            {"x": cx - hw, "y": cy - hl, "z": cz + hh},
+            {"x": cx + hw, "y": cy - hl, "z": cz + hh},
+            {"x": cx + hw, "y": cy + hl, "z": cz + hh},
+            {"x": cx - hw, "y": cy + hl, "z": cz + hh},
+        ]
+
+    # A list (not dict) with ins_id / label keys
+    labels = [
+        {"ins_id": "42", "label": "coffee_mug", "bounding_box": _dict_corners([1.0, 2.0, 0.5], [0.12, 0.12, 0.15])},
+        {"ins_id": "43", "label": "window", "bounding_box": _dict_corners([3.0, 0.0, 1.2], [1.2, 0.1, 0.8])},
+    ]
+    labels_path = tmp_path / "labels.json"
+    labels_path.write_text(json.dumps(labels))
+
+    payload = ingest_interiorgs(labels_path, None, fac)
+    assert payload["source"] == "interiorgs"
+
+    manip = payload["manipulation_candidates"]
+    artic = payload["articulation_hints"]
+    assert len(manip) == 1
+    assert manip[0]["label"] == "coffee_mug"
+    assert manip[0]["instance_id"] == "42"
+    assert len(artic) == 1
+    assert artic[0]["label"] == "window"
+    assert artic[0]["instance_id"] == "43"
+    np.testing.assert_allclose(manip[0]["boundingBox"]["center"], [1.0, 2.0, 0.5], atol=1e-5)
 
 
 def test_obb_from_position_size():
@@ -289,6 +348,8 @@ def test_ingest_interiorgs_labels_only(tmp_path):
     task_ids = {t["task_id"] for t in payload["tasks"]}
     assert "pick_place_manipulation" in task_ids
     assert "open_close_access_points" in task_ids
+    assert any(t["task_id"].startswith("Pick up ") for t in payload["tasks"])
+    assert any(t["task_id"].startswith("Open and close ") for t in payload["tasks"])
 
 
 def test_ingest_interiorgs_scene_type_from_structure(tmp_path):

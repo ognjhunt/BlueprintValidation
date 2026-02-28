@@ -12,6 +12,7 @@ from ..config import FacilityConfig, ValidationConfig
 from ..evaluation.openvla_runner import (
     load_dreamdojo_world_model,
 )
+from ..evaluation.task_hints import tasks_from_task_hints
 from ..evaluation.vlm_judge import (
     JudgeScore,
     ManipulationJudgeScore,
@@ -149,16 +150,8 @@ class TrainedPolicyEvalStage(PipelineStage):
                 detail="Could not extract initial frames from rendered clips.",
             )
 
-        # Build task list (merge navigation + manipulation)
-        tasks = list(config.eval_policy.tasks or [])
-        for mt in config.eval_policy.manipulation_tasks:
-            if mt not in tasks:
-                tasks.append(mt)
-        if not tasks:
-            tasks = [
-                "Navigate forward through the corridor",
-                "Pick up the tote from the shelf",
-            ]
+        # Build task list (merge config + task hints)
+        tasks, hint_count = _build_task_list(config, facility)
 
         num_rollouts = config.eval_policy.num_rollouts
         max_steps = config.eval_policy.max_steps_per_rollout
@@ -287,6 +280,7 @@ class TrainedPolicyEvalStage(PipelineStage):
             "trained_manipulation_success_rate": _manipulation_success_rate(trained_manip),
             "num_rollouts_trained": len(trained_scores),
             "num_scoring_failures": len(scoring_failures),
+            "task_hints_injected": hint_count,
             "trained_checkpoint": str(trained_checkpoint),
             "pairwise": pairwise,
         }
@@ -320,6 +314,30 @@ def _extract_initial_frames(render_manifest: dict) -> list:
             if ret:
                 frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
     return frames
+
+
+def _build_task_list(config: ValidationConfig, facility: FacilityConfig) -> tuple[List[str], int]:
+    tasks = list(config.eval_policy.tasks or [])
+    for task in config.eval_policy.manipulation_tasks:
+        if task not in tasks:
+            tasks.append(task)
+
+    hint_tasks: List[str] = []
+    if facility.task_hints_path is not None:
+        try:
+            hint_tasks = tasks_from_task_hints(facility.task_hints_path)
+        except Exception as exc:
+            logger.warning("Failed loading task hints from %s: %s", facility.task_hints_path, exc)
+    for task in hint_tasks:
+        if task not in tasks:
+            tasks.append(task)
+
+    if not tasks:
+        tasks = [
+            "Navigate forward through the corridor",
+            "Pick up the tote from the shelf",
+        ]
+    return tasks, len(hint_tasks)
 
 
 def _resolve_trained_checkpoint(

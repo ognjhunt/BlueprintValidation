@@ -1,0 +1,296 @@
+schema_version: v1
+project_name: "InteriorGS Kitchen Scenes"
+
+# ---- InteriorGS Kitchen Facilities ----
+#
+# These three scenes were selected from spatialverse/InteriorGS (1000-scene
+# dataset) as having the richest kitchen appliance diversity:
+#
+#   0785_841229 — 6 appliances: dishwasher, fridge, kettle, microwave, oven, rice cooker (304 objects)
+#   0787_841244 — 6 appliances: dishwasher, fridge, kettle, microwave, oven, rice cooker (279 objects)
+#   0436_840303 — 5 appliances: dishwasher, kettle, oven, refrigerator, rice cooker (236 objects)
+#
+# Download PLY files before running (requires HF token with dataset access):
+#
+#   huggingface-cli download spatialverse/InteriorGS \
+#       0785_841229/3dgs_compressed.ply \
+#       0787_841244/3dgs_compressed.ply \
+#       0436_840303/3dgs_compressed.ply \
+#       --repo-type dataset --local-dir ../data/interiorgs
+#
+# S0 bootstrap auto-detects labels.json alongside the PLY and skips VLM.
+# Download labels.json too:
+#
+#   huggingface-cli download spatialverse/InteriorGS \
+#       0785_841229/labels.json \
+#       0787_841244/labels.json \
+#       0436_840303/labels.json \
+#       0785_841229/structure.json \
+#       0787_841244/structure.json \
+#       0436_840303/structure.json \
+#       --repo-type dataset --local-dir ../data/interiorgs
+
+facilities:
+  kitchen_0785:
+    name: "Kitchen Scene 0785 (InteriorGS)"
+    ply_path: ../data/interiorgs/0785_841229/3dgs_compressed.ply
+    task_hints_path: ../data/interiorgs/0785_841229/task_targets.synthetic.json
+    description: >
+      Open-plan apartment interior with kitchen area. Contains dishwasher,
+      fridge, kettle, microwave, oven, and rice cooker. Rich in bowls,
+      dishes, and tableware. Z-up coordinate system (InteriorGS standard).
+    landmarks:
+      - "kitchen appliances along the counter"
+      - "dining area with chairs and table"
+      - "living area with fan and Air Purifier"
+    up_axis: "z"
+    floor_height_m: 0.0
+    ceiling_height_m: 2.8
+
+  kitchen_0787:
+    name: "Kitchen Scene 0787 (InteriorGS)"
+    ply_path: ../data/interiorgs/0787_841244/3dgs_compressed.ply
+    task_hints_path: ../data/interiorgs/0787_841244/task_targets.synthetic.json
+    description: >
+      Compact apartment interior with kitchen nook. Contains dishwasher,
+      fridge, kettle, microwave, oven, and rice cooker. Dense bowls and
+      glassware. Smallest scene (279 objects) — cleanest for initial testing.
+    landmarks:
+      - "kitchen appliances and countertop"
+      - "dining table with glassware"
+      - "cabinet and cupboard storage area"
+    up_axis: "z"
+    floor_height_m: 0.0
+    ceiling_height_m: 2.8
+
+  kitchen_0436:
+    name: "Kitchen Scene 0436 (InteriorGS)"
+    ply_path: ../data/interiorgs/0436_840303/3dgs_compressed.ply
+    task_hints_path: ../data/interiorgs/0436_840303/task_targets.synthetic.json
+    description: >
+      Apartment with dedicated kitchen section. Contains dishwasher,
+      kettle, oven, refrigerator, and rice cooker. Also features
+      wall cabinet and basin cabinet for articulation tasks.
+    landmarks:
+      - "refrigerator and oven along kitchen wall"
+      - "dishwasher and basin cabinet"
+      - "dining area with wine glasses and bowls"
+    up_axis: "z"
+    floor_height_m: 0.0
+    ceiling_height_m: 2.8
+
+# ---- Stage 1: Render ----
+render:
+  resolution: [480, 640]
+  fps: 10
+  num_frames: 49
+  camera_height_m: 1.0
+  camera_look_down_deg: 20
+  camera_paths:
+    - type: orbit
+      radius_m: 2.5
+      num_orbits: 2
+    - type: sweep
+      length_m: 5.0
+    - type: manipulation
+      height_override_m: 0.5
+      look_down_override_deg: 40
+  num_clips_per_path: 3
+  scene_aware: true
+  collision_check: true
+  voxel_size_m: 0.08
+  density_threshold: 3
+  min_clearance_m: 0.12
+  vlm_fallback: true
+  vlm_fallback_model: gemini-3-flash-preview
+  vlm_fallback_num_views: 4
+
+# ---- Stage 1b: Robot arm compositing ----
+robot_composite:
+  enabled: true
+  urdf_path: ./robots/sample_6dof_arm.urdf
+  end_effector_link: wrist_3_link
+  base_xyz: [0.0, 0.0, 0.0]
+  base_rpy: [0.0, 0.0, 0.0]
+  start_joint_positions: [0.0, -1.1, 1.2, -1.0, -1.2, 0.0]
+  end_joint_positions: [0.4, -0.8, 1.0, -1.2, -1.0, 0.3]
+  min_visible_joint_ratio: 0.6
+  min_consistency_score: 0.6
+  line_color_bgr: [50, 180, 255]
+  line_thickness: 3
+
+# ---- Stage 1c: Gemini image polish ----
+gemini_polish:
+  enabled: true
+  model: gemini-3.1-flash-image-preview
+  api_key_env: GOOGLE_GENAI_API_KEY
+  prompt: "Preserve robot arm pose and scene geometry exactly. Improve photorealism and blending quality."
+  sample_every_n_frames: 2
+
+# ---- Stage 1d: RoboSplat augmentation ----
+robosplat:
+  enabled: true
+  backend: auto
+  parity_mode: hybrid
+  runtime_preset: balanced
+  variants_per_input: 4
+  object_source_priority: [task_hints_obb, vlm_detect, cluster]
+  demo_source: synthetic
+  bootstrap_if_missing_demo: true
+  bootstrap_num_rollouts: 6
+  bootstrap_horizon_steps: 24
+  bootstrap_tasks_limit: 4
+  quality_gate_enabled: true
+  min_variants_required_per_clip: 1
+  fallback_to_legacy_scan: true
+  fallback_on_backend_error: true
+  persist_scene_variants: false
+  vendor_repo_path: ../vendor/robosplat
+  vendor_ref: ""
+
+# ---- Stage 2: Enrich ----
+enrich:
+  cosmos_model: nvidia/Cosmos-Transfer2.5-2B
+  cosmos_checkpoint: ../data/checkpoints/cosmos-transfer-2.5-2b/
+  cosmos_repo: /opt/cosmos-transfer
+  controlnet_inputs: [rgb, depth]
+  num_variants_per_render: 5
+  guidance: 7.0
+  dynamic_variants: true
+  dynamic_variants_model: gemini-3-flash-preview
+
+# ---- Stage 3: Fine-tune ----
+finetune:
+  dreamdojo_repo: /opt/DreamDojo
+  dreamdojo_checkpoint: ../data/checkpoints/DreamDojo/2B_pretrain/
+  model_size: 2B
+  use_lora: true
+  lora_rank: 32
+  lora_alpha: 32
+  lora_target_modules: "q_proj,k_proj,v_proj,output_proj,mlp.layer1,mlp.layer2"
+  learning_rate: 1.0e-4
+  num_epochs: 50
+  batch_size: 1
+  gradient_accumulation_steps: 4
+  warmup_steps: 100
+  save_every_n_epochs: 10
+  max_training_hours: 72
+
+# ---- Stage 4: OpenVLA-OFT Policy Eval ----
+eval_policy:
+  openvla_model: openvla/openvla-7b
+  openvla_checkpoint: ../data/checkpoints/openvla-7b/
+  unnorm_key: bridge_orig
+  num_rollouts: 50
+  max_steps_per_rollout: 100
+  conditions: ["baseline", "adapted"]
+  min_absolute_difference: 0.5
+  tasks:
+    - "Navigate to the kitchen counter area"
+    - "Approach the refrigerator"
+    - "Move toward the dining table"
+  manipulation_tasks:
+    - "Pick up the bowl from the counter and place it in the sink"
+    - "Open the dishwasher door and load a dish"
+    - "Pick up the kettle and move it to the stove"
+    - "Open the oven door and place the dish inside"
+    - "Pick up the cup and place it on the shelf"
+    - "Open the refrigerator and retrieve an item"
+  vlm_judge:
+    model: gemini-3-flash-preview
+    api_key_env: GOOGLE_GENAI_API_KEY
+    enable_agentic_vision: true
+
+# ---- Stage 3b: OpenVLA-OFT policy fine-tune ----
+policy_finetune:
+  enabled: true
+  openvla_repo: /opt/openvla-oft
+  finetune_script: vla-scripts/finetune.py
+  data_root_dir: ../data/openvla_datasets
+  dataset_name: bridge_orig
+  recipe: oft
+  action_chunk_size: 8
+  parallel_decoding: true
+  use_continuous_actions: true
+  use_l1_regression: true
+  lora_rank: 32
+  batch_size: 8
+  grad_accumulation_steps: 2
+  learning_rate: 5.0e-4
+  save_steps: 1000
+  max_steps: 5000
+  image_aug: true
+  nproc_per_node: 1
+
+# ---- Stage 3c: Policy RL loop ----
+policy_rl_loop:
+  enabled: false
+  iterations: 2
+  horizon_steps: 24
+  rollouts_per_task: 8
+  group_size: 4
+  reward_mode: hybrid
+  vlm_reward_fraction: 0.25
+  top_quantile: 0.30
+  near_miss_min_quantile: 0.30
+  near_miss_max_quantile: 0.60
+  policy_refine_steps_per_iter: 1000
+  world_model_refresh_enabled: true
+  world_model_refresh_epochs: 3
+  world_model_refresh_learning_rate: 5.0e-5
+
+# ---- Policy adapter ----
+policy_adapter:
+  name: openvla_oft
+
+# ---- Stage 4b: Rollout dataset export ----
+rollout_dataset:
+  enabled: true
+  seed: 17
+  train_split: 0.8
+  min_steps_per_rollout: 4
+  task_score_threshold: 7.0
+  include_failed_rollouts: false
+  max_action_delta_norm: 5.0
+  require_consistent_action_dim: true
+  baseline_dataset_name: blueprint_baseline_generated
+  adapted_dataset_name: blueprint_site_generated
+  export_dir: ../data/outputs/policy_datasets
+
+# ---- Stage 4d: Trained policy A/B comparison ----
+policy_compare:
+  enabled: false
+  heldout_num_rollouts: 20
+  heldout_seed: 123
+  eval_world_model: adapted
+  heldout_tasks:
+    - "Pick up the bowl from the counter"
+    - "Open the dishwasher and load a dish"
+  task_score_success_threshold: 7.0
+  manipulation_task_keywords: [pick, grasp, lift, place, open, close, bowl, dish, kettle]
+  require_grasp_for_manipulation: true
+  require_lift_for_manipulation: true
+  require_place_for_manipulation: true
+
+# ---- Stage 5: Visual Fidelity ----
+eval_visual:
+  metrics: [psnr, ssim, lpips]
+  lpips_backbone: alex
+
+# ---- Stage 6: Spatial Accuracy ----
+eval_spatial:
+  num_sample_frames: 20
+  vlm_model: gemini-3-flash-preview
+
+# ---- Stage 7: Cross-Site ----
+eval_crosssite:
+  num_clips_per_model: 30
+  vlm_model: gemini-3-flash-preview
+
+# ---- Hardware / Cloud ----
+cloud:
+  provider: runpod
+  gpu_type: H100
+  num_gpus: 1
+  max_cost_usd: 500
+  auto_shutdown: true

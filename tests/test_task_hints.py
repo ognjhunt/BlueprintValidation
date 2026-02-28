@@ -18,12 +18,12 @@ def test_tasks_from_task_hints_maps_task_ids_and_labels(tmp_path):
             {"task_id": "Pick up the coffee mug"},
         ],
         "manipulation_candidates": [
-            {"label": "tote"},
+            {"label": "tote", "instance_id": "101"},
             {"label": "box"},
             {"label": "staging_lane", "category": "navigation"},
         ],
         "articulation_hints": [
-            {"label": "door"},
+            {"label": "door", "instance_id": "7"},
         ],
         "navigation_hints": [
             {"label": "charging_station"},
@@ -36,8 +36,9 @@ def test_tasks_from_task_hints_maps_task_ids_and_labels(tmp_path):
     assert "Open and close a nearby door or cabinet" in tasks
     assert "Navigate to the target region while avoiding obstacles" in tasks
     assert "Pick up the coffee mug" in tasks
-    assert "Pick up the tote and place it in the target zone" in tasks
-    assert "Open and close the door" in tasks
+    assert "Pick up tote_101 and place it in the target zone" in tasks
+    assert "Open and close door_7" in tasks
+    assert "Pick up the box and place it in the target zone" in tasks
     assert "Navigate to the charging station" in tasks
     assert "Pick up the staging lane and place it in the target zone" not in tasks
 

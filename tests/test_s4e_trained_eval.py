@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 import pytest
 
@@ -128,3 +129,29 @@ def test_resolve_trained_checkpoint_prefers_s3c(tmp_path):
     }
     resolved = _resolve_trained_checkpoint(previous, tmp_path)
     assert resolved == s3c_ckpt
+
+
+def test_trained_eval_build_task_list_includes_task_hints(tmp_path):
+    from blueprint_validation.config import FacilityConfig, ValidationConfig
+    from blueprint_validation.stages.s4e_trained_eval import _build_task_list
+
+    hints = tmp_path / "task_targets.json"
+    hints.write_text(
+        json.dumps(
+            {
+                "tasks": [{"task_id": "pick_place_manipulation"}],
+                "manipulation_candidates": [{"label": "bowl", "instance_id": "101"}],
+                "articulation_hints": [{"label": "door", "instance_id": "7"}],
+            }
+        )
+    )
+
+    cfg = ValidationConfig()
+    cfg.eval_policy.tasks = ["Navigate forward through the corridor"]
+    fac = FacilityConfig(name="A", ply_path=Path("/tmp/a.ply"), task_hints_path=hints)
+
+    tasks, hint_count = _build_task_list(cfg, fac)
+    assert hint_count > 0
+    assert "Navigate forward through the corridor" in tasks
+    assert "Pick up bowl_101 and place it in the target zone" in tasks
+    assert "Open and close door_7" in tasks

@@ -92,6 +92,58 @@ _NAVIGATION_KEYWORDS = frozenset(
     }
 )
 
+_PICKABLE_OBJECT_KEYWORDS = frozenset(
+    {
+        "bottle",
+        "bowl",
+        "box",
+        "can",
+        "cup",
+        "dish",
+        "glass",
+        "kettle",
+        "knife",
+        "mug",
+        "pan",
+        "plate",
+        "pot",
+        "rice",
+        "remote",
+        "spoon",
+    }
+)
+
+_NON_PICKABLE_OBJECT_KEYWORDS = frozenset(
+    {
+        "bed",
+        "cabinet",
+        "ceiling",
+        "chair",
+        "counter",
+        "dishwasher",
+        "door",
+        "drawer",
+        "dryer",
+        "fan",
+        "floor",
+        "fridge",
+        "lamp",
+        "microwave",
+        "oven",
+        "refrigerator",
+        "shelf",
+        "sink",
+        "sofa",
+        "stove",
+        "table",
+        "tv",
+        "wall",
+        "wardrobe",
+        "washer",
+        "window",
+    }
+)
+
 
 def _infer_category_from_label(label: str) -> str:
     """Map a semantic label string to manipulation/articulation/navigation."""
@@ -124,11 +176,23 @@ def _semantic_class_key(label: str) -> str:
 def _obb_from_corners(corners: list) -> Optional[dict]:
     """Derive center + AABB extents from a list of 3D corner vertices.
 
-    InteriorGS labels.json bounding_box is a list of 8 (x, y, z) points.
+    Accepts two formats:
+      - list of ``[x, y, z]`` sequences (normalized / test format)
+      - list of ``{"x": ..., "y": ..., "z": ...}`` dicts (actual InteriorGS format)
+
     Returns None if the input is malformed.
     """
     try:
-        pts = np.array(corners, dtype=np.float64)
+        if not isinstance(corners, (list, tuple)):
+            return None
+        # Normalise dict points to [x, y, z] sequences.
+        normalised = []
+        for pt in corners:
+            if isinstance(pt, dict):
+                normalised.append([pt["x"], pt["y"], pt["z"]])
+            else:
+                normalised.append(pt)
+        pts = np.array(normalised, dtype=np.float64)
         if pts.ndim != 2 or pts.shape[1] != 3 or len(pts) < 2:
             return None
         center = pts.mean(axis=0).tolist()
@@ -138,7 +202,7 @@ def _obb_from_corners(corners: list) -> Optional[dict]:
             "extents": extents,
             "axes": np.eye(3, dtype=np.float64).tolist(),
         }
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, KeyError):
         return None
 
 
@@ -169,6 +233,162 @@ def _interiorgs_scene_type(structure_data: dict) -> str:
         return "indoor"
     counts = Counter(room_types)
     return counts.most_common(1)[0][0].lower().replace(" ", "_")
+
+
+def _prompt_token_from_entry(entry: dict) -> str:
+    """Build a stable prompt token, e.g. ``bowl_101``."""
+    label = str(entry.get("label") or "object")
+    label_token = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_") or "object"
+    instance_id = str(entry.get("instance_id") or "").strip()
+    iid_token = re.sub(r"[^a-zA-Z0-9]+", "", instance_id)
+    if iid_token:
+        return f"{label_token}_{iid_token}"
+    return label_token
+
+
+def _entry_extents(entry: dict) -> Optional[np.ndarray]:
+    bbox = entry.get("boundingBox")
+    if not isinstance(bbox, dict):
+        return None
+    extents = bbox.get("extents")
+    if not isinstance(extents, list) or len(extents) != 3:
+        return None
+    try:
+        arr = np.asarray([float(v) for v in extents], dtype=np.float64)
+    except (TypeError, ValueError):
+        return None
+    if np.any(~np.isfinite(arr)):
+        return None
+    return arr
+
+
+def _is_plausible_pick_candidate(entry: dict) -> bool:
+    """Heuristic filter for object-level pick/place prompts."""
+    label = str(entry.get("label") or "")
+    tokens = set(_label_tokens(label))
+    if not tokens:
+        return False
+    if tokens & _NON_PICKABLE_OBJECT_KEYWORDS:
+        return False
+
+    extents = _entry_extents(entry)
+    if extents is not None:
+        max_extent = float(extents.max())
+        volume = float(np.prod(extents))
+        # Keep prompts focused on reasonably graspable objects.
+        if max_extent > 0.60 or volume > 0.08:
+            return False
+
+    return True
+
+
+def _select_prompt_entries(
+    entries: List[dict],
+    limit: int,
+    *,
+    pick_filter: bool = False,
+) -> List[dict]:
+    selected: List[dict] = []
+    seen: set = set()
+
+    def _add(entry: dict) -> None:
+        key = (
+            str(entry.get("instance_id") or "").strip(),
+            str(entry.get("label") or "").strip().lower(),
+        )
+        if key in seen:
+            return
+        seen.add(key)
+        selected.append(entry)
+
+    if pick_filter:
+        # First pass: prioritize common graspable object classes.
+        for entry in entries:
+            label_tokens = set(_label_tokens(str(entry.get("label") or "")))
+            if not _is_plausible_pick_candidate(entry):
+                continue
+            if not (label_tokens & _PICKABLE_OBJECT_KEYWORDS):
+                continue
+            _add(entry)
+            if len(selected) >= limit:
+                return selected
+        # Second pass: broaden to other plausible pick candidates.
+        for entry in entries:
+            if not _is_plausible_pick_candidate(entry):
+                continue
+            _add(entry)
+            if len(selected) >= limit:
+                return selected
+
+    for entry in entries:
+        _add(entry)
+        if len(selected) >= limit:
+            return selected
+
+    return selected
+
+
+def _build_interiorgs_prompt_tasks(
+    manipulation_candidates: List[dict],
+    articulation_hints: List[dict],
+    navigation_hints: List[dict],
+    scene_type: str,
+) -> List[dict]:
+    """Build task list with both category IDs and explicit natural-language prompts."""
+    tasks: List[dict] = []
+
+    if manipulation_candidates:
+        tasks.append(
+            {"task_id": "pick_place_manipulation", "source": "interiorgs", "scene_type": scene_type}
+        )
+    if articulation_hints:
+        tasks.append(
+            {"task_id": "open_close_access_points", "source": "interiorgs", "scene_type": scene_type}
+        )
+    if not tasks:
+        tasks.append(
+            {"task_id": "pick_place_manipulation", "source": "fallback", "scene_type": scene_type}
+        )
+
+    for entry in _select_prompt_entries(manipulation_candidates, limit=6, pick_filter=True):
+        token = _prompt_token_from_entry(entry)
+        tasks.append(
+            {
+                "task_id": f"Pick up {token} and place it in the target zone",
+                "source": "interiorgs_prompt",
+                "scene_type": scene_type,
+            }
+        )
+
+    for entry in _select_prompt_entries(articulation_hints, limit=4):
+        token = _prompt_token_from_entry(entry)
+        tasks.append(
+            {
+                "task_id": f"Open and close {token}",
+                "source": "interiorgs_prompt",
+                "scene_type": scene_type,
+            }
+        )
+
+    for entry in _select_prompt_entries(navigation_hints, limit=2):
+        label = str(entry.get("label") or "target area").strip().lower().replace("_", " ")
+        tasks.append(
+            {
+                "task_id": f"Navigate to the {label}",
+                "source": "interiorgs_prompt",
+                "scene_type": scene_type,
+            }
+        )
+
+    deduped: List[dict] = []
+    seen_prompts: set = set()
+    for task in tasks:
+        prompt_key = str(task.get("task_id") or "").strip().lower()
+        if not prompt_key or prompt_key in seen_prompts:
+            continue
+        seen_prompts.add(prompt_key)
+        deduped.append(task)
+    return deduped
 
 
 def ingest_interiorgs(
@@ -202,10 +422,28 @@ def ingest_interiorgs(
 
     # ------------------------------------------------------------------
     # 1. labels.json objects (ground-truth OBBs)
+    #
+    # Two formats are supported:
+    #   A) Actual InteriorGS on-disk format — labels_data is a *list* where
+    #      each item has keys: ins_id, label, bounding_box (list of {x,y,z} dicts)
+    #   B) Normalised / test format — labels_data is a *dict* with an "objects"
+    #      key; each item has: instance_id, semantic_label, bounding_box (list
+    #      of [x,y,z] lists)
     # ------------------------------------------------------------------
-    for obj in labels_data.get("objects", []):
-        iid = str(obj.get("instance_id", "")).strip()
-        label = str(obj.get("semantic_label", "unknown")).strip()
+    if isinstance(labels_data, list):
+        # Format A: actual InteriorGS file
+        raw_objects: List[dict] = labels_data
+        _get_iid = lambda o: str(o.get("ins_id", "")).strip()
+        _get_label = lambda o: str(o.get("label", "unknown")).strip()
+    else:
+        # Format B: normalised / test dict
+        raw_objects = labels_data.get("objects", [])
+        _get_iid = lambda o: str(o.get("instance_id", "")).strip()
+        _get_label = lambda o: str(o.get("semantic_label", "unknown")).strip()
+
+    for obj in raw_objects:
+        iid = _get_iid(obj)
+        label = _get_label(obj)
         corners = obj.get("bounding_box")
         if not corners:
             continue
@@ -239,7 +477,8 @@ def ingest_interiorgs(
     # ------------------------------------------------------------------
     for hole in structure_data.get("holes", []):
         hole_type = str(hole.get("type", "")).upper()
-        if hole_type not in {"DOOR", "WINDOW"}:
+        # OPENING is a passthrough arch feature — treat as door for task purposes.
+        if hole_type not in {"DOOR", "WINDOW", "OPENING"}:
             continue
         profile = hole.get("profile")
         if not profile:
@@ -248,7 +487,7 @@ def ingest_interiorgs(
         if bbox is None:
             continue
 
-        label = "door" if hole_type == "DOOR" else "window"
+        label = "window" if hole_type == "WINDOW" else "door"
         center_key = [round(v, 3) for v in bbox["center"]]
         extent_key = [round(v, 3) for v in bbox["extents"]]
         stable_key = f"{label}|{center_key}|{extent_key}".encode("utf-8")
@@ -302,19 +541,12 @@ def ingest_interiorgs(
     # Derive tasks from what we found
     # ------------------------------------------------------------------
     scene_type = _interiorgs_scene_type(structure_data)
-    tasks: List[dict] = []
-    if manipulation_candidates:
-        tasks.append(
-            {"task_id": "pick_place_manipulation", "source": "interiorgs", "scene_type": scene_type}
-        )
-    if articulation_hints:
-        tasks.append(
-            {"task_id": "open_close_access_points", "source": "interiorgs", "scene_type": scene_type}
-        )
-    if not tasks:
-        tasks.append(
-            {"task_id": "pick_place_manipulation", "source": "fallback", "scene_type": scene_type}
-        )
+    tasks = _build_interiorgs_prompt_tasks(
+        manipulation_candidates=manipulation_candidates,
+        articulation_hints=articulation_hints,
+        navigation_hints=navigation_hints,
+        scene_type=scene_type,
+    )
 
     num_m = len(manipulation_candidates)
     num_a = len(articulation_hints)
