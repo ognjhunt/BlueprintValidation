@@ -9,6 +9,7 @@ from ..common import StageResult, get_logger, read_json, write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..enrichment.cosmos_runner import enrich_clip
 from ..enrichment.variant_specs import get_variants
+from ..warmup import load_cached_variants
 from .base import PipelineStage
 
 logger = get_logger("stages.s2_enrich")
@@ -48,17 +49,22 @@ class EnrichStage(PipelineStage):
 
         render_manifest = read_json(render_manifest_path)
 
-        # Extract a sample frame for dynamic variant generation
-        sample_frame_path = _extract_sample_frame(render_manifest, work_dir)
-
-        variants = get_variants(
-            custom_variants=config.enrich.variants or None,
-            dynamic=config.enrich.dynamic_variants,
-            dynamic_model=config.enrich.dynamic_variants_model,
-            sample_frame_path=sample_frame_path,
-            num_variants=config.enrich.num_variants_per_render,
-            facility_description=facility.description,
-        )
+        # Check for warmup-cached variant prompts before calling Gemini
+        cached_variants = load_cached_variants(work_dir)
+        if cached_variants:
+            logger.info("Using %d cached variant prompts from warmup", len(cached_variants))
+            variants = cached_variants
+        else:
+            # Extract a sample frame for dynamic variant generation
+            sample_frame_path = _extract_sample_frame(render_manifest, work_dir)
+            variants = get_variants(
+                custom_variants=config.enrich.variants or None,
+                dynamic=config.enrich.dynamic_variants,
+                dynamic_model=config.enrich.dynamic_variants_model,
+                sample_frame_path=sample_frame_path,
+                num_variants=config.enrich.num_variants_per_render,
+                facility_description=facility.description,
+            )
 
         # Limit variants to configured count
         variants = variants[: config.enrich.num_variants_per_render]

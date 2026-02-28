@@ -381,6 +381,7 @@ def _build_pairwise_metrics(all_scores: List[Dict]) -> Dict:
             mean1 = float(np.mean([s["task_score"] for s in s1]))
             mean2 = float(np.mean([s["task_score"] for s in s2]))
             improvement = ((mean2 - mean1) / max(mean1, 1e-8)) * 100
+            abs_diff = mean2 - mean1
 
             min_len = min(len(s1), len(s2))
             wins = sum(
@@ -406,6 +407,7 @@ def _build_pairwise_metrics(all_scores: List[Dict]) -> Dict:
                 f"{c1}_mean": round(mean1, 3),
                 f"{c2}_mean": round(mean2, 3),
                 "improvement_pct": round(improvement, 2),
+                "absolute_difference": round(abs_diff, 3),
                 "win_rate": round(win_rate, 3),
                 "p_value": round(p_value, 6) if p_value is not None else None,
             }

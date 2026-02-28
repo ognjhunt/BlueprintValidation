@@ -87,6 +87,37 @@ end_header
 
 
 @pytest.fixture
+def sample_ply_with_rgb(tmp_path) -> Path:
+    """Create a minimal synthetic PLY with direct RGB vertex colors."""
+    ply_path = tmp_path / "test_rgb.ply"
+    n = 32
+    rng = np.random.default_rng(7)
+
+    header = f"""ply
+format binary_little_endian 1.0
+element vertex {n}
+property float x
+property float y
+property float z
+property uchar red
+property uchar green
+property uchar blue
+end_header
+"""
+
+    with open(ply_path, "wb") as f:
+        f.write(header.encode("ascii"))
+        for i in range(n):
+            x, y, z = rng.uniform(-2, 2), rng.uniform(-2, 2), rng.uniform(0, 1.5)
+            r = i % 256
+            g = (2 * i) % 256
+            b = (3 * i) % 256
+            f.write(struct.pack("<3f3B", x, y, z, r, g, b))
+
+    return ply_path
+
+
+@pytest.fixture
 def sample_config(tmp_path) -> "ValidationConfig":
     """Create a minimal config for testing."""
     from blueprint_validation.config import (

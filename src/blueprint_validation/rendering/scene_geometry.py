@@ -3,16 +3,221 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+import math
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 import numpy as np
 
 from ..common import get_logger
-from ..config import CameraPathSpec, ManipulationZoneConfig
+from ..config import CameraPathSpec, FacilityConfig, ManipulationZoneConfig
 
 logger = get_logger("rendering.scene_geometry")
+
+
+# ---------------------------------------------------------------------------
+# Scene orientation transform
+# ---------------------------------------------------------------------------
+
+_UP_AXIS_ROTATIONS = {
+    "z": np.eye(3, dtype=np.float64),
+    "+z": np.eye(3, dtype=np.float64),
+    "y": np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]], dtype=np.float64),
+    "+y": np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]], dtype=np.float64),
+    "-y": np.array([[1, 0, 0], [0, 0, 1], [0, -1, 0]], dtype=np.float64),
+    "-z": np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]], dtype=np.float64),
+    "x": np.array([[0, 0, -1], [0, 1, 0], [1, 0, 0]], dtype=np.float64),
+    "+x": np.array([[0, 0, -1], [0, 1, 0], [1, 0, 0]], dtype=np.float64),
+    "-x": np.array([[0, 0, 1], [0, 1, 0], [-1, 0, 0]], dtype=np.float64),
+}
+
+
+def _euler_xyz_to_matrix(rx_deg: float, ry_deg: float, rz_deg: float) -> np.ndarray:
+    """Build a 3x3 rotation matrix from extrinsic XYZ Euler angles in degrees."""
+    rx, ry, rz = math.radians(rx_deg), math.radians(ry_deg), math.radians(rz_deg)
+    cx, sx = math.cos(rx), math.sin(rx)
+    cy, sy = math.cos(ry), math.sin(ry)
+    cz, sz = math.cos(rz), math.sin(rz)
+    Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]], dtype=np.float64)
+    Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]], dtype=np.float64)
+    Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]], dtype=np.float64)
+    return Rz @ Ry @ Rx
+
+
+def detect_up_axis(means: np.ndarray, confidence_ratio: float = 1.5) -> str:
+    """Infer the up axis from point cloud variance analysis.
+
+    Uses a two-stage approach:
+
+    1. **Robust extents** — Trim the outer 1% of points per axis to ignore
+       noise/outliers, then pick the axis with the smallest trimmed range.
+    2. **Floor-density sign check** — Split the candidate axis at the median.
+       If the lower slab has more points than the upper slab the direction is
+       positive (normal: floor at min, ceiling at max).  Otherwise negative.
+
+    Returns one of ``"x"``, ``"y"``, ``"z"``, ``"-x"``, ``"-y"``, ``"-z"``.
+    Falls back to ``"z"`` when the scene is roughly cubical or there are
+    too few points.
+
+    Args:
+        means: (N, 3) point positions.
+        confidence_ratio: The second-smallest extent must be at least this
+            many times larger than the smallest for the detection to be
+            confident.  Below this threshold the function falls back to "z".
+    """
+    if means.shape[0] < 10:
+        logger.warning(
+            "Too few points (%d) for up-axis detection; defaulting to Z-up",
+            means.shape[0],
+        )
+        return "z"
+
+    # Robust extents: trim 1st-99th percentile to ignore outlier Gaussians
+    lo = np.percentile(means, 1, axis=0)
+    hi = np.percentile(means, 99, axis=0)
+    extents = hi - lo
+
+    if extents.min() < 1e-6:
+        logger.warning(
+            "Near-zero extent detected (%.4f); defaulting to Z-up", extents.min(),
+        )
+        return "z"
+
+    min_axis = int(np.argmin(extents))
+    sorted_extents = np.sort(extents)
+    ratio = sorted_extents[1] / sorted_extents[0]
+
+    if ratio < confidence_ratio:
+        logger.info(
+            "Scene extents roughly equal (X=%.2f Y=%.2f Z=%.2f, ratio=%.1f); "
+            "defaulting to Z-up. Set up_axis manually if needed.",
+            extents[0], extents[1], extents[2], ratio,
+        )
+        return "z"
+
+    axis_name = {0: "x", 1: "y", 2: "z"}[min_axis]
+
+    # Sign detection: count points in the bottom vs top 15% of the physical
+    # extent along the candidate axis.  The floor is a large flat surface so
+    # typically has more Gaussians than the ceiling.
+    vals = means[:, min_axis]
+    axis_lo = lo[min_axis]
+    axis_extent = extents[min_axis]
+    slab = 0.15 * axis_extent
+    n_lo = int(np.sum(vals <= axis_lo + slab))
+    n_hi = int(np.sum(vals >= axis_lo + axis_extent - slab))
+
+    if n_hi > n_lo * 1.3:
+        # More density near the top → scene is flipped
+        axis_name = f"-{axis_name}"
+
+    logger.info(
+        "Auto-detected up_axis='%s' (extents: X=%.2f Y=%.2f Z=%.2f, "
+        "ratio=%.1f, lo_density=%d, hi_density=%d)",
+        axis_name, extents[0], extents[1], extents[2], ratio, n_lo, n_hi,
+    )
+    return axis_name
+
+
+def compute_scene_transform(facility: FacilityConfig) -> np.ndarray:
+    """Compute a 4x4 transform that maps PLY-native coords to pipeline Z-up coords.
+
+    Composes the up-axis preset rotation with optional additional Euler rotation.
+    Returns identity when up_axis="z" and scene_rotation_deg=[0,0,0].
+
+    Note: ``up_axis="auto"`` must be resolved to a concrete axis *before*
+    calling this function (see :func:`detect_up_axis`).  If "auto" is passed
+    directly a warning is emitted and Z-up is assumed.
+    """
+    up_key = facility.up_axis.lower().strip()
+
+    if up_key == "auto":
+        logger.warning(
+            "compute_scene_transform called with up_axis='auto' without prior "
+            "resolution; falling back to 'z'. Call detect_up_axis() first."
+        )
+        up_key = "z"
+
+    if up_key not in _UP_AXIS_ROTATIONS:
+        raise ValueError(
+            f"Unknown up_axis '{facility.up_axis}'. "
+            f"Valid values: {sorted(_UP_AXIS_ROTATIONS.keys())}"
+        )
+
+    R_up = _UP_AXIS_ROTATIONS[up_key]
+
+    # Additional Euler rotation (applied after up-axis correction)
+    rx, ry, rz = facility.scene_rotation_deg
+    if rx != 0.0 or ry != 0.0 or rz != 0.0:
+        R_extra = _euler_xyz_to_matrix(rx, ry, rz)
+        R = R_extra @ R_up
+    else:
+        R = R_up
+
+    T = np.eye(4, dtype=np.float64)
+    T[:3, :3] = R
+    return T
+
+
+def is_identity_transform(T: np.ndarray) -> bool:
+    """Check if a 4x4 transform is (close to) identity."""
+    return bool(np.allclose(T, np.eye(4), atol=1e-10))
+
+
+def transform_means(means: np.ndarray, T: np.ndarray) -> np.ndarray:
+    """Apply a 4x4 rotation transform to (N, 3) positions."""
+    R = T[:3, :3]
+    return (R @ means.T).T
+
+
+def transform_c2w(c2w: np.ndarray, T: np.ndarray) -> np.ndarray:
+    """Convert a c2w matrix from the corrected (Z-up) frame to the original PLY frame.
+
+    If T maps original→corrected, then T_inv maps corrected→original.
+    c2w_original = T_inv @ c2w_corrected
+    """
+    T_inv = np.eye(4, dtype=np.float64)
+    T_inv[:3, :3] = T[:3, :3].T  # orthogonal rotation: inverse = transpose
+    return T_inv @ c2w
+
+
+def transform_obbs(
+    obbs: List[OrientedBoundingBox],
+    T: np.ndarray,
+) -> List[OrientedBoundingBox]:
+    """Rotate OBB centers/axes from PLY-native frame into corrected frame."""
+    R = T[:3, :3]
+    transformed: List[OrientedBoundingBox] = []
+    for obb in obbs:
+        transformed.append(
+            OrientedBoundingBox(
+                instance_id=obb.instance_id,
+                label=obb.label,
+                center=R @ obb.center,
+                extents=obb.extents.copy(),
+                axes=R @ obb.axes,
+                confidence=obb.confidence,
+                category=obb.category,
+            )
+        )
+    return transformed
+
+
+def transform_camera_path_specs(
+    specs: List[CameraPathSpec],
+    T: np.ndarray,
+) -> List[CameraPathSpec]:
+    """Rotate any explicit approach point into the corrected frame."""
+    transformed: List[CameraPathSpec] = []
+    for spec in specs:
+        if spec.approach_point is None:
+            transformed.append(spec)
+            continue
+        point = np.asarray(spec.approach_point, dtype=np.float64).reshape(1, 3)
+        rotated = transform_means(point, T)[0].tolist()
+        transformed.append(replace(spec, approach_point=rotated))
+    return transformed
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +279,7 @@ _IDENTITY_AXES = np.eye(3, dtype=np.float64)
 
 
 def load_obbs_from_task_targets(path: Path) -> List[OrientedBoundingBox]:
-    """Parse task_targets.json and extract OBBs from manipulation_candidates + articulation_hints."""
+    """Parse task_targets.json and extract OBBs from hint candidate groups."""
     with open(path) as f:
         data = json.load(f)
 
@@ -83,6 +288,7 @@ def load_obbs_from_task_targets(path: Path) -> List[OrientedBoundingBox]:
     for category, key in [
         ("manipulation", "manipulation_candidates"),
         ("articulation", "articulation_hints"),
+        ("navigation", "navigation_hints"),
     ]:
         for entry in data.get(key, []):
             bbox = entry.get("boundingBox") or entry.get("obb")
@@ -116,11 +322,12 @@ def load_obbs_from_task_targets(path: Path) -> List[OrientedBoundingBox]:
             )
 
     logger.info(
-        "Loaded %d OBBs from %s (manipulation=%d, articulation=%d)",
+        "Loaded %d OBBs from %s (manipulation=%d, articulation=%d, navigation=%d)",
         len(obbs),
         path,
         sum(1 for o in obbs if o.category == "manipulation"),
         sum(1 for o in obbs if o.category == "articulation"),
+        sum(1 for o in obbs if o.category == "navigation"),
     )
     return obbs
 
@@ -215,7 +422,7 @@ def generate_scene_aware_specs(
 ) -> List[CameraPathSpec]:
     """Generate CameraPathSpecs from OBBs — one per detected object.
 
-    Manipulation candidates get tight arcs; articulation objects get orbits.
+    Manipulation candidates get tight arcs; articulation/navigation objects get orbits.
     """
     specs: List[CameraPathSpec] = []
 
@@ -234,8 +441,8 @@ def generate_scene_aware_specs(
                     look_down_override_deg=45.0,
                 )
             )
-        else:
-            # Articulation objects (doors, drawers) — orbit around them
+        elif obb.category == "articulation":
+            # Articulation objects (doors, drawers) — orbit around them.
             specs.append(
                 CameraPathSpec(
                     type="orbit",
@@ -243,6 +450,17 @@ def generate_scene_aware_specs(
                     num_orbits=1,
                     height_override_m=cam_height,
                     look_down_override_deg=25.0,
+                )
+            )
+        else:
+            # Navigation regions are coarse waypoints; use a gentle overview orbit.
+            specs.append(
+                CameraPathSpec(
+                    type="orbit",
+                    radius_m=standoff,
+                    num_orbits=1,
+                    height_override_m=cam_height,
+                    look_down_override_deg=35.0,
                 )
             )
 
@@ -413,3 +631,69 @@ def cluster_scene_points(
             if len(members) > 0:
                 centers[ci] = members.mean(axis=0)
     return centers.astype(np.float32)
+
+
+@dataclass
+class ClusterResult:
+    """Result of scene point clustering with per-cluster bounding info."""
+
+    centers: np.ndarray  # (K, 3) float32 cluster centers
+    extents: np.ndarray  # (K, 3) float32 per-cluster bounding box extents
+    point_counts: np.ndarray  # (K,) int32 number of points in each cluster
+
+
+def cluster_scene_points_with_extents(
+    means: np.ndarray,
+    num_clusters: int = 8,
+    max_points: int = 30000,
+    seed: int = 13,
+    min_extent: float = 0.1,
+    max_extent: float = 2.0,
+) -> ClusterResult:
+    """Cluster scene points and return centers with per-cluster bounding extents.
+
+    Same lightweight k-means as :func:`cluster_scene_points`, but also computes
+    the 5th-95th percentile axis-aligned bounding box of each cluster, clamped
+    to *[min_extent, max_extent]* per axis.
+    """
+    if means.size == 0:
+        return ClusterResult(
+            centers=np.zeros((0, 3), dtype=np.float32),
+            extents=np.zeros((0, 3), dtype=np.float32),
+            point_counts=np.zeros(0, dtype=np.int32),
+        )
+    pts = means.astype(np.float32)
+    if len(pts) > max_points:
+        rng = np.random.default_rng(seed)
+        choice = rng.choice(len(pts), size=max_points, replace=False)
+        pts = pts[choice]
+    k = max(1, min(int(num_clusters), len(pts)))
+
+    rng = np.random.default_rng(seed)
+    centers = pts[rng.choice(len(pts), size=k, replace=False)].astype(np.float32)
+    for _ in range(12):
+        d = np.linalg.norm(pts[:, None, :] - centers[None, :, :], axis=2)
+        assign = np.argmin(d, axis=1)
+        for ci in range(k):
+            members = pts[assign == ci]
+            if len(members) > 0:
+                centers[ci] = members.mean(axis=0)
+
+    # Compute per-cluster extents from 5th-95th percentile
+    ext = np.full((k, 3), min_extent, dtype=np.float32)
+    counts = np.zeros(k, dtype=np.int32)
+    d = np.linalg.norm(pts[:, None, :] - centers[None, :, :], axis=2)
+    assign = np.argmin(d, axis=1)
+    for ci in range(k):
+        members = pts[assign == ci]
+        counts[ci] = len(members)
+        if len(members) >= 2:
+            lo = np.percentile(members, 5, axis=0)
+            hi = np.percentile(members, 95, axis=0)
+            ext[ci] = np.clip(hi - lo, min_extent, max_extent)
+
+    logger.info(
+        "Clustered %d points into %d clusters (sizes: %s)",
+        len(pts), k, counts.tolist(),
+    )
+    return ClusterResult(centers=centers, extents=ext, point_counts=counts)

@@ -235,6 +235,7 @@ class PolicyEvalStage(PipelineStage):
         baseline_mean = per_condition.get("baseline", {}).get("mean_task_score", 0)
         adapted_mean = per_condition.get("adapted", {}).get("mean_task_score", 0)
         improvement = ((adapted_mean - baseline_mean) / max(baseline_mean, 1e-8)) * 100
+        absolute_difference = adapted_mean - baseline_mean
 
         min_len = min(len(baseline_scores), len(adapted_scores))
         wins = sum(
@@ -258,6 +259,7 @@ class PolicyEvalStage(PipelineStage):
             "baseline_mean_task_score": round(float(baseline_mean), 3),
             "adapted_mean_task_score": round(float(adapted_mean), 3),
             "improvement_pct": round(float(improvement), 2),
+            "absolute_difference": round(float(absolute_difference), 3),
             "win_rate": round(float(win_rate), 3),
             "p_value": round(p_value, 6) if p_value is not None else None,
             "num_rollouts_baseline": len(baseline_scores),
@@ -419,6 +421,7 @@ def _build_pairwise_metrics(all_scores: List[Dict], conditions: List[str]) -> Di
             mean1 = float(np.mean([s["task_score"] for s in s1]))
             mean2 = float(np.mean([s["task_score"] for s in s2]))
             improvement = ((mean2 - mean1) / max(mean1, 1e-8)) * 100
+            abs_diff = mean2 - mean1
             min_len = min(len(s1), len(s2))
             wins = sum(
                 1 for a, b in zip(s1[:min_len], s2[:min_len])
@@ -439,6 +442,7 @@ def _build_pairwise_metrics(all_scores: List[Dict], conditions: List[str]) -> Di
                 f"{c1}_mean": round(mean1, 3),
                 f"{c2}_mean": round(mean2, 3),
                 "improvement_pct": round(improvement, 2),
+                "absolute_difference": round(abs_diff, 3),
                 "win_rate": round(win_rate, 3),
                 "p_value": round(p_value, 6) if p_value is not None else None,
             }

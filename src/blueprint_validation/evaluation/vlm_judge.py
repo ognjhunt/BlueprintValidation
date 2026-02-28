@@ -6,6 +6,7 @@ import base64
 import json
 import os
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List
@@ -160,6 +161,29 @@ def _get_gemini_client(config: VLMJudgeConfig):
     return client
 
 
+def _generate_with_retry(client, *, model, contents, config, max_retries: int = 3):
+    """Call generate_content with exponential backoff on transient errors."""
+    for attempt in range(max_retries):
+        try:
+            return client.models.generate_content(
+                model=model, contents=contents, config=config,
+            )
+        except Exception as exc:
+            exc_text = str(exc).lower()
+            transient = any(
+                kw in exc_text
+                for kw in ("rate limit", "429", "500", "503", "timeout", "unavailable", "deadline")
+            )
+            if not transient or attempt == max_retries - 1:
+                raise
+            wait = 2 ** attempt
+            logger.warning(
+                "Transient API error (attempt %d/%d), retrying in %ds: %s",
+                attempt + 1, max_retries, wait, exc,
+            )
+            time.sleep(wait)
+
+
 def _encode_video_frames(video_path: Path, max_frames: int = 16) -> List[dict]:
     """Extract and encode frames from a video for VLM input."""
     import cv2
@@ -234,7 +258,8 @@ def score_rollout(
                 )
             )
 
-        response = client.models.generate_content(
+        response = _generate_with_retry(
+            client,
             model=config.model,
             contents=[types.Content(parts=parts, role="user")],
             config=_build_generate_config(
@@ -311,7 +336,8 @@ def score_rollout_manipulation(
                 )
             )
 
-        response = client.models.generate_content(
+        response = _generate_with_retry(
+            client,
             model=config.model,
             contents=[types.Content(parts=parts, role="user")],
             config=_build_generate_config(
@@ -394,7 +420,8 @@ def score_spatial_accuracy(
                     "and a non-empty reasoning string."
                 )
             )
-        response = client.models.generate_content(
+        response = _generate_with_retry(
+            client,
             model=config.model,
             contents=[types.Content(parts=parts, role="user")],
             config=_build_generate_config(
@@ -459,7 +486,8 @@ def classify_facility(
                     "Retry: return JSON only with predicted_facility, confidence (0-1), reasoning."
                 )
             )
-        response = client.models.generate_content(
+        response = _generate_with_retry(
+            client,
             model=config.model,
             contents=[types.Content(parts=parts, role="user")],
             config=_build_generate_config(

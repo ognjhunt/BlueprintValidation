@@ -56,6 +56,8 @@ def test_facility_config():
     assert fac.name == "Test"
     assert fac.floor_height_m == 0.0
     assert len(fac.landmarks) == 2
+    assert fac.up_axis == "auto"
+    assert fac.scene_rotation_deg == [0.0, 0.0, 0.0]
 
 
 def test_config_with_all_sections(tmp_path):
@@ -190,3 +192,46 @@ def test_config_resolves_relative_paths(tmp_path):
     assert config.eval_policy.openvla_checkpoint.is_absolute()
     assert config.policy_finetune.openvla_repo.is_absolute()
     assert config.policy_finetune.data_root_dir.is_absolute()
+
+
+def test_config_parses_scene_orientation_fields(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "scene_orientation.yaml"
+    config_path.write_text(yaml.dump({
+        "project_name": "Scene Orientation",
+        "facilities": {
+            "a": {
+                "name": "A",
+                "ply_path": "/tmp/a.ply",
+                "up_axis": "y",
+                "scene_rotation_deg": [10, 20, 30],
+            },
+        },
+    }))
+
+    config = load_config(config_path)
+    fac = config.facilities["a"]
+    assert fac.up_axis == "y"
+    assert fac.scene_rotation_deg == [10.0, 20.0, 30.0]
+
+
+def test_config_rejects_invalid_scene_rotation_length(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "bad_scene_orientation.yaml"
+    config_path.write_text(yaml.dump({
+        "project_name": "Bad Scene Orientation",
+        "facilities": {
+            "a": {
+                "name": "A",
+                "ply_path": "/tmp/a.ply",
+                "scene_rotation_deg": [0, 90],
+            },
+        },
+    }))
+
+    with pytest.raises(ValueError, match="scene_rotation_deg"):
+        load_config(config_path)

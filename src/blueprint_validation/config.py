@@ -32,6 +32,11 @@ class FacilityConfig:
     floor_height_m: float = 0.0
     ceiling_height_m: float = 5.0
     manipulation_zones: List[ManipulationZoneConfig] = field(default_factory=list)
+    # Scene orientation correction — the pipeline assumes Z-up.
+    # "auto" detects the up axis from point cloud extents during warmup.
+    # Override with "z", "y", "-y", "-z", "x", or "-x" if auto-detection is wrong.
+    up_axis: str = "auto"
+    scene_rotation_deg: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
 
 
 @dataclass
@@ -164,6 +169,7 @@ class PolicyEvalConfig:
     tasks: List[str] = field(default_factory=list)
     manipulation_tasks: List[str] = field(default_factory=list)
     conditions: List[str] = field(default_factory=lambda: ["baseline", "adapted"])
+    min_absolute_difference: float = 0.5  # minimum raw score difference for PASS
     vlm_judge: VLMJudgeConfig = field(default_factory=VLMJudgeConfig)
 
 
@@ -384,6 +390,14 @@ def _parse_manipulation_zones(raw_list: List[Dict[str, Any]]) -> List[Manipulati
     return zones
 
 
+def _parse_scene_rotation_deg(raw_value: Any) -> List[float]:
+    if raw_value is None:
+        return [0.0, 0.0, 0.0]
+    if not isinstance(raw_value, (list, tuple)) or len(raw_value) != 3:
+        raise ValueError("facility.scene_rotation_deg must be a list of three numbers [rx, ry, rz]")
+    return [float(v) for v in raw_value]
+
+
 def _parse_facility(raw: Dict[str, Any], base_dir: Path) -> FacilityConfig:
     task_hints_value = raw.get("task_hints_path")
     return FacilityConfig(
@@ -395,6 +409,8 @@ def _parse_facility(raw: Dict[str, Any], base_dir: Path) -> FacilityConfig:
         floor_height_m=raw.get("floor_height_m", 0.0),
         ceiling_height_m=raw.get("ceiling_height_m", 5.0),
         manipulation_zones=_parse_manipulation_zones(raw.get("manipulation_zones", [])),
+        up_axis=str(raw.get("up_axis", "auto")).strip(),
+        scene_rotation_deg=_parse_scene_rotation_deg(raw.get("scene_rotation_deg")),
     )
 
 
@@ -562,6 +578,7 @@ def load_config(path: Path) -> ValidationConfig:
             tasks=ep.get("tasks", []),
             manipulation_tasks=ep.get("manipulation_tasks", []),
             conditions=ep.get("conditions", ["baseline", "adapted"]),
+            min_absolute_difference=float(ep.get("min_absolute_difference", 0.5)),
             vlm_judge=VLMJudgeConfig(
                 model=vlm_raw.get("model", "gemini-3-flash-preview"),
                 api_key_env=vlm_raw.get("api_key_env", "GOOGLE_GENAI_API_KEY"),

@@ -137,7 +137,7 @@ class RLDSExportStage(PipelineStage):
                 ),
             )
 
-        # Convert JSONL to TFRecords for OpenVLA
+        # Convert JSONL to TFRecords for OpenVLA-OFT
         tfrecord_dir = config.rollout_dataset.export_dir / dataset_name
         convert_jsonl_to_tfrecord(
             train_jsonl_path=train_dir / "episodes.jsonl",

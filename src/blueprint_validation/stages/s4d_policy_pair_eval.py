@@ -297,6 +297,9 @@ def _compute_pair_metrics(rows: List[dict]) -> dict:
             * 100.0,
             2,
         ),
+        "task_score_absolute_difference": round(
+            float(np.mean(site_scores)) - float(np.mean(base_scores)), 3
+        ),
         "policy_base_success_rate": round(float(np.mean(base_success)), 3),
         "policy_site_success_rate": round(float(np.mean(site_success)), 3),
         "win_rate_site_over_base": round(wins / len(paired), 3),

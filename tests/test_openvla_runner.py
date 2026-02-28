@@ -1,4 +1,4 @@
-"""Tests for OpenVLA runner integration contracts."""
+"""Tests for OpenVLA-OFT runner integration contracts."""
 
 from __future__ import annotations
 

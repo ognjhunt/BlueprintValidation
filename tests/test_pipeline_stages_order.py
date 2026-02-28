@@ -13,12 +13,14 @@ def test_pipeline_stage_order(sample_config, tmp_path):
 
     # Access the per_facility_stages list by inspecting run_all
     # We test the import works correctly for all new stages
+    from blueprint_validation.stages.s0_task_hints_bootstrap import TaskHintsBootstrapStage
     from blueprint_validation.stages.s4a_rlds_export import RLDSExportStage
     from blueprint_validation.stages.s1e_splatsim_interaction import SplatSimInteractionStage
     from blueprint_validation.stages.s3b_policy_finetune import PolicyFinetuneStage
     from blueprint_validation.stages.s3c_policy_rl_loop import PolicyRLLoopStage
     from blueprint_validation.stages.s4e_trained_eval import TrainedPolicyEvalStage
 
+    assert TaskHintsBootstrapStage().name == "s0_task_hints_bootstrap"
     assert RLDSExportStage().name == "s4a_rlds_export"
     assert SplatSimInteractionStage().name == "s1e_splatsim_interaction"
     assert PolicyFinetuneStage().name == "s3b_policy_finetune"
@@ -28,6 +30,7 @@ def test_pipeline_stage_order(sample_config, tmp_path):
 
 def test_all_stages_importable():
     """Verify all pipeline stage modules can be imported."""
+    from blueprint_validation.stages.s0_task_hints_bootstrap import TaskHintsBootstrapStage
     from blueprint_validation.stages.s1_render import RenderStage
     from blueprint_validation.stages.s1b_robot_composite import RobotCompositeStage
     from blueprint_validation.stages.s1c_gemini_polish import GeminiPolishStage
@@ -73,6 +76,7 @@ def test_stage_names_are_unique():
 
     config = ValidationConfig()
     # Instantiate pipeline to get stage list (indirectly via imports)
+    from blueprint_validation.stages.s0_task_hints_bootstrap import TaskHintsBootstrapStage
     from blueprint_validation.stages.s1_render import RenderStage
     from blueprint_validation.stages.s1b_robot_composite import RobotCompositeStage
     from blueprint_validation.stages.s1c_gemini_polish import GeminiPolishStage
@@ -92,6 +96,7 @@ def test_stage_names_are_unique():
     from blueprint_validation.stages.s6_spatial_accuracy import SpatialAccuracyStage
 
     stages = [
+        TaskHintsBootstrapStage(),
         RenderStage(),
         RobotCompositeStage(),
         GeminiPolishStage(),

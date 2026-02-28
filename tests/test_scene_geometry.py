@@ -16,6 +16,7 @@ import pytest
 def _make_task_targets(
     manipulation_candidates: list | None = None,
     articulation_hints: list | None = None,
+    navigation_hints: list | None = None,
 ) -> dict:
     """Build a minimal task_targets.json-style dict."""
     data: dict = {}
@@ -23,6 +24,8 @@ def _make_task_targets(
         data["manipulation_candidates"] = manipulation_candidates
     if articulation_hints is not None:
         data["articulation_hints"] = articulation_hints
+    if navigation_hints is not None:
+        data["navigation_hints"] = navigation_hints
     return data
 
 
@@ -67,6 +70,23 @@ def test_load_obbs_from_task_targets(tmp_path):
     tote = next(o for o in obbs if o.label == "tote")
     np.testing.assert_allclose(tote.center, [1.0, 2.0, 0.5])
     np.testing.assert_allclose(tote.extents, [0.3, 0.4, 0.2])
+
+
+def test_load_obbs_includes_navigation_hints(tmp_path):
+    from blueprint_validation.rendering.scene_geometry import load_obbs_from_task_targets
+
+    data = _make_task_targets(
+        navigation_hints=[
+            _make_candidate("charging_station", [2.0, 1.0, 0.0], [1.0, 1.0, 0.2]),
+        ]
+    )
+    path = tmp_path / "task_targets.json"
+    path.write_text(json.dumps(data))
+
+    obbs = load_obbs_from_task_targets(path)
+    assert len(obbs) == 1
+    assert obbs[0].category == "navigation"
+    assert obbs[0].label == "charging_station"
 
 
 def test_load_obbs_missing_bbox(tmp_path):

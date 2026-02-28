@@ -168,6 +168,8 @@ def _resolve_object_centers(
                     scene_center=scene_center,
                     num_views=4,
                 )
+                if not isinstance(specs, list):
+                    specs = list(getattr(specs, "specs", []))
                 centers = []
                 for spec in specs:
                     if spec.approach_point is None:

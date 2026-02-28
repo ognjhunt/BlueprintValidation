@@ -52,6 +52,7 @@ def _collect_results(config: ValidationConfig, work_dir: Path) -> Dict[str, Any]
     }
 
     stages = [
+        "s0_task_hints_bootstrap",
         "s1_render", "s1b_robot_composite", "s1c_gemini_polish", "s1d_gaussian_augment",
         "s1e_splatsim_interaction",
         "s2_enrich", "s3_finetune", "s4_policy_eval", "s4a_rlds_export", "s3b_policy_finetune",
@@ -90,7 +91,7 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
 
     # Executive Summary
     lines.append("## Executive Summary\n")
-    _add_executive_summary(lines, data)
+    _add_executive_summary(lines, data, config)
 
     # Per-Facility Results
     for fid, fac_data in data.get("facilities", {}).items():
@@ -107,6 +108,7 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
             lines.append("|--------|-------|")
             lines.append(f"| Baseline mean task score | {metrics.get('baseline_mean_task_score', 'N/A')} |")
             lines.append(f"| Adapted mean task score | {metrics.get('adapted_mean_task_score', 'N/A')} |")
+            lines.append(f"| Absolute difference | {metrics.get('absolute_difference', 'N/A')} |")
             lines.append(f"| Improvement | {metrics.get('improvement_pct', 'N/A')}% |")
             lines.append(f"| Win rate | {metrics.get('win_rate', 'N/A')} |")
             lines.append(f"| p-value | {metrics.get('p_value', 'N/A')} |")
@@ -116,8 +118,8 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
             pairwise = metrics.get("pairwise", {})
             if pairwise:
                 lines.append("#### Pairwise Condition Comparisons\n")
-                lines.append("| Comparison | Score A | Score B | Improvement | Win Rate | p-value |")
-                lines.append("|------------|---------|---------|-------------|----------|---------|")
+                lines.append("| Comparison | Score A | Score B | Abs Diff | Improvement | Win Rate | p-value |")
+                lines.append("|------------|---------|---------|----------|-------------|----------|---------|")
                 for pair_key, pair_data in pairwise.items():
                     parts = pair_key.split("_vs_")
                     if len(parts) == 2:
@@ -126,6 +128,7 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
                             f"| {c1} vs {c2} "
                             f"| {pair_data.get(f'{c1}_mean', 'N/A')} "
                             f"| {pair_data.get(f'{c2}_mean', 'N/A')} "
+                            f"| {pair_data.get('absolute_difference', 'N/A')} "
                             f"| {pair_data.get('improvement_pct', 'N/A')}% "
                             f"| {pair_data.get('win_rate', 'N/A')} "
                             f"| {pair_data.get('p_value', 'N/A')} |"
@@ -172,8 +175,8 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
             te_pairwise = te_metrics.get("pairwise", {})
             if te_pairwise:
                 lines.append("#### Trained vs Frozen Comparisons\n")
-                lines.append("| Comparison | Score A | Score B | Improvement | Win Rate | p-value |")
-                lines.append("|------------|---------|---------|-------------|----------|---------|")
+                lines.append("| Comparison | Score A | Score B | Abs Diff | Improvement | Win Rate | p-value |")
+                lines.append("|------------|---------|---------|----------|-------------|----------|---------|")
                 for pair_key, pair_data in te_pairwise.items():
                     parts = pair_key.split("_vs_")
                     if len(parts) == 2:
@@ -182,6 +185,7 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
                             f"| {c1} vs {c2} "
                             f"| {pair_data.get(f'{c1}_mean', 'N/A')} "
                             f"| {pair_data.get(f'{c2}_mean', 'N/A')} "
+                            f"| {pair_data.get('absolute_difference', 'N/A')} "
                             f"| {pair_data.get('improvement_pct', 'N/A')}% "
                             f"| {pair_data.get('win_rate', 'N/A')} "
                             f"| {pair_data.get('p_value', 'N/A')} |"
@@ -199,6 +203,9 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
             )
             lines.append(
                 f"| Policy site mean task score | {metrics.get('policy_site_mean_task_score', 'N/A')} |"
+            )
+            lines.append(
+                f"| Absolute difference | {metrics.get('task_score_absolute_difference', 'N/A')} |"
             )
             lines.append(
                 f"| Improvement | {metrics.get('task_score_improvement_pct', 'N/A')}% |"
@@ -347,22 +354,26 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _add_executive_summary(lines: list, data: dict) -> None:
+def _add_executive_summary(lines: list, data: dict, config: ValidationConfig = None) -> None:
     """Add executive summary to the report."""
+    min_abs_diff = 0.5
+    if config is not None:
+        min_abs_diff = config.eval_policy.min_absolute_difference
+
     # Check if primary test passed
     primary_passed = False
     for fid, fac_data in data.get("facilities", {}).items():
         if "s4d_policy_pair_eval" in fac_data:
             metrics = fac_data["s4d_policy_pair_eval"].get("metrics", {})
-            improvement = metrics.get("task_score_improvement_pct", 0)
+            abs_diff = metrics.get("task_score_absolute_difference", 0)
             p_value = metrics.get("p_value_task_score")
-            if improvement > 0 and (p_value is None or p_value < 0.05):
+            if abs_diff >= min_abs_diff and (p_value is None or p_value < 0.05):
                 primary_passed = True
         elif "s4_policy_eval" in fac_data:
             metrics = fac_data["s4_policy_eval"].get("metrics", {})
-            improvement = metrics.get("improvement_pct", 0)
+            abs_diff = metrics.get("absolute_difference", 0)
             p_value = metrics.get("p_value")
-            if improvement > 0 and (p_value is None or p_value < 0.05):
+            if abs_diff >= min_abs_diff and (p_value is None or p_value < 0.05):
                 primary_passed = True
 
     # Check if trained policy test passed (S4e)
@@ -373,9 +384,9 @@ def _add_executive_summary(lines: list, data: dict) -> None:
             te_pairwise = te_metrics.get("pairwise", {})
             for pair_key, pair_data in te_pairwise.items():
                 if "trained" in pair_key:
-                    imp = pair_data.get("improvement_pct", 0)
+                    abs_d = pair_data.get("absolute_difference", 0)
                     pv = pair_data.get("p_value")
-                    if imp > 0 and (pv is None or pv < 0.05):
+                    if abs_d >= min_abs_diff and (pv is None or pv < 0.05):
                         trained_passed = True
 
     cross_site_passed = False
@@ -395,9 +406,10 @@ def _add_executive_summary(lines: list, data: dict) -> None:
 
     if primary_passed:
         lines.append(
-            "**The site-adapted world model produced higher policy task scores than the "
-            "baseline, with statistical significance.** This validates that facility-specific "
-            "Gaussian splat data improves the evaluation environment for robot policies.\n"
+            f"**The site-adapted world model produced higher policy task scores than the "
+            f"baseline (absolute difference >= {min_abs_diff}, p < 0.05).** This validates "
+            f"that facility-specific Gaussian splat data improves the evaluation environment "
+            f"for robot policies.\n"
         )
     if trained_passed:
         lines.append(

@@ -93,6 +93,8 @@ fi
 
 echo
 echo "Next commands (stage-by-stage):"
+echo "0) warmup (CPU-only pre-computation — run before GPU allocation)"
+echo "   blueprint-validate --config \"$CONFIG_PATH\" --work-dir \"$WORK_DIR\" warmup"
 echo "1) preflight"
 echo "   blueprint-validate --config \"$CONFIG_PATH\" --work-dir \"$WORK_DIR\" preflight"
 echo "2) Stage 1 render"

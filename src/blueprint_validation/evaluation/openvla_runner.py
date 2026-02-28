@@ -1,4 +1,4 @@
-"""OpenVLA inference loop for policy evaluation inside DreamDojo world model."""
+"""OpenVLA-OFT inference loop for policy evaluation inside DreamDojo world model."""
 
 from __future__ import annotations
 
@@ -24,13 +24,13 @@ class RolloutResult:
 
 
 def load_openvla(model_name: str, checkpoint_path: Optional[Path] = None, device: str = "cuda"):
-    """Load OpenVLA model for inference."""
+    """Load OpenVLA-OFT model for inference."""
     from transformers import AutoModelForVision2Seq, AutoProcessor
     import torch
 
     model_id = str(checkpoint_path) if checkpoint_path and checkpoint_path.exists() else model_name
 
-    logger.info("Loading OpenVLA from %s", model_id)
+    logger.info("Loading OpenVLA-OFT from %s", model_id)
     processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
     model = AutoModelForVision2Seq.from_pretrained(
         model_id,
@@ -40,8 +40,8 @@ def load_openvla(model_name: str, checkpoint_path: Optional[Path] = None, device
     ).to(device)
     if not hasattr(model, "predict_action"):
         raise RuntimeError(
-            f"Loaded OpenVLA model from {model_id} does not expose predict_action(). "
-            "Ensure you are using an OpenVLA-compatible checkpoint."
+            f"Loaded OpenVLA-OFT model from {model_id} does not expose predict_action(). "
+            "Ensure you are using an OpenVLA-OFT-compatible checkpoint."
         )
 
     return model, processor
@@ -117,7 +117,7 @@ def run_rollout(
     clip_name: str = "rollout",
     device: str = "cuda",
 ) -> RolloutResult:
-    """Run a single policy rollout: OpenVLA predicts actions, DreamDojo generates frames."""
+    """Run a single policy rollout: OpenVLA-OFT predicts actions, DreamDojo generates frames."""
     try:
         from PIL import Image
     except ImportError:  # pragma: no cover - exercised in lightweight test envs
@@ -137,7 +137,7 @@ def run_rollout(
     logger.info("Running rollout for task: %s (max %d steps)", task_prompt, max_steps)
 
     for step in range(max_steps):
-        # OpenVLA predicts action from current observation
+        # OpenVLA-OFT predicts action from current observation
         image = Image.fromarray(current_frame) if Image else current_frame
         prompt = f"In: What action should the robot take to {task_prompt}?\nOut:"
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -16,10 +17,18 @@ from ..rendering.scene_geometry import (
     OccupancyGrid,
     auto_populate_manipulation_zones,
     build_occupancy_grid,
+    compute_scene_transform,
+    detect_up_axis,
     filter_and_fix_poses,
     generate_scene_aware_specs,
+    is_identity_transform,
     load_obbs_from_task_targets,
+    transform_camera_path_specs,
+    transform_c2w,
+    transform_means,
+    transform_obbs,
 )
+from ..warmup import load_cached_clips, load_warmup_cache
 from .base import PipelineStage
 
 logger = get_logger("stages.s1_render")
@@ -40,6 +49,7 @@ class RenderStage(PipelineStage):
         facility: FacilityConfig,
         splat_means_np: np.ndarray,
         scene_center: np.ndarray,
+        scene_T: Optional[np.ndarray] = None,
     ) -> tuple[List[CameraPathSpec], Optional[OccupancyGrid]]:
         """Build scene-aware camera specs and occupancy grid when enabled."""
         occupancy: Optional[OccupancyGrid] = None
@@ -60,6 +70,8 @@ class RenderStage(PipelineStage):
         if facility.task_hints_path and facility.task_hints_path.exists():
             obbs = load_obbs_from_task_targets(facility.task_hints_path)
             if obbs:
+                if scene_T is not None:
+                    obbs = transform_obbs(obbs, scene_T)
                 extra_specs = generate_scene_aware_specs(obbs, occupancy)
                 facility.manipulation_zones = auto_populate_manipulation_zones(
                     facility.manipulation_zones, obbs
@@ -82,13 +94,17 @@ class RenderStage(PipelineStage):
         try:
             from ..rendering.vlm_scene_detector import detect_and_generate_specs
 
-            return detect_and_generate_specs(
+            result = detect_and_generate_specs(
                 splat_means_np=splat_means_np,
                 scene_center=scene_center,
                 num_views=config.render.vlm_fallback_num_views,
                 model=config.render.vlm_fallback_model,
                 resolution=config.render.resolution,
             )
+            if isinstance(result, list):
+                # Backward compatibility with older detector return shape.
+                return result
+            return list(getattr(result, "specs", []))
         except Exception:
             logger.warning("VLM fallback detection failed; continuing with naive paths", exc_info=True)
             return []
@@ -108,28 +124,177 @@ class RenderStage(PipelineStage):
         logger.info("Loading splat from %s (device=%s)", facility.ply_path, device)
         splat = load_splat(facility.ply_path, device=device)
 
-        scene_center = splat.center.cpu().numpy()
-        splat_means_np = splat.means.cpu().numpy()
         resolution = config.render.resolution
         num_frames = config.render.num_frames
         camera_height = config.render.camera_height_m
         look_down_deg = config.render.camera_look_down_deg
         fps = config.render.fps
 
-        # Scene-aware camera placement
-        extra_specs, occupancy = self._build_scene_aware_specs(
-            config, facility, splat_means_np, scene_center
-        )
+        # Check for warmup cache — skip CPU-heavy prep if available
+        cached_clips = load_cached_clips(work_dir)
+        warmup_cache = load_warmup_cache(work_dir)
+        extra_specs_count = 0
 
-        all_path_specs = list(config.render.camera_paths) + extra_specs
-        if extra_specs:
+        # Resolve auto up-axis: prefer warmup-detected value, else detect now
+        if facility.up_axis.lower().strip() == "auto":
+            if warmup_cache and "detected_up_axis" in warmup_cache:
+                resolved = warmup_cache["detected_up_axis"]
+                logger.info("Using warmup-detected up_axis='%s'", resolved)
+            elif warmup_cache and "resolved_up_axis" in warmup_cache:
+                resolved = warmup_cache["resolved_up_axis"]
+                logger.info("Using warmup-resolved up_axis='%s'", resolved)
+            else:
+                splat_means_for_detect = splat.means.cpu().numpy()
+                resolved = detect_up_axis(splat_means_for_detect)
+            facility = replace(facility, up_axis=resolved)
+
+        # Compute scene orientation transform (e.g. Y-up → Z-up)
+        scene_T = compute_scene_transform(facility)
+        has_transform = not is_identity_transform(scene_T)
+        if has_transform:
+            logger.info("Scene transform active (up_axis=%s)", facility.up_axis)
+
+        if cached_clips is not None:
             logger.info(
-                "Added %d scene-aware camera paths (total: %d)",
-                len(extra_specs),
-                len(all_path_specs),
+                "Using warmup cache: %d pre-computed clips (skipping occupancy grid + path gen)",
+                len(cached_clips),
+            )
+            extra_specs_count = (warmup_cache or {}).get("scene_aware_specs", 0)
+            manifest_entries = self._render_from_cache(
+                cached_clips, splat, render_dir, resolution, fps,
+                scene_T if has_transform else None,
+            )
+        else:
+            splat_means_np = splat.means.cpu().numpy()
+
+            # Transform positions for scene geometry (camera paths, occupancy)
+            if has_transform:
+                splat_means_np = transform_means(splat_means_np, scene_T)
+            scene_center = splat_means_np.mean(axis=0)
+
+            # Scene-aware camera placement
+            extra_specs, occupancy = self._build_scene_aware_specs(
+                config, facility, splat_means_np, scene_center, scene_T if has_transform else None
+            )
+            extra_specs_count = len(extra_specs)
+
+            base_specs = list(config.render.camera_paths)
+            if has_transform:
+                base_specs = transform_camera_path_specs(base_specs, scene_T)
+            all_path_specs = base_specs + extra_specs
+            if extra_specs:
+                logger.info(
+                    "Added %d scene-aware camera paths (total: %d)",
+                    len(extra_specs),
+                    len(all_path_specs),
+                )
+
+            manifest_entries = self._generate_and_render(
+                config, splat, all_path_specs, scene_center,
+                occupancy, render_dir, num_frames, camera_height,
+                look_down_deg, resolution, fps,
+                scene_T if has_transform else None,
             )
 
-        # Generate camera paths and render clips
+        # Write manifest
+        manifest_path = render_dir / "render_manifest.json"
+        manifest = {
+            "facility": facility.name,
+            "ply_path": str(facility.ply_path),
+            "num_clips": len(manifest_entries),
+            "scene_aware": config.render.scene_aware,
+            "scene_aware_specs": extra_specs_count,
+            "clips": manifest_entries,
+        }
+        write_json(manifest, manifest_path)
+
+        return StageResult(
+            stage_name=self.name,
+            status="success",
+            elapsed_seconds=0,  # filled by execute()
+            outputs={
+                "render_dir": str(render_dir),
+                "manifest_path": str(manifest_path),
+                "num_clips": len(manifest_entries),
+            },
+            metrics={
+                "num_clips": len(manifest_entries),
+                "total_frames": sum(e["num_frames"] for e in manifest_entries),
+                "resolution": list(resolution),
+                "scene_aware_specs": extra_specs_count,
+            },
+        )
+
+    def _render_from_cache(
+        self,
+        cached_clips: List[Dict],
+        splat,
+        render_dir: Path,
+        resolution: tuple,
+        fps: int,
+        scene_T: Optional[np.ndarray] = None,
+    ) -> List[Dict]:
+        """Render clips using pre-computed camera paths from warmup cache."""
+        from ..warmup import _deserialize_camera_poses
+
+        manifest_entries: List[Dict] = []
+        for clip_data in cached_clips:
+            clip_name = clip_data["clip_name"]
+            poses = _deserialize_camera_poses(clip_data["poses"])
+
+            # Convert cameras from corrected frame back to original PLY frame
+            if scene_T is not None:
+                from ..rendering.camera_paths import CameraPose
+
+                poses = [
+                    CameraPose(
+                        c2w=transform_c2w(p.c2w, scene_T),
+                        fx=p.fx, fy=p.fy, cx=p.cx, cy=p.cy,
+                        width=p.width, height=p.height,
+                    )
+                    for p in poses
+                ]
+
+            # Save camera path
+            save_path_to_json(poses, render_dir / f"{clip_name}_camera_path.json")
+
+            # Render (GPU)
+            output = render_video(
+                splat=splat,
+                poses=poses,
+                output_dir=render_dir,
+                clip_name=clip_name,
+                fps=fps,
+            )
+            manifest_entries.append({
+                "clip_name": clip_name,
+                "path_type": clip_data["path_type"],
+                "clip_index": clip_data["clip_index"],
+                "num_frames": len(poses),
+                "resolution": list(resolution),
+                "fps": fps,
+                "video_path": str(output.video_path),
+                "depth_video_path": str(output.depth_video_path),
+                "camera_path": str(render_dir / f"{clip_name}_camera_path.json"),
+            })
+        return manifest_entries
+
+    def _generate_and_render(
+        self,
+        config: ValidationConfig,
+        splat,
+        all_path_specs: List,
+        scene_center: np.ndarray,
+        occupancy: Optional[OccupancyGrid],
+        render_dir: Path,
+        num_frames: int,
+        camera_height: float,
+        look_down_deg: float,
+        resolution: tuple,
+        fps: int,
+        scene_T: Optional[np.ndarray] = None,
+    ) -> List[Dict]:
+        """Original path: generate camera paths from scratch, then render."""
         manifest_entries: List[Dict] = []
         clip_index = 0
 
@@ -164,6 +329,19 @@ class RenderStage(PipelineStage):
                         clip_index += 1
                         continue
 
+                # Convert cameras from corrected frame to original PLY frame
+                if scene_T is not None:
+                    from ..rendering.camera_paths import CameraPose
+
+                    poses = [
+                        CameraPose(
+                            c2w=transform_c2w(p.c2w, scene_T),
+                            fx=p.fx, fy=p.fy, cx=p.cx, cy=p.cy,
+                            width=p.width, height=p.height,
+                        )
+                        for p in poses
+                    ]
+
                 clip_name = f"clip_{clip_index:03d}_{path_spec.type}"
 
                 # Save camera path
@@ -194,34 +372,7 @@ class RenderStage(PipelineStage):
                 })
                 clip_index += 1
 
-        # Write manifest
-        manifest_path = render_dir / "render_manifest.json"
-        manifest = {
-            "facility": facility.name,
-            "ply_path": str(facility.ply_path),
-            "num_clips": len(manifest_entries),
-            "scene_aware": config.render.scene_aware,
-            "scene_aware_specs": len(extra_specs),
-            "clips": manifest_entries,
-        }
-        write_json(manifest, manifest_path)
-
-        return StageResult(
-            stage_name=self.name,
-            status="success",
-            elapsed_seconds=0,  # filled by execute()
-            outputs={
-                "render_dir": str(render_dir),
-                "manifest_path": str(manifest_path),
-                "num_clips": len(manifest_entries),
-            },
-            metrics={
-                "num_clips": len(manifest_entries),
-                "total_frames": sum(e["num_frames"] for e in manifest_entries),
-                "resolution": list(resolution),
-                "scene_aware_specs": len(extra_specs),
-            },
-        )
+        return manifest_entries
 
 
 def _has_cuda() -> bool:

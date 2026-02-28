@@ -16,6 +16,10 @@ facilities:
       - "break room in northwest corner"
     floor_height_m: 0.0
     ceiling_height_m: 6.0
+    # Scene orientation — default "auto" detects from point cloud extents.
+    # Override: "z", "y", "-y", "-z", "x", "-x"
+    # up_axis: "auto"
+    # scene_rotation_deg: [0, 0, 180]  # additional XYZ rotation in degrees
     manipulation_zones:
       - name: shelf_tote_pick
         approach_point: [2.1, 0.5, 0.8]
@@ -191,6 +195,7 @@ eval_policy:
   num_rollouts: 50
   max_steps_per_rollout: 100
   conditions: ["baseline", "adapted"]  # "trained" added automatically when S3b succeeds
+  min_absolute_difference: 0.5  # minimum raw score difference (0-10 scale) for PASS verdict
   tasks:
     - "Navigate forward through the corridor"
     - "Turn left at the intersection"

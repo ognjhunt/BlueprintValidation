@@ -405,6 +405,74 @@ def eval_crosssite(ctx: click.Context) -> None:
     click.echo(f"Cross-site complete: {result.status} ({result.elapsed_seconds:.1f}s)")
 
 
+@cli.command()
+@click.option("--facility", default=None, help="Facility ID (omit to warmup all facilities).")
+@click.pass_context
+def warmup(ctx: click.Context, facility: str | None) -> None:
+    """Pre-compute CPU-only artifacts (occupancy grids, camera paths, variant prompts).
+
+    Run this before a GPU session to save 5-15 min per facility at render time.
+    """
+    from .warmup import warmup_facility
+
+    config = ctx.obj["config"]
+    work_dir = ctx.obj["work_dir"]
+
+    if facility:
+        fac = _get_facility(ctx, facility)
+        fac_work_dir = work_dir / facility
+        fac_work_dir.mkdir(parents=True, exist_ok=True)
+        summary = warmup_facility(config, fac, fac_work_dir)
+        click.echo(
+            f"Warmup {facility}: {summary.get('num_clips', 0)} clips, "
+            f"{summary.get('elapsed_seconds', 0):.1f}s"
+        )
+    else:
+        for fid, fac in config.facilities.items():
+            fac_work_dir = work_dir / fid
+            fac_work_dir.mkdir(parents=True, exist_ok=True)
+            summary = warmup_facility(config, fac, fac_work_dir)
+            click.echo(
+                f"Warmup {fid}: {summary.get('num_clips', 0)} clips, "
+                f"{summary.get('elapsed_seconds', 0):.1f}s"
+            )
+        click.echo(f"All {len(config.facilities)} facilities warmed up.")
+
+
+@cli.command("bootstrap-task-hints")
+@click.option("--facility", default=None, help="Facility ID (omit to bootstrap all facilities).")
+@click.pass_context
+def bootstrap_task_hints(ctx: click.Context, facility: str | None) -> None:
+    """Stage 0: Bootstrap synthetic task_targets.json when source hints are missing."""
+    from .stages.s0_task_hints_bootstrap import TaskHintsBootstrapStage
+
+    config = ctx.obj["config"]
+    work_dir = ctx.obj["work_dir"]
+
+    stage = TaskHintsBootstrapStage()
+    if facility:
+        fac = _get_facility(ctx, facility)
+        fac_work_dir = work_dir / facility
+        fac_work_dir.mkdir(parents=True, exist_ok=True)
+        result = stage.execute(config, fac, fac_work_dir, {})
+        result.save(fac_work_dir / "s0_task_hints_bootstrap_result.json")
+        click.echo(
+            f"Bootstrap {facility}: {result.status} "
+            f"(hints={result.outputs.get('task_hints_path', 'none')})"
+        )
+        return
+
+    for fid, fac in config.facilities.items():
+        fac_work_dir = work_dir / fid
+        fac_work_dir.mkdir(parents=True, exist_ok=True)
+        result = stage.execute(config, fac, fac_work_dir, {})
+        result.save(fac_work_dir / "s0_task_hints_bootstrap_result.json")
+        click.echo(
+            f"Bootstrap {fid}: {result.status} "
+            f"(hints={result.outputs.get('task_hints_path', 'none')})"
+        )
+
+
 @cli.command("run-all")
 @click.pass_context
 def run_all(ctx: click.Context) -> None:
@@ -447,6 +515,7 @@ def status(ctx: click.Context) -> None:
     work_dir = ctx.obj["work_dir"]
 
     stages = [
+        "s0_task_hints_bootstrap",
         "s1_render", "s1b_robot_composite", "s1c_gemini_polish", "s1d_gaussian_augment",
         "s1e_splatsim_interaction",
         "s2_enrich", "s3_finetune", "s3b_policy_finetune", "s3c_policy_rl_loop",

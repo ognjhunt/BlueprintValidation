@@ -59,5 +59,10 @@ ENV OPENVLA_ROOT=/opt/openvla-oft
 
 EXPOSE 22
 
+# Hint: mount warmup cache + model weights at runtime:
+#   -v /host/data/outputs:/app/data/outputs  (warmup cache)
+#   -v /host/data/checkpoints:/app/data/checkpoints  (model weights)
+# Then on first SSH: blueprint-validate warmup
+
 # RunPod entrypoint: SSH daemon + keep alive
 ENTRYPOINT ["/bin/bash", "-c", "/usr/sbin/sshd && sleep infinity"]
