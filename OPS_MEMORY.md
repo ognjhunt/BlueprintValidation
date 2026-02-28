@@ -85,6 +85,31 @@ the permanent fixes applied so we do not repeat them.
     gated guardrail assets during enrichment.
   - `src/blueprint_validation/config.py` adds `enrich.disable_guardrails` (default `true`).
 
+### 8) Stage 2 still needs Cosmos-Predict tokenizer repo access
+- Symptom:
+  - `s2_enrich` failed even with guardrails disabled while fetching
+    `nvidia/Cosmos-Predict2.5-2B` `tokenizer.pth` (403 gated repo error).
+- Root cause:
+  - Cosmos Transfer runtime depends on Predict2.5 tokenizer assets that are not
+    covered by only downloading `nvidia/Cosmos-Transfer2.5-2B`.
+- Permanent fix:
+  - `scripts/download_models.sh` now explicitly downloads/verifies
+    `nvidia/Cosmos-Predict2.5-2B` `tokenizer.pth` during prep so access issues
+    fail early before `run-all`.
+  - HF license/access checklist now includes `nvidia/Cosmos-Predict2.5-2B`.
+
+### 9) Local 2-minute sync loop silently failed under cron
+- Symptom:
+  - periodic local checkpoint sync log showed repeated
+    `scripts/vast_checkpoint_sync.sh: line 100: vastai: command not found`.
+- Root cause:
+  - cron environment lacked `vastai` in `PATH`, so auto SSH target resolution
+    failed.
+- Permanent fix:
+  - cron entry now passes `SSH_HOST=ssh2.vast.ai` and `SSH_PORT=22930` explicitly
+    so sync runs without `vastai` CLI lookup.
+  - one-shot validation confirmed local snapshot pull + chained B2 push succeed.
+
 ## Open follow-up
 - `BLUEPRINT_AUTO_SHUTDOWN_CMD` is currently an echo placeholder on the VM.
   Replace with a real `vastai stop ...` or equivalent mechanism before long runs.

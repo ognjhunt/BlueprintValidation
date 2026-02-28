@@ -72,24 +72,33 @@ if ! "${WHOAMI_CMD[@]}" &> /dev/null; then
     echo "You also need to accept the model licenses on HuggingFace for:"
     echo "  - nvidia/DreamDojo"
     echo "  - nvidia/Cosmos-Transfer2.5-2B"
+    echo "  - nvidia/Cosmos-Predict2.5-2B"
     echo "  - openvla/openvla-7b (base weights for OpenVLA-OFT)"
     exit 1
 fi
 
-echo "[1/3] Downloading DreamDojo-2B pretrained..."
+echo "[1/4] Downloading DreamDojo-2B pretrained..."
 "${DOWNLOAD_CMD[@]}" nvidia/DreamDojo \
     --local-dir "$DATA_DIR/DreamDojo/2B_pretrain/" \
     "${RESUME_FLAG[@]}" \
     --include "2B_pretrain/*"
 
 echo ""
-echo "[2/3] Downloading Cosmos Transfer 2.5 (2B)..."
+echo "[2/4] Downloading Cosmos Transfer 2.5 (2B)..."
 "${DOWNLOAD_CMD[@]}" nvidia/Cosmos-Transfer2.5-2B \
     --local-dir "$DATA_DIR/cosmos-transfer-2.5-2b/" \
     "${RESUME_FLAG[@]}"
 
 echo ""
-echo "[3/3] Downloading OpenVLA-OFT base 7B weights..."
+echo "[3/4] Verifying Cosmos Predict 2.5 tokenizer access (required by Cosmos Transfer runtime)..."
+"${DOWNLOAD_CMD[@]}" nvidia/Cosmos-Predict2.5-2B \
+    --local-dir "$DATA_DIR/cosmos-predict-2.5-2b/" \
+    "${RESUME_FLAG[@]}" \
+    --revision "6787e176dce74a101d922174a95dba29fa5f0c55" \
+    --include "tokenizer.pth"
+
+echo ""
+echo "[4/4] Downloading OpenVLA-OFT base 7B weights..."
 "${DOWNLOAD_CMD[@]}" openvla/openvla-7b \
     --local-dir "$DATA_DIR/openvla-7b/" \
     "${RESUME_FLAG[@]}"
@@ -98,6 +107,7 @@ echo ""
 echo "=== All models downloaded ==="
 echo "DreamDojo:      $DATA_DIR/DreamDojo/2B_pretrain/"
 echo "Cosmos Transfer: $DATA_DIR/cosmos-transfer-2.5-2b/"
+echo "Cosmos Predict tokenizer: $DATA_DIR/cosmos-predict-2.5-2b/tokenizer.pth"
 echo "OpenVLA-OFT base: $DATA_DIR/openvla-7b/"
 echo ""
 echo "Total disk usage:"
