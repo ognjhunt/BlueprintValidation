@@ -124,6 +124,7 @@ class EnrichConfig:
     cosmos_model: str = "nvidia/Cosmos-Transfer2.5-2B"
     cosmos_checkpoint: Path = Path("./data/checkpoints/cosmos-transfer-2.5-2b/")
     cosmos_repo: Path = Path("/opt/cosmos-transfer")
+    disable_guardrails: bool = True
     controlnet_inputs: List[str] = field(default_factory=lambda: ["rgb", "depth"])
     num_variants_per_render: int = 5
     variants: List[VariantSpec] = field(default_factory=list)
@@ -576,6 +577,7 @@ def load_config(path: Path) -> ValidationConfig:
                 e.get("cosmos_repo", "/opt/cosmos-transfer"),
                 base_dir,
             ),
+            disable_guardrails=bool(e.get("disable_guardrails", True)),
             controlnet_inputs=e.get("controlnet_inputs", ["rgb", "depth"]),
             num_variants_per_render=e.get("num_variants_per_render", 5),
             variants=_parse_variants(e.get("variants", [])),

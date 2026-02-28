@@ -32,11 +32,7 @@ def _normalize(value: float, minimum: float, maximum: float) -> float:
 
 
 def _pack_111011(x: float, y: float, z: float) -> np.uint32:
-    return np.uint32(
-        (_pack_unorm(x, 11) << 21)
-        | (_pack_unorm(y, 10) << 11)
-        | _pack_unorm(z, 11)
-    )
+    return np.uint32((_pack_unorm(x, 11) << 21) | (_pack_unorm(y, 10) << 11) | _pack_unorm(z, 11))
 
 
 def _pack_8888(x: float, y: float, z: float, w: float) -> np.uint32:
@@ -176,9 +172,15 @@ def _write_supersplat_compressed_fixture(path: Path) -> dict[str, np.ndarray]:
             _normalize(means[i, 2], float(chunk["min_z"][0]), float(chunk["max_z"][0])),
         )
         vertex["packed_scale"][i] = _pack_111011(
-            _normalize(scales[i, 0], float(chunk["min_scale_x"][0]), float(chunk["max_scale_x"][0])),
-            _normalize(scales[i, 1], float(chunk["min_scale_y"][0]), float(chunk["max_scale_y"][0])),
-            _normalize(scales[i, 2], float(chunk["min_scale_z"][0]), float(chunk["max_scale_z"][0])),
+            _normalize(
+                scales[i, 0], float(chunk["min_scale_x"][0]), float(chunk["max_scale_x"][0])
+            ),
+            _normalize(
+                scales[i, 1], float(chunk["min_scale_y"][0]), float(chunk["max_scale_y"][0])
+            ),
+            _normalize(
+                scales[i, 2], float(chunk["min_scale_z"][0]), float(chunk["max_scale_z"][0])
+            ),
         )
         vertex["packed_rotation"][i] = _pack_rotation(quats[i])
         vertex["packed_color"][i] = _pack_8888(

@@ -133,12 +133,13 @@ ensure_repo "$ROOT_DIR/data/vendor/openvla-oft" "/opt/openvla-oft" "https://gith
 ensure_repo "$ROOT_DIR/data/vendor/openpi" "/opt/openpi" "https://github.com/Physical-Intelligence/openpi.git"
 
 if [ "$INSTALL_COSMOS_RUNTIME_DEPS" = "true" ]; then
-  echo "Installing Cosmos runtime dependency (sam2)..."
-  pip_install -U "sam2==1.1.0"
+  echo "Installing Cosmos runtime dependencies (sam2, natsort)..."
+  pip_install -U "sam2==1.1.0" "natsort>=8.4.0"
   python - <<'PY'
 import importlib
 importlib.import_module("sam2")
-print("Verified sam2 import.")
+importlib.import_module("natsort")
+print("Verified sam2 + natsort imports.")
 PY
 else
   echo "Skipping Cosmos runtime dependency install (INSTALL_COSMOS_RUNTIME_DEPS=false)."
@@ -219,8 +220,9 @@ if [ "$INSTALL_DREAMDOJO_EXTRA" = "true" ]; then
 
   if ! verify_dreamdojo_import; then
     echo "DreamDojo import failed; installing supplemental dependencies (piq, pytorch3d)..."
-    pip_install -U piq
-    pip_install --no-build-isolation "git+https://github.com/facebookresearch/pytorch3d.git"
+    # Avoid upgrading torch/vision here; DreamDojo installs a CUDA-matched stack.
+    pip_install --no-deps "piq==0.8.0"
+    pip_install --no-build-isolation --no-deps "git+https://github.com/facebookresearch/pytorch3d.git"
     verify_dreamdojo_import
   fi
 fi

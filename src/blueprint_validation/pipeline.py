@@ -341,6 +341,9 @@ class ValidationPipeline:
         return hourly_rate * elapsed_hours
 
     def _is_budget_exceeded(self, pipeline_start: float) -> bool:
+        # Allow cloud.max_cost_usd <= 0 to disable the guard explicitly.
+        if float(self.config.cloud.max_cost_usd) <= 0:
+            return False
         estimated = self._estimated_cost_usd(pipeline_start)
         if estimated is None:
             return False

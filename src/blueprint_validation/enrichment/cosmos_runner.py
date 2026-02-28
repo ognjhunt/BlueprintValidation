@@ -68,6 +68,7 @@ def build_controlnet_spec(
 def build_cosmos_inference_command(
     spec_path: Path,
     output_dir: Path,
+    disable_guardrails: bool = True,
 ) -> list[str]:
     """Build the Cosmos inference command."""
     cmd = [
@@ -78,6 +79,8 @@ def build_cosmos_inference_command(
         "-o",
         str(output_dir),
     ]
+    if disable_guardrails:
+        cmd.append("--disable-guardrails")
     return cmd
 
 
@@ -134,6 +137,7 @@ def run_cosmos_inference(
     cosmos_checkpoint: Path,
     cosmos_model: str = "nvidia/Cosmos-Transfer2.5-2B",
     cosmos_repo: Optional[Path] = None,
+    disable_guardrails: bool = True,
 ) -> Path:
     """Run Cosmos Transfer 2.5 inference and return generated output video path."""
     del (
@@ -159,6 +163,7 @@ def run_cosmos_inference(
     cmd = build_cosmos_inference_command(
         spec_path=spec_path,
         output_dir=expected_output_path.parent,
+        disable_guardrails=disable_guardrails,
     )
     logger.info("Running Cosmos inference (%s): %s", cosmos_model, " ".join(cmd))
     env = os.environ.copy()
@@ -169,7 +174,9 @@ def run_cosmos_inference(
         str(repo_root / "packages" / "cosmos-oss"),
     ]
     current_pythonpath = env.get("PYTHONPATH", "")
-    merged_entries = cosmos_pythonpath_entries + ([current_pythonpath] if current_pythonpath else [])
+    merged_entries = cosmos_pythonpath_entries + (
+        [current_pythonpath] if current_pythonpath else []
+    )
     env["PYTHONPATH"] = os.pathsep.join(merged_entries)
 
     result = subprocess.run(
@@ -223,6 +230,7 @@ def enrich_clip(
             cosmos_checkpoint=config.cosmos_checkpoint,
             cosmos_model=config.cosmos_model,
             cosmos_repo=config.cosmos_repo,
+            disable_guardrails=config.disable_guardrails,
         )
         outputs.append(
             CosmosOutput(

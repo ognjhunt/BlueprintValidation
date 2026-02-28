@@ -168,7 +168,7 @@ def _patch_preflight_fast(monkeypatch, preflight):
     )
 
 
-def test_preflight_requires_sam2_dependency(sample_config, monkeypatch):
+def test_preflight_requires_stage2_runtime_dependencies(sample_config, monkeypatch):
     import blueprint_validation.preflight as preflight
     from blueprint_validation.common import PreflightCheck
 
@@ -212,6 +212,7 @@ def test_preflight_requires_sam2_dependency(sample_config, monkeypatch):
     _ = preflight.run_preflight(sample_config)
 
     assert ("sam2", "sam2") in seen_dependencies
+    assert ("natsort", "natsort") in seen_dependencies
 
 
 def test_preflight_pi05_base_reference_fails_when_openvla_like(

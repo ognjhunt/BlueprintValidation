@@ -81,15 +81,19 @@ build_remote_path() {
 
   # Prefer ephemeral config when key material is provided via env.
   if [[ -n "${B2_APPLICATION_KEY_ID:-}" && -n "${B2_APPLICATION_KEY:-}" ]]; then
-    export RCLONE_CONFIG_B2EPHEM_TYPE="b2"
-    export RCLONE_CONFIG_B2EPHEM_ACCOUNT="$B2_APPLICATION_KEY_ID"
-    export RCLONE_CONFIG_B2EPHEM_KEY="$B2_APPLICATION_KEY"
     echo "b2ephem:${B2_BUCKET}/${prefix}"
     return 0
   fi
 
   echo "${RCLONE_REMOTE}:${B2_BUCKET}/${prefix}"
 }
+
+# Note: exports must happen in the parent shell (not inside command substitution).
+if [[ -n "${B2_APPLICATION_KEY_ID:-}" && -n "${B2_APPLICATION_KEY:-}" ]]; then
+  export RCLONE_CONFIG_B2EPHEM_TYPE="b2"
+  export RCLONE_CONFIG_B2EPHEM_ACCOUNT="$B2_APPLICATION_KEY_ID"
+  export RCLONE_CONFIG_B2EPHEM_KEY="$B2_APPLICATION_KEY"
+fi
 
 REMOTE_PATH="$(build_remote_path)"
 

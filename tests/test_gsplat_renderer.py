@@ -38,7 +38,9 @@ def test_render_frame_expands_background_for_rgb_ed(monkeypatch):
         info = {}
         return renders, alphas, info
 
-    monkeypatch.setitem(sys.modules, "gsplat", types.SimpleNamespace(rasterization=fake_rasterization))
+    monkeypatch.setitem(
+        sys.modules, "gsplat", types.SimpleNamespace(rasterization=fake_rasterization)
+    )
 
     splat = GaussianSplatData(
         means=torch.zeros((1, 3), dtype=torch.float32),

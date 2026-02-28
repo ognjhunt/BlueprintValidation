@@ -27,10 +27,14 @@ echo "Snapshot tag mode: ${SNAPSHOT_TAG}"
 while true; do
   echo ""
   echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] Sync cycle start"
-  if INSTANCE_ID="$INSTANCE_ID" \
+  set +e
+  INSTANCE_ID="$INSTANCE_ID" \
     SNAPSHOT_TAG="$SNAPSHOT_TAG" \
     LOCAL_BACKUP_ROOT="$LOCAL_BACKUP_ROOT" \
-    bash "$SCRIPT_DIR/vast_checkpoint_sync.sh" pull; then
+    bash "$SCRIPT_DIR/vast_checkpoint_sync.sh" pull
+  cycle_status=$?
+  set -e
+  if [[ "$cycle_status" -eq 0 ]]; then
     echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] Sync cycle complete"
   else
     echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] Sync cycle failed"

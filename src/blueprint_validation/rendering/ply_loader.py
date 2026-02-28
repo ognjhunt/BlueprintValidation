@@ -197,9 +197,7 @@ def _decode_supersplat_compressed(plydata) -> tuple[np.ndarray, ...]:
             usable = (sh_rest_raw.shape[1] // 3) * 3
             if usable > 0:
                 sh_rest = sh_rest_raw[:, :usable].reshape(n, usable // 3, 3)
-                sh_coeffs = np.concatenate([sh_dc[:, None, :], sh_rest], axis=1).astype(
-                    np.float32
-                )
+                sh_coeffs = np.concatenate([sh_dc[:, None, :], sh_rest], axis=1).astype(np.float32)
 
     return means, scales, quats, opacities, sh_coeffs
 

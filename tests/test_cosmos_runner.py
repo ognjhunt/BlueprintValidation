@@ -35,7 +35,15 @@ def test_build_cosmos_inference_command():
         spec_path=Path("/tmp/spec.json"),
         output_dir=Path("/tmp/out"),
     )
-    assert cmd == ["python", "examples/inference.py", "-i", "/tmp/spec.json", "-o", "/tmp/out"]
+    assert cmd == [
+        "python",
+        "examples/inference.py",
+        "-i",
+        "/tmp/spec.json",
+        "-o",
+        "/tmp/out",
+        "--disable-guardrails",
+    ]
 
 
 def test_resolve_cosmos_repo(tmp_path):

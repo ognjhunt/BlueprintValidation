@@ -83,6 +83,7 @@ def load_dreamdojo_world_model(
             from cosmos_predict2.action_conditioned.inference import (
                 ActionConditionedInferenceArguments,
             )
+
             return ac_inference, ActionConditionedInferenceArguments
         except Exception:
             from cosmos_predict2 import action_conditioned as ac_inference

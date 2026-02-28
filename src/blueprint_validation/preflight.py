@@ -721,9 +721,10 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
         )
     )
     checks.append(check_cosmos_wrapper_contract(config.enrich.cosmos_repo))
-    # Cosmos Transfer inference imports SAM2 helpers at module import time.
-    # Require sam2 up-front so Stage 2 cannot fail mid-run on missing dependency.
+    # Cosmos Transfer inference imports SAM2 helpers and natsort at module import time.
+    # Require both up-front so Stage 2 cannot fail mid-run on missing dependency.
     checks.append(check_dependency("sam2", "sam2"))
+    checks.append(check_dependency("natsort", "natsort"))
     checks.append(check_path_exists(config.finetune.dreamdojo_repo, "repo:dreamdojo"))
     checks.append(
         check_path_exists_under(
