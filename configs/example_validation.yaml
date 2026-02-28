@@ -211,7 +211,7 @@ eval_policy:
 # Uses OFT-oriented finetuning defaults (OpenVLA-OFT-style recipe).
 # Trains policy on site-specific rollout data from Stage 4a (runs in world model, not IRL).
 policy_finetune:
-  enabled: true
+  enabled: false
   openvla_repo: /opt/openvla-oft
   finetune_script: vla-scripts/finetune.py
   # data_root_dir should contain datasets like <data_root_dir>/bridge_orig
@@ -233,7 +233,7 @@ policy_finetune:
 
 # ---- Stage 3c: World-VLA-Loop-style policy RL loop ----
 policy_rl_loop:
-  enabled: true
+  enabled: false
   iterations: 2
   horizon_steps: 24
   rollouts_per_task: 8
@@ -254,7 +254,7 @@ policy_adapter:
 
 # ---- Stage 4b: Rollout -> RLDS-style dataset export ----
 rollout_dataset:
-  enabled: true
+  enabled: false
   seed: 17
   train_split: 0.8
   min_steps_per_rollout: 4
@@ -268,7 +268,7 @@ rollout_dataset:
 
 # ---- Stage 4d: Trained policy A/B comparison ----
 policy_compare:
-  enabled: true
+  enabled: false
   heldout_num_rollouts: 20
   heldout_seed: 123
   eval_world_model: adapted

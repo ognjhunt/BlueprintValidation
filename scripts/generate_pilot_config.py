@@ -280,7 +280,7 @@ def _build_config(
             "nproc_per_node": 1,
         },
         "policy_rl_loop": {
-            "enabled": True,
+            "enabled": policy_finetune_enabled,
             "iterations": 2,
             "horizon_steps": 24,
             "rollouts_per_task": 8,
@@ -297,7 +297,7 @@ def _build_config(
         },
         "policy_adapter": {"name": "openvla_oft"},
         "rollout_dataset": {
-            "enabled": True,
+            "enabled": policy_finetune_enabled,
             "seed": 17,
             "train_split": 0.75,
             "min_steps_per_rollout": 4,
@@ -310,7 +310,7 @@ def _build_config(
             "export_dir": "../data/outputs/policy_datasets",
         },
         "policy_compare": {
-            "enabled": True,
+            "enabled": policy_finetune_enabled,
             "heldout_num_rollouts": 6,
             "heldout_seed": 123,
             "eval_world_model": "adapted",
@@ -364,8 +364,8 @@ def main() -> int:
     parser.add_argument(
         "--policy-finetune",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Enable/disable policy pair training/evaluation in generated config (default: enabled).",
+        default=False,
+        help="Enable/disable policy pair training/evaluation in generated config (default: disabled).",
     )
     args = parser.parse_args()
 

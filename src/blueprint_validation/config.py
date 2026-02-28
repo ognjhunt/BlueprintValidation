@@ -169,7 +169,7 @@ class PolicyEvalConfig:
 
 @dataclass
 class PolicyFinetuneConfig:
-    enabled: bool = True
+    enabled: bool = False
     openvla_repo: Path = Path("/opt/openvla-oft")
     finetune_script: str = "vla-scripts/finetune.py"
     data_root_dir: Optional[Path] = None
@@ -253,7 +253,7 @@ class SplatSimConfig:
 
 @dataclass
 class PolicyRLLoopConfig:
-    enabled: bool = True
+    enabled: bool = False
     iterations: int = 2
     horizon_steps: int = 24
     rollouts_per_task: int = 8
@@ -271,7 +271,7 @@ class PolicyRLLoopConfig:
 
 @dataclass
 class RolloutDatasetConfig:
-    enabled: bool = True
+    enabled: bool = False
     seed: int = 17
     train_split: float = 0.8
     min_steps_per_rollout: int = 4
@@ -286,7 +286,7 @@ class RolloutDatasetConfig:
 
 @dataclass
 class PolicyCompareConfig:
-    enabled: bool = True
+    enabled: bool = False
     heldout_num_rollouts: int = 20
     heldout_seed: int = 123
     eval_world_model: str = "adapted"
@@ -575,7 +575,7 @@ def load_config(path: Path) -> ValidationConfig:
         pf = raw["policy_finetune"]
         data_root_dir = pf.get("data_root_dir")
         config.policy_finetune = PolicyFinetuneConfig(
-            enabled=pf.get("enabled", True),
+            enabled=pf.get("enabled", False),
             openvla_repo=_resolve_path(pf.get("openvla_repo", "/opt/openvla-oft"), base_dir),
             finetune_script=pf.get("finetune_script", "vla-scripts/finetune.py"),
             data_root_dir=(
@@ -733,7 +733,7 @@ def load_config(path: Path) -> ValidationConfig:
     if "policy_rl_loop" in raw:
         pr = raw["policy_rl_loop"]
         config.policy_rl_loop = PolicyRLLoopConfig(
-            enabled=pr.get("enabled", True),
+            enabled=pr.get("enabled", False),
             iterations=int(pr.get("iterations", 2)),
             horizon_steps=int(pr.get("horizon_steps", 24)),
             rollouts_per_task=int(pr.get("rollouts_per_task", 8)),
@@ -754,7 +754,7 @@ def load_config(path: Path) -> ValidationConfig:
     if "rollout_dataset" in raw:
         rd = raw["rollout_dataset"]
         config.rollout_dataset = RolloutDatasetConfig(
-            enabled=rd.get("enabled", True),
+            enabled=rd.get("enabled", False),
             seed=rd.get("seed", 17),
             train_split=float(rd.get("train_split", 0.8)),
             min_steps_per_rollout=rd.get("min_steps_per_rollout", 4),
@@ -779,7 +779,7 @@ def load_config(path: Path) -> ValidationConfig:
     if "policy_compare" in raw:
         pc = raw["policy_compare"]
         config.policy_compare = PolicyCompareConfig(
-            enabled=pc.get("enabled", True),
+            enabled=pc.get("enabled", False),
             heldout_num_rollouts=pc.get("heldout_num_rollouts", 20),
             heldout_seed=pc.get("heldout_seed", 123),
             eval_world_model=pc.get("eval_world_model", "adapted"),
