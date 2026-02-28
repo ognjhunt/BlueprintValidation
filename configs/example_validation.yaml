@@ -64,10 +64,23 @@ render:
       height_override_m: 0.6
       look_down_override_deg: 45
   num_clips_per_path: 3
+  # Scene-aware camera placement: uses task_targets.json OBBs (or VLM fallback)
+  # to generate extra camera paths centered on detected objects.
+  scene_aware: true
+  # Collision avoidance via voxelized Gaussian point cloud occupancy grid.
+  collision_check: true
+  voxel_size_m: 0.1
+  density_threshold: 3
+  min_clearance_m: 0.15
+  # VLM fallback: when no task_targets.json exists, render overview frames and
+  # send to Gemini for object detection + depth unprojection to 3D positions.
+  vlm_fallback: true
+  vlm_fallback_model: gemini-3-flash-preview
+  vlm_fallback_num_views: 4
 
 # ---- Stage 1b: Robot arm compositing (URDF + camera extrinsics) ----
 robot_composite:
-  enabled: false
+  enabled: true
   urdf_path: ./robots/sample_6dof_arm.urdf
   end_effector_link: wrist_3_link
   base_xyz: [0.0, 0.0, 0.0]
@@ -80,9 +93,9 @@ robot_composite:
   line_color_bgr: [50, 180, 255]
   line_thickness: 3
 
-# ---- Stage 1c: Optional Gemini image polish ----
+# ---- Stage 1c: Gemini image polish ----
 gemini_polish:
-  enabled: false
+  enabled: true
   model: gemini-3.1-flash-image-preview
   api_key_env: GOOGLE_GENAI_API_KEY
   prompt: "Preserve robot arm pose and scene geometry exactly. Improve photorealism and blending quality."
@@ -96,17 +109,17 @@ enrich:
   controlnet_inputs: [rgb, depth]
   num_variants_per_render: 5
   guidance: 7.0
-  variants:
-    - name: daylight_empty
-      prompt: "Bright daylight, empty clean industrial space, polished concrete floors"
-    - name: daylight_busy
-      prompt: "Bright daylight, workers in safety vests, forklifts moving"
-    - name: evening_dim
-      prompt: "Dim evening lighting, overhead fluorescents casting shadows"
-    - name: wet_floor
-      prompt: "Wet reflective concrete floor, caution signs, overhead lighting"
-    - name: cluttered
-      prompt: "Boxes and pallets scattered, busy workspace, equipment visible"
+  # Dynamic variants: Gemini analyzes a sample rendered frame and generates
+  # scene-appropriate prompts (e.g. lighting, weather, activity variations).
+  # Falls back to builtin warehouse-style variants if Gemini is unavailable.
+  dynamic_variants: true
+  dynamic_variants_model: gemini-3-flash-preview
+  # Override with explicit variants if you want full control:
+  # variants:
+  #   - name: daylight_empty
+  #     prompt: "Bright daylight, empty clean industrial space, polished concrete floors"
+  #   - name: evening_dim
+  #     prompt: "Dim evening lighting, overhead fluorescents casting shadows"
 
 # ---- Stage 3: Fine-tune ----
 finetune:
@@ -152,11 +165,11 @@ eval_policy:
     api_key_env: GOOGLE_GENAI_API_KEY
     enable_agentic_vision: true
 
-# ---- Stage 3b: Optional OpenVLA policy fine-tune ----
+# ---- Stage 3b: OpenVLA policy fine-tune ----
 # Uses official OpenVLA finetune entrypoint (torchrun vla-scripts/finetune.py).
-# Keep disabled unless you have an OpenVLA-compatible dataset root.
+# Trains OpenVLA on site-specific rollout data from Stage 4a (runs in world model, not IRL).
 policy_finetune:
-  enabled: false
+  enabled: true
   openvla_repo: /opt/openvla
   finetune_script: vla-scripts/finetune.py
   # data_root_dir should contain datasets like <data_root_dir>/bridge_orig

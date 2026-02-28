@@ -47,7 +47,18 @@ class EnrichStage(PipelineStage):
             )
 
         render_manifest = read_json(render_manifest_path)
-        variants = get_variants(config.enrich.variants or None)
+
+        # Extract a sample frame for dynamic variant generation
+        sample_frame_path = _extract_sample_frame(render_manifest, work_dir)
+
+        variants = get_variants(
+            custom_variants=config.enrich.variants or None,
+            dynamic=config.enrich.dynamic_variants,
+            dynamic_model=config.enrich.dynamic_variants_model,
+            sample_frame_path=sample_frame_path,
+            num_variants=config.enrich.num_variants_per_render,
+            facility_description=facility.description,
+        )
 
         # Limit variants to configured count
         variants = variants[: config.enrich.num_variants_per_render]
@@ -126,3 +137,35 @@ def _resolve_render_manifest(work_dir: Path) -> Path | None:
         if candidate.exists():
             return candidate
     return None
+
+
+def _extract_sample_frame(manifest: dict, work_dir: Path) -> Path | None:
+    """Extract a single frame from the first clip for dynamic variant generation."""
+    clips = manifest.get("clips", [])
+    if not clips:
+        return None
+
+    video_path = Path(clips[0].get("video_path", ""))
+    if not video_path.exists():
+        return None
+
+    try:
+        import cv2
+
+        cap = cv2.VideoCapture(str(video_path))
+        # Seek to ~25% through for a representative frame
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, total_frames // 4))
+        ret, frame = cap.read()
+        cap.release()
+
+        if not ret or frame is None:
+            return None
+
+        sample_path = work_dir / "enriched" / "_sample_frame.png"
+        sample_path.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(sample_path), frame)
+        return sample_path
+    except Exception:
+        logger.debug("Failed to extract sample frame for dynamic variants", exc_info=True)
+        return None

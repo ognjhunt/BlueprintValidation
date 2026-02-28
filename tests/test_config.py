@@ -34,7 +34,7 @@ def test_config_defaults():
     assert config.policy_adapter.name == "openvla"
     assert config.rollout_dataset.enabled is True
     assert config.policy_compare.enabled is True
-    assert config.policy_finetune.enabled is False
+    assert config.policy_finetune.enabled is True
     assert config.policy_finetune.dataset_name == "bridge_orig"
 
 

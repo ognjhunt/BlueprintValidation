@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -41,6 +42,45 @@ def _latest_task_hints(runs_root: Path) -> Path | None:
     return candidates[0] if candidates else None
 
 
+def _zones_from_task_targets(task_targets_path: Path) -> List[dict]:
+    """Extract manipulation zones from a task_targets.json file.
+
+    Reads OBB centers from manipulation_candidates and uses them as
+    approach/target points instead of hardcoded defaults.
+    """
+    try:
+        data = json.loads(task_targets_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return []
+
+    zones: List[dict] = []
+    candidates = data.get("manipulation_candidates", [])
+    for cand in candidates:
+        bbox = cand.get("boundingBox") or {}
+        center = bbox.get("center")
+        if not center or len(center) != 3:
+            continue
+        label = cand.get("label", "object")
+        extents = bbox.get("extents", [0.3, 0.3, 0.3])
+        max_xy = max(extents[0], extents[1]) if len(extents) >= 2 else 0.3
+        standoff = min(max(0.6, max_xy * 1.5), 3.0)
+        cam_height = max(0.4, center[2] + 0.3)
+
+        zones.append({
+            "name": f"{label}_{len(zones)}",
+            "approach_point": [round(c, 3) for c in center],
+            "target_point": [
+                round(center[0] + standoff * 0.5, 3),
+                round(center[1], 3),
+                round(center[2], 3),
+            ],
+            "camera_height_m": round(cam_height, 2),
+            "camera_look_down_deg": 45.0,
+            "arc_radius_m": round(standoff, 2),
+        })
+    return zones
+
+
 def _facility_from_run(
     run_dir: Path,
     ply_path: Path,
@@ -49,14 +89,15 @@ def _facility_from_run(
 ) -> tuple[str, dict]:
     fid = "facility_a" if idx == 0 else "facility_b"
     task_hints_path = run_dir / "task_targets.json"
-    facility = {
-        "name": f"Auto Facility {idx + 1} ({run_dir.name})",
-        "ply_path": str(ply_path),
-        "description": f"Auto-imported from BlueprintCapturePipeline run '{run_dir.name}'.",
-        "landmarks": [],
-        "floor_height_m": 0.0,
-        "ceiling_height_m": 5.0,
-        "manipulation_zones": [
+
+    # Try to extract real manipulation zones from task_targets.json
+    zones: List[dict] = []
+    effective_hints = task_hints_path if task_hints_path.exists() else fallback_task_hints
+    if effective_hints is not None and effective_hints.exists():
+        zones = _zones_from_task_targets(effective_hints)
+
+    if not zones:
+        zones = [
             {
                 "name": "default_pick_zone",
                 "approach_point": [0.0, 0.0, 0.8],
@@ -65,7 +106,16 @@ def _facility_from_run(
                 "camera_look_down_deg": 45.0,
                 "arc_radius_m": 0.4,
             }
-        ],
+        ]
+
+    facility = {
+        "name": f"Auto Facility {idx + 1} ({run_dir.name})",
+        "ply_path": str(ply_path),
+        "description": f"Auto-imported from BlueprintCapturePipeline run '{run_dir.name}'.",
+        "landmarks": [],
+        "floor_height_m": 0.0,
+        "ceiling_height_m": 5.0,
+        "manipulation_zones": zones,
     }
     if task_hints_path.exists():
         facility["task_hints_path"] = str(task_hints_path)
@@ -106,9 +156,17 @@ def _build_config(
                 {"type": "manipulation", "height_override_m": 0.65, "look_down_override_deg": 45},
             ],
             "num_clips_per_path": 1,
+            "scene_aware": True,
+            "collision_check": True,
+            "voxel_size_m": 0.1,
+            "density_threshold": 3,
+            "min_clearance_m": 0.15,
+            "vlm_fallback": True,
+            "vlm_fallback_model": "gemini-3-flash-preview",
+            "vlm_fallback_num_views": 4,
         },
         "robot_composite": {
-            "enabled": False,
+            "enabled": True,
             "urdf_path": "./configs/robots/sample_6dof_arm.urdf",
             "base_xyz": [0.0, 0.0, 0.0],
             "base_rpy": [0.0, 0.0, 0.0],
@@ -118,7 +176,7 @@ def _build_config(
             "min_consistency_score": 0.6,
         },
         "gemini_polish": {
-            "enabled": False,
+            "enabled": True,
             "model": "gemini-3.1-flash-image-preview",
             "api_key_env": "GOOGLE_GENAI_API_KEY",
             "sample_every_n_frames": 3,
@@ -130,10 +188,8 @@ def _build_config(
             "controlnet_inputs": ["rgb", "depth"],
             "num_variants_per_render": 2,
             "guidance": 7.0,
-            "variants": [
-                {"name": "daylight", "prompt": "Bright clean industrial environment"},
-                {"name": "busy_shift", "prompt": "Busy shift with pallets and workers"},
-            ],
+            "dynamic_variants": True,
+            "dynamic_variants_model": "gemini-3-flash-preview",
         },
         "finetune": {
             "dreamdojo_repo": dreamdojo_repo,

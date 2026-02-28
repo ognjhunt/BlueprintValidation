@@ -22,7 +22,7 @@ RUN mkdir -p /var/run/sshd && \
 
 # Install uv
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.cargo/bin:$PATH"
+ENV PATH="/root/.local/bin:$PATH"
 
 # Install HuggingFace CLI for model downloads
 RUN uv tool install -U "huggingface_hub[cli]"
@@ -39,15 +39,19 @@ COPY scripts/ /app/scripts/
 RUN uv venv /app/.venv && \
     . /app/.venv/bin/activate && \
     uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 && \
-    uv pip install flash-attn --no-build-isolation && \
-    uv pip install -e /app
+    uv pip install setuptools wheel psutil && \
+    if [ "$(uname -m)" = "x86_64" ]; then uv pip install flash-attn --no-build-isolation; else echo "Skipping flash-attn on $(uname -m)"; fi && \
+    uv pip install -e /app && \
+    rm -rf /opt/uv_cache /root/.cache/uv /root/.cache/pip
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Clone DreamDojo and Cosmos Transfer 2.5
 RUN git clone --depth 1 https://github.com/NVIDIA/DreamDojo.git /opt/DreamDojo && \
-    git clone --depth 1 https://github.com/nvidia-cosmos/cosmos-transfer2.5.git /opt/cosmos-transfer
-RUN . /app/.venv/bin/activate && uv pip install -e /opt/DreamDojo
-RUN git clone --depth 1 https://github.com/openvla/openvla.git /opt/openvla
+    git clone --depth 1 https://github.com/nvidia-cosmos/cosmos-transfer2.5.git /opt/cosmos-transfer && \
+    rm -rf /opt/DreamDojo/.git /opt/cosmos-transfer/.git
+RUN if [ "$(uname -m)" = "x86_64" ]; then . /app/.venv/bin/activate && uv pip install -e /opt/DreamDojo; else echo "Skipping DreamDojo editable install on $(uname -m)"; fi
+RUN git clone --depth 1 https://github.com/openvla/openvla.git /opt/openvla && \
+    rm -rf /opt/openvla/.git
 
 ENV DREAMDOJO_ROOT=/opt/DreamDojo
 ENV COSMOS_ROOT=/opt/cosmos-transfer

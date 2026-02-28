@@ -60,11 +60,20 @@ class RenderConfig:
     camera_look_down_deg: float = 15.0
     camera_paths: List[CameraPathSpec] = field(default_factory=list)
     num_clips_per_path: int = 3
+    # Scene-aware camera placement
+    scene_aware: bool = True
+    collision_check: bool = True
+    voxel_size_m: float = 0.1
+    density_threshold: int = 3
+    min_clearance_m: float = 0.15
+    vlm_fallback: bool = True
+    vlm_fallback_model: str = "gemini-3-flash-preview"
+    vlm_fallback_num_views: int = 4
 
 
 @dataclass
 class RobotCompositeConfig:
-    enabled: bool = False
+    enabled: bool = True
     urdf_path: Optional[Path] = None
     end_effector_link: Optional[str] = None
     base_xyz: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
@@ -79,7 +88,7 @@ class RobotCompositeConfig:
 
 @dataclass
 class GeminiPolishConfig:
-    enabled: bool = False
+    enabled: bool = True
     model: str = "gemini-3.1-flash-image-preview"
     api_key_env: str = "GOOGLE_GENAI_API_KEY"
     prompt: str = (
@@ -104,6 +113,9 @@ class EnrichConfig:
     num_variants_per_render: int = 5
     variants: List[VariantSpec] = field(default_factory=list)
     guidance: float = 7.0
+    # Dynamic variant generation: use Gemini to produce scene-appropriate prompts
+    dynamic_variants: bool = True
+    dynamic_variants_model: str = "gemini-3-flash-preview"
 
 
 @dataclass
@@ -156,7 +168,7 @@ class PolicyEvalConfig:
 
 @dataclass
 class PolicyFinetuneConfig:
-    enabled: bool = False
+    enabled: bool = True
     openvla_repo: Path = Path("/opt/openvla")
     finetune_script: str = "vla-scripts/finetune.py"
     data_root_dir: Optional[Path] = None
@@ -361,6 +373,14 @@ def load_config(path: Path) -> ValidationConfig:
             camera_look_down_deg=r.get("camera_look_down_deg", 15.0),
             camera_paths=_parse_camera_paths(r.get("camera_paths", []), base_dir),
             num_clips_per_path=r.get("num_clips_per_path", 3),
+            scene_aware=r.get("scene_aware", True),
+            collision_check=r.get("collision_check", True),
+            voxel_size_m=float(r.get("voxel_size_m", 0.1)),
+            density_threshold=int(r.get("density_threshold", 3)),
+            min_clearance_m=float(r.get("min_clearance_m", 0.15)),
+            vlm_fallback=r.get("vlm_fallback", True),
+            vlm_fallback_model=r.get("vlm_fallback_model", "gemini-3-flash-preview"),
+            vlm_fallback_num_views=int(r.get("vlm_fallback_num_views", 4)),
         )
 
     # Enrich
@@ -380,13 +400,15 @@ def load_config(path: Path) -> ValidationConfig:
             num_variants_per_render=e.get("num_variants_per_render", 5),
             variants=_parse_variants(e.get("variants", [])),
             guidance=e.get("guidance", 7.0),
+            dynamic_variants=e.get("dynamic_variants", True),
+            dynamic_variants_model=e.get("dynamic_variants_model", "gemini-3-flash-preview"),
         )
 
     if "robot_composite" in raw:
         rc = raw["robot_composite"]
         urdf_value = rc.get("urdf_path")
         config.robot_composite = RobotCompositeConfig(
-            enabled=rc.get("enabled", False),
+            enabled=rc.get("enabled", True),
             urdf_path=_resolve_path(urdf_value, base_dir) if urdf_value else None,
             end_effector_link=rc.get("end_effector_link"),
             base_xyz=rc.get("base_xyz", [0.0, 0.0, 0.0]),
@@ -402,7 +424,7 @@ def load_config(path: Path) -> ValidationConfig:
     if "gemini_polish" in raw:
         gp = raw["gemini_polish"]
         config.gemini_polish = GeminiPolishConfig(
-            enabled=gp.get("enabled", False),
+            enabled=gp.get("enabled", True),
             model=gp.get("model", "gemini-3.1-flash-image-preview"),
             api_key_env=gp.get("api_key_env", "GOOGLE_GENAI_API_KEY"),
             prompt=gp.get("prompt", GeminiPolishConfig().prompt),
@@ -472,7 +494,7 @@ def load_config(path: Path) -> ValidationConfig:
         pf = raw["policy_finetune"]
         data_root_dir = pf.get("data_root_dir")
         config.policy_finetune = PolicyFinetuneConfig(
-            enabled=pf.get("enabled", False),
+            enabled=pf.get("enabled", True),
             openvla_repo=_resolve_path(pf.get("openvla_repo", "/opt/openvla"), base_dir),
             finetune_script=pf.get("finetune_script", "vla-scripts/finetune.py"),
             data_root_dir=(

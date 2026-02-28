@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install uv
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.cargo/bin:$PATH"
+ENV PATH="/root/.local/bin:$PATH"
 
 WORKDIR /app
 
@@ -30,20 +30,24 @@ COPY scripts/ /app/scripts/
 RUN uv venv /app/.venv && \
     . /app/.venv/bin/activate && \
     uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 && \
-    uv pip install -e /app
+    uv pip install -e /app && \
+    rm -rf /opt/uv_cache /root/.cache/uv /root/.cache/pip
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Clone and install DreamDojo
-RUN git clone --depth 1 https://github.com/NVIDIA/DreamDojo.git /opt/DreamDojo
+RUN git clone --depth 1 https://github.com/NVIDIA/DreamDojo.git /opt/DreamDojo && \
+    rm -rf /opt/DreamDojo/.git
 ENV DREAMDOJO_ROOT=/opt/DreamDojo
 RUN . /app/.venv/bin/activate && uv pip install -e /opt/DreamDojo
 
 # Clone and install Cosmos Transfer 2.5
-RUN git clone --depth 1 https://github.com/nvidia-cosmos/cosmos-transfer2.5.git /opt/cosmos-transfer
+RUN git clone --depth 1 https://github.com/nvidia-cosmos/cosmos-transfer2.5.git /opt/cosmos-transfer && \
+    rm -rf /opt/cosmos-transfer/.git
 ENV COSMOS_ROOT=/opt/cosmos-transfer
 
 # Clone OpenVLA repo for fine-tuning entrypoints (vla-scripts/finetune.py).
-RUN git clone --depth 1 https://github.com/openvla/openvla.git /opt/openvla
+RUN git clone --depth 1 https://github.com/openvla/openvla.git /opt/openvla && \
+    rm -rf /opt/openvla/.git
 ENV OPENVLA_ROOT=/opt/openvla
 
 ENTRYPOINT ["blueprint-validate"]
