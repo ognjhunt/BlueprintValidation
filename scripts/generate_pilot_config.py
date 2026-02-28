@@ -280,7 +280,7 @@ def _build_config(
             "nproc_per_node": 1,
         },
         "policy_rl_loop": {
-            "enabled": policy_finetune_enabled,
+            "enabled": False,
             "iterations": 2,
             "horizon_steps": 24,
             "rollouts_per_task": 8,
@@ -310,7 +310,7 @@ def _build_config(
             "export_dir": "../data/outputs/policy_datasets",
         },
         "policy_compare": {
-            "enabled": policy_finetune_enabled,
+            "enabled": False,
             "heldout_num_rollouts": 6,
             "heldout_seed": 123,
             "eval_world_model": "adapted",
@@ -364,8 +364,11 @@ def main() -> int:
     parser.add_argument(
         "--policy-finetune",
         action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Enable/disable policy pair training/evaluation in generated config (default: disabled).",
+        default=True,
+        help=(
+            "Enable/disable policy finetune + rollout dataset export in generated config "
+            "(default: enabled)."
+        ),
     )
     args = parser.parse_args()
 

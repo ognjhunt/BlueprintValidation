@@ -154,8 +154,9 @@ PROVISION_REPOS=true bash scripts/setup_first_data.sh
   - optionally enable `gemini_polish.enabled=true` for photoreal blending polish
   - keep geometry filters on (`robot_composite.min_visible_joint_ratio`, `min_consistency_score`)
 - For policy improvement claim:
-  - these policy-training stages are disabled by default in current config templates
-  - enable `rollout_dataset.enabled`, `policy_finetune.enabled`, and `policy_compare.enabled`
+  - `policy_finetune.enabled` and `rollout_dataset.enabled` are on by default in current templates
+  - `policy_rl_loop.enabled` and `policy_compare.enabled` stay off by default
+  - enable `policy_compare.enabled` when you want paired policy A/B training/eval
   - run `export-rollouts`, `train-policy-pair`, `eval-policy-pair`
 - Capture checklist: `configs/capture/manipulation_capture_checklist.md`
 

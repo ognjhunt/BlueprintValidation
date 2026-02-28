@@ -169,7 +169,7 @@ class PolicyEvalConfig:
 
 @dataclass
 class PolicyFinetuneConfig:
-    enabled: bool = False
+    enabled: bool = True
     openvla_repo: Path = Path("/opt/openvla-oft")
     finetune_script: str = "vla-scripts/finetune.py"
     data_root_dir: Optional[Path] = None
@@ -271,7 +271,7 @@ class PolicyRLLoopConfig:
 
 @dataclass
 class RolloutDatasetConfig:
-    enabled: bool = False
+    enabled: bool = True
     seed: int = 17
     train_split: float = 0.8
     min_steps_per_rollout: int = 4
@@ -575,7 +575,7 @@ def load_config(path: Path) -> ValidationConfig:
         pf = raw["policy_finetune"]
         data_root_dir = pf.get("data_root_dir")
         config.policy_finetune = PolicyFinetuneConfig(
-            enabled=pf.get("enabled", False),
+            enabled=pf.get("enabled", True),
             openvla_repo=_resolve_path(pf.get("openvla_repo", "/opt/openvla-oft"), base_dir),
             finetune_script=pf.get("finetune_script", "vla-scripts/finetune.py"),
             data_root_dir=(
@@ -754,7 +754,7 @@ def load_config(path: Path) -> ValidationConfig:
     if "rollout_dataset" in raw:
         rd = raw["rollout_dataset"]
         config.rollout_dataset = RolloutDatasetConfig(
-            enabled=rd.get("enabled", False),
+            enabled=rd.get("enabled", True),
             seed=rd.get("seed", 17),
             train_split=float(rd.get("train_split", 0.8)),
             min_steps_per_rollout=rd.get("min_steps_per_rollout", 4),

@@ -32,9 +32,9 @@ def test_config_defaults():
     assert config.eval_policy.unnorm_key == "bridge_orig"
     assert config.eval_policy.vlm_judge.enable_agentic_vision is True
     assert config.policy_adapter.name == "openvla_oft"
-    assert config.rollout_dataset.enabled is False
+    assert config.rollout_dataset.enabled is True
     assert config.policy_compare.enabled is False
-    assert config.policy_finetune.enabled is False
+    assert config.policy_finetune.enabled is True
     assert config.policy_finetune.dataset_name == "bridge_orig"
     assert config.policy_finetune.recipe == "oft"
     assert config.robosplat.enabled is True
