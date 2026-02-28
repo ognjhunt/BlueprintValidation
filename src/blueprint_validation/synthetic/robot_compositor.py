@@ -197,12 +197,23 @@ def _project_points(
     w2c = np.linalg.inv(camera_pose.c2w)
     points_h = np.concatenate([points_world, np.ones((len(points_world), 1))], axis=1)
     cam = (w2c @ points_h.T).T
-    z = cam[:, 2]
     focal = width / (2.0 * math.tan(math.radians(camera_pose.fov_deg / 2.0)))
-    x = (cam[:, 0] * focal / (z + 1e-8)) + (width / 2.0)
-    y = (cam[:, 1] * focal / (z + 1e-8)) + (height / 2.0)
+
+    def _project(depth: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        x = (cam[:, 0] * focal / (depth + 1e-8)) + (width / 2.0)
+        y = (cam[:, 1] * focal / (depth + 1e-8)) + (height / 2.0)
+        visible_mask = (depth > 1e-4) & (x >= 0) & (x < width) & (y >= 0) & (y < height)
+        return x, y, visible_mask
+
+    depth = cam[:, 2]
+    x, y, visible = _project(depth)
+    if not np.any(visible):
+        # Some camera conventions have forward along -Z in camera space.
+        x_alt, y_alt, visible_alt = _project(-depth)
+        if np.any(visible_alt):
+            x, y, visible = x_alt, y_alt, visible_alt
+
     pix = np.stack([x, y], axis=1)
-    visible = (z > 1e-4) & (x >= 0) & (x < width) & (y >= 0) & (y < height)
     return pix, visible
 
 

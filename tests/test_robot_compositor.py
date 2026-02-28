@@ -66,3 +66,16 @@ def test_composite_robot_arm_into_clip(tmp_path):
     )
     assert out_video.exists()
     assert metrics.clip_name == "in"
+
+
+def test_project_points_supports_negative_z_forward():
+    from blueprint_validation.synthetic.robot_compositor import CameraPose, _project_points
+
+    points_world = np.array([[0.0, 0.0, -2.0]], dtype=np.float64)
+    pose = CameraPose(c2w=np.eye(4, dtype=np.float64), fov_deg=60.0)
+
+    pix, visible = _project_points(points_world, pose, width=640, height=480)
+
+    assert pix.shape == (1, 2)
+    assert visible.shape == (1,)
+    assert bool(visible[0]) is True
