@@ -12,7 +12,11 @@ from ..config import FacilityConfig, ValidationConfig
 from ..evaluation.openvla_runner import (
     load_dreamdojo_world_model,
 )
-from ..evaluation.task_hints import tasks_from_task_hints
+from ..evaluation.task_hints import (
+    balance_eval_tasks,
+    recommended_rollouts_per_condition,
+    tasks_from_task_hints,
+)
 from ..evaluation.vlm_judge import (
     JudgeScore,
     ManipulationJudgeScore,
@@ -98,7 +102,12 @@ class PolicyEvalStage(PipelineStage):
 
         tasks, hint_count = _build_task_list(config, facility)
 
-        num_rollouts = config.eval_policy.num_rollouts
+        requested_rollouts = int(config.eval_policy.num_rollouts)
+        num_rollouts = recommended_rollouts_per_condition(
+            num_unique_tasks=len(tasks),
+            requested=requested_rollouts,
+            profile="dreamdojo",
+        )
         max_steps = config.eval_policy.max_steps_per_rollout
 
         device = "cuda" if _has_cuda() else "cpu"
@@ -269,6 +278,9 @@ class PolicyEvalStage(PipelineStage):
             "adapted_policy_checkpoint": (
                 str(adapted_policy_checkpoint) if adapted_policy_checkpoint else None
             ),
+            "requested_rollouts_per_condition": requested_rollouts,
+            "planned_rollouts_per_condition": num_rollouts,
+            "num_unique_task_templates": len(tasks),
             "per_condition": per_condition,
             "pairwise": pairwise,
             "baseline_manipulation_success_rate": per_condition.get(
@@ -321,7 +333,10 @@ def _build_task_list(config: ValidationConfig, facility: FacilityConfig) -> tupl
     hint_tasks: List[str] = []
     if facility.task_hints_path is not None:
         try:
-            hint_tasks = tasks_from_task_hints(facility.task_hints_path)
+            hint_tasks = tasks_from_task_hints(
+                facility.task_hints_path,
+                profile="dreamdojo",
+            )
         except Exception as exc:
             logger.warning("Failed loading task hints from %s: %s", facility.task_hints_path, exc)
     for task in hint_tasks:
@@ -334,7 +349,7 @@ def _build_task_list(config: ValidationConfig, facility: FacilityConfig) -> tupl
             "Turn left at the intersection",
             "Approach the nearest obstacle",
         ]
-    return tasks, len(hint_tasks)
+    return balance_eval_tasks(tasks, profile="dreamdojo"), len(hint_tasks)
 
 
 def _has_cuda() -> bool:

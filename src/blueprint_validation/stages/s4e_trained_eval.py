@@ -12,7 +12,11 @@ from ..config import FacilityConfig, ValidationConfig
 from ..evaluation.openvla_runner import (
     load_dreamdojo_world_model,
 )
-from ..evaluation.task_hints import tasks_from_task_hints
+from ..evaluation.task_hints import (
+    balance_eval_tasks,
+    recommended_rollouts_per_condition,
+    tasks_from_task_hints,
+)
 from ..evaluation.vlm_judge import (
     JudgeScore,
     ManipulationJudgeScore,
@@ -153,7 +157,12 @@ class TrainedPolicyEvalStage(PipelineStage):
         # Build task list (merge config + task hints)
         tasks, hint_count = _build_task_list(config, facility)
 
-        num_rollouts = config.eval_policy.num_rollouts
+        requested_rollouts = int(config.eval_policy.num_rollouts)
+        num_rollouts = recommended_rollouts_per_condition(
+            num_unique_tasks=len(tasks),
+            requested=requested_rollouts,
+            profile="policy",
+        )
         max_steps = config.eval_policy.max_steps_per_rollout
         device = "cuda" if _has_cuda() else "cpu"
 
@@ -281,6 +290,9 @@ class TrainedPolicyEvalStage(PipelineStage):
             "num_rollouts_trained": len(trained_scores),
             "num_scoring_failures": len(scoring_failures),
             "task_hints_injected": hint_count,
+            "requested_rollouts_trained": requested_rollouts,
+            "planned_rollouts_trained": num_rollouts,
+            "num_unique_task_templates": len(tasks),
             "trained_checkpoint": str(trained_checkpoint),
             "pairwise": pairwise,
         }
@@ -325,7 +337,10 @@ def _build_task_list(config: ValidationConfig, facility: FacilityConfig) -> tupl
     hint_tasks: List[str] = []
     if facility.task_hints_path is not None:
         try:
-            hint_tasks = tasks_from_task_hints(facility.task_hints_path)
+            hint_tasks = tasks_from_task_hints(
+                facility.task_hints_path,
+                profile="policy",
+            )
         except Exception as exc:
             logger.warning("Failed loading task hints from %s: %s", facility.task_hints_path, exc)
     for task in hint_tasks:
@@ -337,7 +352,7 @@ def _build_task_list(config: ValidationConfig, facility: FacilityConfig) -> tupl
             "Navigate forward through the corridor",
             "Pick up the tote from the shelf",
         ]
-    return tasks, len(hint_tasks)
+    return balance_eval_tasks(tasks, profile="policy"), len(hint_tasks)
 
 
 def _resolve_trained_checkpoint(

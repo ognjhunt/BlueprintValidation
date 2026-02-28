@@ -144,6 +144,23 @@ _NON_PICKABLE_OBJECT_KEYWORDS = frozenset(
     }
 )
 
+_TOGGLEABLE_KEYWORDS = frozenset(
+    {
+        "air",
+        "burner",
+        "fan",
+        "heater",
+        "hood",
+        "kettle",
+        "lamp",
+        "light",
+        "microwave",
+        "oven",
+        "stove",
+        "switch",
+    }
+)
+
 
 def _infer_category_from_label(label: str) -> str:
     """Map a semantic label string to manipulation/articulation/navigation."""
@@ -282,14 +299,24 @@ def _is_plausible_pick_candidate(entry: dict) -> bool:
     return True
 
 
+def _entry_family(entry: dict) -> str:
+    label = str(entry.get("label") or "")
+    family = _semantic_class_key(label)
+    if family:
+        return family
+    return re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_") or "object"
+
+
 def _select_prompt_entries(
     entries: List[dict],
     limit: int,
     *,
     pick_filter: bool = False,
+    max_per_family: int = 2,
 ) -> List[dict]:
     selected: List[dict] = []
     seen: set = set()
+    family_counts: Dict[str, int] = {}
 
     def _add(entry: dict) -> None:
         key = (
@@ -298,7 +325,12 @@ def _select_prompt_entries(
         )
         if key in seen:
             return
+        family = _entry_family(entry)
+        if family and family_counts.get(family, 0) >= max(1, max_per_family):
+            return
         seen.add(key)
+        if family:
+            family_counts[family] = family_counts.get(family, 0) + 1
         selected.append(entry)
 
     if pick_filter:
@@ -350,7 +382,12 @@ def _build_interiorgs_prompt_tasks(
             {"task_id": "pick_place_manipulation", "source": "fallback", "scene_type": scene_type}
         )
 
-    for entry in _select_prompt_entries(manipulation_candidates, limit=6, pick_filter=True):
+    for entry in _select_prompt_entries(
+        manipulation_candidates,
+        limit=16,
+        pick_filter=True,
+        max_per_family=2,
+    ):
         token = _prompt_token_from_entry(entry)
         tasks.append(
             {
@@ -360,7 +397,11 @@ def _build_interiorgs_prompt_tasks(
             }
         )
 
-    for entry in _select_prompt_entries(articulation_hints, limit=4):
+    for entry in _select_prompt_entries(
+        articulation_hints,
+        limit=10,
+        max_per_family=2,
+    ):
         token = _prompt_token_from_entry(entry)
         tasks.append(
             {
@@ -370,7 +411,30 @@ def _build_interiorgs_prompt_tasks(
             }
         )
 
-    for entry in _select_prompt_entries(navigation_hints, limit=2):
+    # Add explicit "toggle" tasks for appliances/switches where appropriate.
+    toggle_pool = list(manipulation_candidates) + list(articulation_hints)
+    for entry in _select_prompt_entries(
+        toggle_pool,
+        limit=6,
+        max_per_family=1,
+    ):
+        tokens = set(_label_tokens(str(entry.get("label") or "")))
+        if not (tokens & _TOGGLEABLE_KEYWORDS):
+            continue
+        token = _prompt_token_from_entry(entry)
+        tasks.append(
+            {
+                "task_id": f"Turn on {token} and then turn it off",
+                "source": "interiorgs_prompt",
+                "scene_type": scene_type,
+            }
+        )
+
+    for entry in _select_prompt_entries(
+        navigation_hints,
+        limit=4,
+        max_per_family=1,
+    ):
         label = str(entry.get("label") or "target area").strip().lower().replace("_", " ")
         tasks.append(
             {
