@@ -77,6 +77,11 @@ def test_preflight_pi05_invalid_profile_runtime_backend(sample_config, monkeypat
     monkeypatch.setattr(preflight, "check_facility_ply", lambda *a, **k: _ok("ply"))
     monkeypatch.setattr(preflight, "check_model_weights", lambda *a, **k: _ok("weights"))
     monkeypatch.setattr(preflight, "check_hf_auth", lambda: _ok("hf_auth"))
+    monkeypatch.setattr(
+        preflight,
+        "check_cosmos_predict_tokenizer_access",
+        lambda *a, **k: _ok("cosmos_predict"),
+    )
     monkeypatch.setattr(preflight, "check_path_exists", lambda *a, **k: _ok(k.get("name", "path")))
     monkeypatch.setattr(
         preflight, "check_path_exists_under", lambda *a, **k: _ok(k.get("name", "path_under"))
@@ -155,6 +160,11 @@ def _patch_preflight_fast(monkeypatch, preflight):
     monkeypatch.setattr(preflight, "check_model_weights", lambda *a, **k: _ok("weights"))
     monkeypatch.setattr(preflight, "check_hf_auth", lambda: _ok("hf_auth"))
     monkeypatch.setattr(
+        preflight,
+        "check_cosmos_predict_tokenizer_access",
+        lambda *a, **k: _ok("cosmos_predict"),
+    )
+    monkeypatch.setattr(
         preflight, "check_path_exists_under", lambda *a, **k: _ok(k.get("name", "path_under"))
     )
     monkeypatch.setattr(preflight, "check_cosmos_wrapper_contract", lambda *a, **k: _ok("cosmos"))
@@ -188,6 +198,11 @@ def test_preflight_requires_stage2_runtime_dependencies(sample_config, monkeypat
     monkeypatch.setattr(preflight, "check_facility_ply", lambda *a, **k: _ok("ply"))
     monkeypatch.setattr(preflight, "check_model_weights", lambda *a, **k: _ok("weights"))
     monkeypatch.setattr(preflight, "check_hf_auth", lambda: _ok("hf_auth"))
+    monkeypatch.setattr(
+        preflight,
+        "check_cosmos_predict_tokenizer_access",
+        lambda *a, **k: _ok("cosmos_predict"),
+    )
     monkeypatch.setattr(preflight, "check_path_exists", lambda *a, **k: _ok("path"))
     monkeypatch.setattr(preflight, "check_path_exists_under", lambda *a, **k: _ok("path_under"))
     monkeypatch.setattr(preflight, "check_cosmos_wrapper_contract", lambda *a, **k: _ok("cosmos"))
@@ -332,3 +347,29 @@ def test_check_pi05_script_contracts_fail_when_flags_missing(tmp_path):
     assert norm.passed is False
     assert "--dataset_root" in train.detail or "CLI options" in train.detail
     assert "--dataset_root" in norm.detail or "CLI options" in norm.detail
+
+
+def test_check_cosmos_predict_tokenizer_access_passes_with_local_file(tmp_path):
+    from blueprint_validation.preflight import check_cosmos_predict_tokenizer_access
+
+    cosmos_transfer_dir = tmp_path / "cosmos-transfer-2.5-2b"
+    cosmos_transfer_dir.mkdir(parents=True, exist_ok=True)
+    tokenizer_path = tmp_path / "cosmos-predict-2.5-2b" / "tokenizer.pth"
+    tokenizer_path.parent.mkdir(parents=True, exist_ok=True)
+    tokenizer_path.write_bytes(b"ok")
+
+    result = check_cosmos_predict_tokenizer_access(cosmos_transfer_dir)
+    assert result.passed is True
+    assert "Local tokenizer present" in result.detail
+
+
+def test_check_cosmos_predict_tokenizer_access_fails_without_token_or_file(tmp_path, monkeypatch):
+    from blueprint_validation.preflight import check_cosmos_predict_tokenizer_access
+
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    cosmos_transfer_dir = tmp_path / "cosmos-transfer-2.5-2b"
+    cosmos_transfer_dir.mkdir(parents=True, exist_ok=True)
+
+    result = check_cosmos_predict_tokenizer_access(cosmos_transfer_dir)
+    assert result.passed is False
+    assert "HF_TOKEN is unset" in result.detail

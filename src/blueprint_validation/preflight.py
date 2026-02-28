@@ -36,6 +36,10 @@ _PI05_REQUIRED_NORM_STATS_FLAGS = {
     "--profile",
 }
 
+_COSMOS_PREDICT_REPO = "nvidia/Cosmos-Predict2.5-2B"
+_COSMOS_PREDICT_REVISION = "6787e176dce74a101d922174a95dba29fa5f0c55"
+_COSMOS_PREDICT_TOKENIZER_FILENAME = "tokenizer.pth"
+
 
 def check_gpu() -> PreflightCheck:
     try:
@@ -233,6 +237,94 @@ def check_hf_auth() -> PreflightCheck:
         name="hf_auth",
         passed=False,
         detail="Run `huggingface-cli login` or set HF_TOKEN",
+    )
+
+
+def check_cosmos_predict_tokenizer_access(cosmos_checkpoint_path: Path) -> PreflightCheck:
+    """Validate access to the Cosmos Predict tokenizer required by Stage 2 runtime."""
+    name = "enrich:cosmos_predict_tokenizer"
+    local_candidates: list[Path] = []
+
+    # Preferred location used by scripts/download_models.sh.
+    if cosmos_checkpoint_path:
+        local_candidates.append(
+            cosmos_checkpoint_path.parent
+            / "cosmos-predict-2.5-2b"
+            / _COSMOS_PREDICT_TOKENIZER_FILENAME
+        )
+    # Canonical cloud/default checkpoint roots.
+    local_candidates.extend(
+        [
+            Path("/models/checkpoints")
+            / "cosmos-predict-2.5-2b"
+            / _COSMOS_PREDICT_TOKENIZER_FILENAME,
+            Path("/app/data/checkpoints")
+            / "cosmos-predict-2.5-2b"
+            / _COSMOS_PREDICT_TOKENIZER_FILENAME,
+        ]
+    )
+
+    seen: set[str] = set()
+    for candidate in local_candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        if candidate.exists() and candidate.is_file():
+            return PreflightCheck(
+                name=name,
+                passed=True,
+                detail=f"Local tokenizer present: {candidate}",
+            )
+
+    token = (os.environ.get("HF_TOKEN") or "").strip()
+    if not token:
+        return PreflightCheck(
+            name=name,
+            passed=False,
+            detail=(
+                "Missing local tokenizer and HF_TOKEN is unset. "
+                "Grant access to nvidia/Cosmos-Predict2.5-2B and run scripts/download_models.sh."
+            ),
+        )
+
+    try:
+        from huggingface_hub import get_hf_file_metadata, hf_hub_url
+    except Exception as exc:
+        return PreflightCheck(
+            name=name,
+            passed=False,
+            detail=f"huggingface_hub unavailable for access check: {exc}",
+        )
+
+    try:
+        url = hf_hub_url(
+            repo_id=_COSMOS_PREDICT_REPO,
+            filename=_COSMOS_PREDICT_TOKENIZER_FILENAME,
+            revision=_COSMOS_PREDICT_REVISION,
+            repo_type="model",
+        )
+        get_hf_file_metadata(url=url, token=token)
+    except Exception as exc:
+        msg = str(exc).replace("\n", " ").strip()
+        if len(msg) > 220:
+            msg = msg[:220] + "..."
+        return PreflightCheck(
+            name=name,
+            passed=False,
+            detail=(
+                "Cannot access required HF asset "
+                f"{_COSMOS_PREDICT_REPO}@{_COSMOS_PREDICT_REVISION}/{_COSMOS_PREDICT_TOKENIZER_FILENAME}: "
+                f"{msg}"
+            ),
+        )
+
+    return PreflightCheck(
+        name=name,
+        passed=True,
+        detail=(
+            f"HF access verified: {_COSMOS_PREDICT_REPO}/{_COSMOS_PREDICT_TOKENIZER_FILENAME}"
+        ),
     )
 
 
@@ -710,6 +802,7 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
         )
     )
     checks.append(check_hf_auth())
+    checks.append(check_cosmos_predict_tokenizer_access(config.enrich.cosmos_checkpoint))
 
     # Runtime repos and scripts required by Stage 2+.
     checks.append(check_path_exists(config.enrich.cosmos_repo, "repo:cosmos_transfer"))
