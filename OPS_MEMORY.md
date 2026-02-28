@@ -102,12 +102,16 @@ the permanent fixes applied so we do not repeat them.
 - Symptom:
   - periodic local checkpoint sync log showed repeated
     `scripts/vast_checkpoint_sync.sh: line 100: vastai: command not found`.
+  - later cycles also showed `rclone is required` despite manual sync working.
 - Root cause:
   - cron environment lacked `vastai` in `PATH`, so auto SSH target resolution
     failed.
+  - cron `PATH` also omitted `/opt/homebrew/bin`, so `rclone` was not found.
 - Permanent fix:
   - cron entry now passes `SSH_HOST=ssh2.vast.ai` and `SSH_PORT=22930` explicitly
     so sync runs without `vastai` CLI lookup.
+  - cron entry now sets explicit `PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`
+    so `rclone` is available for B2 mirroring.
   - one-shot validation confirmed local snapshot pull + chained B2 push succeed.
 
 ## Open follow-up
