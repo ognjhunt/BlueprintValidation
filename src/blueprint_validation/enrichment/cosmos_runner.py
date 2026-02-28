@@ -163,12 +163,14 @@ def run_cosmos_inference(
     logger.info("Running Cosmos inference (%s): %s", cosmos_model, " ".join(cmd))
     env = os.environ.copy()
     repo_root_str = str(repo_root)
+    cosmos_pythonpath_entries = [
+        repo_root_str,
+        str(repo_root / "packages" / "cosmos-cuda"),
+        str(repo_root / "packages" / "cosmos-oss"),
+    ]
     current_pythonpath = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        repo_root_str
-        if not current_pythonpath
-        else f"{repo_root_str}{os.pathsep}{current_pythonpath}"
-    )
+    merged_entries = cosmos_pythonpath_entries + ([current_pythonpath] if current_pythonpath else [])
+    env["PYTHONPATH"] = os.pathsep.join(merged_entries)
 
     result = subprocess.run(
         cmd,

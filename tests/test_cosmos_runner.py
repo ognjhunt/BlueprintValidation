@@ -98,4 +98,7 @@ def test_run_cosmos_inference_sets_repo_pythonpath(tmp_path, monkeypatch):
     assert seen["cwd"] == str(repo)
     assert seen["cmd"][:2] == ["python", "examples/inference.py"]
     pythonpath = seen["env"].get("PYTHONPATH", "")
-    assert pythonpath.startswith(str(repo))
+    parts = pythonpath.split(":")
+    assert parts[0] == str(repo)
+    assert parts[1] == str(repo / "packages" / "cosmos-cuda")
+    assert parts[2] == str(repo / "packages" / "cosmos-oss")
