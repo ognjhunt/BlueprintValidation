@@ -30,6 +30,7 @@ def test_render_frame_expands_background_for_rgb_ed(monkeypatch):
 
     def fake_rasterization(**kwargs):
         captured["background_shape"] = tuple(kwargs["backgrounds"].shape)
+        captured["packed"] = kwargs.get("packed")
         h = kwargs["height"]
         w = kwargs["width"]
         renders = torch.zeros((1, h, w, 4), dtype=torch.float32)
@@ -50,6 +51,7 @@ def test_render_frame_expands_background_for_rgb_ed(monkeypatch):
 
     rgb, depth = render_frame(splat, _DummyPose(), background=np.array([1.0, 1.0, 1.0]))
 
-    assert captured["background_shape"] == (1, 4)
+    assert captured["background_shape"] == (1, 3)
+    assert captured["packed"] is False
     assert rgb.shape == (6, 8, 3)
     assert depth.shape == (6, 8)
