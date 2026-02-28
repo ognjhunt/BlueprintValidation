@@ -1,4 +1,4 @@
-"""Stage 4e: Evaluate the trained (fine-tuned) OpenVLA policy in the adapted world model."""
+"""Stage 4e: Evaluate trained OpenVLA-OFT policy in the adapted world model."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from ..common import StageResult, get_logger, read_json, write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..evaluation.openvla_runner import (
     load_dreamdojo_world_model,
-    run_rollout,
 )
 from ..evaluation.vlm_judge import (
     JudgeScore,
@@ -67,7 +66,7 @@ def _has_cuda() -> bool:
 class TrainedPolicyEvalStage(PipelineStage):
     """Evaluate the trained policy against frozen baselines.
 
-    Runs the ``trained`` condition: fine-tuned OpenVLA in the adapted world
+    Runs the ``trained`` condition: fine-tuned OpenVLA-OFT in the adapted world
     model.  Then merges with Stage 4 scores to produce pairwise comparisons
     (baseline-vs-trained, adapted-vs-trained).
     """
@@ -78,7 +77,7 @@ class TrainedPolicyEvalStage(PipelineStage):
 
     @property
     def description(self) -> str:
-        return "Evaluate trained OpenVLA policy in site-adapted DreamDojo world model"
+        return "Evaluate trained OpenVLA-OFT policy in site-adapted DreamDojo world model"
 
     def run(
         self,
@@ -192,32 +191,18 @@ class TrainedPolicyEvalStage(PipelineStage):
             init_frame = initial_frames[rollout_idx % len(initial_frames)]
             clip_name = f"trained_{task[:20].replace(' ', '_')}_{rollout_idx:03d}"
 
-            if policy_adapter.name == "openvla":
-                rollout = run_rollout(
-                    world_model=world_model,
-                    openvla_model=policy_handle.model,
-                    openvla_processor=policy_handle.processor,
-                    initial_frame=init_frame,
-                    task_prompt=task,
-                    max_steps=max_steps,
-                    unnorm_key=config.eval_policy.unnorm_key,
-                    output_dir=condition_dir,
-                    clip_name=clip_name,
-                    device=device,
-                )
-            else:
-                rollout = run_rollout_with_adapter(
-                    world_model=world_model,
-                    policy_adapter=policy_adapter,
-                    policy_handle=policy_handle,
-                    initial_frame=init_frame,
-                    task_prompt=task,
-                    max_steps=max_steps,
-                    unnorm_key=config.eval_policy.unnorm_key,
-                    output_dir=condition_dir,
-                    clip_name=clip_name,
-                    device=device,
-                )
+            rollout = run_rollout_with_adapter(
+                world_model=world_model,
+                policy_adapter=policy_adapter,
+                policy_handle=policy_handle,
+                initial_frame=init_frame,
+                task_prompt=task,
+                max_steps=max_steps,
+                unnorm_key=config.eval_policy.unnorm_key,
+                output_dir=condition_dir,
+                clip_name=clip_name,
+                device=device,
+            )
 
             if not rollout.video_path or not rollout.video_path.exists():
                 scoring_failures.append(f"Rollout video missing for {clip_name}")

@@ -32,7 +32,7 @@ if ! huggingface-cli whoami &> /dev/null; then
     echo "You also need to accept the model licenses on HuggingFace for:"
     echo "  - nvidia/DreamDojo"
     echo "  - nvidia/Cosmos-Transfer2.5-2B"
-    echo "  - openvla/openvla-7b"
+    echo "  - openvla/openvla-7b (base weights for OpenVLA-OFT)"
     exit 1
 fi
 
@@ -49,7 +49,7 @@ huggingface-cli download nvidia/Cosmos-Transfer2.5-2B \
     --resume-download
 
 echo ""
-echo "[3/3] Downloading OpenVLA 7B..."
+echo "[3/3] Downloading OpenVLA-OFT base 7B weights..."
 huggingface-cli download openvla/openvla-7b \
     --local-dir "$DATA_DIR/openvla-7b/" \
     --resume-download
@@ -58,7 +58,7 @@ echo ""
 echo "=== All models downloaded ==="
 echo "DreamDojo:      $DATA_DIR/DreamDojo/2B_pretrain/"
 echo "Cosmos Transfer: $DATA_DIR/cosmos-transfer-2.5-2b/"
-echo "OpenVLA:        $DATA_DIR/openvla-7b/"
+echo "OpenVLA-OFT base: $DATA_DIR/openvla-7b/"
 echo ""
 echo "Total disk usage:"
 du -sh "$DATA_DIR"

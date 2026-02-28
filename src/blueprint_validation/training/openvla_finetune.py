@@ -1,4 +1,4 @@
-"""OpenVLA fine-tuning orchestration (LoRA/OFT adapter stage)."""
+"""OpenVLA-OFT fine-tuning orchestration."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ def build_openvla_finetune_command(
     run_root_dir: Path,
     adapter_tmp_dir: Path,
 ) -> list[str]:
-    """Build a torchrun command matching the OpenVLA finetune entrypoint."""
+    """Build a torchrun command matching the OpenVLA-OFT finetune entrypoint."""
     if config.data_root_dir is None:
         raise RuntimeError(
             "policy_finetune.data_root_dir is required when policy_finetune.enabled=true."
@@ -99,10 +99,10 @@ def run_openvla_finetune(
     facility_id: str,
     output_dir: Path,
 ) -> Dict:
-    """Execute OpenVLA fine-tuning and return run metadata."""
+    """Execute OpenVLA-OFT fine-tuning and return run metadata."""
     if not config.openvla_repo.exists():
         raise RuntimeError(
-            f"OpenVLA repo not found at {config.openvla_repo}. "
+            f"OpenVLA-OFT repo not found at {config.openvla_repo}. "
             "Set policy_finetune.openvla_repo to a valid checkout."
         )
     if config.data_root_dir is None:
@@ -115,7 +115,7 @@ def run_openvla_finetune(
         )
     if not (config.data_root_dir / config.dataset_name).exists():
         raise RuntimeError(
-            "OpenVLA dataset directory missing. Expected "
+            "OpenVLA-OFT dataset directory missing. Expected "
             f"{config.data_root_dir / config.dataset_name}. "
             "Provide policy_finetune.data_root_dir and policy_finetune.dataset_name."
         )
@@ -125,7 +125,7 @@ def run_openvla_finetune(
     script_path = _resolve_finetune_script(config.openvla_repo, config.finetune_script)
     if not script_path.exists():
         raise RuntimeError(
-            f"OpenVLA fine-tune script not found at {script_path}. "
+            f"OpenVLA-OFT fine-tune script not found at {script_path}. "
             "Check policy_finetune.finetune_script."
         )
 
@@ -142,7 +142,7 @@ def run_openvla_finetune(
         adapter_tmp_dir=adapter_tmp_dir,
     )
     logger.info(
-        "Starting OpenVLA fine-tuning for facility=%s dataset=%s",
+        "Starting OpenVLA-OFT fine-tuning for facility=%s dataset=%s",
         facility_id,
         config.dataset_name,
     )
@@ -178,7 +178,7 @@ def run_openvla_finetune(
     elif artifact_path is None:
         finetune_result["status"] = "failed"
         finetune_result["stderr"] = (
-            "OpenVLA fine-tune command succeeded but no artifacts were found under "
+            "OpenVLA-OFT fine-tune command succeeded but no artifacts were found under "
             f"{adapter_tmp_dir} or {run_root_dir}."
         )
     else:

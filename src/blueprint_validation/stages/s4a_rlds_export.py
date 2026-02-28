@@ -24,7 +24,7 @@ class RLDSExportStage(PipelineStage):
 
     @property
     def description(self) -> str:
-        return "Export successful rollouts to RLDS TFRecords for OpenVLA fine-tuning"
+        return "Export successful rollouts to RLDS TFRecords for OpenVLA-OFT fine-tuning"
 
     def run(
         self,

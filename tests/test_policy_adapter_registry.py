@@ -15,3 +15,10 @@ def test_registry_supports_oft_alias():
 
     adapter = get_policy_adapter("oft")
     assert adapter.name == "openvla_oft"
+
+
+def test_registry_maps_legacy_openvla_alias_to_oft():
+    from blueprint_validation.policy_adapters.registry import get_policy_adapter
+
+    adapter = get_policy_adapter("openvla")
+    assert adapter.name == "openvla_oft"

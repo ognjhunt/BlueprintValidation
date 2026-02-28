@@ -213,7 +213,9 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
     # Model weights
     checks.append(check_model_weights(config.finetune.dreamdojo_checkpoint, "DreamDojo"))
     checks.append(check_model_weights(config.enrich.cosmos_checkpoint, "Cosmos-Transfer-2.5"))
-    checks.append(check_model_weights(config.eval_policy.openvla_checkpoint, "OpenVLA"))
+    checks.append(
+        check_model_weights(config.eval_policy.openvla_checkpoint, "OpenVLA-OFT base weights")
+    )
     checks.append(check_hf_auth())
 
     # Runtime repos and scripts required by Stage 2+.
@@ -357,7 +359,7 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
             )
         )
 
-    # Optional OpenVLA fine-tuning prerequisites
+    # Optional OpenVLA-OFT fine-tuning prerequisites
     if config.policy_finetune.enabled:
         checks.append(check_external_tool("torchrun"))
         checks.append(

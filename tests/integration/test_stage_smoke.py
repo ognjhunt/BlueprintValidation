@@ -118,7 +118,7 @@ def test_stage4_policy_eval_deterministic_metrics(sample_config, tmp_path, monke
     load_calls = []
 
     class FakeAdapter:
-        name = "openvla"
+        name = "openvla_oft"
 
         def load_policy(self, model_name, checkpoint_path, device):
             load_calls.append((model_name, checkpoint_path, device))
@@ -138,7 +138,7 @@ def test_stage4_policy_eval_deterministic_metrics(sample_config, tmp_path, monke
             self.video_path = video_path
             self.num_steps = 3
 
-    def fake_run_rollout(*, output_dir, clip_name, **kwargs):
+    def fake_run_rollout_with_adapter(*, output_dir, clip_name, **kwargs):
         video_path = output_dir / f"{clip_name}.mp4"
         video_path.parent.mkdir(parents=True, exist_ok=True)
         video_path.write_bytes(b"x")
@@ -149,7 +149,10 @@ def test_stage4_policy_eval_deterministic_metrics(sample_config, tmp_path, monke
             return JudgeScore(8, 7, 7, "adapted better", "{}")
         return JudgeScore(5, 6, 6, "baseline", "{}")
 
-    monkeypatch.setattr("blueprint_validation.stages.s4_policy_eval.run_rollout", fake_run_rollout)
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4_policy_eval.run_rollout_with_adapter",
+        fake_run_rollout_with_adapter,
+    )
     monkeypatch.setattr("blueprint_validation.stages.s4_policy_eval.score_rollout", fake_score_rollout)
 
     previous = {
@@ -250,7 +253,7 @@ def test_stage4c_policy_pair_train_smoke(sample_config, tmp_path, monkeypatch):
             self.detail = ""
 
     class FakeAdapter:
-        name = "openvla"
+        name = "openvla_oft"
 
         def dataset_transform(self, source_dataset_dir, output_root, dataset_name):
             out = output_root / dataset_name
@@ -325,7 +328,7 @@ def test_stage4d_policy_pair_eval_smoke(sample_config, tmp_path, monkeypatch):
         pass
 
     class FakeAdapter:
-        name = "openvla"
+        name = "openvla_oft"
 
         def load_policy(self, model_name, checkpoint_path, device):
             return FakeHandle()

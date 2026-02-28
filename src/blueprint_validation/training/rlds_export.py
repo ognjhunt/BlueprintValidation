@@ -167,7 +167,7 @@ def export_rollouts_to_rlds_jsonl(
 
 
 # ---------------------------------------------------------------------------
-# TFRecord conversion for OpenVLA fine-tuning
+# TFRecord conversion for OpenVLA-OFT fine-tuning
 # ---------------------------------------------------------------------------
 
 
@@ -177,7 +177,7 @@ def convert_jsonl_to_tfrecord(
     output_dir: Path,
     dataset_name: str,
 ) -> Path:
-    """Convert JSONL episodes into TFRecord RLDS format consumed by OpenVLA.
+    """Convert JSONL episodes into TFRecord RLDS format consumed by OpenVLA-OFT.
 
     Creates the directory layout expected by ``tensorflow_datasets``::
 
@@ -200,7 +200,7 @@ def convert_jsonl_to_tfrecord(
     except ImportError:
         logger.warning(
             "tensorflow not installed — writing JSONL-only dataset at %s. "
-            "Install tensorflow to produce TFRecords for OpenVLA.",
+            "Install tensorflow to produce TFRecords for OpenVLA-OFT.",
             output_dir,
         )
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -225,7 +225,7 @@ def convert_jsonl_to_tfrecord(
 
                     image_bytes = Path(image_path).read_bytes()
                     action = step["action"]
-                    # Pad or truncate to 7-D for OpenVLA
+                    # Pad or truncate to 7-D for OpenVLA-OFT action interface.
                     action = (action + [0.0] * 7)[:7]
 
                     feature = {

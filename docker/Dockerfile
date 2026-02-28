@@ -45,10 +45,10 @@ RUN git clone --depth 1 https://github.com/nvidia-cosmos/cosmos-transfer2.5.git 
     rm -rf /opt/cosmos-transfer/.git
 ENV COSMOS_ROOT=/opt/cosmos-transfer
 
-# Clone OpenVLA repo for fine-tuning entrypoints (vla-scripts/finetune.py).
-RUN git clone --depth 1 https://github.com/openvla/openvla.git /opt/openvla && \
-    rm -rf /opt/openvla/.git
-ENV OPENVLA_ROOT=/opt/openvla
+# Clone OpenVLA-OFT repo for fine-tuning entrypoints (vla-scripts/finetune.py).
+RUN git clone --depth 1 https://github.com/moojink/openvla-oft.git /opt/openvla-oft && \
+    rm -rf /opt/openvla-oft/.git
+ENV OPENVLA_ROOT=/opt/openvla-oft
 
 ENTRYPOINT ["blueprint-validate"]
 CMD ["--help"]

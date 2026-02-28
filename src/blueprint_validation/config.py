@@ -570,7 +570,7 @@ def load_config(path: Path) -> ValidationConfig:
             ),
         )
 
-    # Policy fine-tuning (OpenVLA LoRA/OFT adapter stage)
+    # Policy fine-tuning (OpenVLA-OFT adapter stage)
     if "policy_finetune" in raw:
         pf = raw["policy_finetune"]
         data_root_dir = pf.get("data_root_dir")

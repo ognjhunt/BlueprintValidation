@@ -80,12 +80,12 @@ def test_config_with_all_sections(tmp_path):
         },
         "policy_finetune": {
             "enabled": True,
-            "openvla_repo": "/tmp/openvla",
+            "openvla_repo": "/tmp/openvla-oft",
             "data_root_dir": "/tmp/data",
             "dataset_name": "bridge_orig",
             "max_steps": 100,
         },
-        "policy_adapter": {"name": "openvla"},
+        "policy_adapter": {"name": "openvla_oft"},
         "splatsim": {
             "enabled": True,
             "mode": "strict",
@@ -172,7 +172,7 @@ def test_config_resolves_relative_paths(tmp_path):
         "finetune": {"dreamdojo_repo": "./vendor/DreamDojo"},
         "eval_policy": {"openvla_checkpoint": rel_checkpoint},
         "policy_finetune": {
-            "openvla_repo": "./vendor/openvla",
+            "openvla_repo": "./vendor/openvla-oft",
             "data_root_dir": "./data/openvla",
         },
     }

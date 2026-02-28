@@ -10,7 +10,7 @@ import numpy as np
 
 from ..common import get_logger, write_json
 from ..config import FacilityConfig, PolicyFinetuneConfig, ValidationConfig
-from ..evaluation.openvla_runner import load_dreamdojo_world_model, run_rollout
+from ..evaluation.openvla_runner import load_dreamdojo_world_model
 from ..evaluation.rollout_utils import run_rollout_with_adapter
 from ..evaluation.vlm_judge import (
     JudgeScore,
@@ -186,32 +186,18 @@ def _collect_rollouts(
             init_frame = initial_frames[rollout_idx % len(initial_frames)]
             clip_name = f"iter{iteration:02d}_r{rollout_idx:04d}_{task[:20].replace(' ', '_')}"
 
-            if policy_adapter.name == "openvla":
-                rollout = run_rollout(
-                    world_model=world_model,
-                    openvla_model=policy_handle.model,
-                    openvla_processor=policy_handle.processor,
-                    initial_frame=init_frame,
-                    task_prompt=task,
-                    max_steps=max_steps,
-                    unnorm_key=config.eval_policy.unnorm_key,
-                    output_dir=output_dir,
-                    clip_name=clip_name,
-                    device=device,
-                )
-            else:
-                rollout = run_rollout_with_adapter(
-                    world_model=world_model,
-                    policy_adapter=policy_adapter,
-                    policy_handle=policy_handle,
-                    initial_frame=init_frame,
-                    task_prompt=task,
-                    max_steps=max_steps,
-                    unnorm_key=config.eval_policy.unnorm_key,
-                    output_dir=output_dir,
-                    clip_name=clip_name,
-                    device=device,
-                )
+            rollout = run_rollout_with_adapter(
+                world_model=world_model,
+                policy_adapter=policy_adapter,
+                policy_handle=policy_handle,
+                initial_frame=init_frame,
+                task_prompt=task,
+                max_steps=max_steps,
+                unnorm_key=config.eval_policy.unnorm_key,
+                output_dir=output_dir,
+                clip_name=clip_name,
+                device=device,
+            )
 
             if not rollout.video_path or not rollout.video_path.exists():
                 rollout_idx += 1
@@ -538,5 +524,4 @@ def _has_cuda() -> bool:
         return torch.cuda.is_available()
     except Exception:
         return False
-
 

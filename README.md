@@ -95,7 +95,7 @@ blueprint-validate --config /app/configs/example_validation.yaml run-all
 
 ### Docker Snapshot
 
-Build a reusable runtime image snapshot (includes DreamDojo/Cosmos/OpenVLA repos):
+Build a reusable runtime image snapshot (includes DreamDojo/Cosmos/OpenVLA-OFT repos):
 
 ```bash
 bash scripts/build_runtime_snapshot.sh
@@ -121,7 +121,7 @@ PROVISION_REPOS=true bash scripts/setup_first_data.sh
 | [Cosmos Transfer 2.5](https://github.com/nvidia-cosmos/cosmos-transfer2.5) | NVIDIA | Video enrichment |
 | RoboSplat (pinned vendor + native completion) | SHOWLab + local | Default S1d 3D Gaussian augmentation backend |
 | [OpenVLA-OFT](https://github.com/moojink/openvla-oft) | OpenVLA team | Default policy adapter/fine-tuning recipe |
-| [OpenVLA 7B](https://github.com/openvla/openvla) | Stanford | Backward-compatible baseline policy path |
+| [OpenVLA 7B weights](https://github.com/openvla/openvla) | Stanford | Base checkpoint consumed via OpenVLA-OFT |
 | [gsplat](https://github.com/nerfstudio-project/gsplat) | Nerfstudio | Gaussian splat rendering |
 | Gemini 3 Flash Preview | Google | VLM judge with Agentic Vision |
 

@@ -1,4 +1,4 @@
-"""Optional OpenVLA policy fine-tuning stage."""
+"""Optional OpenVLA-OFT policy fine-tuning stage."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ class PolicyFinetuneStage(PipelineStage):
 
     @property
     def description(self) -> str:
-        return "Optional OpenVLA LoRA/OFT fine-tuning on manipulation trajectories"
+        return "Optional OpenVLA-OFT fine-tuning on manipulation trajectories"
 
     def run(
         self,
@@ -53,7 +53,7 @@ class PolicyFinetuneStage(PipelineStage):
                     "Using pipeline-generated RLDS dataset: %s from %s",
                     rlds_name, rlds_dir,
                 )
-                # Point data_root_dir to the parent so OpenVLA finds dataset_name/ inside
+                # Point data_root_dir to the parent so OpenVLA-OFT finds dataset_name/ inside
                 from pathlib import Path as _Path
 
                 rlds_dataset_path = _Path(rlds_dir)

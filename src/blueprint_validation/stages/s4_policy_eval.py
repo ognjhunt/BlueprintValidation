@@ -1,4 +1,4 @@
-"""Stage 4: OpenVLA policy evaluation — baseline vs site-adapted DreamDojo."""
+"""Stage 4: OpenVLA-OFT policy evaluation — baseline vs site-adapted DreamDojo."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from ..common import StageResult, get_logger, read_json, write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..evaluation.openvla_runner import (
     load_dreamdojo_world_model,
-    run_rollout,
 )
 from ..evaluation.task_hints import tasks_from_task_hints
 from ..evaluation.vlm_judge import (
@@ -34,7 +33,7 @@ class PolicyEvalStage(PipelineStage):
 
     @property
     def description(self) -> str:
-        return "Evaluate OpenVLA policy in baseline vs site-adapted DreamDojo world model"
+        return "Evaluate OpenVLA-OFT policy in baseline vs site-adapted DreamDojo world model"
 
     def run(
         self,
@@ -139,32 +138,18 @@ class PolicyEvalStage(PipelineStage):
                 init_frame = initial_frames[rollout_idx % len(initial_frames)]
                 clip_name = f"{condition}_{task[:20].replace(' ', '_')}_{rollout_idx:03d}"
 
-                if policy_adapter.name == "openvla":
-                    rollout = run_rollout(
-                        world_model=world_model,
-                        openvla_model=policy_handle.model,
-                        openvla_processor=policy_handle.processor,
-                        initial_frame=init_frame,
-                        task_prompt=task,
-                        max_steps=max_steps,
-                        unnorm_key=config.eval_policy.unnorm_key,
-                        output_dir=condition_dir,
-                        clip_name=clip_name,
-                        device=device,
-                    )
-                else:
-                    rollout = run_rollout_with_adapter(
-                        world_model=world_model,
-                        policy_adapter=policy_adapter,
-                        policy_handle=policy_handle,
-                        initial_frame=init_frame,
-                        task_prompt=task,
-                        max_steps=max_steps,
-                        unnorm_key=config.eval_policy.unnorm_key,
-                        output_dir=condition_dir,
-                        clip_name=clip_name,
-                        device=device,
-                    )
+                rollout = run_rollout_with_adapter(
+                    world_model=world_model,
+                    policy_adapter=policy_adapter,
+                    policy_handle=policy_handle,
+                    initial_frame=init_frame,
+                    task_prompt=task,
+                    max_steps=max_steps,
+                    unnorm_key=config.eval_policy.unnorm_key,
+                    output_dir=condition_dir,
+                    clip_name=clip_name,
+                    device=device,
+                )
 
                 if not rollout.video_path or not rollout.video_path.exists():
                     msg = f"Rollout video missing for {clip_name}"
@@ -458,5 +443,3 @@ def _build_pairwise_metrics(all_scores: List[Dict], conditions: List[str]) -> Di
                 "p_value": round(p_value, 6) if p_value is not None else None,
             }
     return pairwise
-
-

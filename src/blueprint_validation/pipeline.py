@@ -52,7 +52,7 @@ class ValidationPipeline:
             FinetuneStage(),            # S3: DreamDojo LoRA fine-tune
             PolicyEvalStage(),          # S4: frozen policy eval (baseline + adapted)
             RLDSExportStage(),          # S4a: export adapted rollouts -> RLDS TFRecords
-            PolicyFinetuneStage(),      # S3b: OpenVLA LoRA on pipeline-generated data
+            PolicyFinetuneStage(),      # S3b: OpenVLA-OFT fine-tune on pipeline-generated data
             PolicyRLLoopStage(),        # S3c: iterative RL loop + world-model refresh
             TrainedPolicyEvalStage(),   # S4e: evaluate trained vs frozen baselines
             RolloutDatasetStage(),      # S4b: export paired rollouts -> JSONL datasets

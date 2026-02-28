@@ -250,7 +250,7 @@ def rl_loop_policy(ctx: click.Context, facility: str) -> None:
 @click.option("--facility", required=True, help="Facility ID.")
 @click.pass_context
 def eval_policy(ctx: click.Context, facility: str) -> None:
-    """Stage 4: OpenVLA policy evaluation with VLM judge scoring."""
+    """Stage 4: OpenVLA-OFT policy evaluation with VLM judge scoring."""
     from .stages.s4_policy_eval import PolicyEvalStage
 
     config = ctx.obj["config"]

@@ -5,7 +5,7 @@ project_name: "Blueprint Validation Pilot"
 facilities:
   facility_a:
     name: "Warehouse A - Durham"
-    ply_path: ./data/facilities/facility_a/splat.ply
+    ply_path: ../data/facilities/facility_a/splat.ply
     # Optional: BlueprintCapturePipeline task_targets.json generated from source video.
     # When present, Stage 4 auto-injects additional manipulation/articulation tasks.
     # task_hints_path: /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/runs/<run>/task_targets.json
@@ -29,7 +29,7 @@ facilities:
 
   facility_b:
     name: "Warehouse B - Raleigh"
-    ply_path: ./data/facilities/facility_b/splat.ply
+    ply_path: ../data/facilities/facility_b/splat.ply
     # task_hints_path: /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/runs/<run>/task_targets.json
     description: "Smaller warehouse with conveyor system, narrow aisles"
     landmarks:
@@ -119,7 +119,7 @@ robosplat:
   fallback_to_legacy_scan: true
   fallback_on_backend_error: true
   persist_scene_variants: false
-  vendor_repo_path: ./vendor/robosplat
+  vendor_repo_path: ../vendor/robosplat
   vendor_ref: ""
 
 # ---- Stage 1e: Minimal SplatSim interaction (opt-in) ----
@@ -146,7 +146,7 @@ robosplat_scan:
 # ---- Stage 2: Enrich ----
 enrich:
   cosmos_model: nvidia/Cosmos-Transfer2.5-2B
-  cosmos_checkpoint: ./data/checkpoints/cosmos-transfer-2.5-2b/
+  cosmos_checkpoint: ../data/checkpoints/cosmos-transfer-2.5-2b/
   cosmos_repo: /opt/cosmos-transfer
   controlnet_inputs: [rgb, depth]
   num_variants_per_render: 5
@@ -166,7 +166,7 @@ enrich:
 # ---- Stage 3: Fine-tune ----
 finetune:
   dreamdojo_repo: /opt/DreamDojo
-  dreamdojo_checkpoint: ./data/checkpoints/DreamDojo/2B_pretrain/
+  dreamdojo_checkpoint: ../data/checkpoints/DreamDojo/2B_pretrain/
   # Optional DreamDojo config script path or config name (without .sh) under dreamdojo_repo/configs.
   # experiment_config: post-training/2b_720p_adapted_17f
   model_size: 2B
@@ -183,10 +183,10 @@ finetune:
   save_every_n_epochs: 10
   max_training_hours: 72
 
-# ---- Stage 4: Policy Eval ----
+# ---- Stage 4: OpenVLA-OFT Policy Eval ----
 eval_policy:
   openvla_model: openvla/openvla-7b
-  openvla_checkpoint: ./data/checkpoints/openvla-7b/
+  openvla_checkpoint: ../data/checkpoints/openvla-7b/
   unnorm_key: bridge_orig
   num_rollouts: 50
   max_steps_per_rollout: 100
@@ -207,7 +207,7 @@ eval_policy:
     api_key_env: GOOGLE_GENAI_API_KEY
     enable_agentic_vision: true
 
-# ---- Stage 3b: OpenVLA policy fine-tune ----
+# ---- Stage 3b: OpenVLA-OFT policy fine-tune ----
 # Uses OFT-oriented finetuning defaults (OpenVLA-OFT-style recipe).
 # Trains policy on site-specific rollout data from Stage 4a (runs in world model, not IRL).
 policy_finetune:
@@ -215,7 +215,7 @@ policy_finetune:
   openvla_repo: /opt/openvla-oft
   finetune_script: vla-scripts/finetune.py
   # data_root_dir should contain datasets like <data_root_dir>/bridge_orig
-  data_root_dir: ./data/openvla_datasets
+  data_root_dir: ../data/openvla_datasets
   dataset_name: bridge_orig
   recipe: oft
   action_chunk_size: 8
@@ -264,7 +264,7 @@ rollout_dataset:
   require_consistent_action_dim: true
   baseline_dataset_name: blueprint_baseline_generated
   adapted_dataset_name: blueprint_site_generated
-  export_dir: ./data/outputs/policy_datasets
+  export_dir: ../data/outputs/policy_datasets
 
 # ---- Stage 4d: Trained policy A/B comparison ----
 policy_compare:

@@ -273,7 +273,7 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
             pf = fac_data["s3b_policy_finetune"]
             metrics = pf.get("metrics", {})
             outputs = pf.get("outputs", {})
-            lines.append("### Policy Fine-tuning (OpenVLA)\n")
+            lines.append("### Policy Fine-tuning (OpenVLA-OFT)\n")
             lines.append(f"- Status: {pf.get('status', 'N/A')}")
             lines.append(f"- Dataset: {metrics.get('dataset_name', 'N/A')}")
             lines.append(f"- Return code: {metrics.get('returncode', 'N/A')}")

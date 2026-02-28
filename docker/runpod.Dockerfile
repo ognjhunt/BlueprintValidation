@@ -50,12 +50,12 @@ RUN git clone --depth 1 https://github.com/NVIDIA/DreamDojo.git /opt/DreamDojo &
     git clone --depth 1 https://github.com/nvidia-cosmos/cosmos-transfer2.5.git /opt/cosmos-transfer && \
     rm -rf /opt/DreamDojo/.git /opt/cosmos-transfer/.git
 RUN if [ "$(uname -m)" = "x86_64" ]; then . /app/.venv/bin/activate && uv pip install -e /opt/DreamDojo; else echo "Skipping DreamDojo editable install on $(uname -m)"; fi
-RUN git clone --depth 1 https://github.com/openvla/openvla.git /opt/openvla && \
-    rm -rf /opt/openvla/.git
+RUN git clone --depth 1 https://github.com/moojink/openvla-oft.git /opt/openvla-oft && \
+    rm -rf /opt/openvla-oft/.git
 
 ENV DREAMDOJO_ROOT=/opt/DreamDojo
 ENV COSMOS_ROOT=/opt/cosmos-transfer
-ENV OPENVLA_ROOT=/opt/openvla
+ENV OPENVLA_ROOT=/opt/openvla-oft
 
 EXPOSE 22
 

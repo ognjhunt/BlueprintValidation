@@ -1,4 +1,4 @@
-"""Tests for OpenVLA policy fine-tuning adapter."""
+"""Tests for OpenVLA-OFT policy fine-tuning adapter."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ def test_build_openvla_finetune_command_contract(tmp_path):
         max_steps=200,
         image_aug=False,
     )
-    script_path = Path("/opt/openvla/vla-scripts/finetune.py")
+    script_path = Path("/opt/openvla-oft/vla-scripts/finetune.py")
     cmd = build_openvla_finetune_command(
         script_path=script_path,
         config=cfg,
@@ -51,7 +51,7 @@ def test_run_openvla_finetune_fails_without_dataset(tmp_path):
     from blueprint_validation.config import PolicyFinetuneConfig
     from blueprint_validation.training.openvla_finetune import run_openvla_finetune
 
-    repo = tmp_path / "openvla"
+    repo = tmp_path / "openvla-oft"
     repo.mkdir()
     (repo / "vla-scripts").mkdir()
     (repo / "vla-scripts" / "finetune.py").write_text("print('stub')")
@@ -78,7 +78,7 @@ def test_run_openvla_finetune_success_with_adapter_artifact(tmp_path, monkeypatc
     from blueprint_validation.config import PolicyFinetuneConfig
     from blueprint_validation.training.openvla_finetune import run_openvla_finetune
 
-    repo = tmp_path / "openvla"
+    repo = tmp_path / "openvla-oft"
     script = repo / "vla-scripts" / "finetune.py"
     script.parent.mkdir(parents=True)
     script.write_text("print('stub')")
