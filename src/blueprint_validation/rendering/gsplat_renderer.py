@@ -42,8 +42,28 @@ def render_frame(
     viewmat = pose.viewmat().unsqueeze(0).to(device)  # (1, 4, 4)
     K = pose.K().unsqueeze(0).to(device)  # (1, 3, 3)
 
+    render_mode = "RGB+ED"
+    expected_background_channels = 4 if render_mode == "RGB+ED" else 3
+
     if background is None:
-        background = torch.ones(3, device=device)
+        background = torch.ones(expected_background_channels, device=device)
+        if expected_background_channels == 4:
+            # RGB white + depth background 0.
+            background[-1] = 0.0
+    else:
+        background = torch.as_tensor(background, dtype=torch.float32, device=device)
+        if background.ndim != 1:
+            raise ValueError(
+                f"background must be 1D with {expected_background_channels} channels, "
+                f"got shape {tuple(background.shape)}"
+            )
+        if background.shape[0] == 3 and expected_background_channels == 4:
+            background = torch.cat([background, torch.zeros(1, device=device)])
+        elif background.shape[0] != expected_background_channels:
+            raise ValueError(
+                f"background must have {expected_background_channels} channels for "
+                f"render_mode={render_mode}, got {background.shape[0]}"
+            )
 
     renders, alphas, info = rasterization(
         means=splat.means,
@@ -57,7 +77,7 @@ def render_frame(
         height=pose.height,
         sh_degree=int(np.sqrt(splat.sh_coeffs.shape[1]) - 1),
         backgrounds=background.unsqueeze(0),
-        render_mode="RGB+ED",
+        render_mode=render_mode,
     )
 
     # renders shape: (1, H, W, 4) — RGB + expected depth
