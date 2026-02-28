@@ -1,4 +1,4 @@
-"""Stage 4e: Evaluate trained OpenVLA-OFT policy in the adapted world model."""
+"""Stage 4e: Evaluate trained policy adapter in the adapted world model."""
 
 from __future__ import annotations
 
@@ -33,7 +33,6 @@ from ..evaluation.vlm_judge import (
 )
 from ..evaluation.rollout_utils import run_rollout_with_adapter
 from ..policy_adapters import get_policy_adapter
-from ..training.openvla_finetune import resolve_latest_openvla_checkpoint
 from .base import PipelineStage
 
 logger = get_logger("stages.s4e_trained_eval")
@@ -81,7 +80,7 @@ def _has_cuda() -> bool:
 class TrainedPolicyEvalStage(PipelineStage):
     """Evaluate the trained policy against frozen baselines.
 
-    Runs the ``trained`` condition: fine-tuned OpenVLA-OFT in the adapted world
+    Runs the ``trained`` condition: fine-tuned selected policy adapter in the adapted world
     model.  Then merges with Stage 4 scores to produce pairwise comparisons
     (baseline-vs-trained, adapted-vs-trained).
     """
@@ -92,7 +91,7 @@ class TrainedPolicyEvalStage(PipelineStage):
 
     @property
     def description(self) -> str:
-        return "Evaluate trained OpenVLA-OFT policy in site-adapted DreamDojo world model"
+        return "Evaluate trained policy adapter in site-adapted DreamDojo world model"
 
     def run(
         self,
@@ -102,7 +101,12 @@ class TrainedPolicyEvalStage(PipelineStage):
         previous_results: Dict[str, StageResult],
     ) -> StageResult:
         # Only run if either S3b or S3c produced a trained checkpoint.
-        trained_checkpoint = _resolve_trained_checkpoint(previous_results, work_dir)
+        policy_adapter = get_policy_adapter(config.policy_adapter)
+        trained_checkpoint = _resolve_trained_checkpoint(
+            previous_results=previous_results,
+            work_dir=work_dir,
+            policy_adapter=policy_adapter,
+        )
         if trained_checkpoint is None:
             if _has_successful_training_stage(previous_results):
                 return StageResult(
@@ -213,9 +217,9 @@ class TrainedPolicyEvalStage(PipelineStage):
             )
 
         num_rollouts = len(rollout_assignments)
-        policy_adapter = get_policy_adapter(config.policy_adapter.name)
+        base_model_name, _ = policy_adapter.base_model_ref(config.eval_policy)
         policy_handle = policy_adapter.load_policy(
-            model_name=config.eval_policy.openvla_model,
+            model_name=base_model_name,
             checkpoint_path=trained_checkpoint,
             device=device,
         )
@@ -425,11 +429,24 @@ def _build_task_list(config: ValidationConfig, facility: FacilityConfig) -> tupl
 def _resolve_trained_checkpoint(
     previous_results: Dict[str, StageResult],
     work_dir: Path,
+    policy_adapter=None,
 ) -> Path | None:
+    if policy_adapter is None:
+        from ..training.openvla_finetune import resolve_latest_openvla_checkpoint
+
+        class _LegacyResolver:
+            def resolve_latest_checkpoint(self, run_root: Path):
+                return resolve_latest_openvla_checkpoint(run_root)
+
+        policy_adapter = _LegacyResolver()
+
     # Prefer RL loop output.
     s3c = previous_results.get("s3c_policy_rl_loop")
     if s3c and s3c.status == "success":
-        candidate = s3c.outputs.get("adapted_openvla_checkpoint_rl")
+        candidate = (
+            s3c.outputs.get("adapted_policy_checkpoint_rl")
+            or s3c.outputs.get("adapted_openvla_checkpoint_rl")
+        )
         if candidate:
             path = Path(candidate)
             if path.exists():
@@ -438,7 +455,10 @@ def _resolve_trained_checkpoint(
     # Fallback to supervised policy fine-tune output.
     s3b = previous_results.get("s3b_policy_finetune")
     if s3b and s3b.status == "success":
-        candidate = s3b.outputs.get("adapted_openvla_checkpoint")
+        candidate = (
+            s3b.outputs.get("adapted_policy_checkpoint")
+            or s3b.outputs.get("adapted_openvla_checkpoint")
+        )
         if candidate:
             path = Path(candidate)
             if path.exists():
@@ -448,11 +468,13 @@ def _resolve_trained_checkpoint(
     rl_root = work_dir / "policy_rl_loop"
     if rl_root.exists():
         for iter_dir in sorted(rl_root.glob("iter_*"), reverse=True):
-            candidate = resolve_latest_openvla_checkpoint(iter_dir / "policy_refine" / "runs")
+            candidate = policy_adapter.resolve_latest_checkpoint(
+                iter_dir / "policy_refine" / "runs"
+            )
             if candidate is not None:
                 return candidate
 
-    candidate = resolve_latest_openvla_checkpoint(work_dir / "policy_finetune" / "runs")
+    candidate = policy_adapter.resolve_latest_checkpoint(work_dir / "policy_finetune" / "runs")
     if candidate is not None:
         return candidate
     return None

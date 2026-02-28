@@ -1,4 +1,4 @@
-"""Optional OpenVLA-OFT policy fine-tuning stage."""
+"""Optional policy fine-tuning stage via selected adapter."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Dict
 
 from ..common import StageResult, get_logger
 from ..config import FacilityConfig, ValidationConfig
-from ..training.openvla_finetune import run_openvla_finetune
+from ..policy_adapters import get_policy_adapter
 from .base import PipelineStage
 
 logger = get_logger("stages.s3b_policy_finetune")
@@ -21,7 +21,7 @@ class PolicyFinetuneStage(PipelineStage):
 
     @property
     def description(self) -> str:
-        return "Optional OpenVLA-OFT fine-tuning on manipulation trajectories"
+        return "Optional adapter-based fine-tuning on manipulation trajectories"
 
     def run(
         self,
@@ -43,62 +43,81 @@ class PolicyFinetuneStage(PipelineStage):
         stage_dir = work_dir / "policy_finetune"
         stage_dir.mkdir(parents=True, exist_ok=True)
 
-        # Auto-wire to S4a RLDS export output if available
+        adapter = get_policy_adapter(config.policy_adapter)
+
+        # Auto-wire to S4a RLDS export output if available.
         finetune_config = config.policy_finetune
+        dataset_name = finetune_config.dataset_name
+        source_dataset_dir: Path | None = None
         s4a = previous_results.get("s4a_rlds_export")
         if s4a and s4a.status == "success":
-            rlds_dir = s4a.outputs.get("rlds_dataset_dir")
+            train_jsonl = s4a.outputs.get("train_jsonl")
             rlds_name = s4a.outputs.get("dataset_name")
-            if rlds_dir and rlds_name:
+            if train_jsonl and rlds_name:
                 logger.info(
-                    "Using pipeline-generated RLDS dataset: %s from %s",
-                    rlds_name, rlds_dir,
+                    "Using pipeline-generated rollout dataset: %s from %s",
+                    rlds_name,
+                    train_jsonl,
                 )
-                # Point data_root_dir to the parent so OpenVLA-OFT finds dataset_name/ under it.
-                rlds_dataset_path = Path(rlds_dir)
+                source_dataset_dir = Path(train_jsonl).parent
+                dataset_name = str(rlds_name)
                 finetune_config = replace(
                     finetune_config,
-                    data_root_dir=rlds_dataset_path.parent,
-                    dataset_name=rlds_name,
+                    dataset_name=dataset_name,
                 )
-        elif not finetune_config.data_root_dir:
+        elif finetune_config.data_root_dir is not None:
+            source_dataset_dir = finetune_config.data_root_dir / dataset_name
+        else:
             return StageResult(
                 stage_name=self.name,
                 status="skipped",
                 elapsed_seconds=0,
                 detail=(
-                    "No RLDS dataset from S4a and no data_root_dir configured. "
+                    "No rollout dataset from S4a and no data_root_dir configured. "
                     "Run Stage 4 + S4a first, or set policy_finetune.data_root_dir."
                 ),
             )
 
-        checkpoint_path = config.eval_policy.openvla_checkpoint
-        vla_path = (
-            str(checkpoint_path)
-            if checkpoint_path and checkpoint_path.exists()
-            else config.eval_policy.openvla_model
-        )
+        if source_dataset_dir is None:
+            return StageResult(
+                stage_name=self.name,
+                status="failed",
+                elapsed_seconds=0,
+                detail="Could not resolve source dataset directory for policy fine-tuning.",
+            )
 
-        train_result = run_openvla_finetune(
-            config=finetune_config,
-            vla_path=vla_path,
-            facility_id=work_dir.name,
-            output_dir=stage_dir,
+        adapter_dataset = adapter.dataset_transform(
+            source_dataset_dir=source_dataset_dir,
+            output_root=stage_dir / "dataset",
+            dataset_name=dataset_name,
         )
+        base_model_name, base_checkpoint = adapter.base_model_ref(config.eval_policy)
+
+        train_result = adapter.train_policy(
+            base_model_name=base_model_name,
+            base_checkpoint=base_checkpoint,
+            dataset_root=adapter_dataset.parent,
+            dataset_name=adapter_dataset.name,
+            output_dir=stage_dir / "train",
+            finetune_config=finetune_config,
+        )
+        adapted_path = str(train_result.adapted_checkpoint_path or "")
 
         return StageResult(
             stage_name=self.name,
-            status=train_result.get("status", "failed"),
+            status=train_result.status,
             elapsed_seconds=0,
             outputs={
                 "policy_finetune_dir": str(stage_dir),
-                "adapted_openvla_checkpoint": train_result.get("adapted_checkpoint_path", ""),
-                "train_log": str(stage_dir / "policy_finetune_log.json"),
+                "adapter_name": adapter.name,
+                "adapted_policy_checkpoint": adapted_path,
+                "adapted_openvla_checkpoint": adapted_path,  # legacy compatibility
+                "train_log": str(stage_dir / "train" / "policy_finetune_log.json"),
             },
             metrics={
-                "dataset_name": train_result.get("dataset_name"),
-                "elapsed_seconds": train_result.get("elapsed_seconds"),
-                "returncode": train_result.get("returncode"),
+                "dataset_name": dataset_name,
+                "elapsed_seconds": train_result.elapsed_seconds,
+                "returncode": train_result.raw.get("returncode"),
             },
-            detail=train_result.get("stderr", ""),
+            detail=train_result.detail,
         )

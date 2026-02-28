@@ -100,14 +100,15 @@ class PolicyPairEvalStage(PipelineStage):
             adapted_checkpoint=eval_world_checkpoint,
             device=device,
         )
-        adapter = get_policy_adapter(config.policy_adapter.name)
+        adapter = get_policy_adapter(config.policy_adapter)
+        base_model_name, _ = adapter.base_model_ref(config.eval_policy)
         base_handle = adapter.load_policy(
-            model_name=config.eval_policy.openvla_model,
+            model_name=base_model_name,
             checkpoint_path=base_ckpt,
             device=device,
         )
         site_handle = adapter.load_policy(
-            model_name=config.eval_policy.openvla_model,
+            model_name=base_model_name,
             checkpoint_path=site_ckpt,
             device=device,
         )

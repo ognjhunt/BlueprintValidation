@@ -10,17 +10,25 @@ from typing import Optional
 import numpy as np
 
 from ..common import get_logger
-from ..config import PolicyFinetuneConfig
-from ..training.openvla_finetune import run_openvla_finetune
+from ..config import PolicyAdapterConfig, PolicyEvalConfig, PolicyFinetuneConfig
+from ..training.openvla_finetune import resolve_latest_openvla_checkpoint, run_openvla_finetune
+from ..training.rlds_export import convert_jsonl_to_tfrecord
 from .base import PolicyAdapter, PolicyHandle, PolicyTrainingResult
 
 logger = get_logger("policy_adapters.openvla_oft")
 
 
 class OpenVLAOFTPolicyAdapter(PolicyAdapter):
+    def __init__(self, adapter_config: PolicyAdapterConfig):
+        super().__init__(adapter_config)
+        self.backend = adapter_config.openvla
+
     @property
     def name(self) -> str:
         return "openvla_oft"
+
+    def base_model_ref(self, eval_config: PolicyEvalConfig) -> tuple[str, Optional[Path]]:
+        return eval_config.model_name, eval_config.checkpoint_path
 
     def load_policy(
         self,
@@ -137,23 +145,33 @@ class OpenVLAOFTPolicyAdapter(PolicyAdapter):
     ) -> Path:
         if not source_dataset_dir.exists():
             raise RuntimeError(f"Source dataset directory does not exist: {source_dataset_dir}")
-        target = output_root / dataset_name
-        if target.exists():
-            shutil.rmtree(target)
-        target.mkdir(parents=True, exist_ok=True)
 
-        for item in source_dataset_dir.iterdir():
-            dest = target / item.name
-            if item.is_dir():
-                shutil.copytree(item, dest)
-            else:
-                shutil.copy2(item, dest)
+        episodes_jsonl = source_dataset_dir / "episodes.jsonl"
+        if episodes_jsonl.exists():
+            target = convert_jsonl_to_tfrecord(
+                train_jsonl_path=episodes_jsonl,
+                eval_jsonl_path=None,
+                output_dir=output_root,
+                dataset_name=dataset_name,
+            )
+        else:
+            target = output_root / dataset_name
+            if target.exists():
+                shutil.rmtree(target)
+            target.mkdir(parents=True, exist_ok=True)
+
+            for item in source_dataset_dir.iterdir():
+                dest = target / item.name
+                if item.is_dir():
+                    shutil.copytree(item, dest)
+                else:
+                    shutil.copy2(item, dest)
 
         meta = {
             "adapter": self.name,
             "source_dataset_dir": str(source_dataset_dir),
             "dataset_name": dataset_name,
-            "format": "rlds_style_jsonl",
+            "format": "openvla_compatible",
             "decoding": "chunked_parallel_when_available",
         }
         (target / "adapter_dataset_meta.json").write_text(json.dumps(meta, indent=2))
@@ -169,9 +187,12 @@ class OpenVLAOFTPolicyAdapter(PolicyAdapter):
         finetune_config: PolicyFinetuneConfig,
     ) -> PolicyTrainingResult:
         local_cfg = PolicyFinetuneConfig(**finetune_config.__dict__)
+        local_cfg.openvla_repo = self.backend.openvla_repo
+        local_cfg.finetune_script = self.backend.finetune_script
         local_cfg.data_root_dir = dataset_root
         local_cfg.dataset_name = dataset_name
         local_cfg.recipe = "oft"
+        local_cfg.extra_args = list(local_cfg.extra_args) + list(self.backend.extra_train_args)
 
         checkpoint_str = (
             str(base_checkpoint) if base_checkpoint and base_checkpoint.exists() else base_model_name
@@ -190,3 +211,6 @@ class OpenVLAOFTPolicyAdapter(PolicyAdapter):
             detail=result.get("stderr", "") or result.get("detail", ""),
             raw=result,
         )
+
+    def resolve_latest_checkpoint(self, run_root_dir: Path) -> Optional[Path]:
+        return resolve_latest_openvla_checkpoint(run_root_dir)

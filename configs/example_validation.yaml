@@ -189,8 +189,8 @@ finetune:
 
 # ---- Stage 4: OpenVLA-OFT Policy Eval ----
 eval_policy:
-  openvla_model: openvla/openvla-7b
-  openvla_checkpoint: ../data/checkpoints/openvla-7b/
+  model_name: openvla/openvla-7b
+  checkpoint_path: ../data/checkpoints/openvla-7b/
   unnorm_key: bridge_orig
   num_rollouts: 50
   max_steps_per_rollout: 100
@@ -256,6 +256,20 @@ policy_rl_loop:
 # ---- Policy adapter (multi-policy interface) ----
 policy_adapter:
   name: openvla_oft
+  openvla:
+    openvla_repo: /opt/openvla-oft
+    finetune_script: vla-scripts/finetune.py
+    extra_train_args: []
+  pi05:
+    openpi_repo: /opt/openpi
+    profile: pi05_libero
+    runtime_mode: inprocess
+    train_backend: pytorch
+    train_script: scripts/train_pytorch.py
+    norm_stats_script: scripts/compute_norm_stats.py
+    policy_action_dim: 7
+    policy_state_dim: 7
+    extra_train_args: []
 
 # ---- Stage 4b: Rollout -> RLDS-style dataset export ----
 rollout_dataset:

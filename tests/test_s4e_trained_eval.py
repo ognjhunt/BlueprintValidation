@@ -41,7 +41,7 @@ def test_trained_eval_fails_missing_checkpoint(sample_config, tmp_path):
         stage_name="s3b_policy_finetune",
         status="success",
         elapsed_seconds=0,
-        outputs={"adapted_openvla_checkpoint": "/nonexistent/path"},
+        outputs={"adapted_policy_checkpoint": "/nonexistent/path"},
     )
     stage = TrainedPolicyEvalStage()
     fac = list(sample_config.facilities.values())[0]
@@ -118,13 +118,13 @@ def test_resolve_trained_checkpoint_prefers_s3c(tmp_path):
             stage_name="s3c_policy_rl_loop",
             status="success",
             elapsed_seconds=0,
-            outputs={"adapted_openvla_checkpoint_rl": str(s3c_ckpt)},
+            outputs={"adapted_policy_checkpoint_rl": str(s3c_ckpt)},
         ),
         "s3b_policy_finetune": StageResult(
             stage_name="s3b_policy_finetune",
             status="success",
             elapsed_seconds=0,
-            outputs={"adapted_openvla_checkpoint": str(s3b_ckpt)},
+            outputs={"adapted_policy_checkpoint": str(s3b_ckpt)},
         ),
     }
     resolved = _resolve_trained_checkpoint(previous, tmp_path)

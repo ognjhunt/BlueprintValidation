@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from ..config import PolicyFinetuneConfig
+from ..config import PolicyAdapterConfig, PolicyEvalConfig, PolicyFinetuneConfig
 
 
 @dataclass
@@ -33,9 +33,17 @@ class PolicyTrainingResult:
 class PolicyAdapter(ABC):
     """Abstract adapter contract for policy families."""
 
+    def __init__(self, adapter_config: PolicyAdapterConfig):
+        self.adapter_config = adapter_config
+
     @property
     @abstractmethod
     def name(self) -> str:
+        ...
+
+    @abstractmethod
+    def base_model_ref(self, eval_config: PolicyEvalConfig) -> tuple[str, Optional[Path]]:
+        """Resolve baseline model id and optional checkpoint path for this adapter."""
         ...
 
     @abstractmethod
@@ -77,4 +85,9 @@ class PolicyAdapter(ABC):
         output_dir: Path,
         finetune_config: PolicyFinetuneConfig,
     ) -> PolicyTrainingResult:
+        ...
+
+    @abstractmethod
+    def resolve_latest_checkpoint(self, run_root_dir: Path) -> Optional[Path]:
+        """Resolve the newest adapter checkpoint under a run root."""
         ...

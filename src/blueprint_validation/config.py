@@ -170,8 +170,8 @@ class VLMJudgeConfig:
 
 @dataclass
 class PolicyEvalConfig:
-    openvla_model: str = "openvla/openvla-7b"
-    openvla_checkpoint: Path = Path("./data/checkpoints/openvla-7b/")
+    model_name: str = "openvla/openvla-7b"
+    checkpoint_path: Path = Path("./data/checkpoints/openvla-7b/")
     unnorm_key: str = "bridge_orig"
     num_rollouts: int = 50
     max_steps_per_rollout: int = 100
@@ -180,6 +180,24 @@ class PolicyEvalConfig:
     conditions: List[str] = field(default_factory=lambda: ["baseline", "adapted"])
     min_absolute_difference: float = 0.5  # minimum raw score difference for PASS
     vlm_judge: VLMJudgeConfig = field(default_factory=VLMJudgeConfig)
+
+    @property
+    def openvla_model(self) -> str:
+        """Legacy alias for model_name."""
+        return self.model_name
+
+    @openvla_model.setter
+    def openvla_model(self, value: str) -> None:
+        self.model_name = value
+
+    @property
+    def openvla_checkpoint(self) -> Path:
+        """Legacy alias for checkpoint_path."""
+        return self.checkpoint_path
+
+    @openvla_checkpoint.setter
+    def openvla_checkpoint(self, value: Path) -> None:
+        self.checkpoint_path = value
 
 
 @dataclass
@@ -210,8 +228,30 @@ class PolicyFinetuneConfig:
 
 
 @dataclass
+class OpenVLAAdapterBackendConfig:
+    openvla_repo: Path = Path("/opt/openvla-oft")
+    finetune_script: str = "vla-scripts/finetune.py"
+    extra_train_args: List[str] = field(default_factory=list)
+
+
+@dataclass
+class Pi05AdapterBackendConfig:
+    openpi_repo: Path = Path("/opt/openpi")
+    profile: str = "pi05_libero"  # pi05_libero | pi05_droid
+    runtime_mode: str = "inprocess"  # inprocess (only supported mode)
+    train_backend: str = "pytorch"  # pytorch (only supported backend)
+    train_script: str = "scripts/train_pytorch.py"
+    norm_stats_script: str = "scripts/compute_norm_stats.py"
+    policy_action_dim: int = 7
+    policy_state_dim: int = 7
+    extra_train_args: List[str] = field(default_factory=list)
+
+
+@dataclass
 class PolicyAdapterConfig:
     name: str = "openvla_oft"
+    openvla: OpenVLAAdapterBackendConfig = field(default_factory=OpenVLAAdapterBackendConfig)
+    pi05: Pi05AdapterBackendConfig = field(default_factory=Pi05AdapterBackendConfig)
 
 
 @dataclass
@@ -448,6 +488,33 @@ def _parse_variants(raw_list: List[Dict[str, str]]) -> List[VariantSpec]:
     return [VariantSpec(name=v["name"], prompt=v["prompt"]) for v in raw_list]
 
 
+def _resolve_eval_policy_model_fields(
+    eval_policy_raw: Dict[str, Any],
+) -> tuple[str, str | Path]:
+    model_name = eval_policy_raw.get("model_name")
+    checkpoint_path = eval_policy_raw.get("checkpoint_path")
+
+    if model_name is None and eval_policy_raw.get("openvla_model") is not None:
+        model_name = eval_policy_raw.get("openvla_model")
+        warnings.warn(
+            "eval_policy.openvla_model is deprecated; use eval_policy.model_name.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+    if checkpoint_path is None and eval_policy_raw.get("openvla_checkpoint") is not None:
+        checkpoint_path = eval_policy_raw.get("openvla_checkpoint")
+        warnings.warn(
+            "eval_policy.openvla_checkpoint is deprecated; use eval_policy.checkpoint_path.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+
+    return (
+        str(model_name or "openvla/openvla-7b"),
+        checkpoint_path or "./data/checkpoints/openvla-7b/",
+    )
+
+
 def load_config(path: Path) -> ValidationConfig:
     """Load and parse a YAML config file into a ValidationConfig."""
     config_path = path.resolve()
@@ -582,12 +649,10 @@ def load_config(path: Path) -> ValidationConfig:
     if "eval_policy" in raw:
         ep = raw["eval_policy"]
         vlm_raw = ep.get("vlm_judge", {})
+        model_name, checkpoint_path = _resolve_eval_policy_model_fields(ep)
         config.eval_policy = PolicyEvalConfig(
-            openvla_model=ep.get("openvla_model", "openvla/openvla-7b"),
-            openvla_checkpoint=_resolve_path(
-                ep.get("openvla_checkpoint", "./data/checkpoints/openvla-7b/"),
-                base_dir,
-            ),
+            model_name=model_name,
+            checkpoint_path=_resolve_path(checkpoint_path, base_dir),
             unnorm_key=ep.get("unnorm_key", "bridge_orig"),
             num_rollouts=ep.get("num_rollouts", 50),
             max_steps_per_rollout=ep.get("max_steps_per_rollout", 100),
@@ -645,8 +710,48 @@ def load_config(path: Path) -> ValidationConfig:
 
     if "policy_adapter" in raw:
         pa = raw["policy_adapter"]
+        openvla_raw = pa.get("openvla", {}) if isinstance(pa, dict) else {}
+        pi05_raw = pa.get("pi05", {}) if isinstance(pa, dict) else {}
         config.policy_adapter = PolicyAdapterConfig(
             name=pa.get("name", "openvla_oft"),
+            openvla=OpenVLAAdapterBackendConfig(
+                openvla_repo=_resolve_path(
+                    openvla_raw.get("openvla_repo", config.policy_finetune.openvla_repo),
+                    base_dir,
+                ),
+                finetune_script=str(
+                    openvla_raw.get("finetune_script", config.policy_finetune.finetune_script)
+                ),
+                extra_train_args=[str(v) for v in openvla_raw.get("extra_train_args", [])],
+            ),
+            pi05=Pi05AdapterBackendConfig(
+                openpi_repo=_resolve_path(
+                    pi05_raw.get("openpi_repo", "/opt/openpi"),
+                    base_dir,
+                ),
+                profile=str(pi05_raw.get("profile", "pi05_libero")),
+                runtime_mode=str(pi05_raw.get("runtime_mode", "inprocess")),
+                train_backend=str(pi05_raw.get("train_backend", "pytorch")),
+                train_script=str(pi05_raw.get("train_script", "scripts/train_pytorch.py")),
+                norm_stats_script=str(
+                    pi05_raw.get("norm_stats_script", "scripts/compute_norm_stats.py")
+                ),
+                policy_action_dim=int(pi05_raw.get("policy_action_dim", 7)),
+                policy_state_dim=int(pi05_raw.get("policy_state_dim", 7)),
+                extra_train_args=[str(v) for v in pi05_raw.get("extra_train_args", [])],
+            ),
+        )
+    else:
+        # Keep adapter backend defaults synchronized with policy_finetune defaults
+        # for legacy OpenVLA-only configs.
+        config.policy_adapter = PolicyAdapterConfig(
+            name=config.policy_adapter.name,
+            openvla=OpenVLAAdapterBackendConfig(
+                openvla_repo=config.policy_finetune.openvla_repo,
+                finetune_script=config.policy_finetune.finetune_script,
+                extra_train_args=[],
+            ),
+            pi05=config.policy_adapter.pi05,
         )
 
     if "robosplat" in raw:

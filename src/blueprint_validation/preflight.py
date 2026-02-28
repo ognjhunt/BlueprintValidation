@@ -95,6 +95,41 @@ def check_path_exists_under(root: Path, rel_path: str, name: str) -> PreflightCh
     return PreflightCheck(name=name, passed=False, detail=f"Missing required path: {target}")
 
 
+def _canonical_policy_adapter_name(name: str) -> str:
+    key = (name or "").strip().lower()
+    if key in {"openvla_oft", "openvla-oft", "oft", "openvla", "open-vla"}:
+        return "openvla_oft"
+    if key in {"pi05", "pi0.5", "openpi"}:
+        return "pi05"
+    return key
+
+
+def check_policy_base_reference(model_name: str, checkpoint_path: Path) -> PreflightCheck:
+    if checkpoint_path.exists() and checkpoint_path.is_dir() and any(checkpoint_path.iterdir()):
+        return PreflightCheck(
+            name="policy:base_checkpoint",
+            passed=True,
+            detail=str(checkpoint_path),
+        )
+    if checkpoint_path.exists() and checkpoint_path.is_file():
+        return PreflightCheck(
+            name="policy:base_checkpoint",
+            passed=True,
+            detail=str(checkpoint_path),
+        )
+    if model_name:
+        return PreflightCheck(
+            name="policy:base_model",
+            passed=True,
+            detail=f"Using model reference '{model_name}' (checkpoint path missing: {checkpoint_path})",
+        )
+    return PreflightCheck(
+        name="policy:base_model",
+        passed=False,
+        detail="Neither eval_policy.model_name nor eval_policy.checkpoint_path is usable.",
+    )
+
+
 def check_hf_auth() -> PreflightCheck:
     """Check that Hugging Face auth is available for gated model downloads."""
     if (os.environ.get("HF_TOKEN") or "").strip():
@@ -421,6 +456,7 @@ def check_cloud_shutdown_enforcement(config: ValidationConfig) -> PreflightCheck
 def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
     """Run all preflight checks and return results."""
     checks: List[PreflightCheck] = []
+    adapter_name = _canonical_policy_adapter_name(config.policy_adapter.name)
 
     # GPU
     checks.append(check_gpu())
@@ -456,7 +492,10 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
     checks.append(check_model_weights(config.finetune.dreamdojo_checkpoint, "DreamDojo"))
     checks.append(check_model_weights(config.enrich.cosmos_checkpoint, "Cosmos-Transfer-2.5"))
     checks.append(
-        check_model_weights(config.eval_policy.openvla_checkpoint, "OpenVLA-OFT base weights")
+        check_policy_base_reference(
+            model_name=config.eval_policy.model_name,
+            checkpoint_path=config.eval_policy.checkpoint_path,
+        )
     )
     checks.append(check_hf_auth())
 
@@ -608,75 +647,155 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
             )
         )
 
-    # Optional OpenVLA-OFT fine-tuning prerequisites
     if config.policy_finetune.enabled:
-        checks.append(check_external_tool("torchrun"))
-        checks.append(
-            check_path_exists(
-                config.policy_finetune.openvla_repo,
-                "policy_finetune:openvla_repo",
+        if adapter_name == "openvla_oft":
+            openvla_backend = config.policy_adapter.openvla
+            checks.append(check_external_tool("torchrun"))
+            checks.append(
+                check_path_exists(
+                    openvla_backend.openvla_repo,
+                    "policy_finetune:openvla_repo",
+                )
             )
-        )
-        script_path = Path(config.policy_finetune.finetune_script)
-        if not script_path.is_absolute():
-            script_path = config.policy_finetune.openvla_repo / script_path
-        checks.append(check_path_exists(script_path, "policy_finetune:finetune_script"))
-        checks.append(
-            check_openvla_finetune_contract(
-                config.policy_finetune.openvla_repo,
-                config.policy_finetune.finetune_script,
+            script_path = Path(openvla_backend.finetune_script)
+            if not script_path.is_absolute():
+                script_path = openvla_backend.openvla_repo / script_path
+            checks.append(check_path_exists(script_path, "policy_finetune:finetune_script"))
+            checks.append(
+                check_openvla_finetune_contract(
+                    openvla_backend.openvla_repo,
+                    openvla_backend.finetune_script,
+                )
             )
-        )
-        dataset_names = {config.policy_finetune.dataset_name}
-        if config.rollout_dataset.enabled:
-            dataset_names.add(config.rollout_dataset.baseline_dataset_name)
-            dataset_names.add(config.rollout_dataset.adapted_dataset_name)
-        checks.append(
-            check_openvla_dataset_registry(
-                config.policy_finetune.openvla_repo,
-                dataset_names,
+            dataset_names = {config.policy_finetune.dataset_name}
+            if config.rollout_dataset.enabled:
+                dataset_names.add(config.rollout_dataset.baseline_dataset_name)
+                dataset_names.add(config.rollout_dataset.adapted_dataset_name)
+            checks.append(
+                check_openvla_dataset_registry(
+                    openvla_backend.openvla_repo,
+                    dataset_names,
+                )
             )
-        )
-        # When rollout_dataset is enabled, pair-training stages generate datasets later in-pipeline.
-        if config.rollout_dataset.enabled:
-            checks.append(check_dependency("tensorflow", "tensorflow"))
-            checks.append(check_dependency("tensorflow_datasets", "tensorflow-datasets"))
+            # When rollout_dataset is enabled, pair-training stages generate datasets later in-pipeline.
+            if config.rollout_dataset.enabled:
+                checks.append(check_dependency("tensorflow", "tensorflow"))
+                checks.append(check_dependency("tensorflow_datasets", "tensorflow-datasets"))
+                checks.append(
+                    PreflightCheck(
+                        name="policy_finetune:data_root_dir",
+                        passed=True,
+                        detail="Dataset root generated by Stage 4b/4c pipeline",
+                    )
+                )
+                checks.append(
+                    PreflightCheck(
+                        name="policy_finetune:dataset_dir",
+                        passed=True,
+                        detail=f"Dataset '{config.policy_finetune.dataset_name}' produced during run",
+                    )
+                )
+            elif config.policy_finetune.data_root_dir is None:
+                checks.append(
+                    PreflightCheck(
+                        name="policy_finetune:data_root_dir",
+                        passed=False,
+                        detail="Set policy_finetune.data_root_dir when policy_finetune.enabled=true",
+                    )
+                )
+            else:
+                checks.append(
+                    check_path_exists(
+                        config.policy_finetune.data_root_dir,
+                        "policy_finetune:data_root_dir",
+                    )
+                )
+                dataset_dir = (
+                    config.policy_finetune.data_root_dir / config.policy_finetune.dataset_name
+                )
+                checks.append(
+                    check_path_exists(
+                        dataset_dir,
+                        "policy_finetune:dataset_dir",
+                    )
+                )
+        elif adapter_name == "pi05":
+            pi05 = config.policy_adapter.pi05
             checks.append(
                 PreflightCheck(
-                    name="policy_finetune:data_root_dir",
-                    passed=True,
-                    detail="Dataset root generated by Stage 4b/4c pipeline",
+                    name="policy_adapter:pi05:profile",
+                    passed=pi05.profile in {"pi05_libero", "pi05_droid"},
+                    detail=pi05.profile,
                 )
             )
             checks.append(
                 PreflightCheck(
-                    name="policy_finetune:dataset_dir",
-                    passed=True,
-                    detail=f"Dataset '{config.policy_finetune.dataset_name}' produced during run",
+                    name="policy_adapter:pi05:runtime_mode",
+                    passed=pi05.runtime_mode == "inprocess",
+                    detail=pi05.runtime_mode,
                 )
             )
-        elif config.policy_finetune.data_root_dir is None:
             checks.append(
                 PreflightCheck(
-                    name="policy_finetune:data_root_dir",
-                    passed=False,
-                    detail="Set policy_finetune.data_root_dir when policy_finetune.enabled=true",
+                    name="policy_adapter:pi05:train_backend",
+                    passed=pi05.train_backend == "pytorch",
+                    detail=pi05.train_backend,
                 )
             )
+            checks.append(
+                check_path_exists(
+                    pi05.openpi_repo,
+                    "policy_adapter:pi05:openpi_repo",
+                )
+            )
+            train_script = Path(pi05.train_script)
+            norm_script = Path(pi05.norm_stats_script)
+            if not train_script.is_absolute():
+                train_script = pi05.openpi_repo / train_script
+            if not norm_script.is_absolute():
+                norm_script = pi05.openpi_repo / norm_script
+            checks.append(check_path_exists(train_script, "policy_adapter:pi05:train_script"))
+            checks.append(check_path_exists(norm_script, "policy_adapter:pi05:norm_stats_script"))
+            checks.append(
+                check_python_import_from_path(
+                    "openpi",
+                    pi05.openpi_repo / "src",
+                    "import:openpi",
+                )
+            )
+            checks.append(check_dependency("lerobot", "lerobot"))
+            if config.rollout_dataset.enabled:
+                checks.append(
+                    PreflightCheck(
+                        name="policy_finetune:data_root_dir",
+                        passed=True,
+                        detail="Dataset root generated by Stage 4b/4c pipeline",
+                    )
+                )
+            elif config.policy_finetune.data_root_dir is None:
+                checks.append(
+                    PreflightCheck(
+                        name="policy_finetune:data_root_dir",
+                        passed=False,
+                        detail="Set policy_finetune.data_root_dir when policy_finetune.enabled=true",
+                    )
+                )
+            else:
+                checks.append(
+                    check_path_exists(
+                        config.policy_finetune.data_root_dir,
+                        "policy_finetune:data_root_dir",
+                    )
+                )
         else:
             checks.append(
-                check_path_exists(
-                    config.policy_finetune.data_root_dir,
-                    "policy_finetune:data_root_dir",
-                )
-            )
-            dataset_dir = (
-                config.policy_finetune.data_root_dir / config.policy_finetune.dataset_name
-            )
-            checks.append(
-                check_path_exists(
-                    dataset_dir,
-                    "policy_finetune:dataset_dir",
+                PreflightCheck(
+                    name="policy_adapter:name",
+                    passed=False,
+                    detail=(
+                        f"Unsupported adapter '{config.policy_adapter.name}'. "
+                        "Supported: openvla_oft, pi05"
+                    ),
                 )
             )
 

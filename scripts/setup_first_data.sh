@@ -8,6 +8,7 @@ CONFIG_PATH="${CONFIG_PATH:-$ROOT_DIR/configs/pilot_validation.auto.yaml}"
 WORK_DIR="${WORK_DIR:-$ROOT_DIR/data/outputs/pilot}"
 RUN_PREFLIGHT="${RUN_PREFLIGHT:-true}"
 PROVISION_REPOS="${PROVISION_REPOS:-true}"
+PROVISION_OPENPI="${PROVISION_OPENPI:-true}"
 VENDOR_ROOT="${VENDOR_ROOT:-$ROOT_DIR/data/vendor}"
 
 echo "== BlueprintValidation First-Data Setup =="
@@ -54,6 +55,15 @@ if [[ "$PROVISION_REPOS" == "true" ]]; then
     ensure_repo "$VENDOR_ROOT/openvla-oft" "https://github.com/moojink/openvla-oft.git"
   else
     echo "Using existing /opt/openvla-oft"
+  fi
+  if [[ "$PROVISION_OPENPI" == "true" ]]; then
+    if [[ ! -d "/opt/openpi/.git" ]]; then
+      ensure_repo "$VENDOR_ROOT/openpi" "https://github.com/Physical-Intelligence/openpi.git"
+    else
+      echo "Using existing /opt/openpi"
+    fi
+  else
+    echo "Skipping openpi clone (PROVISION_OPENPI=false)."
   fi
 else
   echo "Skipping repo provisioning (PROVISION_REPOS=false)."

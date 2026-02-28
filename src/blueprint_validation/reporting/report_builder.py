@@ -280,26 +280,32 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
             pf = fac_data["s3b_policy_finetune"]
             metrics = pf.get("metrics", {})
             outputs = pf.get("outputs", {})
-            lines.append("### Policy Fine-tuning (OpenVLA-OFT)\n")
+            adapted_checkpoint = (
+                outputs.get("adapted_policy_checkpoint")
+                or outputs.get("adapted_openvla_checkpoint")
+                or "N/A"
+            )
+            lines.append("### Policy Fine-tuning (Selected Policy Adapter)\n")
             lines.append(f"- Status: {pf.get('status', 'N/A')}")
             lines.append(f"- Dataset: {metrics.get('dataset_name', 'N/A')}")
             lines.append(f"- Return code: {metrics.get('returncode', 'N/A')}")
-            lines.append(
-                f"- Adapted checkpoint: {outputs.get('adapted_openvla_checkpoint', 'N/A')}"
-            )
+            lines.append(f"- Adapted checkpoint: {adapted_checkpoint}")
             lines.append("")
 
         if "s3c_policy_rl_loop" in fac_data:
             rl = fac_data["s3c_policy_rl_loop"]
             metrics = rl.get("metrics", {})
             outputs = rl.get("outputs", {})
+            rl_checkpoint = (
+                outputs.get("adapted_policy_checkpoint_rl")
+                or outputs.get("adapted_openvla_checkpoint_rl")
+                or "N/A"
+            )
             lines.append("### Policy RL Loop (World-VLA-Loop Style)\n")
             lines.append(f"- Status: {rl.get('status', 'N/A')}")
             lines.append(f"- Iterations completed: {metrics.get('iterations_completed', 'N/A')}")
             lines.append(f"- Reward mode: {metrics.get('reward_mode', 'N/A')}")
-            lines.append(
-                f"- RL checkpoint: {outputs.get('adapted_openvla_checkpoint_rl', 'N/A')}"
-            )
+            lines.append(f"- RL checkpoint: {rl_checkpoint}")
             lines.append("")
 
     # Cross-Site Discrimination

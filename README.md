@@ -102,7 +102,7 @@ Notes:
 
 ### Docker Snapshot
 
-Build a reusable runtime image snapshot (includes DreamDojo/Cosmos/OpenVLA-OFT repos):
+Build a reusable runtime image snapshot (includes DreamDojo/Cosmos/OpenVLA-OFT/OpenPI repos):
 
 ```bash
 bash scripts/build_runtime_snapshot.sh
@@ -128,7 +128,9 @@ PROVISION_REPOS=true bash scripts/setup_first_data.sh
 | [Cosmos Transfer 2.5](https://github.com/nvidia-cosmos/cosmos-transfer2.5) | NVIDIA | Video enrichment |
 | RoboSplat (pinned vendor + native completion) | SHOWLab + local | Default S1d 3D Gaussian augmentation backend |
 | [OpenVLA-OFT](https://github.com/moojink/openvla-oft) | OpenVLA team | Default policy adapter/fine-tuning recipe |
-| [OpenVLA 7B weights](https://github.com/openvla/openvla) | Stanford | Base checkpoint consumed via OpenVLA-OFT |
+| [OpenPI](https://github.com/Physical-Intelligence/openpi) | Physical Intelligence | pi0.5 runtime + PyTorch fine-tuning backend |
+| [OpenVLA 7B weights](https://github.com/openvla/openvla) | Stanford | Default base checkpoint for OpenVLA-OFT adapter |
+| pi0.5 profiles (`pi05_libero`, `pi05_droid`) | OpenPI | Optional second policy adapter path |
 | [gsplat](https://github.com/nerfstudio-project/gsplat) | Nerfstudio | Gaussian splat rendering |
 | Gemini 3 Flash Preview | Google | VLM judge with Agentic Vision |
 
@@ -145,10 +147,30 @@ PROVISION_REPOS=true bash scripts/setup_first_data.sh
   - DreamDojo repo (and importable `cosmos_predict2`)
   - Cosmos Transfer repo (`examples/inference.py`)
   - OpenVLA-OFT repo (`vla-scripts/finetune.py` compatible entrypoint)
+  - OpenPI repo (`scripts/train_pytorch.py`, `scripts/compute_norm_stats.py`)
 - HuggingFace auth (`huggingface-cli login` or `HF_TOKEN`) with accepted licenses for:
   - `nvidia/DreamDojo`
   - `nvidia/Cosmos-Transfer2.5-2B`
   - `openvla/openvla-7b`
+
+## Policy Adapter Switching
+
+Adapter switching is config-only:
+
+- Default (OpenVLA-OFT): `policy_adapter.name: openvla_oft`
+- pi0.5: `policy_adapter.name: pi05`
+
+Required config for pi0.5:
+
+- `policy_adapter.pi05.openpi_repo`
+- optional overrides:
+  - `policy_adapter.pi05.profile` (`pi05_libero` default, or `pi05_droid`)
+  - `eval_policy.model_name` / `eval_policy.checkpoint_path`
+
+Backward compatibility:
+
+- Legacy `eval_policy.openvla_model` and `eval_policy.openvla_checkpoint` are still accepted and mapped to `model_name` / `checkpoint_path` with deprecation warnings.
+- Legacy stage output keys (`adapted_openvla_checkpoint*`) are still emitted alongside canonical adapter-neutral keys (`adapted_policy_checkpoint*`).
 
 ## Manipulation-Focused Setup
 

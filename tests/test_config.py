@@ -31,9 +31,13 @@ def test_config_defaults():
     assert config.finetune.use_lora is True
     assert config.finetune.lora_rank == 32
     assert config.eval_policy.vlm_judge.model == "gemini-3-flash-preview"
+    assert config.eval_policy.model_name == "openvla/openvla-7b"
+    assert str(config.eval_policy.checkpoint_path).endswith("data/checkpoints/openvla-7b")
     assert config.eval_policy.unnorm_key == "bridge_orig"
     assert config.eval_policy.vlm_judge.enable_agentic_vision is True
     assert config.policy_adapter.name == "openvla_oft"
+    assert str(config.policy_adapter.openvla.openvla_repo).endswith("opt/openvla-oft")
+    assert config.policy_adapter.pi05.profile == "pi05_libero"
     assert config.rollout_dataset.enabled is True
     assert config.policy_compare.enabled is False
     assert config.policy_finetune.enabled is True
@@ -204,8 +208,66 @@ def test_config_resolves_relative_paths(tmp_path):
     assert config.enrich.cosmos_checkpoint.is_absolute()
     assert config.finetune.dreamdojo_repo.is_absolute()
     assert config.eval_policy.openvla_checkpoint.is_absolute()
+    assert config.eval_policy.checkpoint_path.is_absolute()
     assert config.policy_finetune.openvla_repo.is_absolute()
     assert config.policy_finetune.data_root_dir.is_absolute()
+
+
+def test_eval_policy_legacy_aliases_map_to_generic_fields(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_data = {
+        "project_name": "Legacy Eval Alias",
+        "facilities": {
+            "a": {"name": "A", "ply_path": "/tmp/a.ply"},
+        },
+        "eval_policy": {
+            "openvla_model": "org/custom-openvla",
+            "openvla_checkpoint": "./checkpoints/custom",
+        },
+    }
+    config_path = tmp_path / "legacy_eval.yaml"
+    config_path.write_text(yaml.dump(config_data))
+
+    config = load_config(config_path)
+    assert config.eval_policy.model_name == "org/custom-openvla"
+    assert config.eval_policy.openvla_model == "org/custom-openvla"
+    assert str(config.eval_policy.checkpoint_path).endswith("checkpoints/custom")
+
+
+def test_policy_adapter_pi05_block_parses(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_data = {
+        "project_name": "pi05 Config",
+        "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+        "policy_adapter": {
+            "name": "pi05",
+            "pi05": {
+                "openpi_repo": "./vendor/openpi",
+                "profile": "pi05_droid",
+                "runtime_mode": "inprocess",
+                "train_backend": "pytorch",
+                "train_script": "scripts/train_pytorch.py",
+                "norm_stats_script": "scripts/compute_norm_stats.py",
+                "policy_action_dim": 14,
+                "policy_state_dim": 16,
+            },
+        },
+    }
+    config_path = tmp_path / "pi05.yaml"
+    config_path.write_text(yaml.dump(config_data))
+
+    config = load_config(config_path)
+    assert config.policy_adapter.name == "pi05"
+    assert config.policy_adapter.pi05.profile == "pi05_droid"
+    assert config.policy_adapter.pi05.runtime_mode == "inprocess"
+    assert config.policy_adapter.pi05.train_backend == "pytorch"
+    assert config.policy_adapter.pi05.policy_action_dim == 14
+    assert config.policy_adapter.pi05.policy_state_dim == 16
+    assert config.policy_adapter.pi05.openpi_repo.is_absolute()
 
 
 def test_config_parses_scene_orientation_fields(tmp_path):

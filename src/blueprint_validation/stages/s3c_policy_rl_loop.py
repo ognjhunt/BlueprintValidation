@@ -7,7 +7,7 @@ from typing import Dict, Optional
 
 from ..common import StageResult, get_logger
 from ..config import FacilityConfig, ValidationConfig
-from ..training.openvla_finetune import resolve_latest_openvla_checkpoint
+from ..policy_adapters import get_policy_adapter
 from ..training.policy_rl_loop import run_policy_rl_iterations
 from .base import PipelineStage
 
@@ -54,7 +54,12 @@ class PolicyRLLoopStage(PipelineStage):
                 detail="Adapted DreamDojo checkpoint not found. Run Stage 3 first.",
             )
 
-        initial_policy_checkpoint = _resolve_initial_policy_checkpoint(previous_results, work_dir)
+        policy_adapter = get_policy_adapter(config.policy_adapter)
+        initial_policy_checkpoint = _resolve_initial_policy_checkpoint(
+            previous_results=previous_results,
+            work_dir=work_dir,
+            policy_adapter=policy_adapter,
+        )
         stage_dir = work_dir / "policy_rl_loop"
         stage_dir.mkdir(parents=True, exist_ok=True)
 
@@ -73,6 +78,7 @@ class PolicyRLLoopStage(PipelineStage):
             elapsed_seconds=0,
             outputs={
                 "policy_rl_loop_dir": str(stage_dir),
+                "adapted_policy_checkpoint_rl": result.get("final_policy_checkpoint", ""),
                 "adapted_openvla_checkpoint_rl": result.get("final_policy_checkpoint", ""),
                 "adapted_world_checkpoint_rl": result.get("final_world_checkpoint", ""),
                 "loop_log": str(stage_dir / "policy_rl_loop_log.json"),
@@ -90,11 +96,15 @@ class PolicyRLLoopStage(PipelineStage):
 def _resolve_initial_policy_checkpoint(
     previous_results: Dict[str, StageResult],
     work_dir: Path,
+    policy_adapter,
 ) -> Optional[Path]:
     # Prefer Stage 3b fine-tuned checkpoint.
     s3b = previous_results.get("s3b_policy_finetune")
     if s3b and s3b.status == "success":
-        candidate = s3b.outputs.get("adapted_openvla_checkpoint")
+        candidate = (
+            s3b.outputs.get("adapted_policy_checkpoint")
+            or s3b.outputs.get("adapted_openvla_checkpoint")
+        )
         if candidate:
             path = Path(candidate)
             if path.exists():
@@ -102,7 +112,7 @@ def _resolve_initial_policy_checkpoint(
 
     # Fallback to known policy_finetune run root.
     fallback = work_dir / "policy_finetune" / "runs"
-    checkpoint = resolve_latest_openvla_checkpoint(fallback)
+    checkpoint = policy_adapter.resolve_latest_checkpoint(fallback)
     if checkpoint is not None:
         return checkpoint
     return None

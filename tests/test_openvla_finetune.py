@@ -34,7 +34,6 @@ def test_build_openvla_finetune_command_contract(tmp_path):
         config=cfg,
         vla_path="openvla/openvla-7b",
         run_root_dir=tmp_path / "runs",
-        adapter_tmp_dir=tmp_path / "adapters",
     )
 
     assert cmd[0] == "torchrun"
@@ -101,9 +100,10 @@ def test_run_openvla_finetune_success_with_adapter_artifact(tmp_path, monkeypatc
 
     def fake_run(cmd, capture_output, text, cwd):
         del capture_output, text, cwd
-        adapter_dir = Path(cmd[cmd.index("--adapter_tmp_dir") + 1])
-        adapter_dir.mkdir(parents=True, exist_ok=True)
-        (adapter_dir / "adapter_model.safetensors").write_bytes(b"x")
+        run_root = Path(cmd[cmd.index("--run_root_dir") + 1])
+        artifact = run_root / "run_001" / "lora_adapter"
+        artifact.mkdir(parents=True, exist_ok=True)
+        (artifact / "adapter_model.safetensors").write_bytes(b"x")
         return types.SimpleNamespace(returncode=0, stdout="ok", stderr="")
 
     monkeypatch.setattr(

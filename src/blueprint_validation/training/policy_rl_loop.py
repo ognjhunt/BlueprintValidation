@@ -21,8 +21,7 @@ from ..evaluation.vlm_judge import (
 from ..policy_adapters import get_policy_adapter
 from .dataset_builder import build_dreamdojo_dataset
 from .dreamdojo_finetune import run_dreamdojo_finetune
-from .openvla_finetune import run_openvla_finetune
-from .rlds_export import convert_jsonl_to_tfrecord, export_rollouts_to_rlds_jsonl
+from .rlds_export import export_rollouts_to_rlds_jsonl
 
 logger = get_logger("training.policy_rl_loop")
 
@@ -55,9 +54,10 @@ def run_policy_rl_iterations(
         raise RuntimeError("No tasks configured for RL loop")
 
     device = "cuda" if _has_cuda() else "cpu"
-    policy_adapter = get_policy_adapter(config.policy_adapter.name)
+    policy_adapter = get_policy_adapter(config.policy_adapter)
+    base_model_name, base_checkpoint = policy_adapter.base_model_ref(config.eval_policy)
 
-    current_policy_checkpoint = initial_policy_checkpoint
+    current_policy_checkpoint = initial_policy_checkpoint or base_checkpoint
     current_world_checkpoint = adapted_world_checkpoint
     iteration_summaries: List[Dict] = []
 
@@ -68,7 +68,7 @@ def run_policy_rl_iterations(
         rollouts_dir.mkdir(parents=True, exist_ok=True)
 
         policy_handle = policy_adapter.load_policy(
-            model_name=config.eval_policy.openvla_model,
+            model_name=base_model_name,
             checkpoint_path=current_policy_checkpoint,
             device=device,
         )
@@ -104,17 +104,19 @@ def run_policy_rl_iterations(
         )
 
         dataset_name = f"{config.policy_finetune.dataset_name}_rl_iter{iteration:02d}"
-        policy_dataset_root = _export_selected_rollouts(
+        policy_source_dir = _export_selected_rollouts(
             selected=selected,
             output_root=iter_dir / "policy_dataset",
-            dataset_name=dataset_name,
             task_threshold=config.rollout_dataset.task_score_threshold,
             min_steps=config.rollout_dataset.min_steps_per_rollout,
         )
 
         current_policy_checkpoint = _refine_policy(
             config=config,
-            dataset_root=policy_dataset_root,
+            policy_adapter=policy_adapter,
+            base_model_name=base_model_name,
+            base_checkpoint=base_checkpoint,
+            source_dataset_dir=policy_source_dir,
             dataset_name=dataset_name,
             iteration=iteration,
             output_dir=iter_dir / "policy_refine",
@@ -365,7 +367,6 @@ def _select_rollouts(
 def _export_selected_rollouts(
     selected: List[Dict],
     output_root: Path,
-    dataset_name: str,
     task_threshold: float,
     min_steps: int,
 ) -> Path:
@@ -386,51 +387,48 @@ def _export_selected_rollouts(
     )
     # No eval split for iterative refine; generate empty placeholder.
     (eval_dir / "episodes.jsonl").write_text("")
-
-    tfrecord_root = output_root / "tfrecord"
-    convert_jsonl_to_tfrecord(
-        train_jsonl_path=train_dir / "episodes.jsonl",
-        eval_jsonl_path=None,
-        output_dir=tfrecord_root,
-        dataset_name=dataset_name,
-    )
-    dataset_dir = tfrecord_root / dataset_name
-    if not dataset_dir.exists():
-        # Fallback path when TensorFlow is unavailable and only JSONL is emitted.
-        dataset_dir.mkdir(parents=True, exist_ok=True)
-        (dataset_dir / "train_episodes.jsonl").write_text((train_dir / "episodes.jsonl").read_text())
-    return tfrecord_root
+    return train_dir
 
 
 def _refine_policy(
     config: ValidationConfig,
-    dataset_root: Path,
+    policy_adapter,
+    base_model_name: str,
+    base_checkpoint: Optional[Path],
+    source_dataset_dir: Path,
     dataset_name: str,
     iteration: int,
     output_dir: Path,
     current_policy_checkpoint: Optional[Path],
 ) -> Optional[Path]:
+    dataset_dir = policy_adapter.dataset_transform(
+        source_dataset_dir=source_dataset_dir,
+        output_root=output_dir / "dataset",
+        dataset_name=dataset_name,
+    )
     local_cfg: PolicyFinetuneConfig = replace(
         config.policy_finetune,
-        data_root_dir=dataset_root,
+        data_root_dir=dataset_dir.parent,
         dataset_name=dataset_name,
         max_steps=config.policy_rl_loop.policy_refine_steps_per_iter,
     )
-    vla_path = (
-        str(current_policy_checkpoint)
+    checkpoint_ref = (
+        current_policy_checkpoint
         if current_policy_checkpoint and current_policy_checkpoint.exists()
-        else config.eval_policy.openvla_model
+        else base_checkpoint
     )
-    result = run_openvla_finetune(
-        config=local_cfg,
-        vla_path=vla_path,
-        facility_id=f"rl_iter_{iteration:02d}",
+    result = policy_adapter.train_policy(
+        base_model_name=base_model_name,
+        base_checkpoint=checkpoint_ref,
+        dataset_root=dataset_dir.parent,
+        dataset_name=dataset_dir.name,
         output_dir=output_dir,
+        finetune_config=local_cfg,
     )
-    adapted = result.get("adapted_checkpoint_path")
-    if adapted and Path(adapted).exists():
-        return Path(adapted)
-    logger.warning("Policy refine failed for iter=%d: %s", iteration, result.get("stderr", ""))
+    adapted = result.adapted_checkpoint_path
+    if adapted and adapted.exists():
+        return adapted
+    logger.warning("Policy refine failed for iter=%d: %s", iteration, result.detail)
     return current_policy_checkpoint
 
 
@@ -524,4 +522,3 @@ def _has_cuda() -> bool:
         return torch.cuda.is_available()
     except Exception:
         return False
-

@@ -58,7 +58,7 @@ def test_report_builder_markdown(tmp_path, sample_config):
             "stage_name": "s3c_policy_rl_loop",
             "status": "success",
             "elapsed_seconds": 200.0,
-            "outputs": {"adapted_openvla_checkpoint_rl": "/tmp/ckpt"},
+            "outputs": {"adapted_policy_checkpoint_rl": "/tmp/ckpt"},
             "metrics": {"iterations_completed": 2, "reward_mode": "hybrid"},
         },
         fac_dir / "s3c_policy_rl_loop_result.json",

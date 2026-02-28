@@ -117,8 +117,8 @@ finetune:
   max_training_hours: 72
 
 eval_policy:
-  openvla_model: openvla/openvla-7b
-  openvla_checkpoint: /models/checkpoints/openvla-7b/
+  model_name: openvla/openvla-7b
+  checkpoint_path: /models/checkpoints/openvla-7b/
   unnorm_key: bridge_orig
   num_rollouts: 50
   max_steps_per_rollout: 100
@@ -178,6 +178,20 @@ policy_rl_loop:
 
 policy_adapter:
   name: openvla_oft
+  openvla:
+    openvla_repo: /app/data/vendor/openvla-oft
+    finetune_script: vla-scripts/finetune.py
+    extra_train_args: []
+  pi05:
+    openpi_repo: /app/data/vendor/openpi
+    profile: pi05_libero
+    runtime_mode: inprocess
+    train_backend: pytorch
+    train_script: scripts/train_pytorch.py
+    norm_stats_script: scripts/compute_norm_stats.py
+    policy_action_dim: 7
+    policy_state_dim: 7
+    extra_train_args: []
 
 rollout_dataset:
   enabled: true

@@ -139,6 +139,7 @@ def _build_config(
     dreamdojo_repo: str,
     cosmos_repo: str,
     openvla_repo: str,
+    openpi_repo: str,
 ) -> dict:
     return {
         "schema_version": "v1",
@@ -238,8 +239,8 @@ def _build_config(
             "max_training_hours": 4,
         },
         "eval_policy": {
-            "openvla_model": "openvla/openvla-7b",
-            "openvla_checkpoint": "../data/checkpoints/openvla-7b/",
+            "model_name": "openvla/openvla-7b",
+            "checkpoint_path": "../data/checkpoints/openvla-7b/",
             "unnorm_key": "bridge_orig",
             "num_rollouts": 8,
             "max_steps_per_rollout": 60,
@@ -292,7 +293,25 @@ def _build_config(
             "world_model_refresh_epochs": 3,
             "world_model_refresh_learning_rate": 5e-5,
         },
-        "policy_adapter": {"name": "openvla_oft"},
+        "policy_adapter": {
+            "name": "openvla_oft",
+            "openvla": {
+                "openvla_repo": openvla_repo,
+                "finetune_script": "vla-scripts/finetune.py",
+                "extra_train_args": [],
+            },
+            "pi05": {
+                "openpi_repo": openpi_repo,
+                "profile": "pi05_libero",
+                "runtime_mode": "inprocess",
+                "train_backend": "pytorch",
+                "train_script": "scripts/train_pytorch.py",
+                "norm_stats_script": "scripts/compute_norm_stats.py",
+                "policy_action_dim": 7,
+                "policy_state_dim": 7,
+                "extra_train_args": [],
+            },
+        },
         "rollout_dataset": {
             "enabled": policy_finetune_enabled,
             "seed": 17,
@@ -404,6 +423,11 @@ def main() -> int:
         args.capture_pipeline_root / "vendor" / "openvla-oft",
         Path.cwd() / "data" / "vendor" / "openvla-oft",
     )
+    openpi_repo = _pick_repo_path(
+        Path("/opt/openpi"),
+        args.capture_pipeline_root / "vendor" / "openpi",
+        Path.cwd() / "data" / "vendor" / "openpi",
+    )
 
     include_cross_site = len(facilities) >= 2
     config = _build_config(
@@ -413,6 +437,7 @@ def main() -> int:
         dreamdojo_repo=dreamdojo_repo,
         cosmos_repo=cosmos_repo,
         openvla_repo=openvla_repo,
+        openpi_repo=openpi_repo,
     )
 
     out = args.output_config

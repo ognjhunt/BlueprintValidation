@@ -48,7 +48,7 @@ class PolicyPairTrainStage(PipelineStage):
                 detail="Dataset export summary missing. Run Stage 4b first.",
             )
         _ = read_json(summary_path)
-        adapter = get_policy_adapter(config.policy_adapter.name)
+        adapter = get_policy_adapter(config.policy_adapter)
 
         train_root = work_dir / "policy_pair_train"
         base_root = train_root / "policy_base"
@@ -69,8 +69,7 @@ class PolicyPairTrainStage(PipelineStage):
             dataset_name=config.rollout_dataset.adapted_dataset_name,
         )
 
-        common_model = config.eval_policy.openvla_model
-        common_checkpoint = config.eval_policy.openvla_checkpoint
+        common_model, common_checkpoint = adapter.base_model_ref(config.eval_policy)
         base_result = adapter.train_policy(
             base_model_name=common_model,
             base_checkpoint=common_checkpoint,

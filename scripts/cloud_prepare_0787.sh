@@ -72,6 +72,7 @@ echo "Ensuring vendor repos..."
 ensure_repo "$ROOT_DIR/data/vendor/DreamDojo" "/opt/DreamDojo" "https://github.com/NVIDIA/DreamDojo.git"
 ensure_repo "$ROOT_DIR/data/vendor/cosmos-transfer" "/opt/cosmos-transfer" "https://github.com/nvidia-cosmos/cosmos-transfer2.5.git"
 ensure_repo "$ROOT_DIR/data/vendor/openvla-oft" "/opt/openvla-oft" "https://github.com/moojink/openvla-oft.git"
+ensure_repo "$ROOT_DIR/data/vendor/openpi" "/opt/openpi" "https://github.com/Physical-Intelligence/openpi.git"
 
 echo "Authenticating with Hugging Face..."
 if ! "${HF_AUTH_CMD[@]}" whoami >/dev/null 2>&1; then

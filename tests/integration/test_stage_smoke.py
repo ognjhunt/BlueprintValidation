@@ -112,13 +112,29 @@ def test_stage4_policy_eval_deterministic_metrics(sample_config, tmp_path, monke
 
     frame = np.zeros((16, 16, 3), dtype=np.uint8)
     monkeypatch.setattr(
-        "blueprint_validation.stages.s4_policy_eval._extract_initial_frames",
-        lambda manifest: [frame],
+        "blueprint_validation.stages.s4_policy_eval.build_task_start_assignments",
+        lambda **kwargs: [
+            {
+                "rollout_index": i,
+                "task": sample_config.eval_policy.tasks[i % len(sample_config.eval_policy.tasks)],
+                "clip_index": 0,
+                "clip_name": "clip_000",
+                "path_type": "orbit",
+            }
+            for i in range(sample_config.eval_policy.num_rollouts)
+        ],
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4_policy_eval.load_initial_frames_for_assignments",
+        lambda assignments: {0: frame},
     )
     load_calls = []
 
     class FakeAdapter:
         name = "openvla_oft"
+
+        def base_model_ref(self, eval_config):
+            return eval_config.model_name, eval_config.checkpoint_path
 
         def load_policy(self, model_name, checkpoint_path, device):
             load_calls.append((model_name, checkpoint_path, device))
@@ -160,7 +176,7 @@ def test_stage4_policy_eval_deterministic_metrics(sample_config, tmp_path, monke
             stage_name="s3b_policy_finetune",
             status="success",
             elapsed_seconds=1.0,
-            outputs={"adapted_openvla_checkpoint": str(adapted_policy_dir)},
+            outputs={"adapted_policy_checkpoint": str(adapted_policy_dir)},
         )
     }
     stage = PolicyEvalStage()
@@ -255,6 +271,9 @@ def test_stage4c_policy_pair_train_smoke(sample_config, tmp_path, monkeypatch):
     class FakeAdapter:
         name = "openvla_oft"
 
+        def base_model_ref(self, eval_config):
+            return eval_config.model_name, eval_config.checkpoint_path
+
         def dataset_transform(self, source_dataset_dir, output_root, dataset_name):
             out = output_root / dataset_name
             out.mkdir(parents=True, exist_ok=True)
@@ -329,6 +348,9 @@ def test_stage4d_policy_pair_eval_smoke(sample_config, tmp_path, monkeypatch):
 
     class FakeAdapter:
         name = "openvla_oft"
+
+        def base_model_ref(self, eval_config):
+            return eval_config.model_name, eval_config.checkpoint_path
 
         def load_policy(self, model_name, checkpoint_path, device):
             return FakeHandle()
