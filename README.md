@@ -13,8 +13,10 @@ PLY file (from BlueprintCapturePipeline)
   → Stage 2: Enrich with Cosmos Transfer 2.5 (5-10 variants per clip)
   → Stage 3: Fine-tune DreamDojo-2B on enriched video
   → Stage 4: Frozen policy rollouts (baseline vs adapted world model) + VLM scoring
+  → Stage 4a: Export adapted rollouts to RLDS TFRecords
   → Stage 3b: OFT-oriented policy fine-tuning on generated rollouts
   → Stage 3c: World-VLA-Loop-style iterative policy RL + world refresh
+  → Stage 4e: Evaluate trained policy in adapted world model
   → Stage 4b: Export paired rollouts to RLDS-style train/heldout datasets
   → Stage 4c: Train policy_base vs policy_site from same initialization/budget
   → Stage 4d: Heldout policy A/B evaluation in same world model
@@ -63,11 +65,11 @@ blueprint-validate polish-gemini --facility facility_a    # optional
 blueprint-validate augment-gaussian --facility facility_a # optional Stage 1d
 blueprint-validate enrich --facility facility_a
 blueprint-validate finetune --facility facility_a
+blueprint-validate eval-policy --facility facility_a
 blueprint-validate export-rlds --facility facility_a      # optional Stage 4a
 blueprint-validate finetune-policy --facility facility_a  # optional
 blueprint-validate rl-loop-policy --facility facility_a   # optional Stage 3c
 blueprint-validate eval-trained-policy --facility facility_a  # optional Stage 4e
-blueprint-validate eval-policy --facility facility_a
 blueprint-validate export-rollouts --facility facility_a
 blueprint-validate train-policy-pair --facility facility_a
 blueprint-validate eval-policy-pair --facility facility_a
