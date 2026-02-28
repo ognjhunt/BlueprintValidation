@@ -9,9 +9,12 @@ PLY file (from BlueprintCapturePipeline)
   → Stage 1: Render video clips at robot-height via gsplat
   → Stage 1b (optional): Composite URDF robot arm with camera extrinsics
   → Stage 1c (optional): Gemini image polish on composited clips
+  → Stage 1d (optional): RoboSplat-inspired scan-only augmentation
   → Stage 2: Enrich with Cosmos Transfer 2.5 (5-10 variants per clip)
   → Stage 3: Fine-tune DreamDojo-2B on enriched video
   → Stage 4: Frozen policy rollouts (baseline vs adapted world model) + VLM scoring
+  → Stage 3b: OFT-oriented policy fine-tuning on generated rollouts
+  → Stage 3c: World-VLA-Loop-style iterative policy RL + world refresh
   → Stage 4b: Export paired rollouts to RLDS-style train/heldout datasets
   → Stage 4c: Train policy_base vs policy_site from same initialization/budget
   → Stage 4d: Heldout policy A/B evaluation in same world model
@@ -57,10 +60,12 @@ blueprint-validate run-all
 blueprint-validate render --facility facility_a
 blueprint-validate compose-robot --facility facility_a    # optional
 blueprint-validate polish-gemini --facility facility_a    # optional
+blueprint-validate augment-gaussian --facility facility_a # optional Stage 1d
 blueprint-validate enrich --facility facility_a
 blueprint-validate finetune --facility facility_a
 blueprint-validate export-rlds --facility facility_a      # optional Stage 4a
 blueprint-validate finetune-policy --facility facility_a  # optional
+blueprint-validate rl-loop-policy --facility facility_a   # optional Stage 3c
 blueprint-validate eval-trained-policy --facility facility_a  # optional Stage 4e
 blueprint-validate eval-policy --facility facility_a
 blueprint-validate export-rollouts --facility facility_a
@@ -109,7 +114,8 @@ PROVISION_REPOS=true bash scripts/setup_first_data.sh
 |-----------|--------|---------|
 | [DreamDojo 2B](https://github.com/NVIDIA/DreamDojo) | NVIDIA | World model for fine-tuning |
 | [Cosmos Transfer 2.5](https://github.com/nvidia-cosmos/cosmos-transfer2.5) | NVIDIA | Video enrichment |
-| [OpenVLA 7B](https://github.com/openvla/openvla) | Stanford | Robot policy for evaluation |
+| [OpenVLA-OFT](https://github.com/moojink/openvla-oft) | OpenVLA team | Default policy adapter/fine-tuning recipe |
+| [OpenVLA 7B](https://github.com/openvla/openvla) | Stanford | Backward-compatible baseline policy path |
 | [gsplat](https://github.com/nerfstudio-project/gsplat) | Nerfstudio | Gaussian splat rendering |
 | Gemini 3 Flash Preview | Google | VLM judge with Agentic Vision |
 
@@ -123,7 +129,7 @@ PROVISION_REPOS=true bash scripts/setup_first_data.sh
 - Local clones or container images with:
   - DreamDojo repo (and importable `cosmos_predict2`)
   - Cosmos Transfer repo (`examples/inference.py`)
-  - OpenVLA repo (`vla-scripts/finetune.py`)
+  - OpenVLA-OFT repo (`vla-scripts/finetune.py` compatible entrypoint)
 - HuggingFace auth (`huggingface-cli login` or `HF_TOKEN`) with accepted licenses for:
   - `nvidia/DreamDojo`
   - `nvidia/Cosmos-Transfer2.5-2B`

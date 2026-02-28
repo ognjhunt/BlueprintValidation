@@ -15,10 +15,12 @@ def test_pipeline_stage_order(sample_config, tmp_path):
     # We test the import works correctly for all new stages
     from blueprint_validation.stages.s4a_rlds_export import RLDSExportStage
     from blueprint_validation.stages.s3b_policy_finetune import PolicyFinetuneStage
+    from blueprint_validation.stages.s3c_policy_rl_loop import PolicyRLLoopStage
     from blueprint_validation.stages.s4e_trained_eval import TrainedPolicyEvalStage
 
     assert RLDSExportStage().name == "s4a_rlds_export"
     assert PolicyFinetuneStage().name == "s3b_policy_finetune"
+    assert PolicyRLLoopStage().name == "s3c_policy_rl_loop"
     assert TrainedPolicyEvalStage().name == "s4e_trained_eval"
 
 
@@ -27,9 +29,11 @@ def test_all_stages_importable():
     from blueprint_validation.stages.s1_render import RenderStage
     from blueprint_validation.stages.s1b_robot_composite import RobotCompositeStage
     from blueprint_validation.stages.s1c_gemini_polish import GeminiPolishStage
+    from blueprint_validation.stages.s1d_gaussian_augment import GaussianAugmentStage
     from blueprint_validation.stages.s2_enrich import EnrichStage
     from blueprint_validation.stages.s3_finetune import FinetuneStage
     from blueprint_validation.stages.s3b_policy_finetune import PolicyFinetuneStage
+    from blueprint_validation.stages.s3c_policy_rl_loop import PolicyRLLoopStage
     from blueprint_validation.stages.s4_policy_eval import PolicyEvalStage
     from blueprint_validation.stages.s4a_rlds_export import RLDSExportStage
     from blueprint_validation.stages.s4b_rollout_dataset import RolloutDatasetStage
@@ -69,9 +73,11 @@ def test_stage_names_are_unique():
     from blueprint_validation.stages.s1_render import RenderStage
     from blueprint_validation.stages.s1b_robot_composite import RobotCompositeStage
     from blueprint_validation.stages.s1c_gemini_polish import GeminiPolishStage
+    from blueprint_validation.stages.s1d_gaussian_augment import GaussianAugmentStage
     from blueprint_validation.stages.s2_enrich import EnrichStage
     from blueprint_validation.stages.s3_finetune import FinetuneStage
     from blueprint_validation.stages.s3b_policy_finetune import PolicyFinetuneStage
+    from blueprint_validation.stages.s3c_policy_rl_loop import PolicyRLLoopStage
     from blueprint_validation.stages.s4_policy_eval import PolicyEvalStage
     from blueprint_validation.stages.s4a_rlds_export import RLDSExportStage
     from blueprint_validation.stages.s4b_rollout_dataset import RolloutDatasetStage
@@ -85,11 +91,13 @@ def test_stage_names_are_unique():
         RenderStage(),
         RobotCompositeStage(),
         GeminiPolishStage(),
+        GaussianAugmentStage(),
         EnrichStage(),
         FinetuneStage(),
         PolicyEvalStage(),
         RLDSExportStage(),
         PolicyFinetuneStage(),
+        PolicyRLLoopStage(),
         TrainedPolicyEvalStage(),
         RolloutDatasetStage(),
         PolicyPairTrainStage(),

@@ -270,6 +270,34 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
     if config.gemini_polish.enabled:
         checks.append(check_api_key(config.gemini_polish.api_key_env))
 
+    if config.robosplat_scan.enabled:
+        checks.append(
+            PreflightCheck(
+                name="robosplat_scan:temporal_speed_factors",
+                passed=bool(config.robosplat_scan.temporal_speed_factors),
+                detail=(
+                    "Configured"
+                    if config.robosplat_scan.temporal_speed_factors
+                    else "Provide at least one temporal speed factor"
+                ),
+            )
+        )
+        relight_valid = (
+            config.robosplat_scan.relight_gain_min > 0
+            and config.robosplat_scan.relight_gain_max > 0
+        )
+        checks.append(
+            PreflightCheck(
+                name="robosplat_scan:relight_range",
+                passed=relight_valid,
+                detail=(
+                    f"{config.robosplat_scan.relight_gain_min}..{config.robosplat_scan.relight_gain_max}"
+                    if relight_valid
+                    else "relight_gain_min/max must be > 0"
+                ),
+            )
+        )
+
     # Optional OpenVLA fine-tuning prerequisites
     if config.policy_finetune.enabled:
         checks.append(check_external_tool("torchrun"))
@@ -323,6 +351,37 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
                     "policy_finetune:dataset_dir",
                 )
             )
+
+    if config.policy_rl_loop.enabled:
+        checks.append(
+            PreflightCheck(
+                name="policy_rl_loop:iterations",
+                passed=config.policy_rl_loop.iterations > 0,
+                detail=str(config.policy_rl_loop.iterations),
+            )
+        )
+        checks.append(
+            PreflightCheck(
+                name="policy_rl_loop:reward_mode",
+                passed=config.policy_rl_loop.reward_mode in {
+                    "hybrid",
+                    "vlm_only",
+                    "heuristic_only",
+                },
+                detail=config.policy_rl_loop.reward_mode,
+            )
+        )
+        checks.append(
+            PreflightCheck(
+                name="policy_rl_loop:policy_finetune_enabled",
+                passed=config.policy_finetune.enabled,
+                detail=(
+                    "OK"
+                    if config.policy_finetune.enabled
+                    else "Enable policy_finetune for RL policy updates"
+                ),
+            )
+        )
 
     # Log summary
     passed = sum(1 for c in checks if c.passed)

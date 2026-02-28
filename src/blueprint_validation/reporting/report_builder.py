@@ -52,8 +52,9 @@ def _collect_results(config: ValidationConfig, work_dir: Path) -> Dict[str, Any]
     }
 
     stages = [
-        "s1_render", "s1b_robot_composite", "s1c_gemini_polish", "s2_enrich",
-        "s3_finetune", "s4_policy_eval", "s4a_rlds_export", "s3b_policy_finetune",
+        "s1_render", "s1b_robot_composite", "s1c_gemini_polish", "s1d_gaussian_augment",
+        "s2_enrich", "s3_finetune", "s4_policy_eval", "s4a_rlds_export", "s3b_policy_finetune",
+        "s3c_policy_rl_loop",
         "s4e_trained_eval", "s4b_rollout_dataset", "s4c_policy_pair_train",
         "s4d_policy_pair_eval", "s5_visual_fidelity", "s6_spatial_accuracy",
     ]
@@ -268,6 +269,19 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
             )
             lines.append("")
 
+        if "s3c_policy_rl_loop" in fac_data:
+            rl = fac_data["s3c_policy_rl_loop"]
+            metrics = rl.get("metrics", {})
+            outputs = rl.get("outputs", {})
+            lines.append("### Policy RL Loop (World-VLA-Loop Style)\n")
+            lines.append(f"- Status: {rl.get('status', 'N/A')}")
+            lines.append(f"- Iterations completed: {metrics.get('iterations_completed', 'N/A')}")
+            lines.append(f"- Reward mode: {metrics.get('reward_mode', 'N/A')}")
+            lines.append(
+                f"- RL checkpoint: {outputs.get('adapted_openvla_checkpoint_rl', 'N/A')}"
+            )
+            lines.append("")
+
     # Cross-Site Discrimination
     if data.get("cross_site"):
         cs = data["cross_site"]
@@ -311,6 +325,7 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
     lines.append(f"- Model size: {config.finetune.model_size}")
     lines.append(f"- LoRA: {'rank=' + str(config.finetune.lora_rank) if config.finetune.use_lora else 'disabled (full fine-tuning)'}")
     lines.append(f"- Policy finetune enabled: {config.policy_finetune.enabled}")
+    lines.append(f"- Policy RL loop enabled: {config.policy_rl_loop.enabled}")
     lines.append(f"- Policy dataset: {config.policy_finetune.dataset_name}")
     lines.append(f"- Policy adapter: {config.policy_adapter.name}")
     lines.append(f"- VLM judge: {config.eval_policy.vlm_judge.model}")

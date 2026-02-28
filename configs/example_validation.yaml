@@ -101,6 +101,18 @@ gemini_polish:
   prompt: "Preserve robot arm pose and scene geometry exactly. Improve photorealism and blending quality."
   sample_every_n_frames: 2
 
+# ---- Stage 1d: RoboSplat-inspired scan-only augmentation ----
+robosplat_scan:
+  enabled: true
+  num_augmented_clips_per_input: 2
+  yaw_jitter_deg: 6.0
+  pitch_jitter_deg: 4.0
+  camera_height_jitter_m: 0.12
+  relight_gain_min: 0.85
+  relight_gain_max: 1.20
+  color_temp_shift: true
+  temporal_speed_factors: [0.9, 1.1]
+
 # ---- Stage 2: Enrich ----
 enrich:
   cosmos_model: nvidia/Cosmos-Transfer2.5-2B
@@ -166,15 +178,20 @@ eval_policy:
     enable_agentic_vision: true
 
 # ---- Stage 3b: OpenVLA policy fine-tune ----
-# Uses official OpenVLA finetune entrypoint (torchrun vla-scripts/finetune.py).
-# Trains OpenVLA on site-specific rollout data from Stage 4a (runs in world model, not IRL).
+# Uses OFT-oriented finetuning defaults (OpenVLA-OFT-style recipe).
+# Trains policy on site-specific rollout data from Stage 4a (runs in world model, not IRL).
 policy_finetune:
   enabled: true
-  openvla_repo: /opt/openvla
+  openvla_repo: /opt/openvla-oft
   finetune_script: vla-scripts/finetune.py
   # data_root_dir should contain datasets like <data_root_dir>/bridge_orig
   data_root_dir: ./data/openvla_datasets
   dataset_name: bridge_orig
+  recipe: oft
+  action_chunk_size: 8
+  parallel_decoding: true
+  use_continuous_actions: true
+  use_l1_regression: true
   lora_rank: 32
   batch_size: 8
   grad_accumulation_steps: 2
@@ -184,9 +201,26 @@ policy_finetune:
   image_aug: true
   nproc_per_node: 1
 
+# ---- Stage 3c: World-VLA-Loop-style policy RL loop ----
+policy_rl_loop:
+  enabled: true
+  iterations: 2
+  horizon_steps: 24
+  rollouts_per_task: 8
+  group_size: 4
+  reward_mode: hybrid
+  vlm_reward_fraction: 0.25
+  top_quantile: 0.30
+  near_miss_min_quantile: 0.30
+  near_miss_max_quantile: 0.60
+  policy_refine_steps_per_iter: 1000
+  world_model_refresh_enabled: true
+  world_model_refresh_epochs: 3
+  world_model_refresh_learning_rate: 5.0e-5
+
 # ---- Policy adapter (multi-policy interface) ----
 policy_adapter:
-  name: openvla
+  name: openvla_oft
 
 # ---- Stage 4b: Rollout -> RLDS-style dataset export ----
 rollout_dataset:

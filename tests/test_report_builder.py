@@ -38,6 +38,16 @@ def test_report_builder_markdown(tmp_path, sample_config):
         },
         fac_dir / "s4_policy_eval_result.json",
     )
+    write_json(
+        {
+            "stage_name": "s3c_policy_rl_loop",
+            "status": "success",
+            "elapsed_seconds": 200.0,
+            "outputs": {"adapted_openvla_checkpoint_rl": "/tmp/ckpt"},
+            "metrics": {"iterations_completed": 2, "reward_mode": "hybrid"},
+        },
+        fac_dir / "s3c_policy_rl_loop_result.json",
+    )
 
     output_path = tmp_path / "report.md"
     result = build_report(sample_config, work_dir, fmt="markdown", output_path=output_path)
@@ -45,6 +55,7 @@ def test_report_builder_markdown(tmp_path, sample_config):
     content = result.read_text()
     assert "Validation Report" in content
     assert "Policy Performance" in content
+    assert "Policy RL Loop" in content
     assert "61.9%" in content
 
 

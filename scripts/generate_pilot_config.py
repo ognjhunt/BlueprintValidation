@@ -181,6 +181,17 @@ def _build_config(
             "api_key_env": "GOOGLE_GENAI_API_KEY",
             "sample_every_n_frames": 3,
         },
+        "robosplat_scan": {
+            "enabled": True,
+            "num_augmented_clips_per_input": 2,
+            "yaw_jitter_deg": 6.0,
+            "pitch_jitter_deg": 4.0,
+            "camera_height_jitter_m": 0.12,
+            "relight_gain_min": 0.85,
+            "relight_gain_max": 1.20,
+            "color_temp_shift": True,
+            "temporal_speed_factors": [0.9, 1.1],
+        },
         "enrich": {
             "cosmos_model": "nvidia/Cosmos-Transfer2.5-2B",
             "cosmos_checkpoint": "../data/checkpoints/cosmos-transfer-2.5-2b/",
@@ -234,6 +245,11 @@ def _build_config(
             "finetune_script": "vla-scripts/finetune.py",
             "data_root_dir": "../data/openvla_datasets",
             "dataset_name": "bridge_orig",
+            "recipe": "oft",
+            "action_chunk_size": 8,
+            "parallel_decoding": True,
+            "use_continuous_actions": True,
+            "use_l1_regression": True,
             "lora_rank": 32,
             "batch_size": 4,
             "grad_accumulation_steps": 2,
@@ -243,7 +259,23 @@ def _build_config(
             "image_aug": True,
             "nproc_per_node": 1,
         },
-        "policy_adapter": {"name": "openvla"},
+        "policy_rl_loop": {
+            "enabled": True,
+            "iterations": 2,
+            "horizon_steps": 24,
+            "rollouts_per_task": 8,
+            "group_size": 4,
+            "reward_mode": "hybrid",
+            "vlm_reward_fraction": 0.25,
+            "top_quantile": 0.30,
+            "near_miss_min_quantile": 0.30,
+            "near_miss_max_quantile": 0.60,
+            "policy_refine_steps_per_iter": 1000,
+            "world_model_refresh_enabled": True,
+            "world_model_refresh_epochs": 3,
+            "world_model_refresh_learning_rate": 5e-5,
+        },
+        "policy_adapter": {"name": "openvla_oft"},
         "rollout_dataset": {
             "enabled": True,
             "seed": 17,
@@ -348,9 +380,9 @@ def main() -> int:
         Path.cwd() / "data" / "vendor" / "cosmos-transfer",
     )
     openvla_repo = _pick_repo_path(
-        Path("/opt/openvla"),
-        args.capture_pipeline_root / "vendor" / "openvla",
-        Path.cwd() / "data" / "vendor" / "openvla",
+        Path("/opt/openvla-oft"),
+        args.capture_pipeline_root / "vendor" / "openvla-oft",
+        Path.cwd() / "data" / "vendor" / "openvla-oft",
     )
 
     include_cross_site = len(facilities) >= 2

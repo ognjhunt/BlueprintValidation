@@ -11,7 +11,6 @@ from ..common import StageResult, get_logger, read_json, write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..evaluation.openvla_runner import (
     load_dreamdojo_world_model,
-    load_openvla,
     run_rollout,
 )
 from ..evaluation.vlm_judge import (
@@ -20,6 +19,7 @@ from ..evaluation.vlm_judge import (
     score_rollout,
     score_rollout_manipulation,
 )
+from ..policy_adapters import get_policy_adapter
 from .base import PipelineStage
 
 logger = get_logger("stages.s4e_trained_eval")
@@ -86,23 +86,21 @@ class TrainedPolicyEvalStage(PipelineStage):
         work_dir: Path,
         previous_results: Dict[str, StageResult],
     ) -> StageResult:
-        # Only run if S3b produced a trained checkpoint
-        s3b = previous_results.get("s3b_policy_finetune")
-        if not s3b or s3b.status != "success":
+        # Only run if either S3b or S3c produced a trained checkpoint.
+        trained_checkpoint = _resolve_trained_checkpoint(previous_results, work_dir)
+        if trained_checkpoint is None:
+            if _has_successful_training_stage(previous_results):
+                return StageResult(
+                    stage_name=self.name,
+                    status="failed",
+                    elapsed_seconds=0,
+                    detail="Trained checkpoint not found from S3c/S3b outputs.",
+                )
             return StageResult(
                 stage_name=self.name,
                 status="skipped",
                 elapsed_seconds=0,
-                detail="S3b (policy_finetune) did not succeed. Skipping trained eval.",
-            )
-
-        trained_checkpoint = s3b.outputs.get("adapted_openvla_checkpoint")
-        if not trained_checkpoint or not Path(trained_checkpoint).exists():
-            return StageResult(
-                stage_name=self.name,
-                status="failed",
-                elapsed_seconds=0,
-                detail=f"Trained checkpoint not found: {trained_checkpoint}",
+                detail="Neither S3c nor S3b produced a trained checkpoint. Skipping trained eval.",
             )
 
         # Need adapted DreamDojo checkpoint from Stage 3
@@ -171,10 +169,10 @@ class TrainedPolicyEvalStage(PipelineStage):
         condition_dir = eval_dir / "trained_rollouts"
         condition_dir.mkdir(exist_ok=True)
 
-        # Load trained policy
-        openvla_model, openvla_processor = load_openvla(
-            config.eval_policy.openvla_model,
-            Path(trained_checkpoint),
+        policy_adapter = get_policy_adapter(config.policy_adapter.name)
+        policy_handle = policy_adapter.load_policy(
+            model_name=config.eval_policy.openvla_model,
+            checkpoint_path=trained_checkpoint,
             device=device,
         )
 
@@ -193,18 +191,32 @@ class TrainedPolicyEvalStage(PipelineStage):
             init_frame = initial_frames[rollout_idx % len(initial_frames)]
             clip_name = f"trained_{task[:20].replace(' ', '_')}_{rollout_idx:03d}"
 
-            rollout = run_rollout(
-                world_model=world_model,
-                openvla_model=openvla_model,
-                openvla_processor=openvla_processor,
-                initial_frame=init_frame,
-                task_prompt=task,
-                max_steps=max_steps,
-                unnorm_key=config.eval_policy.unnorm_key,
-                output_dir=condition_dir,
-                clip_name=clip_name,
-                device=device,
-            )
+            if policy_adapter.name == "openvla":
+                rollout = run_rollout(
+                    world_model=world_model,
+                    openvla_model=policy_handle.model,
+                    openvla_processor=policy_handle.processor,
+                    initial_frame=init_frame,
+                    task_prompt=task,
+                    max_steps=max_steps,
+                    unnorm_key=config.eval_policy.unnorm_key,
+                    output_dir=condition_dir,
+                    clip_name=clip_name,
+                    device=device,
+                )
+            else:
+                rollout = _run_rollout_with_adapter(
+                    world_model=world_model,
+                    policy_adapter=policy_adapter,
+                    policy_handle=policy_handle,
+                    initial_frame=init_frame,
+                    task_prompt=task,
+                    max_steps=max_steps,
+                    unnorm_key=config.eval_policy.unnorm_key,
+                    output_dir=condition_dir,
+                    clip_name=clip_name,
+                    device=device,
+                )
 
             if not rollout.video_path or not rollout.video_path.exists():
                 scoring_failures.append(f"Rollout video missing for {clip_name}")
@@ -322,6 +334,92 @@ def _extract_initial_frames(render_manifest: dict) -> list:
             if ret:
                 frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
     return frames
+
+
+def _run_rollout_with_adapter(
+    world_model,
+    policy_adapter,
+    policy_handle,
+    initial_frame: np.ndarray,
+    task_prompt: str,
+    max_steps: int,
+    unnorm_key: str,
+    output_dir: Path,
+    clip_name: str,
+    device: str,
+):
+    import cv2
+    from types import SimpleNamespace
+
+    frames = [initial_frame.copy()]
+    actions = []
+    current = initial_frame
+    for _ in range(max_steps):
+        action = policy_adapter.predict_action(
+            handle=policy_handle,
+            frame=current,
+            task_prompt=task_prompt,
+            unnorm_key=unnorm_key,
+            device=device,
+        )
+        action_list = action.tolist() if hasattr(action, "tolist") else list(action)
+        actions.append(action_list)
+        next_frame = world_model.predict_next_frame(current, action)
+        frames.append(next_frame)
+        current = next_frame
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    video_path = output_dir / f"{clip_name}.mp4"
+    h, w = frames[0].shape[:2]
+    writer = cv2.VideoWriter(str(video_path), cv2.VideoWriter_fourcc(*"mp4v"), 10, (w, h))
+    for frame in frames:
+        writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+    writer.release()
+    return SimpleNamespace(video_path=video_path, action_sequence=actions, num_steps=len(actions))
+
+
+def _resolve_trained_checkpoint(
+    previous_results: Dict[str, StageResult],
+    work_dir: Path,
+) -> Path | None:
+    # Prefer RL loop output.
+    s3c = previous_results.get("s3c_policy_rl_loop")
+    if s3c and s3c.status == "success":
+        candidate = s3c.outputs.get("adapted_openvla_checkpoint_rl")
+        if candidate:
+            path = Path(candidate)
+            if path.exists():
+                return path
+
+    # Fallback to supervised policy fine-tune output.
+    s3b = previous_results.get("s3b_policy_finetune")
+    if s3b and s3b.status == "success":
+        candidate = s3b.outputs.get("adapted_openvla_checkpoint")
+        if candidate:
+            path = Path(candidate)
+            if path.exists():
+                return path
+
+    # Backward-compatible filesystem fallback.
+    rl_root = work_dir / "policy_rl_loop"
+    if rl_root.exists():
+        for iter_dir in sorted(rl_root.glob("iter_*"), reverse=True):
+            candidate = iter_dir / "policy_refine" / "adapters"
+            if candidate.exists() and any(candidate.iterdir()):
+                return candidate
+
+    candidate = work_dir / "policy_finetune" / "adapters"
+    if candidate.exists() and any(candidate.iterdir()):
+        return candidate
+    return None
+
+
+def _has_successful_training_stage(previous_results: Dict[str, StageResult]) -> bool:
+    for key in ("s3c_policy_rl_loop", "s3b_policy_finetune"):
+        stage = previous_results.get(key)
+        if stage and stage.status == "success":
+            return True
+    return False
 
 
 def _build_pairwise_metrics(all_scores: List[Dict]) -> Dict:

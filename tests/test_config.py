@@ -31,11 +31,14 @@ def test_config_defaults():
     assert config.eval_policy.vlm_judge.model == "gemini-3-flash-preview"
     assert config.eval_policy.unnorm_key == "bridge_orig"
     assert config.eval_policy.vlm_judge.enable_agentic_vision is True
-    assert config.policy_adapter.name == "openvla"
+    assert config.policy_adapter.name == "openvla_oft"
     assert config.rollout_dataset.enabled is True
     assert config.policy_compare.enabled is True
     assert config.policy_finetune.enabled is True
     assert config.policy_finetune.dataset_name == "bridge_orig"
+    assert config.policy_finetune.recipe == "oft"
+    assert config.robosplat_scan.enabled is True
+    assert config.policy_rl_loop.enabled is True
 
 
 def test_facility_config():

@@ -14,7 +14,7 @@ def test_trained_eval_skips_without_s3b(sample_config, tmp_path):
     fac = list(sample_config.facilities.values())[0]
     result = stage.run(sample_config, fac, tmp_path, {})
     assert result.status == "skipped"
-    assert "S3b" in result.detail
+    assert "S3c" in result.detail or "S3b" in result.detail
 
 
 def test_trained_eval_skips_when_s3b_failed(sample_config, tmp_path):
@@ -101,3 +101,30 @@ def test_build_rollout_plan():
 
     assert _build_rollout_plan([], 5) == []
     assert _build_rollout_plan(["a"], 0) == []
+
+
+def test_resolve_trained_checkpoint_prefers_s3c(tmp_path):
+    from blueprint_validation.common import StageResult
+    from blueprint_validation.stages.s4e_trained_eval import _resolve_trained_checkpoint
+
+    s3c_ckpt = tmp_path / "s3c_ckpt"
+    s3c_ckpt.mkdir(parents=True)
+    s3b_ckpt = tmp_path / "s3b_ckpt"
+    s3b_ckpt.mkdir(parents=True)
+
+    previous = {
+        "s3c_policy_rl_loop": StageResult(
+            stage_name="s3c_policy_rl_loop",
+            status="success",
+            elapsed_seconds=0,
+            outputs={"adapted_openvla_checkpoint_rl": str(s3c_ckpt)},
+        ),
+        "s3b_policy_finetune": StageResult(
+            stage_name="s3b_policy_finetune",
+            status="success",
+            elapsed_seconds=0,
+            outputs={"adapted_openvla_checkpoint": str(s3b_ckpt)},
+        ),
+    }
+    resolved = _resolve_trained_checkpoint(previous, tmp_path)
+    assert resolved == s3c_ckpt

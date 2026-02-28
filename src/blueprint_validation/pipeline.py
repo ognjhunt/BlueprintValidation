@@ -10,9 +10,11 @@ from .config import ValidationConfig
 from .stages.s1_render import RenderStage
 from .stages.s1b_robot_composite import RobotCompositeStage
 from .stages.s1c_gemini_polish import GeminiPolishStage
+from .stages.s1d_gaussian_augment import GaussianAugmentStage
 from .stages.s2_enrich import EnrichStage
 from .stages.s3_finetune import FinetuneStage
 from .stages.s3b_policy_finetune import PolicyFinetuneStage
+from .stages.s3c_policy_rl_loop import PolicyRLLoopStage
 from .stages.s4_policy_eval import PolicyEvalStage
 from .stages.s4a_rlds_export import RLDSExportStage
 from .stages.s4b_rollout_dataset import RolloutDatasetStage
@@ -43,11 +45,13 @@ class ValidationPipeline:
             RenderStage(),              # S1: splat -> video clips
             RobotCompositeStage(),      # S1b: URDF robot arm composite
             GeminiPolishStage(),        # S1c: optional Gemini photorealism polish
+            GaussianAugmentStage(),     # S1d: RoboSplat-style scan-only augmentation
             EnrichStage(),              # S2: Cosmos Transfer variants
             FinetuneStage(),            # S3: DreamDojo LoRA fine-tune
             PolicyEvalStage(),          # S4: frozen policy eval (baseline + adapted)
             RLDSExportStage(),          # S4a: export adapted rollouts -> RLDS TFRecords
             PolicyFinetuneStage(),      # S3b: OpenVLA LoRA on pipeline-generated data
+            PolicyRLLoopStage(),        # S3c: iterative RL loop + world-model refresh
             TrainedPolicyEvalStage(),   # S4e: evaluate trained vs frozen baselines
             RolloutDatasetStage(),      # S4b: export paired rollouts -> JSONL datasets
             PolicyPairTrainStage(),     # S4c: train policy_base + policy_site

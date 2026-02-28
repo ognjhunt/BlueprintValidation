@@ -169,7 +169,7 @@ class PolicyEvalConfig:
 @dataclass
 class PolicyFinetuneConfig:
     enabled: bool = True
-    openvla_repo: Path = Path("/opt/openvla")
+    openvla_repo: Path = Path("/opt/openvla-oft")
     finetune_script: str = "vla-scripts/finetune.py"
     data_root_dir: Optional[Path] = None
     dataset_name: str = "bridge_orig"
@@ -185,11 +185,48 @@ class PolicyFinetuneConfig:
     nproc_per_node: int = 1
     wandb_project: Optional[str] = None
     wandb_entity: Optional[str] = None
+    recipe: str = "oft"
+    action_chunk_size: int = 8
+    use_continuous_actions: bool = True
+    use_l1_regression: bool = True
+    parallel_decoding: bool = True
+    extra_args: List[str] = field(default_factory=list)
 
 
 @dataclass
 class PolicyAdapterConfig:
-    name: str = "openvla"
+    name: str = "openvla_oft"
+
+
+@dataclass
+class RoboSplatScanConfig:
+    enabled: bool = True
+    num_augmented_clips_per_input: int = 2
+    yaw_jitter_deg: float = 6.0
+    pitch_jitter_deg: float = 4.0
+    camera_height_jitter_m: float = 0.12
+    relight_gain_min: float = 0.85
+    relight_gain_max: float = 1.20
+    color_temp_shift: bool = True
+    temporal_speed_factors: List[float] = field(default_factory=lambda: [0.9, 1.1])
+
+
+@dataclass
+class PolicyRLLoopConfig:
+    enabled: bool = True
+    iterations: int = 2
+    horizon_steps: int = 24
+    rollouts_per_task: int = 8
+    group_size: int = 4
+    reward_mode: str = "hybrid"  # "hybrid", "vlm_only", "heuristic_only"
+    vlm_reward_fraction: float = 0.25
+    top_quantile: float = 0.30
+    near_miss_min_quantile: float = 0.30
+    near_miss_max_quantile: float = 0.60
+    policy_refine_steps_per_iter: int = 1000
+    world_model_refresh_enabled: bool = True
+    world_model_refresh_epochs: int = 3
+    world_model_refresh_learning_rate: float = 5.0e-5
 
 
 @dataclass
@@ -272,6 +309,8 @@ class ValidationConfig:
     eval_policy: PolicyEvalConfig = field(default_factory=PolicyEvalConfig)
     policy_finetune: PolicyFinetuneConfig = field(default_factory=PolicyFinetuneConfig)
     policy_adapter: PolicyAdapterConfig = field(default_factory=PolicyAdapterConfig)
+    robosplat_scan: RoboSplatScanConfig = field(default_factory=RoboSplatScanConfig)
+    policy_rl_loop: PolicyRLLoopConfig = field(default_factory=PolicyRLLoopConfig)
     rollout_dataset: RolloutDatasetConfig = field(default_factory=RolloutDatasetConfig)
     policy_compare: PolicyCompareConfig = field(default_factory=PolicyCompareConfig)
     eval_visual: VisualFidelityConfig = field(default_factory=VisualFidelityConfig)
@@ -495,7 +534,7 @@ def load_config(path: Path) -> ValidationConfig:
         data_root_dir = pf.get("data_root_dir")
         config.policy_finetune = PolicyFinetuneConfig(
             enabled=pf.get("enabled", True),
-            openvla_repo=_resolve_path(pf.get("openvla_repo", "/opt/openvla"), base_dir),
+            openvla_repo=_resolve_path(pf.get("openvla_repo", "/opt/openvla-oft"), base_dir),
             finetune_script=pf.get("finetune_script", "vla-scripts/finetune.py"),
             data_root_dir=(
                 _resolve_path(data_root_dir, base_dir)
@@ -521,12 +560,55 @@ def load_config(path: Path) -> ValidationConfig:
             nproc_per_node=pf.get("nproc_per_node", 1),
             wandb_project=pf.get("wandb_project"),
             wandb_entity=pf.get("wandb_entity"),
+            recipe=pf.get("recipe", "oft"),
+            action_chunk_size=int(pf.get("action_chunk_size", 8)),
+            use_continuous_actions=pf.get("use_continuous_actions", True),
+            use_l1_regression=pf.get("use_l1_regression", True),
+            parallel_decoding=pf.get("parallel_decoding", True),
+            extra_args=[str(v) for v in pf.get("extra_args", [])],
         )
 
     if "policy_adapter" in raw:
         pa = raw["policy_adapter"]
         config.policy_adapter = PolicyAdapterConfig(
-            name=pa.get("name", "openvla"),
+            name=pa.get("name", "openvla_oft"),
+        )
+
+    if "robosplat_scan" in raw:
+        rs = raw["robosplat_scan"]
+        config.robosplat_scan = RoboSplatScanConfig(
+            enabled=rs.get("enabled", True),
+            num_augmented_clips_per_input=int(rs.get("num_augmented_clips_per_input", 2)),
+            yaw_jitter_deg=float(rs.get("yaw_jitter_deg", 6.0)),
+            pitch_jitter_deg=float(rs.get("pitch_jitter_deg", 4.0)),
+            camera_height_jitter_m=float(rs.get("camera_height_jitter_m", 0.12)),
+            relight_gain_min=float(rs.get("relight_gain_min", 0.85)),
+            relight_gain_max=float(rs.get("relight_gain_max", 1.20)),
+            color_temp_shift=rs.get("color_temp_shift", True),
+            temporal_speed_factors=[
+                float(v) for v in rs.get("temporal_speed_factors", [0.9, 1.1])
+            ],
+        )
+
+    if "policy_rl_loop" in raw:
+        pr = raw["policy_rl_loop"]
+        config.policy_rl_loop = PolicyRLLoopConfig(
+            enabled=pr.get("enabled", True),
+            iterations=int(pr.get("iterations", 2)),
+            horizon_steps=int(pr.get("horizon_steps", 24)),
+            rollouts_per_task=int(pr.get("rollouts_per_task", 8)),
+            group_size=int(pr.get("group_size", 4)),
+            reward_mode=pr.get("reward_mode", "hybrid"),
+            vlm_reward_fraction=float(pr.get("vlm_reward_fraction", 0.25)),
+            top_quantile=float(pr.get("top_quantile", 0.30)),
+            near_miss_min_quantile=float(pr.get("near_miss_min_quantile", 0.30)),
+            near_miss_max_quantile=float(pr.get("near_miss_max_quantile", 0.60)),
+            policy_refine_steps_per_iter=int(pr.get("policy_refine_steps_per_iter", 1000)),
+            world_model_refresh_enabled=pr.get("world_model_refresh_enabled", True),
+            world_model_refresh_epochs=int(pr.get("world_model_refresh_epochs", 3)),
+            world_model_refresh_learning_rate=float(
+                pr.get("world_model_refresh_learning_rate", 5.0e-5)
+            ),
         )
 
     if "rollout_dataset" in raw:

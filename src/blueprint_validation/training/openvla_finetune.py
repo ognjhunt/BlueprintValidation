@@ -71,6 +71,16 @@ def build_openvla_finetune_command(
         cmd.extend(["--wandb_project", config.wandb_project])
     if config.wandb_entity:
         cmd.extend(["--wandb_entity", config.wandb_entity])
+    # OFT-oriented knobs are passed through as explicit flags expected by OFT forks.
+    if config.recipe.lower() == "oft":
+        cmd.extend(["--action_chunk_size", str(config.action_chunk_size)])
+        cmd.extend(["--parallel_decoding", "True" if config.parallel_decoding else "False"])
+        cmd.extend(
+            ["--continuous_actions", "True" if config.use_continuous_actions else "False"]
+        )
+        cmd.extend(["--l1_regression", "True" if config.use_l1_regression else "False"])
+    if config.extra_args:
+        cmd.extend(config.extra_args)
     return cmd
 
 
@@ -155,6 +165,7 @@ def run_openvla_finetune(
         "vla_path": vla_path,
         "dataset_name": config.dataset_name,
         "data_root_dir": str(config.data_root_dir),
+        "recipe": config.recipe,
         "command": cmd,
         "run_root_dir": str(run_root_dir),
         "adapter_tmp_dir": str(adapter_tmp_dir),

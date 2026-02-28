@@ -394,6 +394,14 @@ def _resolve_adapted_policy_checkpoint(
     previous_results: Dict[str, StageResult],
     work_dir: Path,
 ) -> Path | None:
+    prev_rl = previous_results.get("s3c_policy_rl_loop")
+    if prev_rl:
+        candidate = prev_rl.outputs.get("adapted_openvla_checkpoint_rl")
+        if candidate:
+            path = Path(candidate)
+            if path.exists():
+                return path
+
     prev = previous_results.get("s3b_policy_finetune")
     if prev:
         candidate = prev.outputs.get("adapted_openvla_checkpoint")
@@ -401,6 +409,12 @@ def _resolve_adapted_policy_checkpoint(
             path = Path(candidate)
             if path.exists():
                 return path
+    rl_root = work_dir / "policy_rl_loop"
+    if rl_root.exists():
+        for iter_dir in sorted(rl_root.glob("iter_*"), reverse=True):
+            candidate = iter_dir / "policy_refine" / "adapters"
+            if candidate.exists() and any(candidate.iterdir()):
+                return candidate
     fallback = work_dir / "policy_finetune" / "adapters"
     if fallback.exists() and any(fallback.iterdir()):
         return fallback

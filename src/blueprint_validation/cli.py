@@ -127,6 +127,23 @@ def polish_gemini(ctx: click.Context, facility: str) -> None:
     click.echo(f"Gemini polish complete: {result.status} ({result.elapsed_seconds:.1f}s)")
 
 
+@cli.command("augment-gaussian")
+@click.option("--facility", required=True, help="Facility ID.")
+@click.pass_context
+def augment_gaussian(ctx: click.Context, facility: str) -> None:
+    """Stage 1d: RoboSplat-inspired scan-only augmentation."""
+    from .stages.s1d_gaussian_augment import GaussianAugmentStage
+
+    config = ctx.obj["config"]
+    fac = _get_facility(ctx, facility)
+    work_dir = _get_stage_work_dir(ctx, facility)
+
+    stage = GaussianAugmentStage()
+    result = stage.execute(config, fac, work_dir, {})
+    result.save(work_dir / "s1d_gaussian_augment_result.json")
+    click.echo(f"Gaussian augment complete: {result.status} ({result.elapsed_seconds:.1f}s)")
+
+
 @cli.command()
 @click.option("--facility", required=True, help="Facility ID.")
 @click.pass_context
@@ -165,7 +182,7 @@ def finetune(ctx: click.Context, facility: str) -> None:
 @click.option("--facility", required=True, help="Facility ID.")
 @click.pass_context
 def finetune_policy(ctx: click.Context, facility: str) -> None:
-    """Optional Stage 3b: OpenVLA policy fine-tuning."""
+    """Optional Stage 3b: OpenVLA-OFT policy fine-tuning."""
     from .stages.s3b_policy_finetune import PolicyFinetuneStage
 
     config = ctx.obj["config"]
@@ -176,6 +193,23 @@ def finetune_policy(ctx: click.Context, facility: str) -> None:
     result = stage.execute(config, fac, work_dir, {})
     result.save(work_dir / "s3b_policy_finetune_result.json")
     click.echo(f"Policy finetune complete: {result.status} ({result.elapsed_seconds:.1f}s)")
+
+
+@cli.command("rl-loop-policy")
+@click.option("--facility", required=True, help="Facility ID.")
+@click.pass_context
+def rl_loop_policy(ctx: click.Context, facility: str) -> None:
+    """Stage 3c: World-VLA-Loop-style policy RL loop."""
+    from .stages.s3c_policy_rl_loop import PolicyRLLoopStage
+
+    config = ctx.obj["config"]
+    fac = _get_facility(ctx, facility)
+    work_dir = _get_stage_work_dir(ctx, facility)
+
+    stage = PolicyRLLoopStage()
+    result = stage.execute(config, fac, work_dir, {})
+    result.save(work_dir / "s3c_policy_rl_loop_result.json")
+    click.echo(f"Policy RL loop complete: {result.status} ({result.elapsed_seconds:.1f}s)")
 
 
 @cli.command("eval-policy")
@@ -379,8 +413,9 @@ def status(ctx: click.Context) -> None:
     work_dir = ctx.obj["work_dir"]
 
     stages = [
-        "s1_render", "s1b_robot_composite", "s1c_gemini_polish", "s2_enrich",
-        "s3_finetune", "s3b_policy_finetune", "s4_policy_eval", "s4a_rlds_export",
+        "s1_render", "s1b_robot_composite", "s1c_gemini_polish", "s1d_gaussian_augment",
+        "s2_enrich", "s3_finetune", "s3b_policy_finetune", "s3c_policy_rl_loop",
+        "s4_policy_eval", "s4a_rlds_export",
         "s4e_trained_eval", "s4b_rollout_dataset", "s4c_policy_pair_train",
         "s4d_policy_pair_eval",
         "s5_visual_fidelity", "s6_spatial_accuracy",
