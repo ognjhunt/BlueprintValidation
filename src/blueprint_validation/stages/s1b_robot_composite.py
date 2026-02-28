@@ -58,6 +58,7 @@ class RobotCompositeStage(PipelineStage):
         out_dir.mkdir(parents=True, exist_ok=True)
 
         composited_clips: List[dict] = []
+        all_composited_clips: List[dict] = []
         metrics: List[dict] = []
         for clip in render_manifest.get("clips", []):
             clip_name = clip["clip_name"]
@@ -83,22 +84,51 @@ class RobotCompositeStage(PipelineStage):
                 end_effector_link=config.robot_composite.end_effector_link,
             )
             metrics.append(result.to_dict())
-            if not result.passed:
-                continue
             updated = dict(clip)
             updated["video_path"] = str(out_video)
             updated["geometry_consistency_score"] = result.geometry_consistency_score
             updated["mean_visible_joint_ratio"] = result.mean_visible_joint_ratio
+            all_composited_clips.append(updated)
+            if not result.passed:
+                continue
             composited_clips.append(updated)
 
         manifest = dict(render_manifest)
-        manifest["clips"] = composited_clips
-        manifest["num_clips"] = len(composited_clips)
-        manifest["robot_composite_metrics"] = metrics
         manifest_path = out_dir / "composited_manifest.json"
-        write_json(manifest, manifest_path)
 
         if not composited_clips:
+            if all_composited_clips:
+                logger.warning(
+                    "No clips passed geometry checks; falling back to all composited clips."
+                )
+                manifest["clips"] = all_composited_clips
+                manifest["num_clips"] = len(all_composited_clips)
+                manifest["robot_composite_metrics"] = metrics
+                manifest["robot_composite_fallback"] = "all_composited_clips"
+                write_json(manifest, manifest_path)
+                return StageResult(
+                    stage_name=self.name,
+                    status="success",
+                    elapsed_seconds=0,
+                    outputs={
+                        "composite_dir": str(out_dir),
+                        "manifest_path": str(manifest_path),
+                    },
+                    metrics={
+                        "num_input_clips": len(render_manifest.get("clips", [])),
+                        "num_output_clips": len(all_composited_clips),
+                        "num_passed_geometry_checks": 0,
+                        "num_failed_geometry_checks": len(all_composited_clips),
+                    },
+                    detail=(
+                        "No clips passed geometry checks; using all composited clips as fallback."
+                    ),
+                )
+
+            manifest["clips"] = composited_clips
+            manifest["num_clips"] = len(composited_clips)
+            manifest["robot_composite_metrics"] = metrics
+            write_json(manifest, manifest_path)
             return StageResult(
                 stage_name=self.name,
                 status="failed",
@@ -106,6 +136,11 @@ class RobotCompositeStage(PipelineStage):
                 outputs={"manifest_path": str(manifest_path)},
                 detail="No clips passed geometry-consistency checks in robot compositing stage.",
             )
+
+        manifest["clips"] = composited_clips
+        manifest["num_clips"] = len(composited_clips)
+        manifest["robot_composite_metrics"] = metrics
+        write_json(manifest, manifest_path)
         return StageResult(
             stage_name=self.name,
             status="success",
