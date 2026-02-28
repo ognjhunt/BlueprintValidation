@@ -203,10 +203,12 @@ def convert_jsonl_to_tfrecord(
             "Install tensorflow to produce TFRecords for OpenVLA-OFT.",
             output_dir,
         )
-        output_dir.mkdir(parents=True, exist_ok=True)
-        return output_dir
+        dataset_root = output_dir / dataset_name
+        dataset_root.mkdir(parents=True, exist_ok=True)
+        return dataset_root
 
-    ds_root = output_dir / dataset_name / "1.0.0"
+    dataset_root = output_dir / dataset_name
+    ds_root = dataset_root / "1.0.0"
 
     for split_name, jsonl_path in [("train", train_jsonl_path), ("eval", eval_jsonl_path)]:
         if jsonl_path is None or not jsonl_path.exists():
@@ -280,4 +282,4 @@ def convert_jsonl_to_tfrecord(
     (ds_root / "dataset_info.json").write_text(json.dumps(info, indent=2))
 
     logger.info("RLDS TFRecord dataset written to %s", ds_root)
-    return ds_root
+    return dataset_root

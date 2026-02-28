@@ -202,10 +202,10 @@ class PolicyFinetuneConfig:
     wandb_project: Optional[str] = None
     wandb_entity: Optional[str] = None
     recipe: str = "oft"
-    action_chunk_size: int = 8
-    use_continuous_actions: bool = True
+    action_chunk_size: int = 8  # Legacy OFT option (ignored by vendored openvla-oft finetune.py).
+    use_continuous_actions: bool = True  # Legacy OFT option (ignored by vendored script).
     use_l1_regression: bool = True
-    parallel_decoding: bool = True
+    parallel_decoding: bool = True  # Legacy OFT option (ignored by vendored script).
     extra_args: List[str] = field(default_factory=list)
 
 
@@ -294,8 +294,8 @@ class RolloutDatasetConfig:
     include_failed_rollouts: bool = False
     max_action_delta_norm: float = 5.0
     require_consistent_action_dim: bool = True
-    baseline_dataset_name: str = "blueprint_baseline_generated"
-    adapted_dataset_name: str = "blueprint_site_generated"
+    baseline_dataset_name: str = "bridge_dataset"  # Must exist in vendored OpenVLA OXE registry.
+    adapted_dataset_name: str = "bridge_orig"  # Must exist in vendored OpenVLA OXE registry.
     export_dir: Path = Path("./data/outputs/policy_datasets")
 
 
@@ -797,11 +797,11 @@ def load_config(path: Path) -> ValidationConfig:
             require_consistent_action_dim=rd.get("require_consistent_action_dim", True),
             baseline_dataset_name=rd.get(
                 "baseline_dataset_name",
-                "blueprint_baseline_generated",
+                "bridge_dataset",
             ),
             adapted_dataset_name=rd.get(
                 "adapted_dataset_name",
-                "blueprint_site_generated",
+                "bridge_orig",
             ),
             export_dir=_resolve_path(
                 rd.get("export_dir", "./data/outputs/policy_datasets"),

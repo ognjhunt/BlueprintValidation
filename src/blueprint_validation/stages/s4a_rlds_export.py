@@ -138,17 +138,16 @@ class RLDSExportStage(PipelineStage):
             )
 
         # Convert JSONL to TFRecords for OpenVLA-OFT
-        tfrecord_dir = config.rollout_dataset.export_dir / dataset_name
-        convert_jsonl_to_tfrecord(
+        dataset_dir = convert_jsonl_to_tfrecord(
             train_jsonl_path=train_dir / "episodes.jsonl",
             eval_jsonl_path=eval_dir / "episodes.jsonl" if num_eval > 0 else None,
-            output_dir=tfrecord_dir,
+            output_dir=config.rollout_dataset.export_dir,
             dataset_name=dataset_name,
         )
 
         logger.info(
             "Exported %d train + %d eval episodes to %s",
-            num_train, num_eval, tfrecord_dir,
+            num_train, num_eval, dataset_dir,
         )
 
         return StageResult(
@@ -156,7 +155,7 @@ class RLDSExportStage(PipelineStage):
             status="success",
             elapsed_seconds=0,
             outputs={
-                "rlds_dataset_dir": str(tfrecord_dir),
+                "rlds_dataset_dir": str(dataset_dir),
                 "dataset_name": dataset_name,
                 "train_jsonl": str(train_dir / "episodes.jsonl"),
                 "eval_jsonl": str(eval_dir / "episodes.jsonl"),

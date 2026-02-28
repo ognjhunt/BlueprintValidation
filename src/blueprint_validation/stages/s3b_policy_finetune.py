@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Dict
 
 from ..common import StageResult, get_logger
-from ..config import FacilityConfig, PolicyFinetuneConfig, ValidationConfig
+from ..config import FacilityConfig, ValidationConfig
 from ..training.openvla_finetune import run_openvla_finetune
 from .base import PipelineStage
 
@@ -53,28 +54,12 @@ class PolicyFinetuneStage(PipelineStage):
                     "Using pipeline-generated RLDS dataset: %s from %s",
                     rlds_name, rlds_dir,
                 )
-                # Point data_root_dir to the parent so OpenVLA-OFT finds dataset_name/ inside
-                from pathlib import Path as _Path
-
-                rlds_dataset_path = _Path(rlds_dir)
-                finetune_config = PolicyFinetuneConfig(
-                    enabled=finetune_config.enabled,
-                    openvla_repo=finetune_config.openvla_repo,
-                    finetune_script=finetune_config.finetune_script,
+                # Point data_root_dir to the parent so OpenVLA-OFT finds dataset_name/ under it.
+                rlds_dataset_path = Path(rlds_dir)
+                finetune_config = replace(
+                    finetune_config,
                     data_root_dir=rlds_dataset_path.parent,
                     dataset_name=rlds_name,
-                    run_root_dir=finetune_config.run_root_dir,
-                    adapter_tmp_dir=finetune_config.adapter_tmp_dir,
-                    lora_rank=finetune_config.lora_rank,
-                    batch_size=finetune_config.batch_size,
-                    grad_accumulation_steps=finetune_config.grad_accumulation_steps,
-                    learning_rate=finetune_config.learning_rate,
-                    save_steps=finetune_config.save_steps,
-                    max_steps=finetune_config.max_steps,
-                    image_aug=finetune_config.image_aug,
-                    nproc_per_node=finetune_config.nproc_per_node,
-                    wandb_project=finetune_config.wandb_project,
-                    wandb_entity=finetune_config.wandb_entity,
                 )
         elif not finetune_config.data_root_dir:
             return StageResult(

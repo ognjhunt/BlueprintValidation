@@ -7,6 +7,7 @@ from typing import Dict, Optional
 
 from ..common import StageResult, get_logger
 from ..config import FacilityConfig, ValidationConfig
+from ..training.openvla_finetune import resolve_latest_openvla_checkpoint
 from ..training.policy_rl_loop import run_policy_rl_iterations
 from .base import PipelineStage
 
@@ -99,10 +100,11 @@ def _resolve_initial_policy_checkpoint(
             if path.exists():
                 return path
 
-    # Fallback to known policy_finetune output directory.
-    fallback = work_dir / "policy_finetune" / "adapters"
-    if fallback.exists() and any(fallback.iterdir()):
-        return fallback
+    # Fallback to known policy_finetune run root.
+    fallback = work_dir / "policy_finetune" / "runs"
+    checkpoint = resolve_latest_openvla_checkpoint(fallback)
+    if checkpoint is not None:
+        return checkpoint
     return None
 
 

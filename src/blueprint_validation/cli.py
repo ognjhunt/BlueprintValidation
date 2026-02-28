@@ -82,6 +82,7 @@ def cli(ctx: click.Context, config_path: str, work_dir: str, verbose: bool, dry_
     ctx.obj["work_dir"] = Path(work_dir)
     ctx.obj["verbose"] = verbose
     ctx.obj["dry_run"] = dry_run
+    os.environ["BLUEPRINT_DRY_RUN"] = "1" if dry_run else "0"
 
 
 @cli.command()
@@ -517,8 +518,14 @@ def bootstrap_task_hints(ctx: click.Context, facility: str | None) -> None:
 
 
 @cli.command("run-all")
+@click.option(
+    "--continue-on-failure",
+    is_flag=True,
+    default=False,
+    help="Continue after stage failures (default is fail-fast).",
+)
 @click.pass_context
-def run_all(ctx: click.Context) -> None:
+def run_all(ctx: click.Context, continue_on_failure: bool) -> None:
     """Run the full validation pipeline, all stages sequentially."""
     from .pipeline import ValidationPipeline
 
@@ -526,11 +533,18 @@ def run_all(ctx: click.Context) -> None:
     work_dir = ctx.obj["work_dir"]
 
     pipeline = ValidationPipeline(config, work_dir)
-    summary = pipeline.run_all()
+    summary = pipeline.run_all(fail_fast=not continue_on_failure)
 
     click.echo("\n=== Pipeline Summary ===")
     for stage_name, result in summary.items():
         click.echo(f"  {stage_name}: {result.status} ({result.elapsed_seconds:.1f}s)")
+
+    failed = [name for name, result in summary.items() if result.status == "failed"]
+    if failed:
+        click.echo("\nPipeline failed stages:", err=True)
+        for name in failed:
+            click.echo(f"  - {name}", err=True)
+        sys.exit(1)
 
 
 @cli.command()

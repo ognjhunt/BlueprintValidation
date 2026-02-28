@@ -43,10 +43,7 @@ def build_controlnet_spec(
         "name": output_path.stem,
         "prompt": prompt,
         "video_path": str(video_path),
-        "output_dir": str(output_path.parent),
         "guidance": guidance,
-        # Internal key used by our pipeline for post-run verification.
-        "output_path": str(output_path),
     }
 
     if "depth" in controls and depth_path and depth_path.exists():
@@ -71,7 +68,6 @@ def build_controlnet_spec(
 def build_cosmos_inference_command(
     spec_path: Path,
     output_dir: Path,
-    num_gpus: int = 1,
 ) -> list[str]:
     """Build the Cosmos inference command."""
     cmd = [
@@ -82,8 +78,6 @@ def build_cosmos_inference_command(
         "-o",
         str(output_dir),
     ]
-    if num_gpus > 1:
-        cmd.extend(["--num_devices", str(num_gpus)])
     return cmd
 
 
@@ -116,6 +110,14 @@ def _resolve_generated_video(expected_path: Path) -> Path:
         return expected_path
 
     output_dir = expected_path.parent
+    stem_matches = sorted(
+        output_dir.glob(f"{expected_path.stem}*.mp4"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if stem_matches:
+        return stem_matches[0]
+
     candidates = sorted(
         output_dir.glob("*.mp4"),
         key=lambda p: p.stat().st_mtime,
@@ -128,16 +130,15 @@ def _resolve_generated_video(expected_path: Path) -> Path:
 
 def run_cosmos_inference(
     spec: dict,
+    expected_output_path: Path,
     cosmos_checkpoint: Path,
     cosmos_model: str = "nvidia/Cosmos-Transfer2.5-2B",
-    num_gpus: int = 1,
     cosmos_repo: Optional[Path] = None,
 ) -> Path:
     """Run Cosmos Transfer 2.5 inference and return generated output video path."""
     del cosmos_checkpoint  # checkpoint presence is preflighted; CLI resolves model assets internally.
 
-    output_path = Path(spec["output_path"])
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    expected_output_path.parent.mkdir(parents=True, exist_ok=True)
 
     repo_root = resolve_cosmos_repo(cosmos_repo or Path("/opt/cosmos-transfer"))
     if not shutil.which("python"):
@@ -148,15 +149,14 @@ def run_cosmos_inference(
         mode="w",
         suffix=".json",
         delete=False,
-        dir=output_path.parent,
+        dir=expected_output_path.parent,
     ) as f:
         json.dump(spec, f, indent=2)
         spec_path = Path(f.name)
 
     cmd = build_cosmos_inference_command(
         spec_path=spec_path,
-        output_dir=output_path.parent,
-        num_gpus=num_gpus,
+        output_dir=expected_output_path.parent,
     )
     logger.info("Running Cosmos inference (%s): %s", cosmos_model, " ".join(cmd))
 
@@ -177,7 +177,7 @@ def run_cosmos_inference(
             f"stderr_tail={stderr_tail!r}"
         )
 
-    generated = _resolve_generated_video(output_path)
+    generated = _resolve_generated_video(expected_output_path)
     logger.info("Cosmos inference complete: %s", generated)
     return generated
 
@@ -206,6 +206,7 @@ def enrich_clip(
 
         generated_video = run_cosmos_inference(
             spec=spec,
+            expected_output_path=expected_video,
             cosmos_checkpoint=config.cosmos_checkpoint,
             cosmos_model=config.cosmos_model,
             cosmos_repo=config.cosmos_repo,

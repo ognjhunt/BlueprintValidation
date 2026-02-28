@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import time
 from pathlib import Path
 from typing import Dict
 
@@ -38,9 +41,30 @@ class ValidationPipeline:
         self.work_dir = work_dir
         self.work_dir.mkdir(parents=True, exist_ok=True)
 
-    def run_all(self) -> Dict[str, StageResult]:
+    def run_all(self, fail_fast: bool = True) -> Dict[str, StageResult]:
         """Run all stages for all facilities, then cross-site test."""
         all_results: Dict[str, StageResult] = {}
+        failed_stage_keys: list[str] = []
+        aborted_early = False
+        pipeline_start = time.monotonic()
+        dry_run = os.environ.get("BLUEPRINT_DRY_RUN", "0") == "1"
+
+        if not dry_run and self.config.cloud.max_cost_usd > 0 and self._hourly_rate_usd() is None:
+            detail = (
+                "cloud.max_cost_usd is set but BLUEPRINT_GPU_HOURLY_RATE_USD is unset; "
+                "refusing to run without enforceable budget guard."
+            )
+            logger.error(detail)
+            key = "pipeline/cloud_budget_guard"
+            failed_stage_keys.append(key)
+            all_results[key] = StageResult(
+                stage_name="cloud_budget_guard",
+                status="failed",
+                elapsed_seconds=0,
+                detail=detail,
+            )
+            self._maybe_trigger_auto_shutdown(detail)
+            aborted_early = True
 
         # Per-facility stages (1-6)
         per_facility_stages = [
@@ -65,6 +89,8 @@ class ValidationPipeline:
         ]
 
         for fid, fconfig in self.config.facilities.items():
+            if aborted_early:
+                break
             logger.info("=== Processing facility: %s ===", fid)
             fac_dir = self.work_dir / fid
             fac_dir.mkdir(parents=True, exist_ok=True)
@@ -83,13 +109,44 @@ class ValidationPipeline:
                 all_results[f"{fid}/{stage.name}"] = result
 
                 if result.status == "failed":
-                    logger.warning(
-                        "Stage %s failed for %s: %s. Continuing to next stage.",
+                    failed_key = f"{fid}/{stage.name}"
+                    failed_stage_keys.append(failed_key)
+                    logger.error(
+                        "Stage %s failed for %s: %s.",
                         stage.name, fid, result.detail,
                     )
+                    if fail_fast:
+                        logger.error(
+                            "Aborting remaining pipeline stages because fail_fast=true "
+                            "(first failure: %s).",
+                            failed_key,
+                        )
+                        aborted_early = True
+                        break
+                    logger.warning("Continuing to next stage because fail_fast=false.")
+
+                if self._is_budget_exceeded(pipeline_start):
+                    detail = self._budget_failure_detail(pipeline_start)
+                    logger.error("Cloud budget guard triggered: %s", detail)
+                    budget_key = "pipeline/cloud_budget_guard"
+                    failed_stage_keys.append(budget_key)
+                    all_results[budget_key] = StageResult(
+                        stage_name="cloud_budget_guard",
+                        status="failed",
+                        elapsed_seconds=0,
+                        detail=detail,
+                    )
+                    self._maybe_trigger_auto_shutdown(detail)
+                    aborted_early = True
+                    break
+
+            if aborted_early:
+                break
 
         # Cross-site stage (requires all facilities)
-        if len(self.config.facilities) >= 2:
+        if aborted_early:
+            logger.info("Skipping cross-site test because pipeline aborted early on stage failure.")
+        elif len(self.config.facilities) >= 2:
             logger.info("=== Running cross-site discrimination test ===")
             cross_site = CrossSiteStage()
             first_fac = list(self.config.facilities.values())[0]
@@ -101,6 +158,8 @@ class ValidationPipeline:
             )
             cs_result.save(self.work_dir / "s7_cross_site_result.json")
             all_results["cross_site/s7_cross_site"] = cs_result
+            if cs_result.status == "failed":
+                failed_stage_keys.append("cross_site/s7_cross_site")
         else:
             logger.info("Skipping cross-site test (requires 2+ facilities)")
 
@@ -109,11 +168,72 @@ class ValidationPipeline:
             "num_facilities": len(self.config.facilities),
             "facility_ids": list(self.config.facilities.keys()),
             "stages": {k: v.to_dict() for k, v in all_results.items()},
-            "overall_status": "success" if all(
-                r.status != "failed" for r in all_results.values()
-            ) else "partial",
+            "overall_status": "failed" if failed_stage_keys else "success",
+            "fail_fast": fail_fast,
+            "aborted_early": aborted_early,
+            "failed_stage_keys": failed_stage_keys,
         }
         write_json(summary, self.work_dir / "pipeline_summary.json")
 
         logger.info("Pipeline complete. Summary at %s", self.work_dir / "pipeline_summary.json")
         return all_results
+
+    def _hourly_rate_usd(self) -> float | None:
+        raw = (os.environ.get("BLUEPRINT_GPU_HOURLY_RATE_USD") or "").strip()
+        if not raw:
+            return None
+        try:
+            value = float(raw)
+        except ValueError:
+            return None
+        if value <= 0:
+            return None
+        return value
+
+    def _estimated_cost_usd(self, pipeline_start: float) -> float | None:
+        hourly_rate = self._hourly_rate_usd()
+        if hourly_rate is None:
+            return None
+        elapsed_hours = max(0.0, (time.monotonic() - pipeline_start) / 3600.0)
+        return hourly_rate * elapsed_hours
+
+    def _is_budget_exceeded(self, pipeline_start: float) -> bool:
+        estimated = self._estimated_cost_usd(pipeline_start)
+        if estimated is None:
+            return False
+        return estimated > float(self.config.cloud.max_cost_usd)
+
+    def _budget_failure_detail(self, pipeline_start: float) -> str:
+        estimated = self._estimated_cost_usd(pipeline_start)
+        if estimated is None:
+            return (
+                "cloud.max_cost_usd is set but BLUEPRINT_GPU_HOURLY_RATE_USD is unset; "
+                "cannot enforce budget."
+            )
+        return (
+            f"Estimated spend ${estimated:.2f} exceeded cloud.max_cost_usd="
+            f"${self.config.cloud.max_cost_usd:.2f}."
+        )
+
+    def _maybe_trigger_auto_shutdown(self, reason: str) -> None:
+        if not self.config.cloud.auto_shutdown:
+            return
+        shutdown_cmd = (os.environ.get("BLUEPRINT_AUTO_SHUTDOWN_CMD") or "").strip()
+        if not shutdown_cmd:
+            logger.warning(
+                "cloud.auto_shutdown=true but BLUEPRINT_AUTO_SHUTDOWN_CMD is not set. "
+                "Skipping shutdown trigger."
+            )
+            return
+        logger.warning("Executing auto-shutdown command due to budget guard trigger.")
+        try:
+            subprocess.run(
+                shutdown_cmd,
+                shell=True,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except Exception as exc:
+            logger.error("Failed to execute auto-shutdown command (%s): %s", shutdown_cmd, exc)

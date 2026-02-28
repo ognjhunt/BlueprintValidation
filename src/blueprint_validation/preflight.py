@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import os
 import shutil
 import subprocess
@@ -12,6 +13,8 @@ from typing import List
 
 from .common import PreflightCheck, get_logger
 from .config import ValidationConfig
+from .enrichment.cosmos_runner import build_controlnet_spec
+from .training.dreamdojo_finetune import resolve_dreamdojo_experiment_name
 
 logger = get_logger("preflight")
 
@@ -180,6 +183,241 @@ def check_facility_ply(facility_id: str, ply_path: Path) -> PreflightCheck:
     )
 
 
+def _extract_class_fields(path: Path, class_name: str) -> set[str]:
+    try:
+        module = ast.parse(path.read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+    for node in module.body:
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            fields: set[str] = set()
+            for stmt in node.body:
+                if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                    fields.add(stmt.target.id)
+                elif isinstance(stmt, ast.Assign):
+                    for target in stmt.targets:
+                        if isinstance(target, ast.Name):
+                            fields.add(target.id)
+            return fields
+    return set()
+
+
+def _extract_dict_keys(path: Path, dict_name: str) -> set[str]:
+    try:
+        module = ast.parse(path.read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+    for node in module.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == dict_name and isinstance(node.value, ast.Dict):
+                keys: set[str] = set()
+                for key in node.value.keys:
+                    if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                        keys.add(key.value)
+                return keys
+    return set()
+
+
+def check_openvla_finetune_contract(openvla_repo: Path, finetune_script: str) -> PreflightCheck:
+    script_path = Path(finetune_script)
+    if not script_path.is_absolute():
+        script_path = openvla_repo / script_path
+    if not script_path.exists():
+        return PreflightCheck(
+            name="policy_finetune:wrapper_contract",
+            passed=False,
+            detail=f"Finetune script missing: {script_path}",
+        )
+    fields = _extract_class_fields(script_path, "FinetuneConfig")
+    if not fields:
+        return PreflightCheck(
+            name="policy_finetune:wrapper_contract",
+            passed=False,
+            detail=f"Could not parse FinetuneConfig fields from {script_path}",
+        )
+    required = {
+        "vla_path",
+        "data_root_dir",
+        "dataset_name",
+        "run_root_dir",
+        "lora_rank",
+        "batch_size",
+        "grad_accumulation_steps",
+        "learning_rate",
+        "save_freq",
+        "max_steps",
+        "image_aug",
+        "use_l1_regression",
+    }
+    missing = sorted(required - fields)
+    if missing:
+        return PreflightCheck(
+            name="policy_finetune:wrapper_contract",
+            passed=False,
+            detail=f"Vendored FinetuneConfig missing expected fields: {', '.join(missing)}",
+        )
+    return PreflightCheck(
+        name="policy_finetune:wrapper_contract",
+        passed=True,
+        detail=f"Wrapper-compatible fields verified in {script_path}",
+    )
+
+
+def check_openvla_dataset_registry(openvla_repo: Path, dataset_names: set[str]) -> PreflightCheck:
+    registry_path = (
+        openvla_repo
+        / "prismatic"
+        / "vla"
+        / "datasets"
+        / "rlds"
+        / "oxe"
+        / "configs.py"
+    )
+    if not registry_path.exists():
+        return PreflightCheck(
+            name="policy_finetune:dataset_registry",
+            passed=False,
+            detail=f"Dataset registry missing: {registry_path}",
+        )
+    registered = _extract_dict_keys(registry_path, "OXE_DATASET_CONFIGS")
+    if not registered:
+        return PreflightCheck(
+            name="policy_finetune:dataset_registry",
+            passed=False,
+            detail=f"Failed to parse OXE_DATASET_CONFIGS from {registry_path}",
+        )
+    missing = sorted(name for name in dataset_names if name not in registered)
+    if missing:
+        sample = ", ".join(sorted(list(registered))[:6])
+        return PreflightCheck(
+            name="policy_finetune:dataset_registry",
+            passed=False,
+            detail=(
+                f"Dataset name(s) not in vendored OXE registry: {', '.join(missing)}. "
+                f"Examples: {sample}"
+            ),
+        )
+    return PreflightCheck(
+        name="policy_finetune:dataset_registry",
+        passed=True,
+        detail=f"Validated dataset names: {', '.join(sorted(dataset_names))}",
+    )
+
+
+def check_cosmos_wrapper_contract(cosmos_repo: Path) -> PreflightCheck:
+    config_path = cosmos_repo / "cosmos_transfer2" / "config.py"
+    if not config_path.exists():
+        return PreflightCheck(
+            name="enrich:cosmos_wrapper_contract",
+            passed=False,
+            detail=f"Missing Cosmos config schema: {config_path}",
+        )
+
+    common_fields = _extract_class_fields(config_path, "CommonInferenceArguments")
+    inference_fields = _extract_class_fields(config_path, "InferenceArguments")
+    allowed_fields = common_fields | inference_fields
+    if not allowed_fields:
+        return PreflightCheck(
+            name="enrich:cosmos_wrapper_contract",
+            passed=False,
+            detail=f"Failed to parse inference fields from {config_path}",
+        )
+
+    spec = build_controlnet_spec(
+        video_path=Path("/tmp/input.mp4"),
+        depth_path=Path("/tmp/depth.mp4"),
+        prompt="contract-check",
+        output_path=Path("/tmp/output.mp4"),
+        guidance=7.0,
+        controlnet_inputs=["rgb", "depth"],
+    )
+    extra = sorted(k for k in spec if k not in allowed_fields)
+    if extra:
+        return PreflightCheck(
+            name="enrich:cosmos_wrapper_contract",
+            passed=False,
+            detail=f"Wrapper emits unsupported inference keys: {', '.join(extra)}",
+        )
+    return PreflightCheck(
+        name="enrich:cosmos_wrapper_contract",
+        passed=True,
+        detail="Wrapper spec keys match vendored InferenceArguments schema",
+    )
+
+
+def check_dreamdojo_contract(dreamdojo_repo: Path, configured_experiment: str | None) -> PreflightCheck:
+    train_script = dreamdojo_repo / "scripts" / "train.py"
+    if not train_script.exists():
+        return PreflightCheck(
+            name="finetune:dreamdojo_contract",
+            passed=False,
+            detail=f"DreamDojo train entrypoint missing: {train_script}",
+        )
+    try:
+        experiment = resolve_dreamdojo_experiment_name(dreamdojo_repo, configured_experiment)
+    except Exception as exc:
+        return PreflightCheck(
+            name="finetune:dreamdojo_contract",
+            passed=False,
+            detail=str(exc),
+        )
+    return PreflightCheck(
+        name="finetune:dreamdojo_contract",
+        passed=True,
+        detail=f"Resolved experiment={experiment}",
+    )
+
+
+def check_cloud_budget_enforcement(config: ValidationConfig) -> PreflightCheck:
+    if config.cloud.max_cost_usd <= 0:
+        return PreflightCheck(
+            name="cloud:budget_enforcement",
+            passed=True,
+            detail="max_cost_usd<=0 (budget cap disabled)",
+        )
+    raw_rate = (os.environ.get("BLUEPRINT_GPU_HOURLY_RATE_USD") or "").strip()
+    try:
+        rate = float(raw_rate)
+    except ValueError:
+        rate = 0.0
+    if rate > 0:
+        return PreflightCheck(
+            name="cloud:budget_enforcement",
+            passed=True,
+            detail=f"Hourly rate from env: ${rate:.4f}/hour",
+        )
+    return PreflightCheck(
+        name="cloud:budget_enforcement",
+        passed=False,
+        detail=(
+            "Set BLUEPRINT_GPU_HOURLY_RATE_USD to enforce cloud.max_cost_usd during pipeline execution."
+        ),
+    )
+
+
+def check_cloud_shutdown_enforcement(config: ValidationConfig) -> PreflightCheck:
+    if not config.cloud.auto_shutdown:
+        return PreflightCheck(
+            name="cloud:auto_shutdown_enforcement",
+            passed=True,
+            detail="auto_shutdown=false",
+        )
+    shutdown_cmd = (os.environ.get("BLUEPRINT_AUTO_SHUTDOWN_CMD") or "").strip()
+    if shutdown_cmd:
+        return PreflightCheck(
+            name="cloud:auto_shutdown_enforcement",
+            passed=True,
+            detail="Shutdown command configured via BLUEPRINT_AUTO_SHUTDOWN_CMD",
+        )
+    return PreflightCheck(
+        name="cloud:auto_shutdown_enforcement",
+        passed=False,
+        detail="Set BLUEPRINT_AUTO_SHUTDOWN_CMD to enforce cloud.auto_shutdown.",
+    )
+
+
 def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
     """Run all preflight checks and return results."""
     checks: List[PreflightCheck] = []
@@ -231,12 +469,13 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
             "repo:cosmos_transfer:inference_script",
         )
     )
+    checks.append(check_cosmos_wrapper_contract(config.enrich.cosmos_repo))
     checks.append(check_path_exists(config.finetune.dreamdojo_repo, "repo:dreamdojo"))
     checks.append(
         check_path_exists_under(
             config.finetune.dreamdojo_repo,
-            "launch.sh",
-            "repo:dreamdojo:launch",
+            "scripts/train.py",
+            "repo:dreamdojo:train_entrypoint",
         )
     )
     checks.append(
@@ -251,6 +490,12 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
             "cosmos_predict2.action_conditioned.inference",
             config.finetune.dreamdojo_repo,
             "import:cosmos_predict2",
+        )
+    )
+    checks.append(
+        check_dreamdojo_contract(
+            config.finetune.dreamdojo_repo,
+            config.finetune.experiment_config,
         )
     )
 
@@ -376,8 +621,26 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
         if not script_path.is_absolute():
             script_path = config.policy_finetune.openvla_repo / script_path
         checks.append(check_path_exists(script_path, "policy_finetune:finetune_script"))
+        checks.append(
+            check_openvla_finetune_contract(
+                config.policy_finetune.openvla_repo,
+                config.policy_finetune.finetune_script,
+            )
+        )
+        dataset_names = {config.policy_finetune.dataset_name}
+        if config.rollout_dataset.enabled:
+            dataset_names.add(config.rollout_dataset.baseline_dataset_name)
+            dataset_names.add(config.rollout_dataset.adapted_dataset_name)
+        checks.append(
+            check_openvla_dataset_registry(
+                config.policy_finetune.openvla_repo,
+                dataset_names,
+            )
+        )
         # When rollout_dataset is enabled, pair-training stages generate datasets later in-pipeline.
         if config.rollout_dataset.enabled:
+            checks.append(check_dependency("tensorflow", "tensorflow"))
+            checks.append(check_dependency("tensorflow_datasets", "tensorflow-datasets"))
             checks.append(
                 PreflightCheck(
                     name="policy_finetune:data_root_dir",
@@ -416,6 +679,9 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
                     "policy_finetune:dataset_dir",
                 )
             )
+
+    checks.append(check_cloud_budget_enforcement(config))
+    checks.append(check_cloud_shutdown_enforcement(config))
 
     if config.policy_rl_loop.enabled:
         checks.append(

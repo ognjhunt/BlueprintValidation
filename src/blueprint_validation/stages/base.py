@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -51,6 +52,14 @@ class PipelineStage(ABC):
         previous_results: Dict[str, StageResult],
     ) -> StageResult:
         """Wrapper that handles timing, logging, and error capture."""
+        if os.environ.get("BLUEPRINT_DRY_RUN", "0") == "1":
+            logger.info("Dry-run enabled; skipping stage execution: %s", self.name)
+            return StageResult(
+                stage_name=self.name,
+                status="skipped",
+                elapsed_seconds=0,
+                detail="dry-run mode",
+            )
         logger.info("Starting stage: %s — %s", self.name, self.description)
         start = time.monotonic()
         try:

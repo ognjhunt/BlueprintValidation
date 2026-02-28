@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List
 
 from ..common import get_logger, write_json
 from ..config import FinetuneConfig
@@ -13,107 +14,151 @@ from ..config import FinetuneConfig
 logger = get_logger("training.dreamdojo_finetune")
 
 
-def _resolve_experiment_config(dreamdojo_root: Path, configured: str | None) -> Path:
-    """Resolve the DreamDojo experiment config script."""
+def list_dreamdojo_experiments(dreamdojo_root: Path) -> List[str]:
+    """List dynamically registered experiment names from DreamDojo YAML configs."""
     configs_root = dreamdojo_root / "configs"
-
-    if configured:
-        raw = Path(configured)
-        if raw.exists():
-            return raw.resolve()
-
-        if configs_root.exists():
-            candidates = [
-                configs_root / configured,
-                configs_root / f"{configured}.sh",
-            ]
-            for candidate in candidates:
-                if candidate.exists():
-                    return candidate.resolve()
-
-        raise RuntimeError(
-            f"DreamDojo experiment config not found: {configured}. "
-            f"Provide finetune.experiment_config as a file path or config name under {configs_root}."
-        )
-
     if not configs_root.exists():
-        raise RuntimeError(
-            f"DreamDojo configs directory not found: {configs_root}. "
-            "Set finetune.experiment_config to a valid config script path."
-        )
+        return []
+    experiments = []
+    for yaml_file in sorted(configs_root.glob("*.yaml")):
+        experiments.append(f"dreamdojo_{yaml_file.stem}".lower())
+    return experiments
 
-    available = sorted(configs_root.rglob("*.sh"))
+
+def resolve_dreamdojo_experiment_name(dreamdojo_root: Path, configured: str | None) -> str:
+    """Resolve a configured experiment into the vendor's expected Hydra experiment name."""
+    available = list_dreamdojo_experiments(dreamdojo_root)
     if not available:
         raise RuntimeError(
-            f"No DreamDojo config scripts found under {configs_root}. "
-            "Set finetune.experiment_config explicitly."
+            f"No DreamDojo YAML configs found under {dreamdojo_root / 'configs'}. "
+            "Ensure finetune.dreamdojo_repo points to a valid DreamDojo checkout."
         )
 
-    # Prefer post-training/adapted config scripts when auto-selecting.
+    if configured:
+        token = configured.strip()
+        maybe_path = Path(token)
+        if maybe_path.is_absolute() or "/" in token or token.endswith(".yaml"):
+            candidate = maybe_path if maybe_path.is_absolute() else (dreamdojo_root / "configs" / maybe_path)
+            if candidate.suffix != ".yaml":
+                candidate_yaml = candidate.with_suffix(".yaml")
+                if candidate_yaml.exists():
+                    candidate = candidate_yaml
+            if not candidate.exists():
+                raise RuntimeError(
+                    f"DreamDojo experiment config not found: {configured}. "
+                    f"Expected a YAML under {dreamdojo_root / 'configs'}."
+                )
+            experiment_name = f"dreamdojo_{candidate.stem}".lower()
+            if experiment_name in available:
+                return experiment_name
+            raise RuntimeError(
+                f"Experiment '{experiment_name}' is not registered from {candidate}. "
+                "Check DreamDojo config loading."
+            )
+
+        normalized = token.lower()
+        if normalized.startswith("dreamdojo_") and normalized in available:
+            return normalized
+
+        candidate = f"dreamdojo_{Path(token).stem}".lower()
+        if candidate in available:
+            return candidate
+
+        raise RuntimeError(
+            f"Unknown DreamDojo experiment '{configured}'. "
+            f"Available examples: {', '.join(available[:5])}"
+        )
+
     preferred = [
-        p for p in available
-        if "post" in p.as_posix().lower() or "adapt" in p.as_posix().lower()
+        "dreamdojo_2b_480_640_gr1",
+        "dreamdojo_2b_480_640_g1",
+        "dreamdojo_2b_480_640_agibot",
+        "dreamdojo_2b_480_640_yam",
     ]
-    picked = preferred[0] if preferred else available[0]
+    for candidate in preferred:
+        if candidate in available:
+            logger.warning(
+                "Auto-selected DreamDojo experiment: %s "
+                "(set finetune.experiment_config to override)",
+                candidate,
+            )
+            return candidate
+
+    picked = available[0]
     logger.warning(
-        "Auto-selected DreamDojo config script: %s (set finetune.experiment_config to override)",
+        "Auto-selected DreamDojo experiment: %s (set finetune.experiment_config to override)",
         picked,
     )
-    return picked.resolve()
-
-
-def render_dreamdojo_config_script(
-    base_config: Path,
-    dataset_dir: Path,
-    output_dir: Path,
-    config: FinetuneConfig,
-    facility_id: str,
-) -> Path:
-    """Render a DreamDojo launch config script that layers Blueprint overrides."""
-    config_script = output_dir / "dreamdojo_launch_config.sh"
-    lora_dir = output_dir / "lora_weights"
-    exp_name = f"blueprint_{facility_id}_lora"
-    lines = [
-        "#!/usr/bin/env bash",
-        "set -euo pipefail",
-        f'source "{base_config}"',
-        "",
-        f'EXP_NAME="${{EXP_NAME:-{exp_name}}}"',
-        f'CHECKPOINT="${{CHECKPOINT:-{config.dreamdojo_checkpoint}}}"',
-        f'DATASET_PATH="${{DATASET_PATH:-{dataset_dir}}}"',
-        f'TRAIN_DATASET_PATH="${{TRAIN_DATASET_PATH:-{dataset_dir}}}"',
-        f'BASE_EXPERIMENT_PATH="${{BASE_EXPERIMENT_PATH:-{lora_dir}}}"',
-        "",
-        "# LoRA + training overrides for post-training configs.",
-        'TRAIN_ARCHITECTURE="${TRAIN_ARCHITECTURE:-lora}"',
-        'USE_LORA="${USE_LORA:-true}"',
-        f'LORA_RANK="${{LORA_RANK:-{config.lora_rank}}}"',
-        f'LORA_ALPHA="${{LORA_ALPHA:-{config.lora_alpha}}}"',
-        f'LEARNING_RATE="${{LEARNING_RATE:-{config.learning_rate}}}"',
-        f'LR="${{LR:-{config.learning_rate}}}"',
-        f'NUM_EPOCHS="${{NUM_EPOCHS:-{config.num_epochs}}}"',
-        f'EPOCHS="${{EPOCHS:-{config.num_epochs}}}"',
-        f'BATCH_SIZE="${{BATCH_SIZE:-{config.batch_size}}}"',
-        f'GRADIENT_ACCUMULATION_STEPS="${{GRADIENT_ACCUMULATION_STEPS:-{config.gradient_accumulation_steps}}}"',
-        f'WARMUP_STEPS="${{WARMUP_STEPS:-{config.warmup_steps}}}"',
-    ]
-    config_script.write_text("\n".join(lines) + "\n")
-    config_script.chmod(0o755)
-    return config_script
+    return picked
 
 
 def build_dreamdojo_launch_command(
     dreamdojo_root: Path,
-    config_script: Path,
+    experiment_name: str,
+    dataset_dir: Path,
+    output_dir: Path,
+    config: FinetuneConfig,
+    facility_id: str,
 ) -> list[str]:
-    """Build the DreamDojo launch command."""
-    launch_script = dreamdojo_root / "launch.sh"
-    if not launch_script.exists():
+    """Build a portable DreamDojo training command without cluster-specific launch.sh wrappers."""
+    train_script = dreamdojo_root / "scripts" / "train.py"
+    if not train_script.exists():
         raise RuntimeError(
-            f"DreamDojo launch script not found at {launch_script}. "
+            f"DreamDojo train entrypoint not found at {train_script}. "
             "Ensure finetune.dreamdojo_repo points to a valid DreamDojo checkout."
         )
-    return ["bash", str(launch_script), str(config_script)]
+
+    steps_per_epoch = max(1, int(os.environ.get("DREAMDOJO_STEPS_PER_EPOCH", "1000")))
+    max_iter = max(1, int(config.num_epochs) * steps_per_epoch)
+    nproc = max(1, int(os.environ.get("DREAMDOJO_NPROC", "1")))
+
+    run_dir = output_dir / "lora_weights"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "torchrun",
+        "--standalone",
+        "--nnodes",
+        "1",
+        "--nproc-per-node",
+        str(nproc),
+        "-m",
+        "scripts.train",
+        "--config=cosmos_predict2/_src/predict2/action/configs/action_conditioned/config.py",
+        "--",
+        f"experiment={experiment_name}",
+        f"job.name=blueprint_{facility_id}",
+        "job.wandb_mode=disabled",
+        f"job.path_local={run_dir}",
+        f"dataloader_train.dataset.dataset_path={dataset_dir}",
+        f"dataloader_train.batch_size={config.batch_size}",
+        f"trainer.grad_accum_iter={config.gradient_accumulation_steps}",
+        f"trainer.max_iter={max_iter}",
+        f"optimizer.lr={config.learning_rate}",
+        f"checkpoint.load_path={config.dreamdojo_checkpoint}",
+        f"model.config.use_lora={'true' if config.use_lora else 'false'}",
+        f"model.config.lora_rank={config.lora_rank}",
+        f"model.config.lora_alpha={config.lora_alpha}",
+        f"model.config.lora_target_modules={config.lora_target_modules}",
+    ]
+    return cmd
+
+
+def _resolve_latest_checkpoint(lora_dir: Path) -> Path | None:
+    checkpoints_dir = lora_dir / "checkpoints"
+    if not checkpoints_dir.exists():
+        return None
+
+    checkpoint_dirs = [
+        path
+        for path in checkpoints_dir.iterdir()
+        if path.is_dir() and path.name.startswith("iter_")
+    ]
+    if checkpoint_dirs:
+        checkpoint_dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        return checkpoint_dirs[0]
+    if any(checkpoints_dir.iterdir()):
+        return checkpoints_dir
+    return None
 
 
 def run_dreamdojo_finetune(
@@ -141,20 +186,23 @@ def run_dreamdojo_finetune(
     if not dataset_dir.exists():
         raise RuntimeError(f"DreamDojo dataset directory not found: {dataset_dir}")
 
-    base_config = _resolve_experiment_config(dreamdojo_root, config.experiment_config)
-    config_script = render_dreamdojo_config_script(
-        base_config=base_config,
+    experiment_name = resolve_dreamdojo_experiment_name(
+        dreamdojo_root=dreamdojo_root,
+        configured=config.experiment_config,
+    )
+    cmd = build_dreamdojo_launch_command(
+        dreamdojo_root=dreamdojo_root,
+        experiment_name=experiment_name,
         dataset_dir=dataset_dir,
         output_dir=output_dir,
         config=config,
         facility_id=facility_id,
     )
-    cmd = build_dreamdojo_launch_command(dreamdojo_root, config_script)
 
     logger.info(
-        "Starting DreamDojo LoRA fine-tuning: facility=%s epochs=%d lr=%s",
+        "Starting DreamDojo LoRA fine-tuning: facility=%s experiment=%s lr=%s",
         facility_id,
-        config.num_epochs,
+        experiment_name,
         config.learning_rate,
     )
     logger.info("Command: %s", " ".join(cmd))
@@ -171,15 +219,15 @@ def run_dreamdojo_finetune(
     elapsed = time.monotonic() - start_time
     status = "success" if result.returncode == 0 else "failed"
 
+    checkpoint_path = _resolve_latest_checkpoint(lora_dir)
     train_result = {
         "facility_id": facility_id,
         "status": status,
         "elapsed_seconds": elapsed,
         "lora_weights_path": str(lora_dir),
-        "adapted_checkpoint_path": str(lora_dir),
+        "adapted_checkpoint_path": str(checkpoint_path or ""),
         "returncode": result.returncode,
-        "base_experiment_config": str(base_config),
-        "rendered_config_script": str(config_script),
+        "experiment_name": experiment_name,
     }
 
     if result.returncode != 0:
@@ -188,12 +236,11 @@ def run_dreamdojo_finetune(
         logger.error("DreamDojo fine-tuning failed: %s", train_result["stderr"])
     else:
         logger.info("DreamDojo fine-tuning complete in %.1fs", elapsed)
-        # Strict mode: require artifact presence.
-        if not any(lora_dir.rglob("*")):
+        if checkpoint_path is None:
             train_result["status"] = "failed"
             train_result["stderr"] = (
-                "DreamDojo command exited successfully but produced no LoRA artifacts "
-                f"under {lora_dir}."
+                "DreamDojo command exited successfully but produced no checkpoints under "
+                f"{lora_dir / 'checkpoints'}."
             )
 
     train_result["loss_history"] = _parse_loss_from_output(result.stdout or "")

@@ -218,8 +218,8 @@ rollout_dataset:
   include_failed_rollouts: false
   max_action_delta_norm: 5.0
   require_consistent_action_dim: true
-  baseline_dataset_name: blueprint_baseline_generated
-  adapted_dataset_name: blueprint_site_generated
+  baseline_dataset_name: bridge_dataset
+  adapted_dataset_name: bridge_orig
   export_dir: ../data/outputs/policy_datasets
 
 # ---- Stage 4d: Trained policy A/B comparison ----

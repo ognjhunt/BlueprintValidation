@@ -33,6 +33,7 @@ from ..evaluation.vlm_judge import (
 )
 from ..evaluation.rollout_utils import run_rollout_with_adapter
 from ..policy_adapters import get_policy_adapter
+from ..training.openvla_finetune import resolve_latest_openvla_checkpoint
 from .base import PipelineStage
 
 logger = get_logger("stages.s4e_trained_eval")
@@ -447,12 +448,12 @@ def _resolve_trained_checkpoint(
     rl_root = work_dir / "policy_rl_loop"
     if rl_root.exists():
         for iter_dir in sorted(rl_root.glob("iter_*"), reverse=True):
-            candidate = iter_dir / "policy_refine" / "adapters"
-            if candidate.exists() and any(candidate.iterdir()):
+            candidate = resolve_latest_openvla_checkpoint(iter_dir / "policy_refine" / "runs")
+            if candidate is not None:
                 return candidate
 
-    candidate = work_dir / "policy_finetune" / "adapters"
-    if candidate.exists() and any(candidate.iterdir()):
+    candidate = resolve_latest_openvla_checkpoint(work_dir / "policy_finetune" / "runs")
+    if candidate is not None:
         return candidate
     return None
 

@@ -26,7 +26,7 @@ def build_openvla_finetune_command(
     config: PolicyFinetuneConfig,
     vla_path: str,
     run_root_dir: Path,
-    adapter_tmp_dir: Path,
+    run_id_note: str | None = None,
 ) -> list[str]:
     """Build a torchrun command matching the OpenVLA-OFT finetune entrypoint."""
     if config.data_root_dir is None:
@@ -50,8 +50,6 @@ def build_openvla_finetune_command(
         config.dataset_name,
         "--run_root_dir",
         str(run_root_dir),
-        "--adapter_tmp_dir",
-        str(adapter_tmp_dir),
         "--lora_rank",
         str(config.lora_rank),
         "--batch_size",
@@ -60,37 +58,42 @@ def build_openvla_finetune_command(
         str(config.grad_accumulation_steps),
         "--learning_rate",
         str(config.learning_rate),
-        "--save_steps",
+        "--save_freq",
         str(config.save_steps),
         "--max_steps",
         str(config.max_steps),
         "--image_aug",
         "True" if config.image_aug else "False",
+        "--use_l1_regression",
+        "True" if config.use_l1_regression else "False",
     ]
+    if run_id_note:
+        cmd.extend(["--run_id_note", run_id_note])
     if config.wandb_project:
         cmd.extend(["--wandb_project", config.wandb_project])
     if config.wandb_entity:
         cmd.extend(["--wandb_entity", config.wandb_entity])
-    # OFT-oriented knobs are passed through as explicit flags expected by OFT forks.
-    if config.recipe.lower() == "oft":
-        cmd.extend(["--action_chunk_size", str(config.action_chunk_size)])
-        cmd.extend(["--parallel_decoding", "True" if config.parallel_decoding else "False"])
-        cmd.extend(
-            ["--continuous_actions", "True" if config.use_continuous_actions else "False"]
-        )
-        cmd.extend(["--l1_regression", "True" if config.use_l1_regression else "False"])
     if config.extra_args:
         cmd.extend(config.extra_args)
     return cmd
 
 
-def _resolve_artifact_path(adapter_tmp_dir: Path, run_root_dir: Path) -> Path | None:
-    if adapter_tmp_dir.exists() and any(adapter_tmp_dir.iterdir()):
-        return adapter_tmp_dir
+def _resolve_artifact_path(run_root_dir: Path) -> Path | None:
     if not run_root_dir.exists():
         return None
-    candidates = sorted(run_root_dir.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True)
+    candidates = []
+    for candidate in run_root_dir.glob("*"):
+        if not candidate.is_dir():
+            continue
+        if (candidate / "lora_adapter").exists():
+            candidates.append(candidate)
+    candidates = sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)
     return candidates[0] if candidates else None
+
+
+def resolve_latest_openvla_checkpoint(run_root_dir: Path) -> Path | None:
+    """Resolve the newest OpenVLA checkpoint directory under a run root."""
+    return _resolve_artifact_path(run_root_dir)
 
 
 def run_openvla_finetune(
@@ -130,16 +133,14 @@ def run_openvla_finetune(
         )
 
     run_root_dir = output_dir / "runs"
-    adapter_tmp_dir = output_dir / "adapters"
     run_root_dir.mkdir(parents=True, exist_ok=True)
-    adapter_tmp_dir.mkdir(parents=True, exist_ok=True)
 
     cmd = build_openvla_finetune_command(
         script_path=script_path,
         config=config,
         vla_path=vla_path,
         run_root_dir=run_root_dir,
-        adapter_tmp_dir=adapter_tmp_dir,
+        run_id_note=f"blueprint_{facility_id}",
     )
     logger.info(
         "Starting OpenVLA-OFT fine-tuning for facility=%s dataset=%s",
@@ -168,10 +169,9 @@ def run_openvla_finetune(
         "recipe": config.recipe,
         "command": cmd,
         "run_root_dir": str(run_root_dir),
-        "adapter_tmp_dir": str(adapter_tmp_dir),
     }
 
-    artifact_path = _resolve_artifact_path(adapter_tmp_dir, run_root_dir)
+    artifact_path = _resolve_artifact_path(run_root_dir)
     if result.returncode != 0:
         finetune_result["stdout"] = (result.stdout or "")[-3000:]
         finetune_result["stderr"] = (result.stderr or "")[-3000:]
@@ -179,7 +179,7 @@ def run_openvla_finetune(
         finetune_result["status"] = "failed"
         finetune_result["stderr"] = (
             "OpenVLA-OFT fine-tune command succeeded but no artifacts were found under "
-            f"{adapter_tmp_dir} or {run_root_dir}."
+            f"{run_root_dir}."
         )
     else:
         finetune_result["adapted_checkpoint_path"] = str(artifact_path)

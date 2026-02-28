@@ -11,6 +11,7 @@ CHECKPOINT_DIR="${CHECKPOINT_DIR:-/models/checkpoints}"
 DOWNLOAD_MODELS="${DOWNLOAD_MODELS:-true}"
 INSTALL_DREAMDOJO_EXTRA="${INSTALL_DREAMDOJO_EXTRA:-true}"
 DREAMDOJO_EXTRA="${DREAMDOJO_EXTRA:-cu128}"
+FACILITY_ID="${FACILITY_ID:-}"
 
 if [ -f "$ROOT_DIR/scripts/runtime_env.local" ]; then
   # shellcheck disable=SC1091
@@ -92,7 +93,27 @@ echo "Ensuring canonical InteriorGS scene assets..."
 
 if [ ! -f "$SCENE_DIR/task_targets.synthetic.json" ]; then
   echo "Generating task hints from labels/structure..."
-  blueprint-validate --config "$CONFIG_PATH" --work-dir "$WORK_DIR" bootstrap-task-hints --facility kitchen_0787
+  if [ -z "$FACILITY_ID" ]; then
+    FACILITY_ID="$(python - "$CONFIG_PATH" <<'PY'
+import sys
+from pathlib import Path
+import yaml
+
+config_path = Path(sys.argv[1])
+if not config_path.exists():
+    print("")
+    raise SystemExit(0)
+raw = yaml.safe_load(config_path.read_text()) or {}
+facilities = raw.get("facilities", {})
+if isinstance(facilities, dict) and facilities:
+    print(next(iter(facilities.keys())))
+else:
+    print("")
+PY
+)"
+  fi
+  FACILITY_ID="${FACILITY_ID:-kitchen_0787}"
+  blueprint-validate --config "$CONFIG_PATH" --work-dir "$WORK_DIR" bootstrap-task-hints --facility "$FACILITY_ID"
 fi
 
 if [ "$DOWNLOAD_MODELS" = "true" ]; then

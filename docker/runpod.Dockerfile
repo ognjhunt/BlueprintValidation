@@ -30,33 +30,28 @@ RUN uv tool install -U "huggingface_hub[cli]"
 WORKDIR /app
 
 # Application code
-COPY pyproject.toml README.md ./
+COPY pyproject.toml uv.lock README.md ./
 COPY src/ /app/src/
 COPY configs/ /app/configs/
 COPY scripts/ /app/scripts/
+COPY data/vendor/ /app/data/vendor/
 
 # Install Python dependencies
 RUN uv venv /app/.venv && \
     . /app/.venv/bin/activate && \
+    uv sync --frozen --no-dev --extra rlds && \
     uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 && \
     uv pip install setuptools wheel psutil && \
     if [ "$(uname -m)" = "x86_64" ]; then uv pip install flash-attn --no-build-isolation; else echo "Skipping flash-attn on $(uname -m)"; fi && \
-    uv pip install -e /app && \
     rm -rf /opt/uv_cache /root/.cache/uv /root/.cache/pip
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Clone DreamDojo and Cosmos Transfer 2.5
-RUN git clone --depth 1 https://github.com/NVIDIA/DreamDojo.git /opt/DreamDojo && \
-    git clone --depth 1 https://github.com/nvidia-cosmos/cosmos-transfer2.5.git /opt/cosmos-transfer && \
-    rm -rf /opt/DreamDojo/.git /opt/cosmos-transfer/.git
+# Use vendored copies in this repo to avoid upstream HEAD drift at image build time.
+RUN mkdir -p /opt /models/checkpoints && \
+    ln -sfn /app/data/vendor/DreamDojo /opt/DreamDojo && \
+    ln -sfn /app/data/vendor/cosmos-transfer /opt/cosmos-transfer && \
+    ln -sfn /app/data/vendor/openvla-oft /opt/openvla-oft
 RUN if [ "$(uname -m)" = "x86_64" ]; then . /app/.venv/bin/activate && uv pip install -e /opt/DreamDojo; else echo "Skipping DreamDojo editable install on $(uname -m)"; fi
-RUN git clone --depth 1 https://github.com/moojink/openvla-oft.git /opt/openvla-oft && \
-    rm -rf /opt/openvla-oft/.git
-RUN mkdir -p /app/data/vendor && \
-    ln -s /opt/DreamDojo /app/data/vendor/DreamDojo && \
-    ln -s /opt/cosmos-transfer /app/data/vendor/cosmos-transfer && \
-    ln -s /opt/openvla-oft /app/data/vendor/openvla-oft && \
-    mkdir -p /models/checkpoints
 
 ENV DREAMDOJO_ROOT=/opt/DreamDojo
 ENV COSMOS_ROOT=/opt/cosmos-transfer
