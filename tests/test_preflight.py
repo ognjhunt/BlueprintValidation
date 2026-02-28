@@ -168,6 +168,52 @@ def _patch_preflight_fast(monkeypatch, preflight):
     )
 
 
+def test_preflight_requires_sam2_dependency(sample_config, monkeypatch):
+    import blueprint_validation.preflight as preflight
+    from blueprint_validation.common import PreflightCheck
+
+    seen_dependencies: list[tuple[str, str]] = []
+
+    def _ok(name: str) -> PreflightCheck:
+        return PreflightCheck(name=name, passed=True, detail="ok")
+
+    def _dependency(module_name: str, package_name: str = "") -> PreflightCheck:
+        seen_dependencies.append((module_name, package_name))
+        pkg = package_name or module_name
+        return PreflightCheck(name=f"dep:{pkg}", passed=True, detail="ok")
+
+    monkeypatch.setattr(preflight, "check_gpu", lambda: _ok("gpu"))
+    monkeypatch.setattr(preflight, "check_dependency", _dependency)
+    monkeypatch.setattr(preflight, "check_external_tool", lambda *a, **k: _ok("tool"))
+    monkeypatch.setattr(preflight, "check_facility_ply", lambda *a, **k: _ok("ply"))
+    monkeypatch.setattr(preflight, "check_model_weights", lambda *a, **k: _ok("weights"))
+    monkeypatch.setattr(preflight, "check_hf_auth", lambda: _ok("hf_auth"))
+    monkeypatch.setattr(preflight, "check_path_exists", lambda *a, **k: _ok("path"))
+    monkeypatch.setattr(preflight, "check_path_exists_under", lambda *a, **k: _ok("path_under"))
+    monkeypatch.setattr(preflight, "check_cosmos_wrapper_contract", lambda *a, **k: _ok("cosmos"))
+    monkeypatch.setattr(preflight, "check_dreamdojo_contract", lambda *a, **k: _ok("dreamdojo"))
+    monkeypatch.setattr(
+        preflight, "check_policy_base_reference_for_adapter", lambda *a, **k: _ok("policy_base")
+    )
+    monkeypatch.setattr(preflight, "check_python_import_from_path", lambda *a, **k: _ok("import"))
+    monkeypatch.setattr(preflight, "check_api_key", lambda *a, **k: _ok("api_key"))
+    monkeypatch.setattr(preflight, "check_api_key_for_scope", lambda *a, **k: _ok("api_scope"))
+    monkeypatch.setattr(
+        preflight, "check_openvla_finetune_contract", lambda *a, **k: _ok("openvla_contract")
+    )
+    monkeypatch.setattr(
+        preflight, "check_openvla_dataset_registry", lambda *a, **k: _ok("dataset_registry")
+    )
+    monkeypatch.setattr(preflight, "check_cloud_budget_enforcement", lambda *a, **k: _ok("budget"))
+    monkeypatch.setattr(
+        preflight, "check_cloud_shutdown_enforcement", lambda *a, **k: _ok("shutdown")
+    )
+
+    _ = preflight.run_preflight(sample_config)
+
+    assert ("sam2", "sam2") in seen_dependencies
+
+
 def test_preflight_pi05_base_reference_fails_when_openvla_like(
     sample_config, monkeypatch, tmp_path
 ):

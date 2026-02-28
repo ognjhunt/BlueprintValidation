@@ -13,6 +13,7 @@ DOWNLOAD_MODELS="${DOWNLOAD_MODELS:-true}"
 INSTALL_DREAMDOJO_EXTRA="${INSTALL_DREAMDOJO_EXTRA:-true}"
 DREAMDOJO_EXTRA="${DREAMDOJO_EXTRA:-cu128}"
 INSTALL_OPENPI_DEPS="${INSTALL_OPENPI_DEPS:-true}"
+INSTALL_COSMOS_RUNTIME_DEPS="${INSTALL_COSMOS_RUNTIME_DEPS:-true}"
 FACILITY_ID="${FACILITY_ID:-}"
 
 if [ -f "$ROOT_DIR/scripts/runtime_env.local" ]; then
@@ -109,6 +110,18 @@ ensure_repo "$ROOT_DIR/data/vendor/DreamDojo" "/opt/DreamDojo" "https://github.c
 ensure_repo "$ROOT_DIR/data/vendor/cosmos-transfer" "/opt/cosmos-transfer" "https://github.com/nvidia-cosmos/cosmos-transfer2.5.git"
 ensure_repo "$ROOT_DIR/data/vendor/openvla-oft" "/opt/openvla-oft" "https://github.com/moojink/openvla-oft.git"
 ensure_repo "$ROOT_DIR/data/vendor/openpi" "/opt/openpi" "https://github.com/Physical-Intelligence/openpi.git"
+
+if [ "$INSTALL_COSMOS_RUNTIME_DEPS" = "true" ]; then
+  echo "Installing Cosmos runtime dependency (sam2)..."
+  pip_install -U "sam2==1.1.0"
+  python - <<'PY'
+import importlib
+importlib.import_module("sam2")
+print("Verified sam2 import.")
+PY
+else
+  echo "Skipping Cosmos runtime dependency install (INSTALL_COSMOS_RUNTIME_DEPS=false)."
+fi
 
 if [ "$INSTALL_OPENPI_DEPS" = "true" ]; then
   OPENPI_REPO="$ROOT_DIR/data/vendor/openpi"

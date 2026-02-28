@@ -49,6 +49,7 @@ RUN uv venv /app/.venv && \
     . /app/.venv/bin/activate && \
     uv sync --frozen --no-dev --extra rlds && \
     uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 && \
+    uv pip install "sam2==1.1.0" && \
     uv pip install setuptools wheel psutil && \
     if [ "$(uname -m)" = "x86_64" ]; then uv pip install flash-attn --no-build-isolation; else echo "Skipping flash-attn on $(uname -m)"; fi && \
     rm -rf /opt/uv_cache /root/.cache/uv /root/.cache/pip
