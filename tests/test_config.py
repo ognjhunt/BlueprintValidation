@@ -25,6 +25,8 @@ def test_config_defaults():
     assert config.render.resolution == (480, 640)
     assert config.render.num_frames == 49
     assert config.render.camera_height_m == 1.2
+    assert config.render.task_scoped_scene_aware is False
+    assert config.render.task_scoped_max_specs == 40
     assert config.finetune.num_epochs == 50
     assert config.finetune.use_lora is True
     assert config.finetune.lora_rank == 32
@@ -70,7 +72,16 @@ def test_config_with_all_sections(tmp_path):
             "a": {"name": "A", "ply_path": "/tmp/a.ply", "task_hints_path": "/tmp/a_tasks.json"},
             "b": {"name": "B", "ply_path": "/tmp/b.ply"},
         },
-        "render": {"resolution": [240, 320], "num_frames": 10},
+        "render": {
+            "resolution": [240, 320],
+            "num_frames": 10,
+            "task_scoped_scene_aware": True,
+            "task_scoped_max_specs": 35,
+            "task_scoped_context_per_target": 1,
+            "task_scoped_overview_specs": 4,
+            "task_scoped_fallback_specs": 10,
+            "task_scoped_profile": "dreamdojo",
+        },
         "robot_composite": {"enabled": True, "urdf_path": "/tmp/arm.urdf"},
         "gemini_polish": {"enabled": True, "model": "gemini-3.1-flash-image-preview"},
         "enrich": {"cosmos_model": "test-model", "num_variants_per_render": 3},
@@ -112,6 +123,9 @@ def test_config_with_all_sections(tmp_path):
     config = load_config(config_path)
     assert len(config.facilities) == 2
     assert config.render.num_frames == 10
+    assert config.render.task_scoped_scene_aware is True
+    assert config.render.task_scoped_max_specs == 35
+    assert config.render.task_scoped_context_per_target == 1
     assert config.enrich.num_variants_per_render == 3
     assert config.finetune.num_epochs == 10
     assert config.finetune.lora_rank == 16

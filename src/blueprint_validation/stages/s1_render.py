@@ -4,16 +4,19 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+import re
 from typing import Dict, List, Optional
 
 import numpy as np
 
 from ..common import StageResult, get_logger, write_json
 from ..config import CameraPathSpec, FacilityConfig, ValidationConfig
+from ..evaluation.task_hints import tasks_from_task_hints
 from ..rendering.camera_paths import generate_path_from_spec, save_path_to_json
 from ..rendering.gsplat_renderer import render_video
 from ..rendering.ply_loader import load_splat
 from ..rendering.scene_geometry import (
+    OrientedBoundingBox,
     OccupancyGrid,
     auto_populate_manipulation_zones,
     build_occupancy_grid,
@@ -72,9 +75,36 @@ class RenderStage(PipelineStage):
             if obbs:
                 if scene_T is not None:
                     obbs = transform_obbs(obbs, scene_T)
-                extra_specs = generate_scene_aware_specs(obbs, occupancy)
+                selected_obbs = obbs
+                if config.render.task_scoped_scene_aware:
+                    task_pool = _build_task_prompt_pool(
+                        config=config,
+                        facility=facility,
+                        profile=config.render.task_scoped_profile,
+                    )
+                    selected_obbs, scoped_stats = _select_task_scoped_obbs(
+                        obbs=obbs,
+                        tasks=task_pool,
+                        max_specs=max(1, int(config.render.task_scoped_max_specs)),
+                        context_per_target=max(0, int(config.render.task_scoped_context_per_target)),
+                        overview_specs=max(0, int(config.render.task_scoped_overview_specs)),
+                        fallback_specs=max(1, int(config.render.task_scoped_fallback_specs)),
+                    )
+                    logger.info(
+                        "Task-scoped scene-aware selection: %d/%d OBBs "
+                        "(targets=%d context=%d overview=%d fallback=%d)",
+                        len(selected_obbs),
+                        len(obbs),
+                        scoped_stats.get("targets", 0),
+                        scoped_stats.get("context", 0),
+                        scoped_stats.get("overview", 0),
+                        scoped_stats.get("fallback", 0),
+                    )
+                extra_specs = generate_scene_aware_specs(selected_obbs, occupancy)
+                if config.render.task_scoped_scene_aware:
+                    extra_specs = [replace(spec, source_tag="task_scoped") for spec in extra_specs]
                 facility.manipulation_zones = auto_populate_manipulation_zones(
-                    facility.manipulation_zones, obbs
+                    facility.manipulation_zones, selected_obbs
                 )
             return extra_specs, occupancy
 
@@ -259,27 +289,27 @@ class RenderStage(PipelineStage):
             save_path_to_json(poses, render_dir / f"{clip_name}_camera_path.json")
 
             # Render (GPU)
-                output = render_video(
-                    splat=splat,
-                    poses=poses,
-                    output_dir=render_dir,
-                    clip_name=clip_name,
-                    fps=fps,
-                )
-                initial_camera = _camera_pose_metadata(poses[0]) if poses else None
-                manifest_entries.append({
-                    "clip_name": clip_name,
-                    "path_type": clip_data["path_type"],
-                    "clip_index": clip_data["clip_index"],
-                    "num_frames": len(poses),
+            output = render_video(
+                splat=splat,
+                poses=poses,
+                output_dir=render_dir,
+                clip_name=clip_name,
+                fps=fps,
+            )
+            initial_camera = _camera_pose_metadata(poses[0]) if poses else None
+            manifest_entries.append({
+                "clip_name": clip_name,
+                "path_type": clip_data["path_type"],
+                "clip_index": clip_data["clip_index"],
+                "num_frames": len(poses),
                 "resolution": list(resolution),
-                    "fps": fps,
-                    "video_path": str(output.video_path),
-                    "depth_video_path": str(output.depth_video_path),
-                    "camera_path": str(render_dir / f"{clip_name}_camera_path.json"),
-                    "initial_camera": initial_camera,
-                    "path_context": {"source": "warmup_cache"},
-                })
+                "fps": fps,
+                "video_path": str(output.video_path),
+                "depth_video_path": str(output.depth_video_path),
+                "camera_path": str(render_dir / f"{clip_name}_camera_path.json"),
+                "initial_camera": initial_camera,
+                "path_context": {"source": "warmup_cache"},
+            })
         return manifest_entries
 
     def _generate_and_render(
@@ -302,7 +332,12 @@ class RenderStage(PipelineStage):
         clip_index = 0
 
         for path_spec in all_path_specs:
-            for clip_num in range(config.render.num_clips_per_path):
+            clip_repeats = int(config.render.num_clips_per_path)
+            # Task-scoped paths are already object-specific; render once to control cost.
+            if str(getattr(path_spec, "source_tag", "")).strip().lower() == "task_scoped":
+                clip_repeats = 1
+            clip_repeats = max(1, clip_repeats)
+            for clip_num in range(clip_repeats):
                 # Add random offset for variety between clips
                 rng = np.random.default_rng(seed=clip_index * 42)
                 offset = rng.uniform(-1.0, 1.0, size=3)
@@ -406,6 +441,7 @@ def _path_context_from_spec(path_spec: CameraPathSpec) -> dict:
     """Serialize minimal path-spec context into render manifest entries."""
     context = {
         "type": path_spec.type,
+        "source_tag": path_spec.source_tag or "default",
         "height_override_m": (
             float(path_spec.height_override_m)
             if path_spec.height_override_m is not None
@@ -427,6 +463,242 @@ def _path_context_from_spec(path_spec: CameraPathSpec) -> dict:
     if path_spec.type == "manipulation":
         context["arc_radius_m"] = float(path_spec.arc_radius_m)
     return context
+
+
+def _build_task_prompt_pool(
+    config: ValidationConfig,
+    facility: FacilityConfig,
+    profile: str,
+) -> List[str]:
+    tasks: List[str] = []
+    for t in list(config.eval_policy.tasks or []) + list(config.eval_policy.manipulation_tasks or []):
+        task = str(t).strip()
+        if task:
+            tasks.append(task)
+
+    if facility.task_hints_path is not None and facility.task_hints_path.exists():
+        try:
+            for task in tasks_from_task_hints(facility.task_hints_path, profile=profile):
+                t = str(task).strip()
+                if t:
+                    tasks.append(t)
+        except Exception as exc:
+            logger.warning(
+                "Failed to load task hints for task-scoped scene-aware selection: %s",
+                exc,
+            )
+
+    return _dedupe_tasks(tasks)
+
+
+def _dedupe_tasks(tasks: List[str]) -> List[str]:
+    seen = set()
+    out: List[str] = []
+    for task in tasks:
+        key = task.lower().strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(task.strip())
+    return out
+
+
+def _select_task_scoped_obbs(
+    *,
+    obbs: List[OrientedBoundingBox],
+    tasks: List[str],
+    max_specs: int,
+    context_per_target: int,
+    overview_specs: int,
+    fallback_specs: int,
+) -> tuple[List[OrientedBoundingBox], Dict[str, int]]:
+    stats = {"targets": 0, "context": 0, "overview": 0, "fallback": 0}
+    if not obbs or max_specs <= 0:
+        return [], stats
+
+    max_specs = max(1, int(max_specs))
+    fallback_specs = max(1, int(fallback_specs))
+    by_instance, by_label = _build_obb_lookup(obbs)
+
+    ordered_indices: List[int] = []
+    role_by_index: Dict[int, str] = {}
+    selected = set()
+
+    def add_idx(idx: int, role: str) -> None:
+        if idx in selected:
+            return
+        selected.add(idx)
+        ordered_indices.append(idx)
+        role_by_index[idx] = role
+
+    # 1) Primary task targets from explicit prompts.
+    for task in tasks:
+        idx = _resolve_task_target_index(task, by_instance, by_label)
+        if idx is not None:
+            add_idx(idx, "targets")
+
+    # 2) Fallback: if task parsing finds nothing, keep a small useful subset.
+    if not ordered_indices:
+        for idx in _fallback_obb_indices(
+            obbs,
+            limit=min(max_specs, fallback_specs),
+        ):
+            add_idx(idx, "fallback")
+        selected_obbs = [obbs[i] for i in ordered_indices[:max_specs]]
+        stats["fallback"] = len(selected_obbs)
+        return selected_obbs, stats
+
+    # 3) Add local context objects near each primary target.
+    primary_indices = list(ordered_indices)
+    for pidx in primary_indices:
+        if len(ordered_indices) >= max_specs:
+            break
+        pcenter = obbs[pidx].center
+        candidates = []
+        for idx, obb in enumerate(obbs):
+            if idx in selected:
+                continue
+            dist = float(np.linalg.norm(obb.center - pcenter))
+            candidates.append((dist, idx))
+        candidates.sort(key=lambda x: (x[0], x[1]))
+        for _, idx in candidates[: max(0, int(context_per_target))]:
+            add_idx(idx, "context")
+            if len(ordered_indices) >= max_specs:
+                break
+
+    # 4) Add a few overview/navigation anchors for broader coverage.
+    if overview_specs > 0 and len(ordered_indices) < max_specs:
+        anchors = [obbs[idx].center for idx in ordered_indices]
+        for _ in range(int(overview_specs)):
+            if len(ordered_indices) >= max_specs:
+                break
+            remaining = [idx for idx in range(len(obbs)) if idx not in selected]
+            if not remaining:
+                break
+            best_idx = None
+            best_score = -1e9
+            for idx in remaining:
+                obb = obbs[idx]
+                if anchors:
+                    dmin = min(float(np.linalg.norm(obb.center - a)) for a in anchors)
+                else:
+                    dmin = 0.0
+                cat_bonus = {
+                    "navigation": 0.25,
+                    "articulation": 0.15,
+                    "manipulation": 0.0,
+                }.get(str(obb.category).strip().lower(), 0.0)
+                score = dmin + cat_bonus
+                if score > best_score:
+                    best_score = score
+                    best_idx = idx
+            if best_idx is None:
+                break
+            add_idx(best_idx, "overview")
+            anchors.append(obbs[best_idx].center)
+
+    final_indices = ordered_indices[:max_specs]
+    selected_obbs = [obbs[i] for i in final_indices]
+    for idx in final_indices:
+        role = role_by_index.get(idx, "")
+        if role in stats:
+            stats[role] += 1
+    return selected_obbs, stats
+
+
+def _build_obb_lookup(
+    obbs: List[OrientedBoundingBox],
+) -> tuple[Dict[str, int], Dict[str, List[int]]]:
+    by_instance: Dict[str, int] = {}
+    by_label: Dict[str, List[int]] = {}
+    for idx, obb in enumerate(obbs):
+        iid = str(obb.instance_id).strip()
+        if iid and iid not in by_instance:
+            by_instance[iid] = idx
+        lkey = _label_key(obb.label)
+        by_label.setdefault(lkey, []).append(idx)
+    return by_instance, by_label
+
+
+def _label_key(label: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(label).strip().lower()).strip("_")
+
+
+def _resolve_task_target_index(
+    task: str,
+    by_instance: Dict[str, int],
+    by_label: Dict[str, List[int]],
+) -> Optional[int]:
+    lowered = str(task).strip().lower()
+    if not lowered:
+        return None
+
+    # explicit object token near action verbs (e.g. "pick up bowl_101 ...")
+    token_match = re.search(
+        r"(?:pick up|open and close|turn on|turn off|toggle|approach|go to|move toward|navigate to)\s+([a-z0-9_]+)",
+        lowered,
+    )
+    if token_match:
+        resolved = _resolve_token_to_index(token_match.group(1), by_instance, by_label)
+        if resolved is not None:
+            return resolved
+
+    # any explicit label_123 token anywhere in the prompt
+    explicit_match = re.search(r"\b([a-z][a-z0-9_]*_[0-9]{1,})\b", lowered)
+    if explicit_match:
+        resolved = _resolve_token_to_index(explicit_match.group(1), by_instance, by_label)
+        if resolved is not None:
+            return resolved
+
+    # navigation/object phrase with spaces
+    nav_match = re.search(r"(?:navigate to|approach|go to|move toward)\s+(?:the\s+)?([a-z0-9_ ]+)", lowered)
+    if nav_match:
+        label_key = _label_key(nav_match.group(1))
+        options = by_label.get(label_key, [])
+        if options:
+            return options[0]
+    return None
+
+
+def _resolve_token_to_index(
+    token: str,
+    by_instance: Dict[str, int],
+    by_label: Dict[str, List[int]],
+) -> Optional[int]:
+    token = str(token).strip().strip("_")
+    if not token:
+        return None
+
+    if token in by_instance:
+        return by_instance[token]
+
+    m = re.match(r"(.+?)_([0-9]+)$", token)
+    if m:
+        instance_id = m.group(2)
+        if instance_id in by_instance:
+            return by_instance[instance_id]
+        options = by_label.get(_label_key(m.group(1)), [])
+        if options:
+            return options[0]
+
+    options = by_label.get(_label_key(token), [])
+    if options:
+        return options[0]
+    return None
+
+
+def _fallback_obb_indices(obbs: List[OrientedBoundingBox], limit: int) -> List[int]:
+    def key_fn(item: tuple[int, OrientedBoundingBox]) -> tuple:
+        idx, obb = item
+        cat_pri = {
+            "manipulation": 0,
+            "articulation": 1,
+            "navigation": 2,
+        }.get(str(obb.category).strip().lower(), 3)
+        return (cat_pri, -float(obb.confidence), _label_key(obb.label), idx)
+
+    ranked = sorted(enumerate(obbs), key=key_fn)
+    return [idx for idx, _ in ranked[: max(1, int(limit))]]
 
 
 def _has_cuda() -> bool:

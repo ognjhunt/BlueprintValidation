@@ -82,16 +82,23 @@ blueprint-validate eval-crosssite
 blueprint-validate report
 ```
 
-## Cloud GPU (RunPod/Lambda)
+## Cloud GPU (Provider-Agnostic)
 
 ```bash
 # Build Docker image
 docker build -f docker/runpod.Dockerfile -t blueprint-validation:latest .
 
-# On RunPod: SSH in and run
-bash /app/scripts/runpod_launch.sh
+# On any GPU provider: SSH in and run
+bash /app/scripts/cloud_launch.sh
 blueprint-validate --config /app/configs/example_validation.yaml run-all
 ```
+
+Notes:
+- `cloud_launch.sh` defaults to model storage at `/models/checkpoints`.
+- You can skip checkpoint downloads if your volume is pre-seeded:
+  - `DOWNLOAD_MODELS=false bash /app/scripts/cloud_launch.sh`
+- DreamDojo CUDA extra install defaults to `cu128`:
+  - `DREAMDOJO_EXTRA=cu128 bash /app/scripts/cloud_launch.sh`
 
 ### Docker Snapshot
 

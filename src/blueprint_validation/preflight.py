@@ -98,16 +98,20 @@ def check_hf_auth() -> PreflightCheck:
         return PreflightCheck(name="hf_auth", passed=True, detail="HF_TOKEN is set")
 
     hf_cli = shutil.which("huggingface-cli")
-    if not hf_cli:
+    hf_new = shutil.which("hf")
+    if not hf_cli and not hf_new:
         return PreflightCheck(
             name="hf_auth",
             passed=False,
-            detail="huggingface-cli not found and HF_TOKEN not set",
+            detail="hf/huggingface-cli not found and HF_TOKEN not set",
         )
 
+    whoami_cmd = (
+        [hf_cli, "whoami"] if hf_cli else [hf_new, "auth", "whoami"]  # type: ignore[list-item]
+    )
     try:
         proc = subprocess.run(
-            [hf_cli, "whoami"],
+            whoami_cmd,
             capture_output=True,
             text=True,
             timeout=10,

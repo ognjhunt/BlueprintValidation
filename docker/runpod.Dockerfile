@@ -52,6 +52,11 @@ RUN git clone --depth 1 https://github.com/NVIDIA/DreamDojo.git /opt/DreamDojo &
 RUN if [ "$(uname -m)" = "x86_64" ]; then . /app/.venv/bin/activate && uv pip install -e /opt/DreamDojo; else echo "Skipping DreamDojo editable install on $(uname -m)"; fi
 RUN git clone --depth 1 https://github.com/moojink/openvla-oft.git /opt/openvla-oft && \
     rm -rf /opt/openvla-oft/.git
+RUN mkdir -p /app/data/vendor && \
+    ln -s /opt/DreamDojo /app/data/vendor/DreamDojo && \
+    ln -s /opt/cosmos-transfer /app/data/vendor/cosmos-transfer && \
+    ln -s /opt/openvla-oft /app/data/vendor/openvla-oft && \
+    mkdir -p /models/checkpoints
 
 ENV DREAMDOJO_ROOT=/opt/DreamDojo
 ENV COSMOS_ROOT=/opt/cosmos-transfer
@@ -59,9 +64,9 @@ ENV OPENVLA_ROOT=/opt/openvla-oft
 
 EXPOSE 22
 
-# Hint: mount warmup cache + model weights at runtime:
-#   -v /host/data/outputs:/app/data/outputs  (warmup cache)
-#   -v /host/data/checkpoints:/app/data/checkpoints  (model weights)
+# Hint: mount outputs + checkpoints at runtime:
+#   -v /host/data/outputs:/app/data/outputs
+#   -v /host/models:/models
 # Then on first SSH: blueprint-validate warmup
 
 # RunPod entrypoint: SSH daemon + keep alive

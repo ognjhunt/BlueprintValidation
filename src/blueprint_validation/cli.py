@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import shlex
 import sys
 from pathlib import Path
 from typing import Optional
@@ -12,6 +14,46 @@ from .common import get_logger, setup_logging
 from .config import load_config
 
 logger = get_logger("cli")
+
+
+def _load_local_env_file(path: Path) -> None:
+    """Load simple KEY=VALUE or export KEY=VALUE entries if env is currently unset."""
+    if not path.exists():
+        return
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        try:
+            parsed = shlex.split(value.strip())
+            os.environ[key] = parsed[0] if parsed else ""
+        except ValueError:
+            os.environ[key] = value.strip().strip("'").strip('"')
+
+
+def _load_local_env_defaults() -> None:
+    """Load repo-local env defaults for non-interactive runs (without overriding process env)."""
+    cwd = Path.cwd()
+    candidates = (
+        cwd / "scripts" / "runtime_env.local",
+        cwd / ".env.local",
+        cwd / ".env",
+    )
+    for candidate in candidates:
+        _load_local_env_file(candidate)
 
 
 @click.group()
@@ -34,6 +76,7 @@ logger = get_logger("cli")
 def cli(ctx: click.Context, config_path: str, work_dir: str, verbose: bool, dry_run: bool) -> None:
     """BlueprintValidation: Gaussian splat to robot world model validation pipeline."""
     setup_logging(verbose)
+    _load_local_env_defaults()
     ctx.ensure_object(dict)
     ctx.obj["config"] = load_config(Path(config_path))
     ctx.obj["work_dir"] = Path(work_dir)

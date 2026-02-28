@@ -69,8 +69,6 @@ def build_task_start_assignments(
 
 def load_initial_frames_for_assignments(assignments: List[dict]) -> Dict[int, np.ndarray]:
     """Decode initial RGB frame for each unique clip referenced by assignments."""
-    import cv2
-
     frames: Dict[int, np.ndarray] = {}
     for item in assignments:
         clip_index = int(item.get("clip_index", -1))
@@ -82,13 +80,40 @@ def load_initial_frames_for_assignments(assignments: List[dict]) -> Dict[int, np
         video_path = Path(video_path_raw)
         if not video_path.exists():
             continue
+        frame = _load_first_frame(video_path)
+        if frame is None:
+            continue
+        frames[clip_index] = frame
+    return frames
+
+
+def _load_first_frame(video_path: Path) -> Optional[np.ndarray]:
+    # Prefer OpenCV when available (fast), but fall back to imageio to keep
+    # evaluation functional in minimal test/runtime environments.
+    try:
+        import cv2
+
         cap = cv2.VideoCapture(str(video_path))
         ok, frame = cap.read()
         cap.release()
-        if not ok:
-            continue
-        frames[clip_index] = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    return frames
+        if ok and frame is not None:
+            return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    except Exception:
+        pass
+
+    try:
+        import imageio.v2 as imageio
+
+        reader = imageio.get_reader(str(video_path))
+        try:
+            frame = reader.get_data(0)
+        finally:
+            reader.close()
+        if frame is not None:
+            return np.asarray(frame)
+    except Exception:
+        return None
+    return None
 
 
 def load_shared_task_start_manifest(path: Path) -> Optional[dict]:
@@ -315,4 +340,3 @@ def _as_vec3(value) -> Optional[np.ndarray]:
         return np.asarray([float(v) for v in value], dtype=np.float64)
     except (TypeError, ValueError):
         return None
-

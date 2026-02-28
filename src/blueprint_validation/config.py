@@ -55,6 +55,8 @@ class CameraPathSpec:
     # manipulation arc params
     approach_point: Optional[List[float]] = None
     arc_radius_m: float = 0.4
+    # internal metadata: where this spec came from
+    source_tag: Optional[str] = None
 
 
 @dataclass
@@ -75,6 +77,13 @@ class RenderConfig:
     vlm_fallback: bool = True
     vlm_fallback_model: str = "gemini-3-flash-preview"
     vlm_fallback_num_views: int = 4
+    # Task-scoped scene-aware camera generation (budget mode)
+    task_scoped_scene_aware: bool = False
+    task_scoped_max_specs: int = 40
+    task_scoped_context_per_target: int = 2
+    task_scoped_overview_specs: int = 6
+    task_scoped_fallback_specs: int = 16
+    task_scoped_profile: str = "dreamdojo"
 
 
 @dataclass
@@ -429,6 +438,7 @@ def _parse_camera_paths(raw_list: List[Dict[str, Any]], base_dir: Path) -> List[
                 look_down_override_deg=raw.get("look_down_override_deg"),
                 approach_point=raw.get("approach_point"),
                 arc_radius_m=raw.get("arc_radius_m", 0.4),
+                source_tag=raw.get("source_tag"),
             )
         )
     return paths
@@ -478,6 +488,12 @@ def load_config(path: Path) -> ValidationConfig:
             vlm_fallback=r.get("vlm_fallback", True),
             vlm_fallback_model=r.get("vlm_fallback_model", "gemini-3-flash-preview"),
             vlm_fallback_num_views=int(r.get("vlm_fallback_num_views", 4)),
+            task_scoped_scene_aware=bool(r.get("task_scoped_scene_aware", False)),
+            task_scoped_max_specs=int(r.get("task_scoped_max_specs", 40)),
+            task_scoped_context_per_target=int(r.get("task_scoped_context_per_target", 2)),
+            task_scoped_overview_specs=int(r.get("task_scoped_overview_specs", 6)),
+            task_scoped_fallback_specs=int(r.get("task_scoped_fallback_specs", 16)),
+            task_scoped_profile=str(r.get("task_scoped_profile", "dreamdojo")),
         )
 
     # Enrich

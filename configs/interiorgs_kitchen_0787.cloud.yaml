@@ -1,35 +1,16 @@
 schema_version: v1
-project_name: "InteriorGS Kitchen 0787 (Canonical Default)"
-
-# ---- InteriorGS Kitchen Facility ----
-#
-# Canonical default scene for budgeted runs:
-#
-#   0787_841244 — 6 appliances: dishwasher, fridge, kettle, microwave, oven, rice cooker (279 objects)
-#
-# Download PLY files before running (requires HF token with dataset access):
-#
-#   huggingface-cli download spatialverse/InteriorGS \
-#       0787_841244/3dgs_compressed.ply \
-#       --repo-type dataset --local-dir ../data/interiorgs
-#
-# S0 bootstrap auto-detects labels.json alongside the PLY and skips VLM.
-# Download labels.json too:
-#
-#   huggingface-cli download spatialverse/InteriorGS \
-#       0787_841244/labels.json \
-#       0787_841244/structure.json \
-#       --repo-type dataset --local-dir ../data/interiorgs
+project_name: "InteriorGS Kitchen 0787 (Cloud Default)"
 
 facilities:
   kitchen_0787:
     name: "Kitchen Scene 0787 (InteriorGS)"
-    ply_path: ../data/interiorgs/0787_841244/3dgs_compressed.ply
-    task_hints_path: ../data/interiorgs/0787_841244/task_targets.synthetic.json
+    ply_path: /app/data/interiorgs/0787_841244/3dgs_compressed.ply
+    task_hints_path: /app/data/interiorgs/0787_841244/task_targets.synthetic.json
     description: >
       Compact apartment interior with kitchen nook. Contains dishwasher,
       fridge, kettle, microwave, oven, and rice cooker. Dense bowls and
-      glassware. Smallest scene (279 objects) — cleanest for initial testing.
+      glassware. Smallest of the selected three scenes and best for budgeted
+      before/after comparisons.
     landmarks:
       - "kitchen appliances and countertop"
       - "dining table with glassware"
@@ -38,7 +19,6 @@ facilities:
     floor_height_m: 0.0
     ceiling_height_m: 2.8
 
-# ---- Stage 1: Render ----
 render:
   resolution: [480, 640]
   fps: 10
@@ -70,7 +50,6 @@ render:
   vlm_fallback_model: gemini-3-flash-preview
   vlm_fallback_num_views: 4
 
-# ---- Stage 1b: Robot arm compositing ----
 robot_composite:
   enabled: true
   urdf_path: ./robots/sample_6dof_arm.urdf
@@ -84,7 +63,6 @@ robot_composite:
   line_color_bgr: [50, 180, 255]
   line_thickness: 3
 
-# ---- Stage 1c: Gemini image polish ----
 gemini_polish:
   enabled: false
   model: gemini-3.1-flash-image-preview
@@ -92,7 +70,6 @@ gemini_polish:
   prompt: "Preserve robot arm pose and scene geometry exactly. Improve photorealism and blending quality."
   sample_every_n_frames: 2
 
-# ---- Stage 1d: RoboSplat augmentation ----
 robosplat:
   enabled: true
   backend: auto
@@ -113,21 +90,19 @@ robosplat:
   vendor_repo_path: ../vendor/robosplat
   vendor_ref: ""
 
-# ---- Stage 2: Enrich ----
 enrich:
   cosmos_model: nvidia/Cosmos-Transfer2.5-2B
-  cosmos_checkpoint: ../data/checkpoints/cosmos-transfer-2.5-2b/
-  cosmos_repo: ../data/vendor/cosmos-transfer
+  cosmos_checkpoint: /models/checkpoints/cosmos-transfer-2.5-2b/
+  cosmos_repo: /app/data/vendor/cosmos-transfer
   controlnet_inputs: [rgb, depth]
   num_variants_per_render: 5
   guidance: 7.0
   dynamic_variants: true
   dynamic_variants_model: gemini-3-flash-preview
 
-# ---- Stage 3: Fine-tune ----
 finetune:
-  dreamdojo_repo: ../data/vendor/DreamDojo
-  dreamdojo_checkpoint: ../data/checkpoints/DreamDojo/2B_pretrain/
+  dreamdojo_repo: /app/data/vendor/DreamDojo
+  dreamdojo_checkpoint: /models/checkpoints/DreamDojo/2B_pretrain/
   model_size: 2B
   use_lora: true
   lora_rank: 32
@@ -141,10 +116,9 @@ finetune:
   save_every_n_epochs: 10
   max_training_hours: 72
 
-# ---- Stage 4: OpenVLA-OFT Policy Eval ----
 eval_policy:
   openvla_model: openvla/openvla-7b
-  openvla_checkpoint: ../data/checkpoints/openvla-7b/
+  openvla_checkpoint: /models/checkpoints/openvla-7b/
   unnorm_key: bridge_orig
   num_rollouts: 50
   max_steps_per_rollout: 100
@@ -166,12 +140,11 @@ eval_policy:
     api_key_env: GOOGLE_GENAI_API_KEY
     enable_agentic_vision: true
 
-# ---- Stage 3b: OpenVLA-OFT policy fine-tune ----
 policy_finetune:
   enabled: true
-  openvla_repo: ../data/vendor/openvla-oft
+  openvla_repo: /app/data/vendor/openvla-oft
   finetune_script: vla-scripts/finetune.py
-  data_root_dir: ../data/openvla_datasets
+  data_root_dir: /app/data/openvla_datasets
   dataset_name: bridge_orig
   recipe: oft
   action_chunk_size: 8
@@ -187,7 +160,6 @@ policy_finetune:
   image_aug: true
   nproc_per_node: 1
 
-# ---- Stage 3c: Policy RL loop ----
 policy_rl_loop:
   enabled: false
   iterations: 2
@@ -204,11 +176,9 @@ policy_rl_loop:
   world_model_refresh_epochs: 3
   world_model_refresh_learning_rate: 5.0e-5
 
-# ---- Policy adapter ----
 policy_adapter:
   name: openvla_oft
 
-# ---- Stage 4b: Rollout dataset export ----
 rollout_dataset:
   enabled: true
   seed: 17
@@ -220,9 +190,8 @@ rollout_dataset:
   require_consistent_action_dim: true
   baseline_dataset_name: blueprint_baseline_generated
   adapted_dataset_name: blueprint_site_generated
-  export_dir: ../data/outputs/policy_datasets
+  export_dir: /app/data/outputs/policy_datasets
 
-# ---- Stage 4d: Trained policy A/B comparison ----
 policy_compare:
   enabled: false
   heldout_num_rollouts: 20
@@ -237,24 +206,20 @@ policy_compare:
   require_lift_for_manipulation: true
   require_place_for_manipulation: true
 
-# ---- Stage 5: Visual Fidelity ----
 eval_visual:
   metrics: [psnr, ssim, lpips]
   lpips_backbone: alex
 
-# ---- Stage 6: Spatial Accuracy ----
 eval_spatial:
   num_sample_frames: 20
   vlm_model: gemini-3-flash-preview
 
-# ---- Stage 7: Cross-Site ----
 eval_crosssite:
   num_clips_per_model: 30
   vlm_model: gemini-3-flash-preview
 
-# ---- Hardware / Cloud ----
 cloud:
-  provider: runpod
+  provider: generic
   gpu_type: H100
   num_gpus: 1
   max_cost_usd: 500
