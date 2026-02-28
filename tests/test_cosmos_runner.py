@@ -48,3 +48,54 @@ def test_resolve_cosmos_repo(tmp_path):
 
     resolved = resolve_cosmos_repo(repo)
     assert resolved == repo
+
+
+def test_run_cosmos_inference_sets_repo_pythonpath(tmp_path, monkeypatch):
+    from blueprint_validation.enrichment.cosmos_runner import run_cosmos_inference
+
+    repo = tmp_path / "cosmos"
+    script = repo / "examples" / "inference.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("print('ok')\n", encoding="utf-8")
+
+    expected_out = tmp_path / "out" / "clip_variant.mp4"
+    expected_out.parent.mkdir(parents=True, exist_ok=True)
+    expected_out.write_bytes(b"x")
+
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        seen["cwd"] = kwargs.get("cwd")
+        seen["env"] = kwargs.get("env", {})
+
+        class _Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _Result()
+
+    monkeypatch.setattr(
+        "blueprint_validation.enrichment.cosmos_runner.subprocess.run",
+        fake_run,
+    )
+
+    # Avoid filesystem-dependent probe logic in this unit test.
+    monkeypatch.setattr(
+        "blueprint_validation.enrichment.cosmos_runner._resolve_generated_video",
+        lambda path: expected_out,
+    )
+
+    generated = run_cosmos_inference(
+        spec={"name": "clip_variant", "prompt": "prompt", "video_path": "/tmp/in.mp4"},
+        expected_output_path=expected_out,
+        cosmos_checkpoint=tmp_path / "ckpt",
+        cosmos_repo=repo,
+    )
+
+    assert generated == expected_out
+    assert seen["cwd"] == str(repo)
+    assert seen["cmd"][:2] == ["python", "examples/inference.py"]
+    pythonpath = seen["env"].get("PYTHONPATH", "")
+    assert pythonpath.startswith(str(repo))

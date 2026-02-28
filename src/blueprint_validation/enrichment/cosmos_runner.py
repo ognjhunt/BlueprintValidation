@@ -161,12 +161,21 @@ def run_cosmos_inference(
         output_dir=expected_output_path.parent,
     )
     logger.info("Running Cosmos inference (%s): %s", cosmos_model, " ".join(cmd))
+    env = os.environ.copy()
+    repo_root_str = str(repo_root)
+    current_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        repo_root_str
+        if not current_pythonpath
+        else f"{repo_root_str}{os.pathsep}{current_pythonpath}"
+    )
 
     result = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
         cwd=str(repo_root),
+        env=env,
         timeout=1800,
     )
 
