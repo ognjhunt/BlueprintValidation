@@ -67,3 +67,12 @@ def test_build_dreamdojo_launch_command(tmp_path):
     assert f"dataloader_train.dataset.dataset_path={dataset_dir}" in text
     assert f"checkpoint.load_path={cfg.dreamdojo_checkpoint}" in text
     assert "model.config.use_lora=true" in text
+    assert 'model.config.lora_target_modules=["q_proj","v_proj"]' in text
+
+
+def test_format_hydra_string_list():
+    from blueprint_validation.training.dreamdojo_finetune import _format_hydra_string_list
+
+    assert _format_hydra_string_list("q_proj,v_proj") == '["q_proj","v_proj"]'
+    assert _format_hydra_string_list(" q_proj , v_proj ") == '["q_proj","v_proj"]'
+    assert _format_hydra_string_list('["q_proj","v_proj"]') == '["q_proj","v_proj"]'
