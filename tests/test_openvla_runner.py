@@ -186,3 +186,24 @@ def setup(_args):
         device="cpu",
     )
     assert hasattr(model, "predict_next_frame")
+
+
+def test_resolve_world_model_checkpoint_path_finds_recursive_iter(tmp_path):
+    from blueprint_validation.evaluation.openvla_runner import _resolve_world_model_checkpoint_path
+
+    root = tmp_path / "lora_weights"
+    model_dir = (
+        root
+        / "blueprint_validation"
+        / "kitchen_0787"
+        / "run_x"
+        / "checkpoints"
+        / "iter_000000030"
+        / "model"
+    )
+    model_dir.mkdir(parents=True)
+    (model_dir / ".metadata").write_text("meta")
+
+    resolved = _resolve_world_model_checkpoint_path(root)
+    assert resolved.name == "iter_000000030"
+    assert (resolved / "model" / ".metadata").exists()

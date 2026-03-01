@@ -129,11 +129,24 @@ def _resolve_world_model_checkpoint_path(checkpoint_path: Path) -> Path:
         )
         candidates.extend(iter_dirs)
 
+    def _maybe_add_recursive_iters(root: Path) -> None:
+        if not root.exists():
+            return
+        iter_dirs = []
+        for p in root.rglob("iter_*"):
+            if not p.is_dir():
+                continue
+            if (p / "model" / ".metadata").exists():
+                iter_dirs.append(p)
+        iter_dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        candidates.extend(iter_dirs)
+
     _maybe_add_latest(checkpoint_path)
     _maybe_add_latest(checkpoint_path / "2B_pretrain")
     _maybe_add_iters(checkpoint_path)
     _maybe_add_iters(checkpoint_path / "2B_pretrain")
     _maybe_add_iters(checkpoint_path / "checkpoints")
+    _maybe_add_recursive_iters(checkpoint_path)
 
     return candidates[0] if candidates else checkpoint_path
 
