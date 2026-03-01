@@ -73,6 +73,7 @@ def test_build_dreamdojo_launch_command(tmp_path):
     assert f"checkpoint.load_path={cfg.dreamdojo_checkpoint}" in text
     assert "model.config.use_lora=true" in text
     assert 'model.config.lora_target_modules="q_proj,v_proj"' in text
+    assert "~dataloader_train.dataloaders" in text
 
 
 def test_quote_hydra_string():

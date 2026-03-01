@@ -152,6 +152,7 @@ def build_dreamdojo_launch_command(
         f"model.config.lora_rank={config.lora_rank}",
         f"model.config.lora_alpha={config.lora_alpha}",
         f"model.config.lora_target_modules={_quote_hydra_string(config.lora_target_modules)}",
+        "~dataloader_train.dataloaders",
     ]
     return cmd
 
