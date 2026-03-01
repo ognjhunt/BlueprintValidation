@@ -134,6 +134,13 @@ class EnrichConfig:
     dynamic_variants_model: str = "gemini-3-flash-preview"
     # If false, Stage 2 fails when dynamic variant generation is unavailable.
     allow_dynamic_variant_fallback: bool = True
+    # Optional explicit context frame index used for Cosmos image context anchoring.
+    # If unset, Stage 2 uses a deterministic quarter-way frame for each clip.
+    context_frame_index: Optional[int] = None
+    # Acceptance gate for control-faithful enrichment. Disabled when <= 0.
+    min_frame0_ssim: float = 0.0
+    # Delete generated output files rejected by the frame-0 SSIM gate.
+    delete_rejected_outputs: bool = False
 
 
 @dataclass
@@ -587,6 +594,11 @@ def load_config(path: Path) -> ValidationConfig:
             dynamic_variants=e.get("dynamic_variants", True),
             dynamic_variants_model=e.get("dynamic_variants_model", "gemini-3-flash-preview"),
             allow_dynamic_variant_fallback=bool(e.get("allow_dynamic_variant_fallback", True)),
+            context_frame_index=(
+                int(e["context_frame_index"]) if e.get("context_frame_index") is not None else None
+            ),
+            min_frame0_ssim=float(e.get("min_frame0_ssim", 0.0)),
+            delete_rejected_outputs=bool(e.get("delete_rejected_outputs", False)),
         )
 
     if "robot_composite" in raw:

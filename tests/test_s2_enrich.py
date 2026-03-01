@@ -27,6 +27,22 @@ def _write_dummy_video(path: Path, frames: int = 4) -> None:
     writer.release()
 
 
+def _write_solid_video(path: Path, value: int, frames: int = 4) -> None:
+    cv2 = pytest.importorskip("cv2")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    h, w = 48, 64
+    writer = cv2.VideoWriter(
+        str(path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        5,
+        (w, h),
+    )
+    frame = np.full((h, w, 3), value, dtype=np.uint8)
+    for _ in range(frames):
+        writer.write(frame)
+    writer.release()
+
+
 def test_s2_enrich_reads_robosplat_manifest(sample_config, tmp_path, monkeypatch):
     from blueprint_validation.common import read_json, write_json
     from blueprint_validation.config import VariantSpec
@@ -242,3 +258,62 @@ def test_scene_specific_depth_control_passthrough_for_other_facilities(tmp_path)
         enrich_dir=tmp_path / "enriched",
     )
     assert got == depth_path
+
+
+def test_s2_enrich_anchor_gate_rejects_low_similarity(sample_config, tmp_path, monkeypatch):
+    from blueprint_validation.common import read_json, write_json
+    from blueprint_validation.config import VariantSpec
+    from blueprint_validation.stages.s2_enrich import EnrichStage
+
+    work_dir = tmp_path
+    render_dir = work_dir / "renders"
+    render_dir.mkdir(parents=True, exist_ok=True)
+    source_video = render_dir / "clip_000_orbit.mp4"
+    source_depth = render_dir / "clip_000_orbit_depth.mp4"
+    _write_solid_video(source_video, value=25)
+    _write_solid_video(source_depth, value=25)
+
+    write_json(
+        {
+            "facility": "Test Facility",
+            "clips": [
+                {
+                    "clip_name": "clip_000_orbit",
+                    "video_path": str(source_video),
+                    "depth_video_path": str(source_depth),
+                }
+            ],
+        },
+        render_dir / "render_manifest.json",
+    )
+
+    sample_config.enrich.dynamic_variants = False
+    sample_config.enrich.variants = [VariantSpec(name="v1", prompt="test variant")]
+    sample_config.enrich.context_frame_index = 0
+    sample_config.enrich.min_frame0_ssim = 0.95
+    sample_config.enrich.delete_rejected_outputs = False
+
+    def _fake_enrich_clip(**kwargs):
+        out = kwargs["output_dir"] / f"{kwargs['clip_name']}_v1.mp4"
+        _write_solid_video(out, value=220)
+        return [
+            SimpleNamespace(
+                variant_name="v1",
+                prompt="test variant",
+                output_video_path=out,
+                input_video_path=kwargs["video_path"],
+                context_frame_index=kwargs.get("context_frame_index"),
+            )
+        ]
+
+    monkeypatch.setattr("blueprint_validation.stages.s2_enrich.enrich_clip", _fake_enrich_clip)
+
+    stage = EnrichStage()
+    fac = list(sample_config.facilities.values())[0]
+    result = stage.run(sample_config, fac, work_dir, {})
+    assert result.status == "failed"
+    assert result.metrics["num_rejected_anchor_similarity"] == 1
+    assert result.metrics["num_enriched_clips"] == 0
+
+    manifest = read_json(work_dir / "enriched" / "enriched_manifest.json")
+    assert manifest["num_clips"] == 0

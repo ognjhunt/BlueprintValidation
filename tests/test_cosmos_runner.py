@@ -28,6 +28,25 @@ def test_build_controlnet_spec_depth(tmp_path):
     assert "edge" not in spec
 
 
+def test_build_controlnet_spec_with_context_frame_index(tmp_path):
+    from blueprint_validation.enrichment.cosmos_runner import build_controlnet_spec
+
+    video = tmp_path / "input.mp4"
+    out = tmp_path / "out.mp4"
+    video.write_bytes(b"x")
+
+    spec = build_controlnet_spec(
+        video_path=video,
+        depth_path=None,
+        prompt="warehouse scene",
+        output_path=out,
+        controlnet_inputs=["rgb"],
+        context_frame_index=9,
+    )
+
+    assert spec["context_frame_index"] == 9
+
+
 def test_build_cosmos_inference_command():
     from blueprint_validation.enrichment.cosmos_runner import build_cosmos_inference_command
 

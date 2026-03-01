@@ -97,9 +97,14 @@ enrich:
   controlnet_inputs: [rgb, depth]
   num_variants_per_render: 5
   guidance: 5.0
-  dynamic_variants: true
+  dynamic_variants: false
   dynamic_variants_model: gemini-3-flash-preview
   allow_dynamic_variant_fallback: false
+  # Anchor generation to a deterministic frame from each source clip.
+  context_frame_index: 9
+  # Reject generations whose first frame diverges too far from the anchor frame.
+  min_frame0_ssim: 0.70
+  delete_rejected_outputs: true
 
 finetune:
   dreamdojo_repo: /app/data/vendor/DreamDojo

@@ -87,7 +87,13 @@ def test_config_with_all_sections(tmp_path):
         },
         "robot_composite": {"enabled": True, "urdf_path": "/tmp/arm.urdf"},
         "gemini_polish": {"enabled": True, "model": "gemini-3.1-flash-image-preview"},
-        "enrich": {"cosmos_model": "test-model", "num_variants_per_render": 3},
+        "enrich": {
+            "cosmos_model": "test-model",
+            "num_variants_per_render": 3,
+            "context_frame_index": 7,
+            "min_frame0_ssim": 0.8,
+            "delete_rejected_outputs": True,
+        },
         "finetune": {"num_epochs": 10, "lora_rank": 16},
         "eval_policy": {
             "num_rollouts": 10,
@@ -131,6 +137,9 @@ def test_config_with_all_sections(tmp_path):
     assert config.render.task_scoped_max_specs == 35
     assert config.render.task_scoped_context_per_target == 1
     assert config.enrich.num_variants_per_render == 3
+    assert config.enrich.context_frame_index == 7
+    assert config.enrich.min_frame0_ssim == pytest.approx(0.8)
+    assert config.enrich.delete_rejected_outputs is True
     assert config.finetune.num_epochs == 10
     assert config.finetune.lora_rank == 16
     assert config.eval_policy.num_rollouts == 10

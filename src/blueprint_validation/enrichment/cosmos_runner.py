@@ -24,6 +24,7 @@ class CosmosOutput:
     output_video_path: Path
     input_video_path: Path
     depth_video_path: Optional[Path]
+    context_frame_index: Optional[int] = None
 
 
 def build_controlnet_spec(
@@ -33,6 +34,7 @@ def build_controlnet_spec(
     output_path: Path,
     guidance: float = 7.0,
     controlnet_inputs: List[str] = None,
+    context_frame_index: Optional[int] = None,
 ) -> dict:
     """Build an inference config matching Cosmos Transfer's JSON CLI schema."""
     if controlnet_inputs is None:
@@ -45,6 +47,8 @@ def build_controlnet_spec(
         "video_path": str(video_path),
         "guidance": guidance,
     }
+    if context_frame_index is not None:
+        spec["context_frame_index"] = int(context_frame_index)
 
     if "depth" in controls and depth_path and depth_path.exists():
         spec["depth"] = {
@@ -209,6 +213,7 @@ def enrich_clip(
     output_dir: Path,
     clip_name: str,
     config: EnrichConfig,
+    context_frame_index: Optional[int] = None,
 ) -> List[CosmosOutput]:
     """Enrich a single rendered clip with multiple visual variants."""
     outputs = []
@@ -222,6 +227,7 @@ def enrich_clip(
             output_path=expected_video,
             guidance=config.guidance,
             controlnet_inputs=config.controlnet_inputs,
+            context_frame_index=context_frame_index,
         )
 
         generated_video = run_cosmos_inference(
@@ -239,6 +245,7 @@ def enrich_clip(
                 output_video_path=generated_video,
                 input_video_path=video_path,
                 depth_video_path=depth_path,
+                context_frame_index=context_frame_index,
             )
         )
 
