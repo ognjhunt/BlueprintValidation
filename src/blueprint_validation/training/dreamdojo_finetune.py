@@ -143,6 +143,7 @@ def build_dreamdojo_launch_command(
         f"job.name=blueprint_{facility_id}",
         "job.wandb_mode=disabled",
         f"dataloader_train.dataset.dataset_path={dataset_dir}",
+        f"dataloader_val.dataset.dataset_path={dataset_dir}",
         f"dataloader_train.batch_size={config.batch_size}",
         f"trainer.grad_accum_iter={config.gradient_accumulation_steps}",
         f"trainer.max_iter={max_iter}",
@@ -153,6 +154,7 @@ def build_dreamdojo_launch_command(
         f"model.config.lora_alpha={config.lora_alpha}",
         f"model.config.lora_target_modules={_quote_hydra_string(config.lora_target_modules)}",
         "~dataloader_train.dataloaders",
+        "~dataloader_val.dataloaders",
     ]
     return cmd
 

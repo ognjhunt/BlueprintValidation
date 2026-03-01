@@ -70,10 +70,12 @@ def test_build_dreamdojo_launch_command(tmp_path):
     assert "job.project=blueprint_validation" in text
     assert "job.group=facility_a" in text
     assert f"dataloader_train.dataset.dataset_path={dataset_dir}" in text
+    assert f"dataloader_val.dataset.dataset_path={dataset_dir}" in text
     assert f"checkpoint.load_path={cfg.dreamdojo_checkpoint}" in text
     assert "model.config.use_lora=true" in text
     assert 'model.config.lora_target_modules="q_proj,v_proj"' in text
     assert "~dataloader_train.dataloaders" in text
+    assert "~dataloader_val.dataloaders" in text
 
 
 def test_quote_hydra_string():
