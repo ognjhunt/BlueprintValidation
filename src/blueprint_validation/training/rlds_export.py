@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Dict, List
 
 from ..common import get_logger
+from .rollout_curriculum import RolloutBucketThresholds, bucket_rollout
 
 logger = get_logger("training.rlds_export")
 
@@ -44,13 +45,8 @@ def extract_video_frames(video_path: Path, output_dir: Path) -> List[Path]:
 
 def rollout_success(entry: Dict, task_threshold: float = 7.0) -> bool:
     """Determine success using explicit manipulation checks when present."""
-    if entry.get("is_manipulation_task"):
-        grasp = entry.get("grasp_acquired")
-        lifted = entry.get("lifted_clear")
-        placed = entry.get("placed_in_target")
-        if grasp is not None and lifted is not None and placed is not None:
-            return bool(grasp) and bool(lifted) and bool(placed)
-    return float(entry.get("task_score", 0.0)) >= task_threshold
+    thresholds = RolloutBucketThresholds(task_score_threshold=float(task_threshold))
+    return bucket_rollout(entry, thresholds) == "success"
 
 
 def export_rollouts_to_rlds_jsonl(

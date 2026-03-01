@@ -110,11 +110,14 @@ def test_rlds_export_stage_succeeds_with_rollouts(sample_config, tmp_path):
     result = stage.run(sample_config, fac, tmp_path, {"s4_policy_eval": s4_result})
     assert result.status == "success"
     assert "rlds_dataset_dir" in result.outputs
+    assert "split_manifest_path" in result.outputs
+    assert "curriculum_manifest_path" in result.outputs
     assert result.metrics["num_train_episodes"] >= 1
+    assert result.metrics["num_success_candidates"] >= 1
 
 
 def test_rlds_export_stage_reports_action_quality_filters(sample_config, tmp_path):
-    from blueprint_validation.common import StageResult, write_json
+    from blueprint_validation.common import StageResult, read_json, write_json
     from blueprint_validation.stages.s4a_rlds_export import RLDSExportStage
 
     sample_config.rollout_dataset.enabled = True
@@ -209,6 +212,117 @@ def test_rlds_export_stage_reports_action_quality_filters(sample_config, tmp_pat
     assert result.metrics["num_filtered_dim_mismatch"] == 1
     assert result.metrics["num_filtered_nonfinite"] == 1
     assert result.metrics["num_filtered_smoothness"] == 1
+    split = Path(result.outputs["split_manifest_path"])
+    assert split.exists()
+    payload = read_json(split)
+    assert set(payload.keys()) == {"train_pair_ids", "eval_pair_ids"}
+
+
+def test_rlds_export_stage_selection_mode_includes_near_miss(sample_config, tmp_path):
+    from blueprint_validation.common import StageResult, read_json, write_json
+    from blueprint_validation.stages.s4a_rlds_export import RLDSExportStage
+
+    sample_config.rollout_dataset.enabled = True
+    sample_config.policy_finetune.enabled = True
+    sample_config.rollout_dataset.selection_mode = "success_near_miss"
+    sample_config.rollout_dataset.task_score_threshold = 7.0
+    sample_config.rollout_dataset.near_miss_min_task_score = 5.0
+    sample_config.rollout_dataset.near_miss_max_task_score = 6.99
+    sample_config.rollout_dataset.near_miss_target_fraction = 0.5
+    sample_config.rollout_dataset.min_steps_per_rollout = 2
+
+    video = tmp_path / "rollout.mp4"
+    _write_tiny_video(video)
+    scores_path = tmp_path / "vlm_scores.json"
+    write_json(
+        {
+            "scores": [
+                {
+                    "condition": "adapted",
+                    "task": "Pick tote",
+                    "task_score": 8.0,
+                    "rollout_index": 0,
+                    "video_path": str(video),
+                    "action_sequence": [[0.0] * 7 for _ in range(4)],
+                    "is_manipulation_task": True,
+                    "grasp_acquired": True,
+                    "lifted_clear": True,
+                    "placed_in_target": True,
+                },
+                {
+                    "condition": "adapted",
+                    "task": "Pick tote",
+                    "task_score": 6.0,
+                    "rollout_index": 1,
+                    "video_path": str(video),
+                    "action_sequence": [[0.0] * 7 for _ in range(4)],
+                    "is_manipulation_task": False,
+                },
+            ]
+        },
+        scores_path,
+    )
+
+    s4_result = StageResult(
+        stage_name="s4_policy_eval",
+        status="success",
+        elapsed_seconds=0,
+        outputs={"scores_path": str(scores_path)},
+    )
+    stage = RLDSExportStage()
+    fac = list(sample_config.facilities.values())[0]
+    result = stage.run(sample_config, fac, tmp_path, {"s4_policy_eval": s4_result})
+    assert result.status == "success"
+    manifest = read_json(Path(result.outputs["curriculum_manifest_path"]))
+    assert manifest["candidate_counts"]["near_miss"] >= 1
+
+
+def test_rlds_export_stage_fails_when_strict_disjoint_eval_has_empty_eval_ids(
+    sample_config, tmp_path
+):
+    from blueprint_validation.common import StageResult, write_json
+    from blueprint_validation.stages.s4a_rlds_export import RLDSExportStage
+
+    sample_config.rollout_dataset.enabled = True
+    sample_config.policy_finetune.enabled = True
+    sample_config.action_boost.enabled = True
+    sample_config.action_boost.strict_disjoint_eval = True
+    sample_config.rollout_dataset.train_split = 0.8
+    sample_config.rollout_dataset.selection_mode = "success_only"
+    sample_config.rollout_dataset.min_steps_per_rollout = 2
+
+    video = tmp_path / "single_rollout.mp4"
+    _write_tiny_video(video)
+    scores_path = tmp_path / "vlm_scores.json"
+    write_json(
+        {
+            "scores": [
+                {
+                    "condition": "adapted",
+                    "task": "Pick tote",
+                    "task_score": 8.0,
+                    "rollout_index": 0,
+                    "video_path": str(video),
+                    "action_sequence": [[0.0] * 7 for _ in range(4)],
+                    "is_manipulation_task": False,
+                }
+            ]
+        },
+        scores_path,
+    )
+
+    s4_result = StageResult(
+        stage_name="s4_policy_eval",
+        status="success",
+        elapsed_seconds=0,
+        outputs={"scores_path": str(scores_path)},
+    )
+    stage = RLDSExportStage()
+    fac = list(sample_config.facilities.values())[0]
+    result = stage.run(sample_config, fac, tmp_path, {"s4_policy_eval": s4_result})
+    assert result.status == "failed"
+    assert "empty eval_pair_ids" in result.detail
+    assert Path(result.outputs["split_manifest_path"]).exists()
 
 
 def test_rlds_export_stage_fails_when_all_rollouts_filtered(sample_config, tmp_path):

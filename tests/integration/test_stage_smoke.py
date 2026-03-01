@@ -22,6 +22,7 @@ def test_stage3b_policy_finetune_skips_when_disabled(sample_config, tmp_path):
 
 
 def test_stage2_to_stage3_handoff(sample_config, tmp_path, monkeypatch):
+    pytest.importorskip("cv2")
     from blueprint_validation.enrichment.cosmos_runner import CosmosOutput
     from blueprint_validation.stages.s2_enrich import EnrichStage
     from blueprint_validation.stages.s3_finetune import FinetuneStage

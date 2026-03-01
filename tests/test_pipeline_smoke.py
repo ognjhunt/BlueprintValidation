@@ -232,6 +232,7 @@ def test_pipeline_wm_only_skips_openvla_stages(sample_config, tmp_path, monkeypa
     pipeline_mod = _patch_pipeline_stages_with_dummies(monkeypatch, call_counts)
     sample_config.cloud.max_cost_usd = 0
     sample_config.eval_policy.headline_scope = "wm_only"
+    sample_config.action_boost.enabled = False
     work_dir = tmp_path / "outputs"
     pipeline = pipeline_mod.ValidationPipeline(sample_config, work_dir)
 
@@ -250,3 +251,79 @@ def test_pipeline_wm_only_skips_openvla_stages(sample_config, tmp_path, monkeypa
         assert results[key].status == "skipped"
         assert "headline_scope=wm_only" in results[key].detail
         assert call_counts.get(stage_name, 0) == 0
+
+
+def test_pipeline_action_boost_auto_switches_wm_only(sample_config, tmp_path, monkeypatch):
+    call_counts = {}
+    pipeline_mod = _patch_pipeline_stages_with_dummies(monkeypatch, call_counts)
+    sample_config.cloud.max_cost_usd = 0
+    sample_config.eval_policy.headline_scope = "wm_only"
+    sample_config.action_boost.enabled = True
+    sample_config.action_boost.auto_switch_headline_scope_to_dual = True
+    work_dir = tmp_path / "outputs"
+    pipeline = pipeline_mod.ValidationPipeline(sample_config, work_dir)
+
+    results = pipeline.run_all(resume_from_results=False)
+    assert sample_config.eval_policy.headline_scope == "dual"
+    for stage_name in ("s4a_rlds_export", "s3b_policy_finetune", "s3c_policy_rl_loop", "s4e_trained_eval"):
+        key = f"test_facility/{stage_name}"
+        assert results[key].status == "success"
+        assert call_counts.get(stage_name, 0) == 1
+
+
+def test_pipeline_action_boost_require_full_converts_skipped_to_failed(
+    sample_config, tmp_path, monkeypatch
+):
+    import blueprint_validation.pipeline as pipeline_mod
+    from blueprint_validation.common import StageResult
+    from blueprint_validation.stages.base import PipelineStage
+
+    class DummyStage(PipelineStage):
+        def __init__(self, stage_name: str, status: str = "success"):
+            self._stage_name = stage_name
+            self._status = status
+
+        @property
+        def name(self):
+            return self._stage_name
+
+        @property
+        def description(self):
+            return self._stage_name
+
+        def run(self, config, facility, work_dir, previous_results):
+            del config, facility, work_dir, previous_results
+            return StageResult(
+                stage_name=self._stage_name,
+                status=self._status,
+                elapsed_seconds=0.0,
+                detail="simulated",
+            )
+
+    monkeypatch.setattr(pipeline_mod, "TaskHintsBootstrapStage", lambda: DummyStage("s0_task_hints_bootstrap"))
+    monkeypatch.setattr(pipeline_mod, "RenderStage", lambda: DummyStage("s1_render"))
+    monkeypatch.setattr(pipeline_mod, "RobotCompositeStage", lambda: DummyStage("s1b_robot_composite"))
+    monkeypatch.setattr(pipeline_mod, "GeminiPolishStage", lambda: DummyStage("s1c_gemini_polish"))
+    monkeypatch.setattr(pipeline_mod, "GaussianAugmentStage", lambda: DummyStage("s1d_gaussian_augment"))
+    monkeypatch.setattr(pipeline_mod, "SplatSimInteractionStage", lambda: DummyStage("s1e_splatsim_interaction"))
+    monkeypatch.setattr(pipeline_mod, "EnrichStage", lambda: DummyStage("s2_enrich"))
+    monkeypatch.setattr(pipeline_mod, "FinetuneStage", lambda: DummyStage("s3_finetune"))
+    monkeypatch.setattr(pipeline_mod, "PolicyEvalStage", lambda: DummyStage("s4_policy_eval"))
+    monkeypatch.setattr(pipeline_mod, "RLDSExportStage", lambda: DummyStage("s4a_rlds_export", status="skipped"))
+    monkeypatch.setattr(pipeline_mod, "PolicyFinetuneStage", lambda: DummyStage("s3b_policy_finetune"))
+    monkeypatch.setattr(pipeline_mod, "PolicyRLLoopStage", lambda: DummyStage("s3c_policy_rl_loop"))
+    monkeypatch.setattr(pipeline_mod, "TrainedPolicyEvalStage", lambda: DummyStage("s4e_trained_eval"))
+    monkeypatch.setattr(pipeline_mod, "RolloutDatasetStage", lambda: DummyStage("s4b_rollout_dataset"))
+    monkeypatch.setattr(pipeline_mod, "PolicyPairTrainStage", lambda: DummyStage("s4c_policy_pair_train"))
+    monkeypatch.setattr(pipeline_mod, "PolicyPairEvalStage", lambda: DummyStage("s4d_policy_pair_eval"))
+    monkeypatch.setattr(pipeline_mod, "VisualFidelityStage", lambda: DummyStage("s5_visual_fidelity"))
+    monkeypatch.setattr(pipeline_mod, "SpatialAccuracyStage", lambda: DummyStage("s6_spatial_accuracy"))
+    monkeypatch.setattr(pipeline_mod, "CrossSiteStage", lambda: DummyStage("s7_cross_site"))
+
+    sample_config.cloud.max_cost_usd = 0
+    sample_config.action_boost.enabled = True
+    sample_config.action_boost.require_full_pipeline = True
+    sample_config.eval_policy.headline_scope = "dual"
+    pipeline = pipeline_mod.ValidationPipeline(sample_config, tmp_path / "outputs")
+    results = pipeline.run_all(resume_from_results=False)
+    assert results["test_facility/s4a_rlds_export"].status == "failed"

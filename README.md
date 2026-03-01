@@ -48,6 +48,33 @@ To move closer to full-scene memory behavior:
   - `enrich.scene_index_k`
   - `enrich.scene_index_sample_every_n_frames`
 
+## Planning Guide
+
+- No-new-data scaling roadmap for future sessions:
+  - [docs/no_new_data_scaling_playbook.md](docs/no_new_data_scaling_playbook.md)
+
+## Full Action-Success Boost
+
+The pipeline supports a default-on full mixed-data path (scan-only, no new real data):
+
+1. Stage 2 enriched scan videos train the world model (Stage 3).
+2. Stage 4 rollouts are bucketed into success / near-miss / hard-negative.
+3. Stage 4a exports a mixed policy curriculum with deterministic train/eval split manifests.
+4. Stage 3b fine-tunes policy on that curriculum.
+5. Stage 3c iteratively refines policy and refreshes the world model using a mix of:
+   - Stage 2 base clips
+   - selected-success rollouts
+   - near-miss / hard-negative rollouts
+6. Stage 4e enforces strict disjoint evaluation (eval starts/tasks not used for policy training).
+
+Key controls:
+- `action_boost.*` for runtime orchestration (`wm_only` auto-switch to `dual`, full-path enforcement).
+- `rollout_dataset.selection_mode` and near-miss/hard-negative fractions.
+- `policy_rl_loop.*` world-refresh and policy-refine mix ratios.
+
+Expected uplift prior (not guaranteed): around `+8 to +18` absolute points in WM eval and
+`+3 to +9` absolute points in IRL transfer when gates pass.
+
 ## Quick Start
 
 ```bash

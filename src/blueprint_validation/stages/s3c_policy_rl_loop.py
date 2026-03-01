@@ -97,12 +97,22 @@ class PolicyRLLoopStage(PipelineStage):
                 "adapted_openvla_checkpoint_rl": result.get("final_policy_checkpoint", ""),
                 "adapted_world_checkpoint_rl": result.get("final_world_checkpoint", ""),
                 "loop_log": str(stage_dir / "policy_rl_loop_log.json"),
+                "latest_world_refresh_manifest": str(
+                    result.get("latest_world_refresh_manifest_path", "")
+                ),
+                "latest_policy_curriculum_manifest": str(
+                    result.get("latest_policy_curriculum_manifest_path", "")
+                ),
             },
             metrics={
                 "iterations_completed": result.get("iterations_completed", 0),
                 "reward_mode": config.policy_rl_loop.reward_mode,
                 "horizon_steps": config.policy_rl_loop.horizon_steps,
                 "rollouts_per_task": config.policy_rl_loop.rollouts_per_task,
+                "latest_world_refresh_mix": result.get("latest_world_refresh_mix_metrics", {}),
+                "latest_policy_curriculum_mix": result.get(
+                    "latest_policy_curriculum_mix_metrics", {}
+                ),
             },
             detail=result.get("detail", ""),
         )

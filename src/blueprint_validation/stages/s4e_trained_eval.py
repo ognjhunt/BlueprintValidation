@@ -146,29 +146,16 @@ class TrainedPolicyEvalStage(PipelineStage):
                 detail="Neither S3c nor S3b produced a trained checkpoint. Skipping trained eval.",
             )
 
-        # Need adapted DreamDojo checkpoint from Stage 3
-        adapted_dir = None
-        prev_s3 = previous_results.get("s3_finetune")
-        if prev_s3:
-            adapted_candidate = prev_s3.outputs.get(
-                "adapted_checkpoint_path"
-            ) or prev_s3.outputs.get("lora_weights_path")
-            if adapted_candidate:
-                adapted_dir = Path(adapted_candidate)
-        if adapted_dir is None:
-            for candidate in [
-                work_dir / "finetune" / "adapted_checkpoint",
-                work_dir / "finetune" / "lora_weights",
-            ]:
-                if candidate.exists():
-                    adapted_dir = candidate
-                    break
+        adapted_dir, eval_world_source = _resolve_eval_world_checkpoint(previous_results, work_dir)
         if adapted_dir is None or not adapted_dir.exists():
             return StageResult(
                 stage_name=self.name,
                 status="failed",
                 elapsed_seconds=0,
-                detail="Adapted DreamDojo checkpoint not found. Run Stage 3 first.",
+                detail=(
+                    "Adapted DreamDojo checkpoint not found. "
+                    "Expected Stage 3 checkpoint or Stage 3c refreshed world checkpoint."
+                ),
             )
 
         # Need initial frames from Stage 1
@@ -229,6 +216,55 @@ class TrainedPolicyEvalStage(PipelineStage):
                 tasks=tasks,
                 assignments=rollout_assignments,
             )
+
+        strict_disjoint_eval = bool(getattr(config.action_boost, "enabled", False)) and bool(
+            getattr(config.action_boost, "strict_disjoint_eval", True)
+        )
+        split_manifest_path = _resolve_split_manifest_path(previous_results, work_dir)
+        disjoint_eval_ids: set[str] = set()
+        train_ids: set[str] = set()
+        if strict_disjoint_eval:
+            if split_manifest_path is None or not split_manifest_path.exists():
+                return StageResult(
+                    stage_name=self.name,
+                    status="failed",
+                    elapsed_seconds=0,
+                    detail=(
+                        "Strict disjoint eval is enabled but split manifest is missing. "
+                        "Run Stage 4a first."
+                    ),
+                )
+            split_manifest = read_json(split_manifest_path)
+            disjoint_eval_ids = {str(v) for v in split_manifest.get("eval_pair_ids", [])}
+            train_ids = {str(v) for v in split_manifest.get("train_pair_ids", [])}
+            overlap = disjoint_eval_ids & train_ids
+            if overlap:
+                return StageResult(
+                    stage_name=self.name,
+                    status="failed",
+                    elapsed_seconds=0,
+                    detail=f"Split manifest invalid: train/eval overlap detected ({len(overlap)} ids).",
+                )
+            if not disjoint_eval_ids:
+                return StageResult(
+                    stage_name=self.name,
+                    status="failed",
+                    elapsed_seconds=0,
+                    detail="Strict disjoint eval is enabled but eval_pair_ids is empty.",
+                )
+            rollout_assignments = [
+                a for a in rollout_assignments if _assignment_pair_id(a) in disjoint_eval_ids
+            ]
+            if not rollout_assignments:
+                return StageResult(
+                    stage_name=self.name,
+                    status="failed",
+                    elapsed_seconds=0,
+                    detail=(
+                        "Strict disjoint eval is enabled but no rollout assignments match "
+                        "Stage 4a eval_pair_ids."
+                    ),
+                )
 
         frame_cache = load_initial_frames_for_assignments(rollout_assignments)
         if not frame_cache:
@@ -381,6 +417,11 @@ class TrainedPolicyEvalStage(PipelineStage):
             "shared_task_start_manifest": str(shared_manifest_path),
             "shared_task_start_manifest_reused": reused_shared_manifest,
             "trained_checkpoint": str(trained_checkpoint),
+            "eval_world_checkpoint": str(adapted_dir),
+            "eval_world_checkpoint_source": eval_world_source,
+            "strict_disjoint_eval_enforced": strict_disjoint_eval,
+            "num_disjoint_eval_assignments": len(rollout_assignments),
+            "split_manifest_path": str(split_manifest_path) if split_manifest_path else "",
             "pairwise": pairwise,
             "judge_audit_csv": str(audit_csv_path),
         }
@@ -436,6 +477,7 @@ class TrainedPolicyEvalStage(PipelineStage):
                 "report_path": str(eval_dir / "trained_eval_report.json"),
                 "shared_task_start_manifest": str(shared_manifest_path),
                 "judge_audit_csv": str(audit_csv_path),
+                "split_manifest_path": str(split_manifest_path) if split_manifest_path else "",
             },
             metrics=metrics,
             detail="\n".join(scoring_failures[:5]),
@@ -534,6 +576,56 @@ def _resolve_trained_checkpoint(
     if candidate is not None:
         return candidate
     return None
+
+
+def _resolve_eval_world_checkpoint(
+    previous_results: Dict[str, StageResult],
+    work_dir: Path,
+) -> tuple[Path | None, str]:
+    s3c = previous_results.get("s3c_policy_rl_loop")
+    if s3c and s3c.status == "success":
+        candidate = s3c.outputs.get("adapted_world_checkpoint_rl")
+        if candidate:
+            path = Path(candidate)
+            if path.exists():
+                return path, "s3c_rl"
+
+    s3 = previous_results.get("s3_finetune")
+    if s3 and s3.status == "success":
+        candidate = s3.outputs.get("adapted_checkpoint_path") or s3.outputs.get("lora_weights_path")
+        if candidate:
+            path = Path(candidate)
+            if path.exists():
+                return path, "s3_finetune"
+
+    for candidate in [
+        work_dir / "finetune" / "adapted_checkpoint",
+        work_dir / "finetune" / "lora_weights",
+    ]:
+        if candidate.exists():
+            return candidate, "s3_finetune"
+    return None, "missing"
+
+
+def _resolve_split_manifest_path(
+    previous_results: Dict[str, StageResult],
+    work_dir: Path,
+) -> Path | None:
+    s4a = previous_results.get("s4a_rlds_export")
+    if s4a and s4a.status == "success":
+        candidate = s4a.outputs.get("split_manifest_path")
+        if candidate:
+            path = Path(str(candidate))
+            if path.exists():
+                return path
+    fallback = work_dir / "rlds_export" / "split_manifest.json"
+    if fallback.exists():
+        return fallback
+    return None
+
+
+def _assignment_pair_id(assignment: Dict) -> str:
+    return f"{int(assignment.get('rollout_index', 0))}::{str(assignment.get('task', ''))}"
 
 
 def _has_successful_training_stage(previous_results: Dict[str, StageResult]) -> bool:

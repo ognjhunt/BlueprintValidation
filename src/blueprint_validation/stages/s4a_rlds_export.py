@@ -2,18 +2,16 @@
 
 from __future__ import annotations
 
-import random
 from pathlib import Path
 from typing import Dict, List
 
-import numpy as np
-
-from ..common import StageResult, get_logger, read_json
+from ..common import StageResult, get_logger, read_json, write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..training.rlds_export import (
     convert_jsonl_to_tfrecord,
     export_rollouts_to_rlds_jsonl,
 )
+from ..training.rollout_curriculum import sample_policy_curriculum
 from .base import PipelineStage
 
 logger = get_logger("stages.s4a_rlds_export")
@@ -26,7 +24,7 @@ class RLDSExportStage(PipelineStage):
 
     @property
     def description(self) -> str:
-        return "Export successful rollouts to RLDS TFRecords for OpenVLA-OFT fine-tuning"
+        return "Export mixed adapted rollouts (success/near-miss/hard-negative) to RLDS"
 
     def run(
         self,
@@ -89,8 +87,6 @@ class RLDSExportStage(PipelineStage):
 
         scores_data = read_json(Path(scores_path))
         all_rollouts: List[Dict] = scores_data.get("scores", [])
-
-        # Filter: only adapted-condition rollouts (training data from site-adapted world model)
         adapted_rollouts_all = [r for r in all_rollouts if r.get("condition") == "adapted"]
         if not adapted_rollouts_all:
             return StageResult(
@@ -99,10 +95,22 @@ class RLDSExportStage(PipelineStage):
                 elapsed_seconds=0,
                 detail="No adapted-condition rollouts found in Stage 4 output.",
             )
-        adapted_rollouts, filter_counts = _filter_rollouts_for_training(
-            adapted_rollouts_all, config
+
+        curriculum_result = sample_policy_curriculum(
+            adapted_rollouts_all,
+            config.rollout_dataset,
+            seed=int(config.rollout_dataset.seed),
         )
-        if not adapted_rollouts:
+        filtered_rollouts = list(curriculum_result.get("adapted_rollouts", []))
+        filter_counts = dict(curriculum_result.get("filter_counts", {}))
+        # Backward-compat alias for existing reports/tests.
+        filter_counts["num_adapted_after_filters"] = int(
+            filter_counts.get("num_after_action_filters", len(filtered_rollouts))
+        )
+        train_rollouts = list(curriculum_result.get("train_rollouts", []))
+        eval_rollouts = list(curriculum_result.get("eval_rollouts", []))
+        curriculum_manifest = dict(curriculum_result.get("curriculum", {}))
+        if not filtered_rollouts:
             return StageResult(
                 stage_name=self.name,
                 status="failed",
@@ -110,10 +118,10 @@ class RLDSExportStage(PipelineStage):
                 detail=(
                     "No adapted-condition rollouts passed action-quality filters. "
                     f"total_adapted={len(adapted_rollouts_all)} "
-                    f"short={filter_counts['num_filtered_short']} "
-                    f"dim_mismatch={filter_counts['num_filtered_dim_mismatch']} "
-                    f"nonfinite={filter_counts['num_filtered_nonfinite']} "
-                    f"smoothness={filter_counts['num_filtered_smoothness']}"
+                    f"short={filter_counts.get('num_filtered_short', 0)} "
+                    f"dim_mismatch={filter_counts.get('num_filtered_dim_mismatch', 0)} "
+                    f"nonfinite={filter_counts.get('num_filtered_nonfinite', 0)} "
+                    f"smoothness={filter_counts.get('num_filtered_smoothness', 0)}"
                 ),
                 metrics={
                     "total_adapted_rollouts": len(adapted_rollouts_all),
@@ -121,20 +129,46 @@ class RLDSExportStage(PipelineStage):
                 },
             )
 
-        # Shuffle and split into train/eval
-        rng = random.Random(config.rollout_dataset.seed)
-        rng.shuffle(adapted_rollouts)
-        split_idx = int(len(adapted_rollouts) * config.rollout_dataset.train_split)
-        train_rollouts = adapted_rollouts[:split_idx]
-        eval_rollouts = adapted_rollouts[split_idx:]
-
         stage_dir = work_dir / "rlds_export"
         stage_dir.mkdir(parents=True, exist_ok=True)
 
         dataset_name = config.rollout_dataset.adapted_dataset_name
         threshold = config.rollout_dataset.task_score_threshold
         min_steps = config.rollout_dataset.min_steps_per_rollout
-        include_failed = config.rollout_dataset.include_failed_rollouts
+        include_failed = bool(config.rollout_dataset.include_failed_rollouts)
+        include_failed = include_failed or str(config.rollout_dataset.selection_mode) != "success_only"
+
+        split_manifest_path = stage_dir / "split_manifest.json"
+        split_manifest = {
+            "train_pair_ids": list(curriculum_result.get("train_pair_ids", [])),
+            "eval_pair_ids": list(curriculum_result.get("eval_pair_ids", [])),
+        }
+        write_json(split_manifest, split_manifest_path)
+        curriculum_manifest_path = stage_dir / "curriculum_manifest.json"
+        write_json(curriculum_manifest, curriculum_manifest_path)
+
+        strict_disjoint_eval = bool(getattr(config.action_boost, "enabled", False)) and bool(
+            getattr(config.action_boost, "strict_disjoint_eval", True)
+        )
+        if strict_disjoint_eval and not split_manifest["eval_pair_ids"]:
+            return StageResult(
+                stage_name=self.name,
+                status="failed",
+                elapsed_seconds=0,
+                detail=(
+                    "Strict disjoint eval is enabled but Stage 4a produced empty eval_pair_ids. "
+                    "Increase rollout volume or adjust curriculum split/selection settings."
+                ),
+                outputs={
+                    "split_manifest_path": str(split_manifest_path),
+                    "curriculum_manifest_path": str(curriculum_manifest_path),
+                },
+                metrics={
+                    "total_adapted_rollouts": len(adapted_rollouts_all),
+                    "requested_rollouts_per_condition": int(config.eval_policy.num_rollouts),
+                    **filter_counts,
+                },
+            )
 
         # Export train split to JSONL
         train_dir = stage_dir / "train"
@@ -171,7 +205,8 @@ class RLDSExportStage(PipelineStage):
                 detail=(
                     f"No episodes passed filters (threshold={threshold}, "
                     f"min_steps={min_steps}). "
-                    f"Total adapted rollouts after action-quality gating: {len(adapted_rollouts)}"
+                    "Total adapted rollouts after action-quality gating: "
+                    f"{len(filtered_rollouts)}"
                 ),
                 metrics={
                     "total_adapted_rollouts": len(adapted_rollouts_all),
@@ -203,6 +238,8 @@ class RLDSExportStage(PipelineStage):
                 "dataset_name": dataset_name,
                 "train_jsonl": str(train_dir / "episodes.jsonl"),
                 "eval_jsonl": str(eval_dir / "episodes.jsonl"),
+                "split_manifest_path": str(split_manifest_path),
+                "curriculum_manifest_path": str(curriculum_manifest_path),
             },
             metrics={
                 "num_train_episodes": num_train,
@@ -210,6 +247,21 @@ class RLDSExportStage(PipelineStage):
                 "num_train_successes": train_meta.get("num_successes", 0),
                 "task_score_threshold": threshold,
                 "total_adapted_rollouts": len(adapted_rollouts_all),
+                "num_success_candidates": int(
+                    curriculum_manifest.get("candidate_counts", {}).get("success", 0)
+                ),
+                "num_near_miss_candidates": int(
+                    curriculum_manifest.get("candidate_counts", {}).get("near_miss", 0)
+                ),
+                "num_hard_negative_candidates": int(
+                    curriculum_manifest.get("candidate_counts", {}).get("hard_negative", 0)
+                ),
+                "num_train_near_miss": int(
+                    curriculum_manifest.get("train_bucket_counts", {}).get("near_miss", 0)
+                ),
+                "num_train_hard_negative": int(
+                    curriculum_manifest.get("train_bucket_counts", {}).get("hard_negative", 0)
+                ),
                 "max_action_delta_norm": config.rollout_dataset.max_action_delta_norm,
                 "require_consistent_action_dim": (
                     config.rollout_dataset.require_consistent_action_dim
@@ -217,89 +269,3 @@ class RLDSExportStage(PipelineStage):
                 **filter_counts,
             },
         )
-
-
-def _filter_rollouts_for_training(
-    rollouts: List[Dict],
-    config: ValidationConfig,
-) -> tuple[List[Dict], Dict[str, int]]:
-    kept: List[Dict] = []
-    counts = {
-        "num_filtered_short": 0,
-        "num_filtered_dim_mismatch": 0,
-        "num_filtered_nonfinite": 0,
-        "num_filtered_smoothness": 0,
-        "num_adapted_after_filters": 0,
-    }
-    min_steps = int(config.rollout_dataset.min_steps_per_rollout)
-    require_consistent = bool(config.rollout_dataset.require_consistent_action_dim)
-    max_delta = float(config.rollout_dataset.max_action_delta_norm)
-
-    for entry in rollouts:
-        actions = entry.get("action_sequence") or []
-        if len(actions) < min_steps:
-            counts["num_filtered_short"] += 1
-            continue
-        valid, reason = _validate_action_sequence(
-            actions=actions,
-            require_consistent_action_dim=require_consistent,
-            max_action_delta_norm=max_delta,
-        )
-        if not valid:
-            if reason == "dim_mismatch":
-                counts["num_filtered_dim_mismatch"] += 1
-            elif reason == "nonfinite":
-                counts["num_filtered_nonfinite"] += 1
-            else:
-                counts["num_filtered_smoothness"] += 1
-            continue
-        kept.append(entry)
-
-    counts["num_adapted_after_filters"] = len(kept)
-    return kept, counts
-
-
-def _validate_action_sequence(
-    *,
-    actions: List[object],
-    require_consistent_action_dim: bool,
-    max_action_delta_norm: float,
-) -> tuple[bool, str | None]:
-    dims: set[int] = set()
-    for action in actions:
-        vec_size = _action_vector_size(action)
-        if vec_size is None:
-            return False, "nonfinite"
-        dims.add(vec_size)
-    if require_consistent_action_dim and len(dims) != 1:
-        return False, "dim_mismatch"
-
-    try:
-        arr = np.asarray(actions, dtype=np.float64)
-    except Exception:
-        return False, "smoothness"
-    if arr.ndim == 1:
-        arr = arr[:, None]
-    if arr.ndim != 2:
-        return False, "smoothness"
-    if not np.isfinite(arr).all():
-        return False, "nonfinite"
-    if len(arr) < 2:
-        return True, None
-    deltas = np.diff(arr, axis=0)
-    norms = np.linalg.norm(deltas, axis=1)
-    if not np.isfinite(norms).all():
-        return False, "nonfinite"
-    if float(np.max(norms)) > max_action_delta_norm:
-        return False, "smoothness"
-    return True, None
-
-
-def _action_vector_size(action: object) -> int | None:
-    try:
-        arr = np.asarray(action, dtype=np.float64)
-    except Exception:
-        return None
-    if arr.ndim == 0:
-        return 1
-    return int(arr.size)

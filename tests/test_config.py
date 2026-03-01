@@ -72,6 +72,17 @@ def test_config_defaults():
     assert str(config.policy_adapter.openvla.openvla_repo).endswith("opt/openvla-oft")
     assert config.policy_adapter.pi05.profile == "pi05_libero"
     assert config.rollout_dataset.enabled is True
+    assert config.rollout_dataset.selection_mode == "success_near_miss"
+    assert config.rollout_dataset.near_miss_min_task_score == pytest.approx(5.0)
+    assert config.rollout_dataset.near_miss_max_task_score == pytest.approx(6.99)
+    assert config.rollout_dataset.near_miss_target_fraction == pytest.approx(0.30)
+    assert config.rollout_dataset.hard_negative_target_fraction == pytest.approx(0.0)
+    assert config.rollout_dataset.per_task_max_episodes == 0
+    assert config.action_boost.enabled is True
+    assert config.action_boost.require_full_pipeline is True
+    assert config.action_boost.auto_switch_headline_scope_to_dual is True
+    assert config.action_boost.compute_profile == "standard"
+    assert config.action_boost.strict_disjoint_eval is True
     assert config.policy_compare.enabled is False
     assert config.policy_finetune.enabled is True
     assert config.policy_finetune.dataset_name == "bridge_orig"
@@ -82,6 +93,15 @@ def test_config_defaults():
     assert config.splatsim.enabled is False
     assert config.splatsim.mode == "hybrid"
     assert config.policy_rl_loop.enabled is False
+    assert config.policy_rl_loop.policy_refine_near_miss_fraction == pytest.approx(0.30)
+    assert config.policy_rl_loop.policy_refine_hard_negative_fraction == pytest.approx(0.10)
+    assert config.policy_rl_loop.world_model_refresh_mix_with_stage2 is True
+    assert config.policy_rl_loop.world_model_refresh_stage2_fraction == pytest.approx(0.60)
+    assert config.policy_rl_loop.world_model_refresh_success_fraction == pytest.approx(0.25)
+    assert config.policy_rl_loop.world_model_refresh_near_miss_fraction == pytest.approx(0.15)
+    assert config.policy_rl_loop.world_model_refresh_min_total_clips == 128
+    assert config.policy_rl_loop.world_model_refresh_max_total_clips == 512
+    assert config.policy_rl_loop.world_model_refresh_seed == 17
 
 
 def test_facility_config():
@@ -200,7 +220,38 @@ def test_config_with_all_sections(tmp_path):
             "min_successful_rollouts_per_zone": 2,
             "fallback_to_prior_manifest": False,
         },
-        "rollout_dataset": {"seed": 99, "train_split": 0.7},
+        "policy_rl_loop": {
+            "enabled": True,
+            "policy_refine_near_miss_fraction": 0.25,
+            "policy_refine_hard_negative_fraction": 0.05,
+            "world_model_refresh_mix_with_stage2": True,
+            "world_model_refresh_stage2_fraction": 0.5,
+            "world_model_refresh_success_fraction": 0.3,
+            "world_model_refresh_near_miss_fraction": 0.2,
+            "world_model_refresh_min_total_clips": 64,
+            "world_model_refresh_max_total_clips": 256,
+            "world_model_refresh_seed": 23,
+        },
+        "action_boost": {
+            "enabled": True,
+            "require_full_pipeline": True,
+            "auto_switch_headline_scope_to_dual": True,
+            "auto_enable_rollout_dataset": True,
+            "auto_enable_policy_finetune": True,
+            "auto_enable_policy_rl_loop": True,
+            "compute_profile": "aggressive",
+            "strict_disjoint_eval": True,
+        },
+        "rollout_dataset": {
+            "seed": 99,
+            "train_split": 0.7,
+            "selection_mode": "success_near_miss_hard",
+            "near_miss_min_task_score": 4.0,
+            "near_miss_max_task_score": 6.5,
+            "near_miss_target_fraction": 0.2,
+            "hard_negative_target_fraction": 0.1,
+            "per_task_max_episodes": 3,
+        },
         "policy_compare": {
             "heldout_num_rollouts": 8,
             "heldout_tasks": ["Pick up the tote from the shelf"],
@@ -277,6 +328,24 @@ def test_config_with_all_sections(tmp_path):
     assert config.splatsim.mode == "strict"
     assert config.splatsim.per_zone_rollouts == 3
     assert config.rollout_dataset.seed == 99
+    assert config.rollout_dataset.selection_mode == "success_near_miss_hard"
+    assert config.rollout_dataset.near_miss_min_task_score == pytest.approx(4.0)
+    assert config.rollout_dataset.near_miss_max_task_score == pytest.approx(6.5)
+    assert config.rollout_dataset.near_miss_target_fraction == pytest.approx(0.2)
+    assert config.rollout_dataset.hard_negative_target_fraction == pytest.approx(0.1)
+    assert config.rollout_dataset.per_task_max_episodes == 3
+    assert config.policy_rl_loop.enabled is True
+    assert config.policy_rl_loop.policy_refine_near_miss_fraction == pytest.approx(0.25)
+    assert config.policy_rl_loop.policy_refine_hard_negative_fraction == pytest.approx(0.05)
+    assert config.policy_rl_loop.world_model_refresh_mix_with_stage2 is True
+    assert config.policy_rl_loop.world_model_refresh_stage2_fraction == pytest.approx(0.5)
+    assert config.policy_rl_loop.world_model_refresh_success_fraction == pytest.approx(0.3)
+    assert config.policy_rl_loop.world_model_refresh_near_miss_fraction == pytest.approx(0.2)
+    assert config.policy_rl_loop.world_model_refresh_min_total_clips == 64
+    assert config.policy_rl_loop.world_model_refresh_max_total_clips == 256
+    assert config.policy_rl_loop.world_model_refresh_seed == 23
+    assert config.action_boost.enabled is True
+    assert config.action_boost.compute_profile == "aggressive"
     assert config.policy_compare.heldout_num_rollouts == 8
     assert config.policy_compare.heldout_tasks == ["Pick up the tote from the shelf"]
     assert str(config.facilities["a"].task_hints_path) == "/tmp/a_tasks.json"
@@ -453,4 +522,42 @@ def test_config_rejects_invalid_scene_rotation_length(tmp_path):
     )
 
     with pytest.raises(ValueError, match="scene_rotation_deg"):
+        load_config(config_path)
+
+
+def test_config_rejects_invalid_action_boost_compute_profile(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "bad_action_boost.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Action Boost",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "action_boost": {"compute_profile": "ultra"},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="action_boost.compute_profile"):
+        load_config(config_path)
+
+
+def test_config_rejects_invalid_rollout_selection_mode(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "bad_selection_mode.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Selection Mode",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "rollout_dataset": {"selection_mode": "all"},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="rollout_dataset.selection_mode"):
         load_config(config_path)

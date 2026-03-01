@@ -403,7 +403,16 @@ class PolicyRLLoopConfig:
     near_miss_min_quantile: float = 0.30
     near_miss_max_quantile: float = 0.60
     policy_refine_steps_per_iter: int = 1000
+    policy_refine_near_miss_fraction: float = 0.30
+    policy_refine_hard_negative_fraction: float = 0.10
     world_model_refresh_enabled: bool = True
+    world_model_refresh_mix_with_stage2: bool = True
+    world_model_refresh_stage2_fraction: float = 0.60
+    world_model_refresh_success_fraction: float = 0.25
+    world_model_refresh_near_miss_fraction: float = 0.15
+    world_model_refresh_min_total_clips: int = 128
+    world_model_refresh_max_total_clips: int = 512
+    world_model_refresh_seed: int = 17
     world_model_refresh_epochs: int = 3
     world_model_refresh_learning_rate: float = 5.0e-5
 
@@ -416,11 +425,29 @@ class RolloutDatasetConfig:
     min_steps_per_rollout: int = 4
     task_score_threshold: float = 7.0
     include_failed_rollouts: bool = False
+    selection_mode: str = "success_near_miss"  # success_only|success_near_miss|success_near_miss_hard
+    near_miss_min_task_score: float = 5.0
+    near_miss_max_task_score: float = 6.99
+    near_miss_target_fraction: float = 0.30
+    hard_negative_target_fraction: float = 0.00
+    per_task_max_episodes: int = 0
     max_action_delta_norm: float = 5.0
     require_consistent_action_dim: bool = True
     baseline_dataset_name: str = "bridge_dataset"  # Must exist in vendored OpenVLA OXE registry.
     adapted_dataset_name: str = "bridge_orig"  # Must exist in vendored OpenVLA OXE registry.
     export_dir: Path = Path("./data/outputs/policy_datasets")
+
+
+@dataclass
+class ActionBoostConfig:
+    enabled: bool = True
+    require_full_pipeline: bool = True
+    auto_switch_headline_scope_to_dual: bool = True
+    auto_enable_rollout_dataset: bool = True
+    auto_enable_policy_finetune: bool = True
+    auto_enable_policy_rl_loop: bool = True
+    compute_profile: str = "standard"  # lean|standard|aggressive
+    strict_disjoint_eval: bool = True
 
 
 @dataclass
@@ -491,6 +518,7 @@ class ValidationConfig:
     robosplat: RoboSplatConfig = field(default_factory=RoboSplatConfig)
     robosplat_scan: RoboSplatScanConfig = field(default_factory=RoboSplatScanConfig)
     splatsim: SplatSimConfig = field(default_factory=SplatSimConfig)
+    action_boost: ActionBoostConfig = field(default_factory=ActionBoostConfig)
     policy_rl_loop: PolicyRLLoopConfig = field(default_factory=PolicyRLLoopConfig)
     rollout_dataset: RolloutDatasetConfig = field(default_factory=RolloutDatasetConfig)
     policy_compare: PolicyCompareConfig = field(default_factory=PolicyCompareConfig)
@@ -550,6 +578,28 @@ def _parse_source_clip_selection_mode(raw_value: Any) -> str:
     if value not in _ALLOWED_SOURCE_CLIP_SELECTION_MODES:
         allowed = ", ".join(sorted(_ALLOWED_SOURCE_CLIP_SELECTION_MODES))
         raise ValueError(f"enrich.source_clip_selection_mode must be one of: {allowed}")
+    return value
+
+
+_ALLOWED_ACTION_BOOST_COMPUTE_PROFILES = {"lean", "standard", "aggressive"}
+
+
+def _parse_action_boost_compute_profile(raw_value: Any) -> str:
+    value = str(raw_value or "standard").strip().lower()
+    if value not in _ALLOWED_ACTION_BOOST_COMPUTE_PROFILES:
+        allowed = ", ".join(sorted(_ALLOWED_ACTION_BOOST_COMPUTE_PROFILES))
+        raise ValueError(f"action_boost.compute_profile must be one of: {allowed}")
+    return value
+
+
+_ALLOWED_ROLLOUT_SELECTION_MODES = {"success_only", "success_near_miss", "success_near_miss_hard"}
+
+
+def _parse_rollout_selection_mode(raw_value: Any) -> str:
+    value = str(raw_value or "success_near_miss").strip().lower()
+    if value not in _ALLOWED_ROLLOUT_SELECTION_MODES:
+        allowed = ", ".join(sorted(_ALLOWED_ROLLOUT_SELECTION_MODES))
+        raise ValueError(f"rollout_dataset.selection_mode must be one of: {allowed}")
     return value
 
 
@@ -1070,6 +1120,23 @@ def load_config(path: Path) -> ValidationConfig:
             fallback_to_prior_manifest=ss.get("fallback_to_prior_manifest", True),
         )
 
+    if "action_boost" in raw:
+        ab = raw["action_boost"]
+        config.action_boost = ActionBoostConfig(
+            enabled=bool(ab.get("enabled", True)),
+            require_full_pipeline=bool(ab.get("require_full_pipeline", True)),
+            auto_switch_headline_scope_to_dual=bool(
+                ab.get("auto_switch_headline_scope_to_dual", True)
+            ),
+            auto_enable_rollout_dataset=bool(ab.get("auto_enable_rollout_dataset", True)),
+            auto_enable_policy_finetune=bool(ab.get("auto_enable_policy_finetune", True)),
+            auto_enable_policy_rl_loop=bool(ab.get("auto_enable_policy_rl_loop", True)),
+            compute_profile=_parse_action_boost_compute_profile(
+                ab.get("compute_profile", "standard")
+            ),
+            strict_disjoint_eval=bool(ab.get("strict_disjoint_eval", True)),
+        )
+
     if "policy_rl_loop" in raw:
         pr = raw["policy_rl_loop"]
         config.policy_rl_loop = PolicyRLLoopConfig(
@@ -1084,7 +1151,32 @@ def load_config(path: Path) -> ValidationConfig:
             near_miss_min_quantile=float(pr.get("near_miss_min_quantile", 0.30)),
             near_miss_max_quantile=float(pr.get("near_miss_max_quantile", 0.60)),
             policy_refine_steps_per_iter=int(pr.get("policy_refine_steps_per_iter", 1000)),
+            policy_refine_near_miss_fraction=float(
+                pr.get("policy_refine_near_miss_fraction", 0.30)
+            ),
+            policy_refine_hard_negative_fraction=float(
+                pr.get("policy_refine_hard_negative_fraction", 0.10)
+            ),
             world_model_refresh_enabled=pr.get("world_model_refresh_enabled", True),
+            world_model_refresh_mix_with_stage2=bool(
+                pr.get("world_model_refresh_mix_with_stage2", True)
+            ),
+            world_model_refresh_stage2_fraction=float(
+                pr.get("world_model_refresh_stage2_fraction", 0.60)
+            ),
+            world_model_refresh_success_fraction=float(
+                pr.get("world_model_refresh_success_fraction", 0.25)
+            ),
+            world_model_refresh_near_miss_fraction=float(
+                pr.get("world_model_refresh_near_miss_fraction", 0.15)
+            ),
+            world_model_refresh_min_total_clips=int(
+                pr.get("world_model_refresh_min_total_clips", 128)
+            ),
+            world_model_refresh_max_total_clips=int(
+                pr.get("world_model_refresh_max_total_clips", 512)
+            ),
+            world_model_refresh_seed=int(pr.get("world_model_refresh_seed", 17)),
             world_model_refresh_epochs=int(pr.get("world_model_refresh_epochs", 3)),
             world_model_refresh_learning_rate=float(
                 pr.get("world_model_refresh_learning_rate", 5.0e-5)
@@ -1100,6 +1192,14 @@ def load_config(path: Path) -> ValidationConfig:
             min_steps_per_rollout=rd.get("min_steps_per_rollout", 4),
             task_score_threshold=float(rd.get("task_score_threshold", 7.0)),
             include_failed_rollouts=rd.get("include_failed_rollouts", False),
+            selection_mode=_parse_rollout_selection_mode(
+                rd.get("selection_mode", "success_near_miss")
+            ),
+            near_miss_min_task_score=float(rd.get("near_miss_min_task_score", 5.0)),
+            near_miss_max_task_score=float(rd.get("near_miss_max_task_score", 6.99)),
+            near_miss_target_fraction=float(rd.get("near_miss_target_fraction", 0.30)),
+            hard_negative_target_fraction=float(rd.get("hard_negative_target_fraction", 0.00)),
+            per_task_max_episodes=int(rd.get("per_task_max_episodes", 0)),
             max_action_delta_norm=float(rd.get("max_action_delta_norm", 5.0)),
             require_consistent_action_dim=rd.get("require_consistent_action_dim", True),
             baseline_dataset_name=rd.get(
@@ -1176,6 +1276,58 @@ def load_config(path: Path) -> ValidationConfig:
             num_gpus=cl.get("num_gpus", 1),
             max_cost_usd=cl.get("max_cost_usd", 500.0),
             auto_shutdown=cl.get("auto_shutdown", True),
+        )
+
+    # Cross-field validation for action-boost curriculum knobs.
+    if not (0.0 < float(config.rollout_dataset.train_split) < 1.0):
+        raise ValueError("rollout_dataset.train_split must be in (0, 1)")
+    if not (0.0 <= float(config.rollout_dataset.near_miss_target_fraction) <= 1.0):
+        raise ValueError("rollout_dataset.near_miss_target_fraction must be in [0, 1]")
+    if not (0.0 <= float(config.rollout_dataset.hard_negative_target_fraction) <= 1.0):
+        raise ValueError("rollout_dataset.hard_negative_target_fraction must be in [0, 1]")
+    if (
+        float(config.rollout_dataset.near_miss_target_fraction)
+        + float(config.rollout_dataset.hard_negative_target_fraction)
+        > 1.0
+    ):
+        raise ValueError(
+            "rollout_dataset.near_miss_target_fraction + "
+            "rollout_dataset.hard_negative_target_fraction must be <= 1"
+        )
+    if float(config.rollout_dataset.near_miss_min_task_score) > float(
+        config.rollout_dataset.near_miss_max_task_score
+    ):
+        raise ValueError(
+            "rollout_dataset.near_miss_min_task_score must be <= "
+            "rollout_dataset.near_miss_max_task_score"
+        )
+    if not (0.0 <= float(config.policy_rl_loop.policy_refine_near_miss_fraction) <= 1.0):
+        raise ValueError("policy_rl_loop.policy_refine_near_miss_fraction must be in [0, 1]")
+    if not (0.0 <= float(config.policy_rl_loop.policy_refine_hard_negative_fraction) <= 1.0):
+        raise ValueError("policy_rl_loop.policy_refine_hard_negative_fraction must be in [0, 1]")
+    if float(config.policy_rl_loop.world_model_refresh_stage2_fraction) < 0.0:
+        raise ValueError("policy_rl_loop.world_model_refresh_stage2_fraction must be >= 0")
+    if float(config.policy_rl_loop.world_model_refresh_success_fraction) < 0.0:
+        raise ValueError("policy_rl_loop.world_model_refresh_success_fraction must be >= 0")
+    if float(config.policy_rl_loop.world_model_refresh_near_miss_fraction) < 0.0:
+        raise ValueError("policy_rl_loop.world_model_refresh_near_miss_fraction must be >= 0")
+    if (
+        float(config.policy_rl_loop.world_model_refresh_stage2_fraction)
+        + float(config.policy_rl_loop.world_model_refresh_success_fraction)
+        + float(config.policy_rl_loop.world_model_refresh_near_miss_fraction)
+        > 1.0
+    ):
+        raise ValueError(
+            "policy_rl_loop world_model_refresh_* fractions must sum to <= 1"
+        )
+    if int(config.policy_rl_loop.world_model_refresh_min_total_clips) < 1:
+        raise ValueError("policy_rl_loop.world_model_refresh_min_total_clips must be >= 1")
+    if int(config.policy_rl_loop.world_model_refresh_max_total_clips) < int(
+        config.policy_rl_loop.world_model_refresh_min_total_clips
+    ):
+        raise ValueError(
+            "policy_rl_loop.world_model_refresh_max_total_clips must be >= "
+            "policy_rl_loop.world_model_refresh_min_total_clips"
         )
 
     return config

@@ -160,14 +160,40 @@ eval_policy:
     api_key_env: GOOGLE_GENAI_API_KEY
     enable_agentic_vision: true
 
+# Full action-success boost mode (scan-only, no new real data).
+# Keeps wm_only in config but runtime auto-switches to dual when enabled.
+action_boost:
+  enabled: true
+  require_full_pipeline: true
+  auto_switch_headline_scope_to_dual: true
+  auto_enable_rollout_dataset: true
+  auto_enable_policy_finetune: true
+  auto_enable_policy_rl_loop: true
+  compute_profile: standard
+  strict_disjoint_eval: true
+
 policy_finetune:
   enabled: false
 
 policy_rl_loop:
   enabled: false
+  policy_refine_near_miss_fraction: 0.30
+  policy_refine_hard_negative_fraction: 0.10
+  world_model_refresh_mix_with_stage2: true
+  world_model_refresh_stage2_fraction: 0.60
+  world_model_refresh_success_fraction: 0.25
+  world_model_refresh_near_miss_fraction: 0.15
+  world_model_refresh_min_total_clips: 128
+  world_model_refresh_max_total_clips: 512
+  world_model_refresh_seed: 17
 
 rollout_dataset:
   enabled: false
+  selection_mode: success_near_miss
+  near_miss_min_task_score: 5.0
+  near_miss_max_task_score: 6.99
+  near_miss_target_fraction: 0.30
+  hard_negative_target_fraction: 0.00
 
 policy_compare:
   enabled: false

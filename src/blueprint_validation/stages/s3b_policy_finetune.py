@@ -64,6 +64,9 @@ class PolicyFinetuneStage(PipelineStage):
         finetune_config = config.policy_finetune
         dataset_name = finetune_config.dataset_name
         source_dataset_dir: Path | None = None
+        split_manifest_path: str | None = None
+        curriculum_manifest_path: str | None = None
+        curriculum_metrics: Dict[str, object] = {}
         s4a = previous_results.get("s4a_rlds_export")
         if s4a and s4a.status == "success":
             train_jsonl = s4a.outputs.get("train_jsonl")
@@ -76,6 +79,17 @@ class PolicyFinetuneStage(PipelineStage):
                 )
                 source_dataset_dir = Path(train_jsonl).parent
                 dataset_name = str(rlds_name)
+                split_manifest_path = s4a.outputs.get("split_manifest_path")
+                curriculum_manifest_path = s4a.outputs.get("curriculum_manifest_path")
+                for key in (
+                    "num_success_candidates",
+                    "num_near_miss_candidates",
+                    "num_hard_negative_candidates",
+                    "num_train_near_miss",
+                    "num_train_hard_negative",
+                ):
+                    if key in s4a.metrics:
+                        curriculum_metrics[key] = s4a.metrics.get(key)
                 finetune_config = replace(
                     finetune_config,
                     dataset_name=dataset_name,
@@ -128,11 +142,14 @@ class PolicyFinetuneStage(PipelineStage):
                 "adapted_policy_checkpoint": adapted_path,
                 "adapted_openvla_checkpoint": adapted_path,  # legacy compatibility
                 "train_log": str(stage_dir / "train" / "policy_finetune_log.json"),
+                "split_manifest_path": split_manifest_path or "",
+                "curriculum_manifest_path": curriculum_manifest_path or "",
             },
             metrics={
                 "dataset_name": dataset_name,
                 "elapsed_seconds": train_result.elapsed_seconds,
                 "returncode": train_result.raw.get("returncode"),
+                **curriculum_metrics,
             },
             detail=train_result.detail,
         )

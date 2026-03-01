@@ -153,3 +153,48 @@ def test_trained_eval_build_task_list_includes_task_hints(tmp_path):
     assert "Navigate forward through the corridor" in tasks
     assert "Pick up bowl_101 and place it in the target zone" in tasks
     assert "Open and close door_7" in tasks
+
+
+def test_resolve_eval_world_checkpoint_prefers_s3c(tmp_path):
+    from blueprint_validation.common import StageResult
+    from blueprint_validation.stages.s4e_trained_eval import _resolve_eval_world_checkpoint
+
+    s3_world = tmp_path / "s3_world"
+    s3_world.mkdir(parents=True)
+    s3c_world = tmp_path / "s3c_world"
+    s3c_world.mkdir(parents=True)
+    previous = {
+        "s3_finetune": StageResult(
+            stage_name="s3_finetune",
+            status="success",
+            elapsed_seconds=0,
+            outputs={"adapted_checkpoint_path": str(s3_world)},
+        ),
+        "s3c_policy_rl_loop": StageResult(
+            stage_name="s3c_policy_rl_loop",
+            status="success",
+            elapsed_seconds=0,
+            outputs={"adapted_world_checkpoint_rl": str(s3c_world)},
+        ),
+    }
+    path, source = _resolve_eval_world_checkpoint(previous, tmp_path)
+    assert path == s3c_world
+    assert source == "s3c_rl"
+
+
+def test_resolve_split_manifest_path_prefers_s4a_output(tmp_path):
+    from blueprint_validation.common import StageResult, write_json
+    from blueprint_validation.stages.s4e_trained_eval import _resolve_split_manifest_path
+
+    split = tmp_path / "split_manifest.json"
+    write_json({"train_pair_ids": [], "eval_pair_ids": []}, split)
+    previous = {
+        "s4a_rlds_export": StageResult(
+            stage_name="s4a_rlds_export",
+            status="success",
+            elapsed_seconds=0,
+            outputs={"split_manifest_path": str(split)},
+        )
+    }
+    resolved = _resolve_split_manifest_path(previous, tmp_path)
+    assert resolved == split

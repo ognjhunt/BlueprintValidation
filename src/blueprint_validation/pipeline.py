@@ -43,6 +43,14 @@ _WM_ONLY_DEFERRED_STAGES = {
     "s4e_trained_eval",
 }
 
+_ACTION_BOOST_REQUIRED_STAGES = {
+    "s4_policy_eval",
+    "s4a_rlds_export",
+    "s3b_policy_finetune",
+    "s3c_policy_rl_loop",
+    "s4e_trained_eval",
+}
+
 
 class ValidationPipeline:
     """Orchestrates the full validation pipeline across all facilities."""
@@ -63,6 +71,7 @@ class ValidationPipeline:
         aborted_early = False
         pipeline_start = time.monotonic()
         dry_run = os.environ.get("BLUEPRINT_DRY_RUN", "0") == "1"
+        action_boost = self._apply_action_boost_runtime_overrides()
         wm_only_scope = (
             (getattr(self.config.eval_policy, "headline_scope", "wm_only") or "wm_only")
             .strip()
@@ -122,7 +131,7 @@ class ValidationPipeline:
                 stage_key = f"{fid}/{stage.name}"
                 result_path = fac_dir / f"{stage.name}_result.json"
                 if wm_only_scope and stage.name in _WM_ONLY_DEFERRED_STAGES:
-                    skipped = StageResult(
+                    result = StageResult(
                         stage_name=stage.name,
                         status="skipped",
                         elapsed_seconds=0,
@@ -131,9 +140,19 @@ class ValidationPipeline:
                             "(OpenVLA stages deferred)."
                         ),
                     )
-                    skipped.save(result_path)
-                    facility_results[stage.name] = skipped
-                    all_results[stage_key] = skipped
+                    result = self._enforce_action_boost_required_stage_result(
+                        result=result,
+                        stage_name=stage.name,
+                        action_boost=action_boost,
+                    )
+                    result.save(result_path)
+                    facility_results[stage.name] = result
+                    all_results[stage_key] = result
+                    if result.status == "failed":
+                        failed_stage_keys.append(stage_key)
+                        if fail_fast:
+                            aborted_early = True
+                            break
                     continue
 
                 if resume_from_results:
@@ -145,8 +164,18 @@ class ValidationPipeline:
                             result_path,
                             existing.status,
                         )
+                        existing = self._enforce_action_boost_required_stage_result(
+                            result=existing,
+                            stage_name=stage.name,
+                            action_boost=action_boost,
+                        )
                         facility_results[stage.name] = existing
                         all_results[stage_key] = existing
+                        if existing.status == "failed":
+                            failed_stage_keys.append(stage_key)
+                            if fail_fast:
+                                aborted_early = True
+                                break
                         continue
 
                 result = stage.execute(
@@ -167,6 +196,13 @@ class ValidationPipeline:
                 if post_sync_result != result:
                     post_sync_result.save(result_path)
                 result = post_sync_result
+                result = self._enforce_action_boost_required_stage_result(
+                    result=result,
+                    stage_name=stage.name,
+                    action_boost=action_boost,
+                )
+                if result != post_sync_result:
+                    result.save(result_path)
                 facility_results[stage.name] = result
                 all_results[stage_key] = result
 
@@ -253,6 +289,82 @@ class ValidationPipeline:
 
         logger.info("Pipeline complete. Summary at %s", self.work_dir / "pipeline_summary.json")
         return all_results
+
+    def _apply_action_boost_runtime_overrides(self) -> dict:
+        cfg = getattr(self.config, "action_boost", None)
+        state = {
+            "enabled": bool(getattr(cfg, "enabled", False)),
+            "require_full_pipeline": bool(getattr(cfg, "require_full_pipeline", False)),
+        }
+        if not state["enabled"]:
+            return state
+
+        if bool(getattr(cfg, "auto_switch_headline_scope_to_dual", True)):
+            scope = (getattr(self.config.eval_policy, "headline_scope", "wm_only") or "wm_only").strip().lower()
+            if scope == "wm_only":
+                logger.warning(
+                    "ActionBoost enabled: overriding eval_policy.headline_scope from wm_only to dual."
+                )
+                self.config.eval_policy.headline_scope = "dual"
+
+        if bool(getattr(cfg, "auto_enable_rollout_dataset", True)):
+            self.config.rollout_dataset.enabled = True
+        if bool(getattr(cfg, "auto_enable_policy_finetune", True)):
+            self.config.policy_finetune.enabled = True
+        if bool(getattr(cfg, "auto_enable_policy_rl_loop", True)):
+            self.config.policy_rl_loop.enabled = True
+
+        self._apply_action_boost_compute_profile(str(getattr(cfg, "compute_profile", "standard")))
+        return state
+
+    def _apply_action_boost_compute_profile(self, profile: str) -> None:
+        mode = (profile or "standard").strip().lower()
+        if mode == "lean":
+            self.config.policy_rl_loop.iterations = 1
+            self.config.policy_rl_loop.rollouts_per_task = 6
+            self.config.policy_rl_loop.policy_refine_steps_per_iter = 750
+            self.config.policy_rl_loop.world_model_refresh_epochs = 2
+            return
+        if mode == "aggressive":
+            self.config.policy_rl_loop.iterations = 3
+            self.config.policy_rl_loop.rollouts_per_task = 12
+            self.config.policy_rl_loop.policy_refine_steps_per_iter = 1500
+            self.config.policy_rl_loop.world_model_refresh_epochs = 4
+            return
+        # standard
+        self.config.policy_rl_loop.iterations = 2
+        self.config.policy_rl_loop.rollouts_per_task = 8
+        self.config.policy_rl_loop.policy_refine_steps_per_iter = 1000
+        self.config.policy_rl_loop.world_model_refresh_epochs = 3
+
+    def _enforce_action_boost_required_stage_result(
+        self,
+        *,
+        result: StageResult,
+        stage_name: str,
+        action_boost: dict,
+    ) -> StageResult:
+        if not bool(action_boost.get("enabled", False)):
+            return result
+        if not bool(action_boost.get("require_full_pipeline", False)):
+            return result
+        if stage_name not in _ACTION_BOOST_REQUIRED_STAGES:
+            return result
+        if result.status != "skipped":
+            return result
+        detail = (
+            f"ActionBoost require_full_pipeline=true forbids skipped required stage '{stage_name}'. "
+            f"Original skip detail: {result.detail}"
+        )
+        return StageResult(
+            stage_name=result.stage_name,
+            status="failed",
+            elapsed_seconds=result.elapsed_seconds,
+            outputs=result.outputs,
+            metrics=result.metrics,
+            detail=detail,
+            timestamp=result.timestamp,
+        )
 
     def _load_existing_stage_result(self, result_path: Path) -> StageResult | None:
         if not result_path.exists():

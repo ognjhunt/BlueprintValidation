@@ -168,6 +168,8 @@ def sample_config(tmp_path):
     )
     # Most tests exercise OpenVLA stages directly; keep fixture on dual scope.
     cfg.eval_policy.headline_scope = "dual"
+    # Keep legacy pipeline behavior in fixture-level tests unless a test opts in.
+    cfg.action_boost.enabled = False
     return cfg
 
 

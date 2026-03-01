@@ -69,3 +69,12 @@ def test_stage_names_are_unique():
     ]
     names = [stage.name for stage in stages]
     assert len(names) == len(set(names)), f"Duplicate stage names: {names}"
+
+
+def test_validation_config_exposes_action_boost_defaults():
+    from blueprint_validation.config import ValidationConfig
+
+    cfg = ValidationConfig()
+    assert cfg.action_boost.enabled is True
+    assert cfg.action_boost.require_full_pipeline is True
+    assert cfg.action_boost.compute_profile == "standard"
