@@ -35,6 +35,7 @@ def _normalize_action_chunk(
     *,
     expected_action_dim: Optional[int],
     actions_per_latent_frame: Optional[int],
+    min_action_steps: Optional[int] = None,
 ) -> np.ndarray:
     """Normalize action input into a [T, D] chunk compatible with DreamDojo."""
     action_array = np.asarray(action, dtype=np.float32)
@@ -53,11 +54,9 @@ def _normalize_action_chunk(
 
     ratio = max(int(actions_per_latent_frame or 1), 1)
     num_steps = int(action_array.shape[0])
-    if num_steps < ratio:
-        pad = np.repeat(action_array[-1:, :], ratio - num_steps, axis=0)
-        action_array = np.concatenate([action_array, pad], axis=0)
-    elif num_steps % ratio != 0:
-        target_steps = ((num_steps + ratio - 1) // ratio) * ratio
+    target_steps = max(num_steps, ratio, int(min_action_steps or 0))
+    target_steps = ((target_steps + ratio - 1) // ratio) * ratio
+    if num_steps < target_steps:
         pad = np.repeat(action_array[-1:, :], target_steps - num_steps, axis=0)
         action_array = np.concatenate([action_array, pad], axis=0)
 
@@ -391,10 +390,16 @@ class _Video2WorldStepModel:
             video_frames = torch.cat([img_tensor, padding], dim=0)
         vid_input = video_frames.to(torch.uint8).unsqueeze(0).permute(0, 2, 1, 3, 4)  # (B, C, T, H, W)
 
+        actions_per_latent = int(self._expected_actions_per_latent_frame or 1)
+        actions_per_latent = max(actions_per_latent, 1)
+        state_t = int(getattr(self._pipe.model.config, "state_t", 1) or 1)
+        min_action_steps = max(state_t - 1, 1) * actions_per_latent
+
         action_array = _normalize_action_chunk(
             action,
             expected_action_dim=self._expected_action_dim,
-            actions_per_latent_frame=self._expected_actions_per_latent_frame,
+            actions_per_latent_frame=actions_per_latent,
+            min_action_steps=min_action_steps,
         )
         action_tensor = torch.from_numpy(action_array).float()
 

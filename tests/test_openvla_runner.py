@@ -32,6 +32,20 @@ def test_normalize_action_chunk_raises_on_dim_mismatch():
         )
 
 
+def test_normalize_action_chunk_honors_min_steps():
+    from blueprint_validation.evaluation.openvla_runner import _normalize_action_chunk
+
+    arr = _normalize_action_chunk(
+        np.array([1.0, 2.0], dtype=np.float32),
+        expected_action_dim=2,
+        actions_per_latent_frame=4,
+        min_action_steps=12,
+    )
+    assert arr.shape == (12, 2)
+    assert np.allclose(arr[0], np.array([1.0, 2.0], dtype=np.float32))
+    assert np.allclose(arr[-1], np.array([1.0, 2.0], dtype=np.float32))
+
+
 def test_run_rollout_passes_unnorm_key():
     from blueprint_validation.evaluation.openvla_runner import run_rollout
 
