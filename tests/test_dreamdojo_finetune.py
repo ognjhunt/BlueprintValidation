@@ -64,6 +64,7 @@ def test_build_dreamdojo_launch_command(tmp_path):
     text = " ".join(cmd)
     assert cmd[:2] == ["torchrun", "--standalone"]
     assert "experiment=dreamdojo_site_adapt" in text
+    assert f"++job.path_local={output_dir / 'lora_weights'}" in text
     assert f"dataloader_train.dataset.dataset_path={dataset_dir}" in text
     assert f"checkpoint.load_path={cfg.dreamdojo_checkpoint}" in text
     assert "model.config.use_lora=true" in text

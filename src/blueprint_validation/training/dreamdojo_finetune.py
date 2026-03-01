@@ -142,7 +142,7 @@ def build_dreamdojo_launch_command(
         f"experiment={experiment_name}",
         f"job.name=blueprint_{facility_id}",
         "job.wandb_mode=disabled",
-        f"job.path_local={run_dir}",
+        f"++job.path_local={run_dir}",
         f"dataloader_train.dataset.dataset_path={dataset_dir}",
         f"dataloader_train.batch_size={config.batch_size}",
         f"trainer.grad_accum_iter={config.gradient_accumulation_steps}",
