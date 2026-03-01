@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -33,6 +34,21 @@ class RolloutDatasetStage(PipelineStage):
         previous_results: Dict[str, StageResult],
     ) -> StageResult:
         del facility, previous_results
+        if (
+            (getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only")
+            .strip()
+            .lower()
+            == "wm_only"
+        ):
+            return StageResult(
+                stage_name=self.name,
+                status="skipped",
+                elapsed_seconds=0,
+                detail=(
+                    "Skipped by policy: eval_policy.headline_scope=wm_only "
+                    "(OpenVLA stages deferred)."
+                ),
+            )
         if not config.rollout_dataset.enabled:
             return StageResult(
                 stage_name=self.name,
@@ -56,6 +72,25 @@ class RolloutDatasetStage(PipelineStage):
                 status="failed",
                 elapsed_seconds=0,
                 detail="No rollout scores found to export.",
+            )
+        eval_report_path = work_dir / "policy_eval" / "policy_eval_report.json"
+        eval_report = read_json(eval_report_path) if eval_report_path.exists() else {}
+        claim_mode = bool(eval_report.get("claim_mode", False))
+        action_contract = eval_report.get("action_contract", {})
+        reliability_gate = eval_report.get("reliability_gate", {})
+        if claim_mode and not bool(action_contract.get("compliant", False)):
+            return StageResult(
+                stage_name=self.name,
+                status="failed",
+                elapsed_seconds=0,
+                detail=f"Claim mode action contract failed: {action_contract}",
+            )
+        if claim_mode and not bool(reliability_gate.get("passed", False)):
+            return StageResult(
+                stage_name=self.name,
+                status="failed",
+                elapsed_seconds=0,
+                detail=f"Claim mode reliability gate failed: {reliability_gate}",
             )
 
         baseline, adapted = _paired_rollouts(scores)
@@ -126,6 +161,10 @@ class RolloutDatasetStage(PipelineStage):
             "adapted_heldout": adapted_heldout_meta,
             "baseline_dataset_name": config.rollout_dataset.baseline_dataset_name,
             "adapted_dataset_name": config.rollout_dataset.adapted_dataset_name,
+            "claim_mode": claim_mode,
+            "action_contract": action_contract,
+            "reliability_gate": reliability_gate,
+            "action_contract_hash": _action_contract_hash(action_contract),
         }
         write_json(summary, dataset_root / "dataset_export_summary.json")
 
@@ -227,3 +266,11 @@ def _action_smoothness_ok(actions: List[list], max_delta_norm: float) -> bool:
     deltas = np.diff(arr, axis=0)
     norms = np.linalg.norm(deltas, axis=1)
     return bool(np.max(norms) <= max_delta_norm)
+
+
+def _action_contract_hash(action_contract: dict) -> str:
+    try:
+        payload = json.dumps(action_contract or {}, sort_keys=True, separators=(",", ":"))
+    except Exception:
+        payload = "{}"
+    return hashlib.md5(payload.encode("utf-8")).hexdigest()

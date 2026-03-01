@@ -373,3 +373,41 @@ def test_check_cosmos_predict_tokenizer_access_fails_without_token_or_file(tmp_p
     result = check_cosmos_predict_tokenizer_access(cosmos_transfer_dir)
     assert result.passed is False
     assert "HF_TOKEN is unset" in result.detail
+
+
+def test_preflight_wm_only_defers_policy_pipeline(sample_config, monkeypatch):
+    import blueprint_validation.preflight as preflight
+
+    _patch_preflight_fast(monkeypatch, preflight)
+    sample_config.eval_policy.mode = "claim"
+    sample_config.eval_policy.headline_scope = "wm_only"
+    sample_config.eval_policy.rollout_driver = "scripted"
+    sample_config.finetune.eval_world_experiment = (
+        "cosmos_predict2p5_2B_reason_embeddings_action_conditioned_rectified_flow_bridge_13frame_256x320"
+    )
+    sample_config.policy_finetune.enabled = True
+
+    checks = preflight.run_preflight(sample_config)
+    by_name = {c.name: c for c in checks}
+    assert by_name["wm_only:rollout_driver"].passed is True
+    assert by_name["wm_only:world_model_action_dim_resolved"].passed is True
+    assert by_name["policy_pipeline:deferred"].passed is True
+    assert "policy_finetune:openvla_repo" not in by_name
+
+
+def test_preflight_claim_dual_keeps_action_contract_checks(sample_config, monkeypatch):
+    import blueprint_validation.preflight as preflight
+
+    _patch_preflight_fast(monkeypatch, preflight)
+    sample_config.eval_policy.mode = "claim"
+    sample_config.eval_policy.headline_scope = "dual"
+    sample_config.eval_policy.required_action_dim = 7
+    sample_config.policy_adapter.openvla.policy_action_dim = 7
+    sample_config.finetune.eval_world_experiment = (
+        "cosmos_predict2p5_2B_reason_embeddings_action_conditioned_rectified_flow_bridge_13frame_256x320"
+    )
+
+    checks = preflight.run_preflight(sample_config)
+    by_name = {c.name: c for c in checks}
+    assert by_name["claim:policy_action_dim"].passed is True
+    assert by_name["claim:world_model_action_dim"].passed is True

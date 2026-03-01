@@ -247,8 +247,10 @@ def score_rollout(
     parts = []
     parts.append(
         types.Part.from_text(
-            f"I'm providing {len(frames)} frames from a robot policy rollout video. "
-            f'The robot was given the task: "{task_prompt}"\n\n{prompt}'
+            text=(
+                f"I'm providing {len(frames)} frames from a robot policy rollout video. "
+                f'The robot was given the task: "{task_prompt}"\n\n{prompt}'
+            )
         )
     )
 
@@ -266,8 +268,10 @@ def score_rollout(
         if attempt > 0:
             parts.append(
                 types.Part.from_text(
-                    "Retry: return JSON only with numeric task_score/visual_score/spatial_score "
-                    "between 0 and 10 and a non-empty reasoning field."
+                    text=(
+                        "Retry: return JSON only with numeric task_score/visual_score/spatial_score "
+                        "between 0 and 10 and a non-empty reasoning field."
+                    )
                 )
             )
 
@@ -328,7 +332,7 @@ def score_rollout_manipulation(
         prompt += f"\nFacility context: {facility_description}\n"
 
     frames = _encode_video_frames(video_path)
-    parts = [types.Part.from_text(f"Manipulation rollout frames ({len(frames)}). {prompt}")]
+    parts = [types.Part.from_text(text=f"Manipulation rollout frames ({len(frames)}). {prompt}")]
     for frame_data in frames:
         parts.append(
             types.Part.from_bytes(
@@ -342,7 +346,9 @@ def score_rollout_manipulation(
         if attempt > 0:
             parts.append(
                 types.Part.from_text(
-                    "Retry: return strict JSON only, include all required boolean manipulation fields."
+                    text=(
+                        "Retry: return strict JSON only, include all required boolean manipulation fields."
+                    )
                 )
             )
 
@@ -413,7 +419,7 @@ def score_spatial_accuracy(
     )
 
     frames = _encode_video_frames(video_path, max_frames=8)
-    parts = [types.Part.from_text(prompt)]
+    parts = [types.Part.from_text(text=prompt)]
     for frame_data in frames:
         parts.append(
             types.Part.from_bytes(
@@ -427,8 +433,10 @@ def score_spatial_accuracy(
         if attempt > 0:
             parts.append(
                 types.Part.from_text(
-                    "Retry: return JSON only with task_score/visual_score/spatial_score in [0,10] "
-                    "and a non-empty reasoning string."
+                    text=(
+                        "Retry: return JSON only with task_score/visual_score/spatial_score in [0,10] "
+                        "and a non-empty reasoning string."
+                    )
                 )
             )
         response = _generate_with_retry(
@@ -479,7 +487,7 @@ def classify_facility(
     )
 
     frames = _encode_video_frames(video_path, max_frames=8)
-    parts = [types.Part.from_text(prompt)]
+    parts = [types.Part.from_text(text=prompt)]
     for frame_data in frames:
         parts.append(
             types.Part.from_bytes(
@@ -493,7 +501,7 @@ def classify_facility(
         if attempt > 0:
             parts.append(
                 types.Part.from_text(
-                    "Retry: return JSON only with predicted_facility, confidence (0-1), reasoning."
+                    text="Retry: return JSON only with predicted_facility, confidence (0-1), reasoning."
                 )
             )
         response = _generate_with_retry(

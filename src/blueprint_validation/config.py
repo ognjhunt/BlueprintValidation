@@ -172,6 +172,8 @@ class FinetuneConfig:
     # Optional isolated Python runtime for DreamDojo Stage 3 (for dependency pinning).
     python_executable: Optional[Path] = None
     experiment_config: Optional[str] = None  # DreamDojo experiment config name
+    # Optional explicit cosmos action-conditioned experiment used for Stage 4 world-model eval.
+    eval_world_experiment: Optional[str] = None
     model_size: str = "2B"
     # video backend for Stage 3 dataloader: "opencv" uses Blueprint dataset class (no torchcodec),
     # "vendor" keeps DreamDojo's MultiVideoActionDataset path.
@@ -208,6 +210,14 @@ class VLMJudgeConfig:
 
 
 @dataclass
+class PolicyEvalReliabilityConfig:
+    max_horizon_steps: int = 12
+    keyframe_reanchor_every: int = 4
+    min_replay_pass_rate: float = 0.70
+    min_controllability_pass_rate: float = 0.70
+
+
+@dataclass
 class PolicyEvalConfig:
     model_name: str = "openvla/openvla-7b"
     checkpoint_path: Path = Path("./data/checkpoints/openvla-7b/")
@@ -217,7 +227,15 @@ class PolicyEvalConfig:
     tasks: List[str] = field(default_factory=list)
     manipulation_tasks: List[str] = field(default_factory=list)
     conditions: List[str] = field(default_factory=lambda: ["baseline", "adapted"])
-    min_absolute_difference: float = 0.5  # minimum raw score difference for PASS
+    headline_scope: str = "wm_only"  # wm_only|dual
+    rollout_driver: str = "scripted"  # scripted|stress|both
+    scripted_rollouts_per_task: int = 12
+    mode: str = "claim"  # claim|research
+    required_action_dim: int = 7
+    min_absolute_difference: float = 1.0  # minimum raw score difference for PASS
+    min_manip_success_delta_pp: float = 15.0
+    require_native_action_compat: bool = True
+    reliability: PolicyEvalReliabilityConfig = field(default_factory=PolicyEvalReliabilityConfig)
     vlm_judge: VLMJudgeConfig = field(default_factory=VLMJudgeConfig)
 
     @property
@@ -270,6 +288,7 @@ class PolicyFinetuneConfig:
 class OpenVLAAdapterBackendConfig:
     openvla_repo: Path = Path("/opt/openvla-oft")
     finetune_script: str = "vla-scripts/finetune.py"
+    policy_action_dim: int = 7
     extra_train_args: List[str] = field(default_factory=list)
 
 
@@ -283,6 +302,8 @@ class Pi05AdapterBackendConfig:
     norm_stats_script: str = "scripts/compute_norm_stats.py"
     policy_action_dim: int = 7
     policy_state_dim: int = 7
+    strict_action_contract: bool = True
+    allow_synthetic_state_for_eval: bool = False
     extra_train_args: List[str] = field(default_factory=list)
 
 
@@ -694,10 +715,13 @@ def load_config(path: Path) -> ValidationConfig:
         experiment_config = ft.get("experiment_config")
         if experiment_config and (
             "/" in experiment_config
-            or experiment_config.endswith(".sh")
+            or experiment_config.endswith((".sh", ".yaml"))
             or experiment_config.startswith(".")
         ):
             experiment_config = str(_resolve_path(experiment_config, base_dir))
+        eval_world_experiment = ft.get("eval_world_experiment")
+        if eval_world_experiment:
+            eval_world_experiment = str(eval_world_experiment).strip()
         config.finetune = FinetuneConfig(
             dreamdojo_repo=_resolve_path(ft.get("dreamdojo_repo", "/opt/DreamDojo"), base_dir),
             dreamdojo_checkpoint=_resolve_path(
@@ -710,6 +734,7 @@ def load_config(path: Path) -> ValidationConfig:
                 else None
             ),
             experiment_config=experiment_config,
+            eval_world_experiment=eval_world_experiment,
             model_size=ft.get("model_size", "2B"),
             video_dataset_backend=str(ft.get("video_dataset_backend", "opencv")),
             probe_dataloader_sample=bool(ft.get("probe_dataloader_sample", True)),
@@ -743,7 +768,30 @@ def load_config(path: Path) -> ValidationConfig:
             tasks=ep.get("tasks", []),
             manipulation_tasks=ep.get("manipulation_tasks", []),
             conditions=ep.get("conditions", ["baseline", "adapted"]),
-            min_absolute_difference=float(ep.get("min_absolute_difference", 0.5)),
+            headline_scope=str(ep.get("headline_scope", "wm_only")),
+            rollout_driver=str(ep.get("rollout_driver", "scripted")),
+            scripted_rollouts_per_task=int(ep.get("scripted_rollouts_per_task", 12)),
+            mode=str(ep.get("mode", "claim")),
+            required_action_dim=int(ep.get("required_action_dim", 7)),
+            min_absolute_difference=float(ep.get("min_absolute_difference", 1.0)),
+            min_manip_success_delta_pp=float(ep.get("min_manip_success_delta_pp", 15.0)),
+            require_native_action_compat=bool(ep.get("require_native_action_compat", True)),
+            reliability=PolicyEvalReliabilityConfig(
+                max_horizon_steps=int(
+                    (ep.get("reliability", {}) or {}).get("max_horizon_steps", 12)
+                ),
+                keyframe_reanchor_every=int(
+                    (ep.get("reliability", {}) or {}).get("keyframe_reanchor_every", 4)
+                ),
+                min_replay_pass_rate=float(
+                    (ep.get("reliability", {}) or {}).get("min_replay_pass_rate", 0.70)
+                ),
+                min_controllability_pass_rate=float(
+                    (ep.get("reliability", {}) or {}).get(
+                        "min_controllability_pass_rate", 0.70
+                    )
+                ),
+            ),
             vlm_judge=VLMJudgeConfig(
                 model=vlm_raw.get("model", "gemini-3-flash-preview"),
                 api_key_env=vlm_raw.get("api_key_env", "GOOGLE_GENAI_API_KEY"),
@@ -802,6 +850,7 @@ def load_config(path: Path) -> ValidationConfig:
                 finetune_script=str(
                     openvla_raw.get("finetune_script", config.policy_finetune.finetune_script)
                 ),
+                policy_action_dim=int(openvla_raw.get("policy_action_dim", 7)),
                 extra_train_args=[str(v) for v in openvla_raw.get("extra_train_args", [])],
             ),
             pi05=Pi05AdapterBackendConfig(
@@ -818,6 +867,10 @@ def load_config(path: Path) -> ValidationConfig:
                 ),
                 policy_action_dim=int(pi05_raw.get("policy_action_dim", 7)),
                 policy_state_dim=int(pi05_raw.get("policy_state_dim", 7)),
+                strict_action_contract=bool(pi05_raw.get("strict_action_contract", True)),
+                allow_synthetic_state_for_eval=bool(
+                    pi05_raw.get("allow_synthetic_state_for_eval", False)
+                ),
                 extra_train_args=[str(v) for v in pi05_raw.get("extra_train_args", [])],
             ),
         )

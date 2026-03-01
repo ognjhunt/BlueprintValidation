@@ -31,6 +31,21 @@ class PolicyFinetuneStage(PipelineStage):
         previous_results: Dict[str, StageResult],
     ) -> StageResult:
         del facility
+        if (
+            (getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only")
+            .strip()
+            .lower()
+            == "wm_only"
+        ):
+            return StageResult(
+                stage_name=self.name,
+                status="skipped",
+                elapsed_seconds=0,
+                detail=(
+                    "Skipped by policy: eval_policy.headline_scope=wm_only "
+                    "(OpenVLA stages deferred)."
+                ),
+            )
 
         if not config.policy_finetune.enabled:
             return StageResult(

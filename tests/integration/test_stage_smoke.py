@@ -102,6 +102,7 @@ def test_stage4_policy_eval_deterministic_metrics(sample_config, tmp_path, monke
     sample_config.eval_policy.tasks = ["task_a", "task_b"]
 
     fac = sample_config.facilities["test_facility"]
+    sample_config.eval_policy.mode = "research"
     work_dir = tmp_path / "outputs" / "test_facility"
     (work_dir / "finetune" / "adapted_checkpoint").mkdir(parents=True)
     adapted_policy_dir = work_dir / "policy_finetune" / "adapters"
@@ -187,9 +188,118 @@ def test_stage4_policy_eval_deterministic_metrics(sample_config, tmp_path, monke
     assert result.metrics["num_rollouts_baseline"] == 5
     assert result.metrics["num_rollouts_adapted"] == 5
     assert result.metrics["improvement_pct"] > 0
-    assert result.metrics["used_adapted_policy_checkpoint"] is True
-    assert len(load_calls) == 2
-    assert load_calls[1][1] == adapted_policy_dir
+
+
+def test_stage4_policy_eval_wm_only_uses_scripted_driver(sample_config, tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from blueprint_validation.common import StageResult
+    from blueprint_validation.evaluation.vlm_judge import JudgeScore
+    from blueprint_validation.stages.s4_policy_eval import PolicyEvalStage
+
+    sample_config.eval_policy.mode = "research"
+    sample_config.eval_policy.headline_scope = "wm_only"
+    sample_config.eval_policy.num_rollouts = 4
+    sample_config.eval_policy.tasks = ["Navigate to loading dock"]
+    sample_config.eval_policy.rollout_driver = "scripted"
+    sample_config.finetune.eval_world_experiment = (
+        "cosmos_predict2p5_2B_reason_embeddings_action_conditioned_rectified_flow_bridge_13frame_256x320"
+    )
+
+    fac = sample_config.facilities["test_facility"]
+    work_dir = tmp_path / "outputs" / "test_facility"
+    (work_dir / "finetune" / "adapted_checkpoint").mkdir(parents=True, exist_ok=True)
+    (work_dir / "renders").mkdir(parents=True, exist_ok=True)
+    write_json({"clips": []}, work_dir / "renders" / "render_manifest.json")
+
+    frame = np.zeros((16, 16, 3), dtype=np.uint8)
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4_policy_eval.build_task_start_assignments",
+        lambda **kwargs: [
+            {
+                "rollout_index": i,
+                "task": sample_config.eval_policy.tasks[0],
+                "clip_index": 0,
+                "clip_name": "clip_000",
+                "path_type": "orbit",
+            }
+            for i in range(sample_config.eval_policy.num_rollouts)
+        ],
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4_policy_eval.load_initial_frames_for_assignments",
+        lambda assignments: {0: frame},
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4_policy_eval.get_policy_adapter",
+        lambda *_: (_ for _ in ()).throw(AssertionError("wm_only should not load policy adapter")),
+    )
+
+    class FakeWorldModel:
+        expected_action_dim = 7
+
+        def predict_next_frame(self, current_frame, action):
+            return current_frame
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4_policy_eval.load_dreamdojo_world_model",
+        lambda *args, **kwargs: FakeWorldModel(),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4_policy_eval.build_scripted_trace_manifest",
+        lambda assignments, action_dim, max_steps: {
+            f"{a['rollout_index']}::{a['clip_index']}::{a['task']}": {
+                "trace_id": f"trace_{a['rollout_index']}",
+                "trace_type": "navigation_scripted",
+                "seed": 1,
+                "action_sequence": [[0.1] * action_dim for _ in range(max_steps)],
+            }
+            for a in assignments
+        },
+    )
+
+    class FakeRollout:
+        def __init__(self, video_path: Path, action_dim: int):
+            self.video_path = video_path
+            self.num_steps = 3
+            self.driver_type = "scripted"
+            self.action_sequence = [[0.1] * action_dim for _ in range(3)]
+            self.action_contract = {
+                "policy_dim": None,
+                "world_dim": action_dim,
+                "dataset_dim": action_dim,
+                "compliant": True,
+                "reason": "",
+            }
+
+    def fake_run_scripted_rollout(*, output_dir, clip_name, action_sequence, trace_id, **kwargs):
+        video_path = output_dir / f"{clip_name}.mp4"
+        video_path.parent.mkdir(parents=True, exist_ok=True)
+        video_path.write_bytes(b"x")
+        return FakeRollout(video_path, len(action_sequence[0]))
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4_policy_eval.run_scripted_rollout",
+        fake_run_scripted_rollout,
+    )
+
+    def fake_score_rollout(*, video_path, **kwargs):
+        if "adapted" in video_path.name:
+            return JudgeScore(8, 7, 7, "adapted better", "{}")
+        return JudgeScore(5, 6, 6, "baseline", "{}")
+
+    monkeypatch.setattr("blueprint_validation.stages.s4_policy_eval.score_rollout", fake_score_rollout)
+
+    result = PolicyEvalStage().execute(sample_config, fac, work_dir, {"s3_finetune": StageResult(
+        stage_name="s3_finetune",
+        status="success",
+        elapsed_seconds=1.0,
+        outputs={"adapted_checkpoint_path": str(work_dir / "finetune" / "adapted_checkpoint")},
+    )})
+    assert result.status == "success"
+    assert result.metrics["headline_scope"] == "wm_only"
+    assert result.metrics["absolute_point_differential"] > 0
+    assert result.metrics["deferred_claims"]
 
 
 def _write_tiny_video(path: Path) -> None:

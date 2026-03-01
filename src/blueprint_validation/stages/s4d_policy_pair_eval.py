@@ -36,6 +36,29 @@ class PolicyPairEvalStage(PipelineStage):
         previous_results: Dict[str, StageResult],
     ) -> StageResult:
         del previous_results
+        if (
+            (getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only")
+            .strip()
+            .lower()
+            == "wm_only"
+        ):
+            return StageResult(
+                stage_name=self.name,
+                status="skipped",
+                elapsed_seconds=0,
+                detail=(
+                    "Skipped by policy: eval_policy.headline_scope=wm_only "
+                    "(OpenVLA stages deferred)."
+                ),
+            )
+        claim_mode = (config.eval_policy.mode or "claim").strip().lower() == "claim"
+        if claim_mode and config.policy_adapter.name.strip().lower() != "openvla_oft":
+            return StageResult(
+                stage_name=self.name,
+                status="failed",
+                elapsed_seconds=0,
+                detail="Claim mode only supports policy_adapter.name=openvla_oft.",
+            )
         if not config.policy_compare.enabled:
             return StageResult(
                 stage_name=self.name,
@@ -98,6 +121,9 @@ class PolicyPairEvalStage(PipelineStage):
         world_model = load_dreamdojo_world_model(
             checkpoint_path=config.finetune.dreamdojo_checkpoint,
             adapted_checkpoint=eval_world_checkpoint,
+            configured_experiment=(
+                config.finetune.eval_world_experiment or config.finetune.experiment_config
+            ),
             dreamdojo_repo=config.finetune.dreamdojo_repo,
             device=device,
         )
@@ -177,11 +203,39 @@ class PolicyPairEvalStage(PipelineStage):
 
         write_json({"scores": score_rows}, eval_dir / "pair_scores.json")
         metrics = _compute_pair_metrics(score_rows)
+        claim_failure_reasons: List[str] = []
+        task_abs_diff = float(metrics.get("task_score_absolute_difference", 0.0) or 0.0)
+        if task_abs_diff < float(config.eval_policy.min_absolute_difference):
+            claim_failure_reasons.append(
+                "Absolute task-score difference below threshold: "
+                f"{task_abs_diff:.3f} < {config.eval_policy.min_absolute_difference:.3f}"
+            )
+        base_manip = metrics.get("policy_base_manipulation_success_rate")
+        site_manip = metrics.get("policy_site_manipulation_success_rate")
+        manip_delta_pp = None
+        if base_manip is not None and site_manip is not None:
+            manip_delta_pp = (float(site_manip) - float(base_manip)) * 100.0
+            if manip_delta_pp < float(config.eval_policy.min_manip_success_delta_pp):
+                claim_failure_reasons.append(
+                    "Manipulation success delta below threshold: "
+                    f"{manip_delta_pp:.2f}pp < {config.eval_policy.min_manip_success_delta_pp:.2f}pp"
+                )
+        claim_passed = len(claim_failure_reasons) == 0
+        metrics["claim_mode"] = claim_mode
+        metrics["claim_passed"] = claim_passed
+        metrics["claim_failure_reasons"] = claim_failure_reasons
+        metrics["manipulation_success_delta_pp"] = (
+            round(float(manip_delta_pp), 6) if manip_delta_pp is not None else None
+        )
         write_json(metrics, eval_dir / "pair_eval_report.json")
 
         return StageResult(
             stage_name=self.name,
-            status="success" if score_rows else "failed",
+            status=(
+                "success"
+                if score_rows and (not claim_mode or claim_passed)
+                else "failed"
+            ),
             elapsed_seconds=0,
             outputs={
                 "pair_eval_dir": str(eval_dir),

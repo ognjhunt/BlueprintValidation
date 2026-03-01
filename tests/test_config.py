@@ -46,6 +46,11 @@ def test_config_defaults():
     assert config.eval_policy.model_name == "openvla/openvla-7b"
     assert str(config.eval_policy.checkpoint_path).endswith("data/checkpoints/openvla-7b")
     assert config.eval_policy.unnorm_key == "bridge_orig"
+    assert config.eval_policy.headline_scope == "wm_only"
+    assert config.eval_policy.rollout_driver == "scripted"
+    assert config.eval_policy.scripted_rollouts_per_task == 12
+    assert config.eval_policy.min_absolute_difference == pytest.approx(1.0)
+    assert config.eval_policy.min_manip_success_delta_pp == pytest.approx(15.0)
     assert config.eval_policy.vlm_judge.enable_agentic_vision is True
     assert config.enrich.max_input_frames == 0
     assert config.enrich.context_frame_mode == "target_centered"
@@ -135,6 +140,11 @@ def test_config_with_all_sections(tmp_path):
         "eval_policy": {
             "num_rollouts": 10,
             "tasks": ["go forward"],
+            "headline_scope": "dual",
+            "rollout_driver": "both",
+            "scripted_rollouts_per_task": 9,
+            "min_absolute_difference": 1.25,
+            "min_manip_success_delta_pp": 20,
             "vlm_judge": {"model": "gemini-3-flash", "enable_agentic_vision": True},
         },
         "policy_finetune": {
@@ -199,6 +209,11 @@ def test_config_with_all_sections(tmp_path):
     assert config.finetune.video_dataset_backend == "vendor"
     assert config.finetune.probe_dataloader_sample is False
     assert config.eval_policy.num_rollouts == 10
+    assert config.eval_policy.headline_scope == "dual"
+    assert config.eval_policy.rollout_driver == "both"
+    assert config.eval_policy.scripted_rollouts_per_task == 9
+    assert config.eval_policy.min_absolute_difference == pytest.approx(1.25)
+    assert config.eval_policy.min_manip_success_delta_pp == pytest.approx(20.0)
     assert config.robot_composite.enabled is True
     assert config.gemini_polish.enabled is True
     assert config.eval_policy.vlm_judge.enable_agentic_vision is True

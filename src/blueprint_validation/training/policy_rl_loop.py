@@ -75,6 +75,9 @@ def run_policy_rl_iterations(
         world_model = load_dreamdojo_world_model(
             checkpoint_path=config.finetune.dreamdojo_checkpoint,
             adapted_checkpoint=current_world_checkpoint,
+            configured_experiment=(
+                config.finetune.eval_world_experiment or config.finetune.experiment_config
+            ),
             dreamdojo_repo=config.finetune.dreamdojo_repo,
             device=device,
         )

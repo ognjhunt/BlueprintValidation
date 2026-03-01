@@ -225,3 +225,28 @@ def test_pipeline_post_stage_sync_hook(sample_config, tmp_path, monkeypatch):
     lines = hook_log.read_text().strip().splitlines()
     assert len(lines) == 18
     assert any(line.startswith("test_facility/s1_render|success") for line in lines)
+
+
+def test_pipeline_wm_only_skips_openvla_stages(sample_config, tmp_path, monkeypatch):
+    call_counts = {}
+    pipeline_mod = _patch_pipeline_stages_with_dummies(monkeypatch, call_counts)
+    sample_config.cloud.max_cost_usd = 0
+    sample_config.eval_policy.headline_scope = "wm_only"
+    work_dir = tmp_path / "outputs"
+    pipeline = pipeline_mod.ValidationPipeline(sample_config, work_dir)
+
+    results = pipeline.run_all(resume_from_results=False)
+    deferred = [
+        "s3b_policy_finetune",
+        "s3c_policy_rl_loop",
+        "s4a_rlds_export",
+        "s4b_rollout_dataset",
+        "s4c_policy_pair_train",
+        "s4d_policy_pair_eval",
+        "s4e_trained_eval",
+    ]
+    for stage_name in deferred:
+        key = f"test_facility/{stage_name}"
+        assert results[key].status == "skipped"
+        assert "headline_scope=wm_only" in results[key].detail
+        assert call_counts.get(stage_name, 0) == 0

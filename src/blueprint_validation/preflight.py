@@ -128,6 +128,148 @@ def _canonical_policy_adapter_name(name: str) -> str:
     return key
 
 
+def _resolve_eval_world_action_dim(config: ValidationConfig) -> int | None:
+    """Resolve expected DreamDojo world-model action dim from configured experiment hints."""
+    token = (config.finetune.eval_world_experiment or config.finetune.experiment_config or "").strip()
+    if not token:
+        return None
+
+    # Explicit experiment names (current supported set in openvla_runner mappings).
+    if token.lower().startswith("cosmos_predict2"):
+        mapping = {
+            "cosmos_predict2p5_2B_action_conditioned_gr00t_gr1_customized_13frame": 384,
+            "cosmos_predict2p5_2B_reason_embeddings_action_conditioned_rectified_flow_bridge_13frame_256x320": 7,
+            "cosmos_predict2p5_2B_reason_embeddings_action_conditioned_rectified_flow_bridge_13frame_480_640_": 7,
+        }
+        return mapping.get(token)
+
+    # Resolve local yaml config and parse action_dim.
+    maybe = Path(token)
+    candidate: Path
+    if maybe.is_absolute() or "/" in token or token.endswith(".yaml"):
+        candidate = maybe if maybe.is_absolute() else (config.finetune.dreamdojo_repo / "configs" / maybe)
+        if candidate.suffix != ".yaml":
+            yaml_candidate = candidate.with_suffix(".yaml")
+            if yaml_candidate.exists():
+                candidate = yaml_candidate
+    else:
+        stem = token.lower()
+        if stem.startswith("dreamdojo_"):
+            stem = stem[len("dreamdojo_") :]
+        candidate = config.finetune.dreamdojo_repo / "configs" / f"{Path(stem).stem}.yaml"
+
+    if not candidate.exists():
+        return None
+    try:
+        text = candidate.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = re.search(r"^\s*action_dim\s*:\s*(\d+)\s*$", text, flags=re.MULTILINE)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _claim_mode_checks(config: ValidationConfig, adapter_name: str) -> list[PreflightCheck]:
+    checks: list[PreflightCheck] = []
+    mode = (config.eval_policy.mode or "").strip().lower()
+    scope = (getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only").strip().lower()
+    checks.append(
+        PreflightCheck(
+            name="eval_policy:mode",
+            passed=mode in {"claim", "research"},
+            detail=mode or "<unset>",
+        )
+    )
+    checks.append(
+        PreflightCheck(
+            name="eval_policy:headline_scope",
+            passed=scope in {"wm_only", "dual"},
+            detail=scope or "<unset>",
+        )
+    )
+    if mode != "claim":
+        return checks
+
+    if scope == "wm_only":
+        rollout_driver = (getattr(config.eval_policy, "rollout_driver", "scripted") or "").strip().lower()
+        checks.append(
+            PreflightCheck(
+                name="wm_only:rollout_driver",
+                passed=rollout_driver in {"scripted", "both"},
+                detail=rollout_driver or "<unset>",
+            )
+        )
+        world_dim = _resolve_eval_world_action_dim(config)
+        checks.append(
+            PreflightCheck(
+                name="wm_only:world_model_action_dim_resolved",
+                passed=world_dim is not None,
+                detail=(
+                    f"world={world_dim}"
+                    if world_dim is not None
+                    else (
+                        "Could not resolve world action_dim from finetune.eval_world_experiment/"
+                        "finetune.experiment_config."
+                    )
+                ),
+            )
+        )
+        return checks
+
+    checks.append(
+        PreflightCheck(
+            name="claim:policy_adapter",
+            passed=adapter_name == "openvla_oft",
+            detail=(
+                "Claim mode only supports openvla_oft."
+                if adapter_name != "openvla_oft"
+                else "openvla_oft"
+            ),
+        )
+    )
+    checks.append(
+        PreflightCheck(
+            name="claim:require_native_action_compat",
+            passed=bool(config.eval_policy.require_native_action_compat),
+            detail=str(config.eval_policy.require_native_action_compat),
+        )
+    )
+
+    required_dim = int(config.eval_policy.required_action_dim)
+    policy_dim = int(config.policy_adapter.openvla.policy_action_dim)
+    checks.append(
+        PreflightCheck(
+            name="claim:policy_action_dim",
+            passed=policy_dim == required_dim,
+            detail=f"policy={policy_dim}, required={required_dim}",
+        )
+    )
+    world_dim = _resolve_eval_world_action_dim(config)
+    checks.append(
+        PreflightCheck(
+            name="claim:world_model_action_dim",
+            passed=world_dim == required_dim,
+            detail=(
+                f"world={world_dim}, required={required_dim}"
+                if world_dim is not None
+                else (
+                    "Could not resolve world action_dim from finetune.eval_world_experiment/"
+                    "finetune.experiment_config."
+                )
+            ),
+        )
+    )
+    checks.append(
+        PreflightCheck(
+            name="claim:rollout_dataset_dim_contract",
+            passed=bool(config.rollout_dataset.require_consistent_action_dim),
+            detail=str(config.rollout_dataset.require_consistent_action_dim),
+        )
+    )
+    return checks
+
+
 def check_policy_base_reference(model_name: str, checkpoint_path: Path) -> PreflightCheck:
     if checkpoint_path.exists() and checkpoint_path.is_dir() and any(checkpoint_path.iterdir()):
         return PreflightCheck(
@@ -760,6 +902,11 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
     """Run all preflight checks and return results."""
     checks: List[PreflightCheck] = []
     adapter_name = _canonical_policy_adapter_name(config.policy_adapter.name)
+    wm_only_scope = (
+        (getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only").strip().lower()
+        == "wm_only"
+    )
+    checks.extend(_claim_mode_checks(config, adapter_name))
 
     # GPU
     checks.append(check_gpu())
@@ -794,13 +941,22 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
     # Model weights
     checks.append(check_model_weights(config.finetune.dreamdojo_checkpoint, "DreamDojo"))
     checks.append(check_model_weights(config.enrich.cosmos_checkpoint, "Cosmos-Transfer-2.5"))
-    checks.append(
-        check_policy_base_reference_for_adapter(
-            adapter_name=adapter_name,
-            model_name=config.eval_policy.model_name,
-            checkpoint_path=config.eval_policy.checkpoint_path,
+    if wm_only_scope:
+        checks.append(
+            PreflightCheck(
+                name="policy:base_reference",
+                passed=True,
+                detail="Deferred because eval_policy.headline_scope=wm_only",
+            )
         )
-    )
+    else:
+        checks.append(
+            check_policy_base_reference_for_adapter(
+                adapter_name=adapter_name,
+                model_name=config.eval_policy.model_name,
+                checkpoint_path=config.eval_policy.checkpoint_path,
+            )
+        )
     checks.append(check_hf_auth())
     checks.append(check_cosmos_predict_tokenizer_access(config.enrich.cosmos_checkpoint))
 
@@ -960,7 +1116,15 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
             )
         )
 
-    if config.policy_finetune.enabled:
+    if wm_only_scope:
+        checks.append(
+            PreflightCheck(
+                name="policy_pipeline:deferred",
+                passed=True,
+                detail="OpenVLA stages deferred because eval_policy.headline_scope=wm_only",
+            )
+        )
+    elif config.policy_finetune.enabled:
         if adapter_name == "openvla_oft":
             openvla_backend = config.policy_adapter.openvla
             checks.append(check_external_tool("torchrun"))

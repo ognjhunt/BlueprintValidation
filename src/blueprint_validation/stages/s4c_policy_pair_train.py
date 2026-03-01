@@ -30,6 +30,21 @@ class PolicyPairTrainStage(PipelineStage):
         previous_results: Dict[str, StageResult],
     ) -> StageResult:
         del facility, previous_results
+        if (
+            (getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only")
+            .strip()
+            .lower()
+            == "wm_only"
+        ):
+            return StageResult(
+                stage_name=self.name,
+                status="skipped",
+                elapsed_seconds=0,
+                detail=(
+                    "Skipped by policy: eval_policy.headline_scope=wm_only "
+                    "(OpenVLA stages deferred)."
+                ),
+            )
         if not config.policy_finetune.enabled:
             return StageResult(
                 stage_name=self.name,
@@ -47,7 +62,24 @@ class PolicyPairTrainStage(PipelineStage):
                 elapsed_seconds=0,
                 detail="Dataset export summary missing. Run Stage 4b first.",
             )
-        _ = read_json(summary_path)
+        summary_payload = read_json(summary_path)
+        if bool(summary_payload.get("claim_mode", False)):
+            action_contract = summary_payload.get("action_contract", {})
+            reliability_gate = summary_payload.get("reliability_gate", {})
+            if not bool(action_contract.get("compliant", False)):
+                return StageResult(
+                    stage_name=self.name,
+                    status="failed",
+                    elapsed_seconds=0,
+                    detail=f"Claim mode action contract failed: {action_contract}",
+                )
+            if not bool(reliability_gate.get("passed", False)):
+                return StageResult(
+                    stage_name=self.name,
+                    status="failed",
+                    elapsed_seconds=0,
+                    detail=f"Claim mode reliability gate failed: {reliability_gate}",
+                )
         adapter = get_policy_adapter(config.policy_adapter)
 
         train_root = work_dir / "policy_pair_train"

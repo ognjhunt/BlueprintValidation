@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import re
 from typing import Dict, List
@@ -174,6 +175,10 @@ def recommended_rollouts_per_condition(
     profile: str,
 ) -> int:
     """Choose rollouts/condition to hit repeat-count and total-rollout guidance."""
+    debug_override = os.environ.get("BLUEPRINT_EVAL_ALLOW_SMALL_ROLLOUTS", "").strip().lower()
+    if debug_override in {"1", "true", "yes", "on"}:
+        return max(1, int(requested))
+
     profile_key = _normalize_profile(profile)
     if profile_key == "dreamdojo":
         repeats_target = 4

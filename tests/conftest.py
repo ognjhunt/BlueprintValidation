@@ -166,6 +166,8 @@ def sample_config(tmp_path):
     cfg.rollout_dataset = RolloutDatasetConfig(
         export_dir=tmp_path / "policy_datasets",
     )
+    # Most tests exercise OpenVLA stages directly; keep fixture on dual scope.
+    cfg.eval_policy.headline_scope = "dual"
     return cfg
 
 

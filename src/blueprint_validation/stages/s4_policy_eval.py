@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 from typing import Dict, List
 
@@ -30,6 +32,10 @@ from ..evaluation.vlm_judge import (
     ManipulationJudgeScore,
     score_rollout,
     score_rollout_manipulation,
+)
+from ..evaluation.scripted_rollout_driver import (
+    build_scripted_trace_manifest,
+    run_scripted_rollout,
 )
 from ..evaluation.rollout_utils import run_rollout_with_adapter
 from ..policy_adapters import get_policy_adapter
@@ -146,9 +152,49 @@ class PolicyEvalStage(PipelineStage):
             )
 
         num_rollouts = len(rollout_assignments)
-        max_steps = config.eval_policy.max_steps_per_rollout
+        headline_scope = _headline_scope(config)
+        claim_mode = (config.eval_policy.mode or "claim").strip().lower() == "claim"
+        required_dim = int(config.eval_policy.required_action_dim)
+        if claim_mode and headline_scope == "dual" and config.policy_adapter.name.strip().lower() != "openvla_oft":
+            return StageResult(
+                stage_name=self.name,
+                status="failed",
+                elapsed_seconds=0,
+                detail="Claim mode only supports policy_adapter.name=openvla_oft.",
+            )
+        if claim_mode and headline_scope == "dual" and not config.eval_policy.require_native_action_compat:
+            return StageResult(
+                stage_name=self.name,
+                status="failed",
+                elapsed_seconds=0,
+                detail="Claim mode requires eval_policy.require_native_action_compat=true.",
+            )
+        max_steps = int(config.eval_policy.max_steps_per_rollout)
+        if claim_mode:
+            max_steps = min(max_steps, int(config.eval_policy.reliability.max_horizon_steps))
 
         device = "cuda" if _has_cuda() else "cpu"
+        if headline_scope == "wm_only":
+            return _run_world_model_only_eval(
+                config=config,
+                facility=facility,
+                work_dir=work_dir,
+                eval_dir=eval_dir,
+                adapted_dir=adapted_dir,
+                tasks=tasks,
+                hint_count=hint_count,
+                requested_rollouts=requested_rollouts,
+                planned_rollouts=planned_rollouts,
+                rollout_assignments=rollout_assignments,
+                frame_cache=frame_cache,
+                num_rollouts=num_rollouts,
+                shared_manifest_path=shared_manifest_path,
+                reused_shared_manifest=reused_shared_manifest,
+                max_steps=max_steps,
+                device=device,
+                claim_mode=claim_mode,
+            )
+
         policy_adapter = get_policy_adapter(config.policy_adapter)
         base_model_name, base_checkpoint = policy_adapter.base_model_ref(config.eval_policy)
         adapted_policy_checkpoint = _resolve_adapted_policy_checkpoint(
@@ -159,6 +205,9 @@ class PolicyEvalStage(PipelineStage):
 
         all_scores: List[Dict] = []
         scoring_failures: List[str] = []
+        observed_action_dims: set[int] = set()
+        observed_policy_dims: set[int] = set()
+        observed_world_dims: set[int] = set()
 
         conditions = list(config.eval_policy.conditions)
         for condition in conditions:
@@ -181,9 +230,39 @@ class PolicyEvalStage(PipelineStage):
             world_model = load_dreamdojo_world_model(
                 checkpoint_path=config.finetune.dreamdojo_checkpoint,
                 adapted_checkpoint=adapted,
+                configured_experiment=(
+                    config.finetune.eval_world_experiment or config.finetune.experiment_config
+                ),
                 dreamdojo_repo=config.finetune.dreamdojo_repo,
                 device=device,
             )
+            world_dim = _extract_world_action_dim(world_model)
+            if world_dim is not None:
+                observed_world_dims.add(int(world_dim))
+            policy_dim = _resolve_policy_action_dim(config)
+            if policy_dim is not None:
+                observed_policy_dims.add(int(policy_dim))
+            if claim_mode and config.eval_policy.require_native_action_compat:
+                if world_dim is None or policy_dim is None:
+                    return StageResult(
+                        stage_name=self.name,
+                        status="failed",
+                        elapsed_seconds=0,
+                        detail=(
+                            "Claim mode requires resolvable policy/world action dims. "
+                            f"policy_dim={policy_dim}, world_dim={world_dim}"
+                        ),
+                    )
+                if int(world_dim) != required_dim or int(policy_dim) != required_dim:
+                    return StageResult(
+                        stage_name=self.name,
+                        status="failed",
+                        elapsed_seconds=0,
+                        detail=(
+                            "Claim mode action contract failed: "
+                            f"policy_dim={policy_dim}, world_dim={world_dim}, required={required_dim}."
+                        ),
+                    )
 
             for assignment in rollout_assignments:
                 rollout_idx = int(assignment.get("rollout_index", 0))
@@ -211,7 +290,28 @@ class PolicyEvalStage(PipelineStage):
                     output_dir=condition_dir,
                     clip_name=clip_name,
                     device=device,
+                    expected_action_dim=required_dim if claim_mode else None,
+                    reanchor_every=(
+                        int(config.eval_policy.reliability.keyframe_reanchor_every)
+                        if claim_mode
+                        else None
+                    ),
                 )
+                action_contract = getattr(rollout, "action_contract", {}) or {}
+                action_dim = action_contract.get("dataset_dim")
+                if action_dim is not None:
+                    observed_action_dims.add(int(action_dim))
+                if claim_mode and config.eval_policy.require_native_action_compat:
+                    if not bool(action_contract.get("compliant", False)):
+                        return StageResult(
+                            stage_name=self.name,
+                            status="failed",
+                            elapsed_seconds=0,
+                            detail=(
+                                "Claim mode action contract violation in rollout: "
+                                f"{action_contract}"
+                            ),
+                        )
 
                 if not rollout.video_path or not rollout.video_path.exists():
                     msg = f"Rollout video missing for {clip_name}"
@@ -278,6 +378,7 @@ class PolicyEvalStage(PipelineStage):
                             if isinstance(score, ManipulationJudgeScore)
                             else None
                         ),
+                        "action_contract": action_contract,
                     }
                 )
 
@@ -328,11 +429,62 @@ class PolicyEvalStage(PipelineStage):
             except ImportError:
                 logger.warning("scipy not available; skipping p-value computation")
 
+        policy_dim = _single_or_none(observed_policy_dims)
+        world_dim = _single_or_none(observed_world_dims)
+        dataset_dim = _single_or_none(observed_action_dims)
+        action_contract = {
+            "policy_dim": policy_dim,
+            "world_dim": world_dim,
+            "dataset_dim": dataset_dim,
+            "compliant": (
+                policy_dim is not None
+                and world_dim is not None
+                and dataset_dim is not None
+                and policy_dim == world_dim == dataset_dim
+            ),
+            "reason": "",
+        }
+        if not action_contract["compliant"]:
+            action_contract["reason"] = (
+                "policy/world/dataset action dimensions are missing or inconsistent."
+            )
+
+        reliability_gate = _build_reliability_gate(config, all_scores)
+        manip_delta_pp = (
+            (per_condition.get("adapted", {}).get("manipulation_success_rate", 0.0) or 0.0)
+            - (per_condition.get("baseline", {}).get("manipulation_success_rate", 0.0) or 0.0)
+        ) * 100.0
+        claim_failure_reasons: List[str] = []
+        if claim_mode:
+            if not action_contract["compliant"]:
+                claim_failure_reasons.append(
+                    f"Action contract failed: {action_contract.get('reason')}"
+                )
+            if not reliability_gate["passed"]:
+                claim_failure_reasons.append(
+                    "Reliability gate failed: "
+                    f"replay_pass_rate={reliability_gate['replay_pass_rate']:.3f}, "
+                    f"controllability_pass_rate={reliability_gate['controllability_pass_rate']:.3f}"
+                )
+            if float(absolute_difference) < float(config.eval_policy.min_absolute_difference):
+                claim_failure_reasons.append(
+                    "Absolute task-score difference below threshold: "
+                    f"{absolute_difference:.3f} < {config.eval_policy.min_absolute_difference:.3f}"
+                )
+            if float(manip_delta_pp) < float(config.eval_policy.min_manip_success_delta_pp):
+                claim_failure_reasons.append(
+                    "Manipulation success delta below threshold: "
+                    f"{manip_delta_pp:.2f}pp < {config.eval_policy.min_manip_success_delta_pp:.2f}pp"
+                )
+        claim_passed = len(claim_failure_reasons) == 0
+
         metrics = {
+            "headline_scope": headline_scope,
             "baseline_mean_task_score": round(float(baseline_mean), 3),
             "adapted_mean_task_score": round(float(adapted_mean), 3),
             "improvement_pct": round(float(improvement), 2),
             "absolute_difference": round(float(absolute_difference), 3),
+            "absolute_point_differential": round(float(absolute_difference), 3),
             "win_rate": round(float(win_rate), 3),
             "p_value": round(p_value, 6) if p_value is not None else None,
             "num_rollouts_baseline": len(baseline_scores),
@@ -358,13 +510,26 @@ class PolicyEvalStage(PipelineStage):
             ),
             "task_hints_injected": hint_count,
             "judge_audit_csv": str(audit_csv_path),
+            "action_contract": action_contract,
+            "reliability_gate": reliability_gate,
+            "manipulation_success_delta_pp": round(float(manip_delta_pp), 3),
+            "claim_mode": claim_mode,
+            "claim_passed": claim_passed,
+            "claim_failure_reasons": claim_failure_reasons,
+            "deferred_claims": [],
+            "confidence_intervals": _build_confidence_intervals(baseline_scores, adapted_scores),
+            "heldout_manifest_hash": _manifest_hash(shared_manifest_path),
         }
 
         write_json(metrics, eval_dir / "policy_eval_report.json")
 
         return StageResult(
             stage_name=self.name,
-            status="success" if all_scores else "failed",
+            status=(
+                "success"
+                if all_scores and (not claim_mode or claim_passed)
+                else "failed"
+            ),
             elapsed_seconds=0,
             outputs={
                 "eval_dir": str(eval_dir),
@@ -376,6 +541,356 @@ class PolicyEvalStage(PipelineStage):
             metrics=metrics,
             detail="\n".join(scoring_failures[:5]),
         )
+
+
+def _run_world_model_only_eval(
+    *,
+    config: ValidationConfig,
+    facility: FacilityConfig,
+    work_dir: Path,
+    eval_dir: Path,
+    adapted_dir: Path,
+    tasks: List[str],
+    hint_count: int,
+    requested_rollouts: int,
+    planned_rollouts: int,
+    rollout_assignments: List[dict],
+    frame_cache: Dict[int, np.ndarray],
+    num_rollouts: int,
+    shared_manifest_path: Path,
+    reused_shared_manifest: bool,
+    max_steps: int,
+    device: str,
+    claim_mode: bool,
+) -> StageResult:
+    rollout_driver = (config.eval_policy.rollout_driver or "scripted").strip().lower()
+    if rollout_driver not in {"scripted", "both"}:
+        return StageResult(
+            stage_name="s4_policy_eval",
+            status="failed",
+            elapsed_seconds=0,
+            detail=(
+                "WM-only claim path currently supports rollout_driver in {'scripted','both'}; "
+                f"got '{rollout_driver}'."
+            ),
+        )
+
+    conditions = ["baseline", "adapted"]
+    world_models = {
+        "baseline": load_dreamdojo_world_model(
+            checkpoint_path=config.finetune.dreamdojo_checkpoint,
+            adapted_checkpoint=None,
+            configured_experiment=(
+                config.finetune.eval_world_experiment or config.finetune.experiment_config
+            ),
+            dreamdojo_repo=config.finetune.dreamdojo_repo,
+            device=device,
+        ),
+        "adapted": load_dreamdojo_world_model(
+            checkpoint_path=config.finetune.dreamdojo_checkpoint,
+            adapted_checkpoint=adapted_dir,
+            configured_experiment=(
+                config.finetune.eval_world_experiment or config.finetune.experiment_config
+            ),
+            dreamdojo_repo=config.finetune.dreamdojo_repo,
+            device=device,
+        ),
+    }
+
+    world_dims = {
+        cond: _extract_world_action_dim(model) for cond, model in world_models.items()
+    }
+    if len({v for v in world_dims.values() if v is not None}) > 1:
+        return StageResult(
+            stage_name="s4_policy_eval",
+            status="failed",
+            elapsed_seconds=0,
+            detail=f"World-model action dims differ across conditions: {world_dims}",
+        )
+    action_dim = world_dims.get("baseline") or world_dims.get("adapted") or _resolve_world_action_dim_from_config(config)
+    if action_dim is None:
+        return StageResult(
+            stage_name="s4_policy_eval",
+            status="failed",
+            elapsed_seconds=0,
+            detail=(
+                "Could not resolve world-model action_dim for WM-only scripted rollouts. "
+                "Set finetune.eval_world_experiment or ensure checkpoint metadata exposes action dim."
+            ),
+        )
+
+    trace_manifest = build_scripted_trace_manifest(
+        rollout_assignments,
+        action_dim=int(action_dim),
+        max_steps=max_steps,
+    )
+
+    all_scores: List[Dict] = []
+    scoring_failures: List[str] = []
+    observed_action_dims: set[int] = set()
+    observed_world_dims: set[int] = {int(action_dim)}
+
+    for condition in conditions:
+        logger.info("Running %s WM-only scripted rollouts", condition)
+        condition_dir = eval_dir / f"{condition}_rollouts"
+        condition_dir.mkdir(exist_ok=True)
+        world_model = world_models[condition]
+        world_dim = _extract_world_action_dim(world_model)
+        if world_dim is not None:
+            observed_world_dims.add(int(world_dim))
+
+        for assignment in rollout_assignments:
+            rollout_idx = int(assignment.get("rollout_index", 0))
+            task = str(assignment.get("task", ""))
+            clip_index = int(assignment.get("clip_index", -1))
+            init_frame = frame_cache.get(clip_index)
+            if init_frame is None:
+                msg = f"Initial frame missing for clip_index={clip_index} task='{task}'"
+                scoring_failures.append(msg)
+                logger.warning(msg)
+                continue
+            trace = trace_manifest.get(_assignment_trace_key(assignment))
+            if trace is None:
+                msg = f"Missing scripted trace for rollout_index={rollout_idx}, task='{task}'"
+                scoring_failures.append(msg)
+                logger.warning(msg)
+                continue
+            clip_stub = str(assignment.get("clip_name", f"clip_{clip_index:03d}"))
+            clip_name = f"{condition}_{clip_stub}_{rollout_idx:03d}".replace("/", "_").replace(
+                " ", "_"
+            )
+
+            rollout = run_scripted_rollout(
+                world_model=world_model,
+                initial_frame=init_frame,
+                action_sequence=trace["action_sequence"],
+                output_dir=condition_dir,
+                clip_name=clip_name,
+                trace_id=str(trace["trace_id"]),
+                reanchor_every=int(config.eval_policy.reliability.keyframe_reanchor_every),
+            )
+            action_contract = getattr(rollout, "action_contract", {}) or {}
+            action_dim_row = action_contract.get("dataset_dim")
+            if action_dim_row is not None:
+                observed_action_dims.add(int(action_dim_row))
+
+            if not rollout.video_path or not rollout.video_path.exists():
+                msg = f"Rollout video missing for {clip_name}"
+                scoring_failures.append(msg)
+                logger.warning(msg)
+                continue
+
+            try:
+                if _is_manipulation_task(task):
+                    score = score_rollout_manipulation(
+                        video_path=rollout.video_path,
+                        task_prompt=task,
+                        config=config.eval_policy.vlm_judge,
+                        facility_description=facility.description,
+                    )
+                else:
+                    score = score_rollout(
+                        video_path=rollout.video_path,
+                        task_prompt=task,
+                        config=config.eval_policy.vlm_judge,
+                        facility_description=facility.description,
+                    )
+            except Exception as e:
+                msg = f"VLM scoring failed for {clip_name}: {e}"
+                logger.warning(msg)
+                scoring_failures.append(msg)
+                score = JudgeScore(0, 0, 0, str(e), "")
+
+            all_scores.append(
+                {
+                    "condition": condition,
+                    "task": task,
+                    "rollout_index": rollout_idx,
+                    "trace_id": trace["trace_id"],
+                    "driver_type": getattr(rollout, "driver_type", "scripted"),
+                    "task_score": score.task_score,
+                    "visual_score": score.visual_score,
+                    "spatial_score": score.spatial_score,
+                    "reasoning": score.reasoning,
+                    "video_path": str(rollout.video_path),
+                    "num_steps": rollout.num_steps,
+                    "action_sequence": getattr(rollout, "action_sequence", []),
+                    "start_clip_index": clip_index,
+                    "start_clip_name": clip_stub,
+                    "start_path_type": str(assignment.get("path_type", "unknown")),
+                    "target_instance_id": assignment.get("target_instance_id"),
+                    "target_label": assignment.get("target_label"),
+                    "is_manipulation_task": _is_manipulation_task(task),
+                    "grasp_acquired": (
+                        score.grasp_acquired if isinstance(score, ManipulationJudgeScore) else None
+                    ),
+                    "lifted_clear": (
+                        score.lifted_clear if isinstance(score, ManipulationJudgeScore) else None
+                    ),
+                    "placed_in_target": (
+                        score.placed_in_target if isinstance(score, ManipulationJudgeScore) else None
+                    ),
+                    "stable_after_place": (
+                        score.stable_after_place
+                        if isinstance(score, ManipulationJudgeScore)
+                        else None
+                    ),
+                    "action_contract": action_contract,
+                }
+            )
+
+    write_json({"scores": all_scores}, eval_dir / "vlm_scores.json")
+    audit_csv_path = eval_dir / "judge_audit.csv"
+    write_judge_audit_csv(all_scores, audit_csv_path)
+
+    per_condition: Dict[str, Dict] = {}
+    for cond in conditions:
+        cond_scores = [s for s in all_scores if s["condition"] == cond]
+        cond_manip = [s for s in cond_scores if s["is_manipulation_task"]]
+        cond_mean = float(np.mean([s["task_score"] for s in cond_scores])) if cond_scores else 0
+        per_condition[cond] = {
+            "mean_task_score": round(cond_mean, 3),
+            "num_rollouts": len(cond_scores),
+            "manipulation_success_rate": _manipulation_success_rate(cond_manip),
+        }
+
+    pairwise = _build_pairwise_metrics(all_scores, conditions)
+    baseline_scores = [s for s in all_scores if s["condition"] == "baseline"]
+    adapted_scores = [s for s in all_scores if s["condition"] == "adapted"]
+    baseline_mean = per_condition.get("baseline", {}).get("mean_task_score", 0)
+    adapted_mean = per_condition.get("adapted", {}).get("mean_task_score", 0)
+    improvement = ((adapted_mean - baseline_mean) / max(baseline_mean, 1e-8)) * 100
+    absolute_difference = adapted_mean - baseline_mean
+
+    min_len = min(len(baseline_scores), len(adapted_scores))
+    wins = sum(
+        1
+        for b, a in zip(baseline_scores[:min_len], adapted_scores[:min_len])
+        if a["task_score"] > b["task_score"]
+    )
+    win_rate = wins / max(min_len, 1)
+
+    p_value = None
+    if min_len >= 2:
+        try:
+            from scipy import stats
+
+            b_vals = [s["task_score"] for s in baseline_scores[:min_len]]
+            a_vals = [s["task_score"] for s in adapted_scores[:min_len]]
+            _, p_value = stats.ttest_rel(b_vals, a_vals)
+            p_value = float(p_value)
+        except ImportError:
+            logger.warning("scipy not available; skipping p-value computation")
+
+    dataset_dim = _single_or_none(observed_action_dims)
+    world_dim = _single_or_none(observed_world_dims)
+    action_contract = {
+        "policy_dim": None,
+        "world_dim": world_dim,
+        "dataset_dim": dataset_dim,
+        "compliant": (
+            world_dim is not None
+            and dataset_dim is not None
+            and int(world_dim) == int(dataset_dim)
+        ),
+        "reason": "",
+    }
+    if not action_contract["compliant"]:
+        action_contract["reason"] = "world/dataset action dimensions are missing or inconsistent."
+
+    reliability_gate = _build_reliability_gate(config, all_scores)
+    manip_delta_pp = (
+        (per_condition.get("adapted", {}).get("manipulation_success_rate", 0.0) or 0.0)
+        - (per_condition.get("baseline", {}).get("manipulation_success_rate", 0.0) or 0.0)
+    ) * 100.0
+
+    claim_failure_reasons: List[str] = []
+    if claim_mode:
+        if not action_contract["compliant"]:
+            claim_failure_reasons.append(
+                f"Action contract failed: {action_contract.get('reason')}"
+            )
+        if not reliability_gate["passed"]:
+            claim_failure_reasons.append(
+                "Reliability gate failed: "
+                f"replay_pass_rate={reliability_gate['replay_pass_rate']:.3f}, "
+                f"controllability_pass_rate={reliability_gate['controllability_pass_rate']:.3f}"
+            )
+        if float(absolute_difference) < float(config.eval_policy.min_absolute_difference):
+            claim_failure_reasons.append(
+                "Absolute task-score difference below threshold: "
+                f"{absolute_difference:.3f} < {config.eval_policy.min_absolute_difference:.3f}"
+            )
+        if float(manip_delta_pp) < float(config.eval_policy.min_manip_success_delta_pp):
+            claim_failure_reasons.append(
+                "Manipulation success delta below threshold: "
+                f"{manip_delta_pp:.2f}pp < {config.eval_policy.min_manip_success_delta_pp:.2f}pp"
+            )
+    claim_passed = len(claim_failure_reasons) == 0
+
+    metrics = {
+        "headline_scope": "wm_only",
+        "rollout_driver": rollout_driver,
+        "baseline_mean_task_score": round(float(baseline_mean), 3),
+        "adapted_mean_task_score": round(float(adapted_mean), 3),
+        "improvement_pct": round(float(improvement), 2),
+        "absolute_difference": round(float(absolute_difference), 3),
+        "absolute_point_differential": round(float(absolute_difference), 3),
+        "win_rate": round(float(win_rate), 3),
+        "p_value": round(p_value, 6) if p_value is not None else None,
+        "num_rollouts_baseline": len(baseline_scores),
+        "num_rollouts_adapted": len(adapted_scores),
+        "num_scoring_failures": len(scoring_failures),
+        "used_adapted_policy_checkpoint": False,
+        "adapted_policy_checkpoint": None,
+        "requested_rollouts_per_condition": requested_rollouts,
+        "planned_rollouts_per_condition": planned_rollouts,
+        "executed_rollouts_per_condition": num_rollouts,
+        "num_unique_task_templates": len(tasks),
+        "shared_task_start_manifest": str(shared_manifest_path),
+        "shared_task_start_manifest_reused": reused_shared_manifest,
+        "per_condition": per_condition,
+        "pairwise": pairwise,
+        "baseline_manipulation_success_rate": per_condition.get("baseline", {}).get(
+            "manipulation_success_rate", 0.0
+        ),
+        "adapted_manipulation_success_rate": per_condition.get("adapted", {}).get(
+            "manipulation_success_rate", 0.0
+        ),
+        "task_hints_injected": hint_count,
+        "judge_audit_csv": str(audit_csv_path),
+        "action_contract": action_contract,
+        "reliability_gate": reliability_gate,
+        "manipulation_success_delta_pp": round(float(manip_delta_pp), 3),
+        "claim_mode": claim_mode,
+        "claim_passed": claim_passed,
+        "claim_failure_reasons": claim_failure_reasons,
+        "deferred_claims": [
+            {
+                "name": "openvla_in_loop",
+                "status": "deferred",
+                "reason": "eval_policy.headline_scope=wm_only; OpenVLA claim path intentionally deferred.",
+            }
+        ],
+        "confidence_intervals": _build_confidence_intervals(baseline_scores, adapted_scores),
+        "heldout_manifest_hash": _manifest_hash(shared_manifest_path),
+    }
+    write_json(metrics, eval_dir / "policy_eval_report.json")
+
+    return StageResult(
+        stage_name="s4_policy_eval",
+        status=("success" if all_scores and (not claim_mode or claim_passed) else "failed"),
+        elapsed_seconds=0,
+        outputs={
+            "eval_dir": str(eval_dir),
+            "scores_path": str(eval_dir / "vlm_scores.json"),
+            "report_path": str(eval_dir / "policy_eval_report.json"),
+            "shared_task_start_manifest": str(shared_manifest_path),
+            "judge_audit_csv": str(audit_csv_path),
+        },
+        metrics=metrics,
+        detail="\n".join(scoring_failures[:5]),
+    )
 
 
 def _extract_initial_frames(render_manifest: dict) -> List[np.ndarray]:
@@ -549,3 +1064,149 @@ def _build_pairwise_metrics(all_scores: List[Dict], conditions: List[str]) -> Di
                 "p_value": round(p_value, 6) if p_value is not None else None,
             }
     return pairwise
+
+
+def _headline_scope(config: ValidationConfig) -> str:
+    scope = (getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only").strip().lower()
+    return scope if scope in {"wm_only", "dual"} else "wm_only"
+
+
+def _resolve_world_action_dim_from_config(config: ValidationConfig) -> int | None:
+    token = (
+        config.finetune.eval_world_experiment
+        or config.finetune.experiment_config
+        or ""
+    ).strip()
+    if not token:
+        return None
+    if token.lower().startswith("cosmos_predict2"):
+        mapping = {
+            "cosmos_predict2p5_2B_action_conditioned_gr00t_gr1_customized_13frame": 384,
+            "cosmos_predict2p5_2B_reason_embeddings_action_conditioned_rectified_flow_bridge_13frame_256x320": 7,
+            "cosmos_predict2p5_2B_reason_embeddings_action_conditioned_rectified_flow_bridge_13frame_480_640_": 7,
+        }
+        return mapping.get(token)
+    maybe = Path(token)
+    if maybe.is_absolute() or "/" in token or token.endswith(".yaml"):
+        candidate = maybe if maybe.is_absolute() else (config.finetune.dreamdojo_repo / "configs" / maybe)
+        if candidate.suffix != ".yaml":
+            yaml_candidate = candidate.with_suffix(".yaml")
+            if yaml_candidate.exists():
+                candidate = yaml_candidate
+    else:
+        stem = token.lower()
+        if stem.startswith("dreamdojo_"):
+            stem = stem[len("dreamdojo_") :]
+        candidate = config.finetune.dreamdojo_repo / "configs" / f"{Path(stem).stem}.yaml"
+    if not candidate.exists():
+        return None
+    try:
+        text = candidate.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    import re
+
+    match = re.search(r"^\s*action_dim\s*:\s*(\d+)\s*$", text, flags=re.MULTILINE)
+    return int(match.group(1)) if match else None
+
+
+def _assignment_trace_key(assignment: dict) -> str:
+    return (
+        f"{assignment.get('rollout_index', 0)}::"
+        f"{assignment.get('clip_index', -1)}::"
+        f"{assignment.get('task', '')}"
+    )
+
+
+def _resolve_policy_action_dim(config: ValidationConfig) -> int | None:
+    adapter = (config.policy_adapter.name or "").strip().lower()
+    if adapter == "openvla_oft":
+        return int(config.policy_adapter.openvla.policy_action_dim)
+    if adapter == "pi05":
+        return int(config.policy_adapter.pi05.policy_action_dim)
+    return None
+
+
+def _extract_world_action_dim(world_model) -> int | None:
+    value = getattr(world_model, "expected_action_dim", None)
+    if value is None:
+        value = getattr(world_model, "_expected_action_dim", None)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def _single_or_none(values: set[int]) -> int | None:
+    if not values:
+        return None
+    if len(values) == 1:
+        return next(iter(values))
+    return None
+
+
+def _build_reliability_gate(config: ValidationConfig, scores: List[Dict]) -> Dict:
+    if not scores:
+        return {
+            "replay_pass_rate": 0.0,
+            "controllability_pass_rate": 0.0,
+            "passed": False,
+            "reason": "No rollouts available.",
+        }
+    replay_passes = 0
+    controllability_passes = 0
+    for row in scores:
+        visual = float(row.get("visual_score", 0.0))
+        spatial = float(row.get("spatial_score", 0.0))
+        if visual >= 5.0 and spatial >= 5.0:
+            replay_passes += 1
+        actions = row.get("action_sequence") or []
+        if len(actions) >= 2:
+            try:
+                arr = np.asarray(actions, dtype=np.float32)
+                deltas = np.diff(arr, axis=0)
+                if float(np.max(np.linalg.norm(deltas, axis=1))) > 1e-4:
+                    controllability_passes += 1
+            except Exception:
+                pass
+    replay_rate = replay_passes / max(len(scores), 1)
+    ctrl_rate = controllability_passes / max(len(scores), 1)
+    passed = (
+        replay_rate >= float(config.eval_policy.reliability.min_replay_pass_rate)
+        and ctrl_rate >= float(config.eval_policy.reliability.min_controllability_pass_rate)
+    )
+    reason = "" if passed else "Replay/controllability rates below configured thresholds."
+    return {
+        "replay_pass_rate": round(float(replay_rate), 6),
+        "controllability_pass_rate": round(float(ctrl_rate), 6),
+        "passed": bool(passed),
+        "reason": reason,
+    }
+
+
+def _build_confidence_intervals(baseline_scores: List[Dict], adapted_scores: List[Dict]) -> Dict:
+    min_len = min(len(baseline_scores), len(adapted_scores))
+    if min_len < 2:
+        return {"paired_mean_delta": None, "paired_95ci_low": None, "paired_95ci_high": None}
+    b_vals = np.asarray([s["task_score"] for s in baseline_scores[:min_len]], dtype=np.float32)
+    a_vals = np.asarray([s["task_score"] for s in adapted_scores[:min_len]], dtype=np.float32)
+    diffs = a_vals - b_vals
+    mean = float(np.mean(diffs))
+    std = float(np.std(diffs, ddof=1))
+    sem = std / np.sqrt(float(min_len))
+    margin = 1.96 * sem
+    return {
+        "paired_mean_delta": round(mean, 6),
+        "paired_95ci_low": round(mean - margin, 6),
+        "paired_95ci_high": round(mean + margin, 6),
+    }
+
+
+def _manifest_hash(path: Path) -> str:
+    try:
+        payload = json.dumps(read_json(path), sort_keys=True, separators=(",", ":"))
+    except Exception:
+        payload = str(path)
+    return hashlib.md5(payload.encode("utf-8")).hexdigest()

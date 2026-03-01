@@ -110,6 +110,12 @@ class Pi05PolicyAdapter(PolicyAdapter):
     def _normalize_action(self, action) -> np.ndarray:
         arr = np.asarray(action, dtype=np.float32).reshape(-1)
         target_dim = int(self.backend.policy_action_dim)
+        if self.backend.strict_action_contract and arr.shape[0] != target_dim:
+            raise RuntimeError(
+                "pi05 strict_action_contract violation: "
+                f"received action_dim={arr.shape[0]}, expected={target_dim}. "
+                "Disable strict_action_contract only for research-mode experiments."
+            )
         if arr.shape[0] < target_dim:
             arr = np.pad(arr, (0, target_dim - arr.shape[0]))
         elif arr.shape[0] > target_dim:

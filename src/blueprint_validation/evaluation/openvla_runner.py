@@ -5,12 +5,29 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
+import re
+import sys
+from importlib import import_module
 
 import numpy as np
 
 from ..common import get_logger
 
 logger = get_logger("evaluation.openvla_runner")
+
+_ACTION_CONFIG_FILE = "cosmos_predict2/_src/predict2/action/configs/action_conditioned/config.py"
+_EXPERIMENT_BY_ACTION_EMBED_WIDTH = {
+    1536: "cosmos_predict2p5_2B_action_conditioned_gr00t_gr1_customized_13frame",
+    28: "cosmos_predict2p5_2B_reason_embeddings_action_conditioned_rectified_flow_bridge_13frame_256x320",
+}
+_ACTION_EMBED_WIDTH_BY_EXPERIMENT = {
+    experiment: width for width, experiment in _EXPERIMENT_BY_ACTION_EMBED_WIDTH.items()
+}
+_EXPERIMENT_BY_ACTION_DIM = {
+    384: "cosmos_predict2p5_2B_action_conditioned_gr00t_gr1_customized_13frame",
+    7: "cosmos_predict2p5_2B_reason_embeddings_action_conditioned_rectified_flow_bridge_13frame_256x320",
+}
+_ACTION_DIM_BY_EXPERIMENT = {experiment: dim for dim, experiment in _EXPERIMENT_BY_ACTION_DIM.items()}
 
 
 @dataclass
@@ -47,9 +64,353 @@ def load_openvla(model_name: str, checkpoint_path: Optional[Path] = None, device
     return model, processor
 
 
+def _resolve_world_model_checkpoint_path(checkpoint_path: Path) -> Path:
+    """Resolve a usable DreamDojo checkpoint directory from common root paths."""
+    checkpoint_path = Path(checkpoint_path)
+    if checkpoint_path.is_file():
+        return checkpoint_path
+
+    candidates: list[Path] = []
+
+    def _maybe_add_latest(root: Path) -> None:
+        latest_txt = root / "latest_checkpoint.txt"
+        if not latest_txt.exists():
+            return
+        try:
+            token = latest_txt.read_text(encoding="utf-8").strip()
+        except OSError:
+            return
+        if not token:
+            return
+        candidate = root / token
+        if candidate.exists():
+            candidates.append(candidate)
+
+    def _maybe_add_iters(root: Path) -> None:
+        if not root.exists():
+            return
+        iter_dirs = sorted(
+            [p for p in root.glob("iter_*") if p.is_dir()],
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        candidates.extend(iter_dirs)
+
+    _maybe_add_latest(checkpoint_path)
+    _maybe_add_latest(checkpoint_path / "2B_pretrain")
+    _maybe_add_iters(checkpoint_path)
+    _maybe_add_iters(checkpoint_path / "2B_pretrain")
+    _maybe_add_iters(checkpoint_path / "checkpoints")
+
+    return candidates[0] if candidates else checkpoint_path
+
+
+def _resolve_checkpoint_model_dir(checkpoint_path: Path) -> Optional[Path]:
+    checkpoint_path = Path(checkpoint_path)
+    if checkpoint_path.is_file():
+        return None
+    if (checkpoint_path / ".metadata").exists():
+        return checkpoint_path
+    if (checkpoint_path / "model" / ".metadata").exists():
+        return checkpoint_path / "model"
+    return None
+
+
+def _read_action_embed_width(checkpoint_path: Path) -> Optional[int]:
+    model_dir = _resolve_checkpoint_model_dir(checkpoint_path)
+    if model_dir is None:
+        return None
+    try:
+        from torch.distributed.checkpoint import FileSystemReader
+    except Exception as e:
+        raise RuntimeError(
+            "torch.distributed.checkpoint is required to validate DreamDojo checkpoint compatibility."
+        ) from e
+
+    reader = FileSystemReader(str(model_dir))
+    metadata = reader.read_metadata()
+    state_meta = getattr(metadata, "state_dict_metadata", {}) or {}
+
+    widths = set()
+    for key, tensor_meta in state_meta.items():
+        key_str = str(key)
+        if "action_embedder" not in key_str or not key_str.endswith(".weight"):
+            continue
+        size = getattr(tensor_meta, "size", None)
+        if size is None or len(size) < 2:
+            continue
+        widths.add(int(size[1]))
+
+    if not widths:
+        return None
+    resolved = min(widths)
+    if len(widths) > 1:
+        logger.info(
+            "Detected multiple action_embedder widths in checkpoint %s: %s; using action-input width=%d",
+            model_dir,
+            sorted(widths),
+            resolved,
+        )
+    return resolved
+
+
+def _resolve_dreamdojo_config_yaml(config_token: str, dreamdojo_repo: Optional[Path]) -> Optional[Path]:
+    token = config_token.strip()
+    if not token:
+        return None
+    if token.lower().startswith("cosmos_predict2"):
+        return None
+    if dreamdojo_repo is None:
+        raise RuntimeError(
+            "DreamDojo config hint was provided, but dreamdojo_repo is not set. "
+            "Set finetune.dreamdojo_repo or set finetune.eval_world_experiment to a cosmos experiment name."
+        )
+
+    maybe_path = Path(token)
+    if maybe_path.is_absolute() or "/" in token or token.endswith(".yaml"):
+        candidate = maybe_path if maybe_path.is_absolute() else (dreamdojo_repo / "configs" / maybe_path)
+        if candidate.suffix != ".yaml":
+            candidate_yaml = candidate.with_suffix(".yaml")
+            if candidate_yaml.exists():
+                candidate = candidate_yaml
+        return candidate
+
+    stem = token.lower()
+    if stem.startswith("dreamdojo_"):
+        stem = stem[len("dreamdojo_") :]
+    return dreamdojo_repo / "configs" / f"{Path(stem).stem}.yaml"
+
+
+def _resolve_action_conditioned_experiment(
+    checkpoint_path: Path,
+    configured_experiment: Optional[str],
+    dreamdojo_repo: Optional[Path],
+) -> str:
+    checkpoint_width = _read_action_embed_width(checkpoint_path)
+    requested = (configured_experiment or "").strip()
+
+    if requested:
+        if requested.lower().startswith("cosmos_predict2"):
+            experiment_name = requested
+        else:
+            config_path = _resolve_dreamdojo_config_yaml(requested, dreamdojo_repo)
+            if config_path is None or not config_path.exists():
+                raise RuntimeError(
+                    f"DreamDojo experiment config not found for '{requested}'. "
+                    "Set finetune.eval_world_experiment explicitly to the matching cosmos experiment."
+                )
+            text = config_path.read_text(encoding="utf-8")
+            match = re.search(r"^\s*action_dim\s*:\s*(\d+)\s*$", text, flags=re.MULTILINE)
+            if not match:
+                raise RuntimeError(
+                    f"Could not read action_dim from DreamDojo config: {config_path}. "
+                    "Set finetune.eval_world_experiment explicitly."
+                )
+            action_dim = int(match.group(1))
+            experiment_name = _EXPERIMENT_BY_ACTION_DIM.get(action_dim)
+            if not experiment_name:
+                raise RuntimeError(
+                    f"Unsupported DreamDojo action_dim={action_dim} from {config_path}. "
+                    "Set finetune.eval_world_experiment explicitly to a compatible cosmos experiment."
+                )
+            logger.info(
+                "Resolved eval world experiment from DreamDojo config %s (action_dim=%d): %s",
+                config_path,
+                action_dim,
+                experiment_name,
+            )
+    else:
+        if checkpoint_width is None:
+            raise RuntimeError(
+                "Could not infer action embedding width from checkpoint metadata. "
+                "Set finetune.eval_world_experiment explicitly to avoid mismatched world-model config."
+            )
+        experiment_name = _EXPERIMENT_BY_ACTION_EMBED_WIDTH.get(checkpoint_width)
+        if not experiment_name:
+            raise RuntimeError(
+                f"Unsupported action embed width {checkpoint_width} in checkpoint {checkpoint_path}. "
+                "Set finetune.eval_world_experiment explicitly."
+            )
+        logger.info(
+            "Auto-resolved eval world experiment from checkpoint action embed width=%d: %s",
+            checkpoint_width,
+            experiment_name,
+        )
+
+    expected_width = _ACTION_EMBED_WIDTH_BY_EXPERIMENT.get(experiment_name)
+    if checkpoint_width is not None and expected_width is not None and checkpoint_width != expected_width:
+        raise RuntimeError(
+            "DreamDojo checkpoint is incompatible with selected action-conditioned experiment: "
+            f"checkpoint action embed width={checkpoint_width}, experiment expects {expected_width} "
+            f"({experiment_name})."
+        )
+
+    return experiment_name
+
+
+def _build_inference_experiment_opts(experiment_name: str) -> list[str]:
+    # Some vendored DreamDojo checkouts miss GR00T dataloader registry entries.
+    # These overrides only affect dataset bindings (unused in inference), while
+    # preserving model architecture and checkpoint compatibility.
+    if "gr00t_gr1_customized_13frame" in experiment_name:
+        return [
+            "data_train=bridge_13frame_480_640_train",
+            "data_val=bridge_13frame_480_640_val",
+        ]
+    return []
+
+
+class _Video2WorldStepModel:
+    """Adapter that exposes predict_next_frame() via DreamDojo's Video2WorldInference."""
+
+    def __init__(
+        self,
+        pipe,
+        guidance: float,
+        negative_prompt: str,
+        num_steps: int = 20,
+        expected_action_dim: Optional[int] = None,
+        expected_actions_per_latent_frame: Optional[int] = None,
+    ):
+        self._pipe = pipe
+        self._guidance = float(guidance)
+        self._negative_prompt = str(negative_prompt)
+        self._num_steps = int(num_steps)
+        self._expected_action_dim = expected_action_dim
+        self._expected_actions_per_latent_frame = expected_actions_per_latent_frame
+        self.expected_action_dim = expected_action_dim
+
+        net = getattr(self._pipe.model, "net", None)
+        if net is not None and self._expected_actions_per_latent_frame is not None:
+            current_ratio = int(getattr(net, "_num_action_per_latent_frame", 0) or 0)
+            if current_ratio <= 0:
+                setattr(net, "_num_action_per_latent_frame", int(self._expected_actions_per_latent_frame))
+                logger.warning(
+                    "Patched invalid _num_action_per_latent_frame=%d to %d from checkpoint-compatible metadata.",
+                    current_ratio,
+                    self._expected_actions_per_latent_frame,
+                )
+
+    def predict_next_frame(self, current_frame: np.ndarray, action) -> np.ndarray:
+        import torch
+        import torchvision.transforms.functional as TVF
+
+        frame = np.asarray(current_frame)
+        if frame.ndim == 2:
+            frame = np.repeat(frame[:, :, None], 3, axis=2)
+        if frame.shape[2] > 3:
+            frame = frame[:, :, :3]
+        if frame.dtype != np.uint8:
+            frame = np.clip(frame, 0, 255).astype(np.uint8)
+
+        h, w = frame.shape[:2]
+
+        model_required_frames = int(
+            self._pipe.model.tokenizer.get_pixel_num_frames(self._pipe.model.config.state_t)
+        )
+        img_tensor = TVF.to_tensor(frame).unsqueeze(0) * 255.0  # (1, C, H, W)
+        if model_required_frames <= 1:
+            video_frames = img_tensor
+        else:
+            padding = torch.zeros(
+                (model_required_frames - 1, img_tensor.shape[1], img_tensor.shape[2], img_tensor.shape[3]),
+                dtype=img_tensor.dtype,
+            )
+            video_frames = torch.cat([img_tensor, padding], dim=0)
+        vid_input = video_frames.to(torch.uint8).unsqueeze(0).permute(0, 2, 1, 3, 4)  # (B, C, T, H, W)
+
+        action_flat = np.asarray(action, dtype=np.float32).reshape(-1)
+        if self._expected_action_dim is not None and action_flat.size != self._expected_action_dim:
+            raise RuntimeError(
+                "Action-space mismatch between policy and world model: "
+                f"policy action_dim={action_flat.size}, world_model action_dim={self._expected_action_dim}. "
+                "Use a policy and DreamDojo checkpoint with matching action dimensions."
+            )
+        action_np = action_flat.reshape(1, -1)
+        action_tensor = torch.from_numpy(action_np).float()
+
+        video = self._pipe.generate_vid2world(
+            prompt="",
+            input_path=vid_input,
+            action=action_tensor,
+            guidance=self._guidance,
+            num_video_frames=model_required_frames,
+            num_latent_conditional_frames=1,
+            resolution=f"{h},{w}",
+            seed=1,
+            negative_prompt=self._negative_prompt,
+            num_steps=self._num_steps,
+            lam_video=None,
+        )
+
+        video_normalized = (video + 1.0) / 2.0
+        video_uint8 = (
+            (torch.clamp(video_normalized[0], 0, 1) * 255)
+            .to(torch.uint8)
+            .permute(1, 2, 3, 0)
+            .detach()
+            .cpu()
+            .numpy()
+        )
+        return video_uint8[-1]
+
+
+def _try_import_action_conditioned_modules():
+    """Try modern DreamDojo action-conditioned imports."""
+    ActionConditionedInferenceArguments = None
+    Video2WorldInference = None
+    try:
+        from cosmos_predict2.action_conditioned_config import (  # type: ignore
+            ActionConditionedInferenceArguments as _Args,
+        )
+        from cosmos_predict2._src.predict2.inference.video2world import (  # type: ignore
+            Video2WorldInference as _Pipe,
+        )
+
+        ActionConditionedInferenceArguments = _Args
+        Video2WorldInference = _Pipe
+    except Exception:
+        ActionConditionedInferenceArguments = None
+        Video2WorldInference = None
+    return ActionConditionedInferenceArguments, Video2WorldInference
+
+
+def _load_legacy_action_conditioned_model(effective_checkpoint: Path, device: str):
+    """Fallback loader for legacy tests/vendors exposing setup() under action_conditioned.*."""
+    legacy_candidates = (
+        "cosmos_predict2.action_conditioned.inference",
+        "cosmos_predict2.action_conditioned",
+    )
+    for module_name in legacy_candidates:
+        try:
+            module = import_module(module_name)
+        except Exception:
+            continue
+        setup_fn = getattr(module, "setup", None)
+        args_cls = getattr(module, "ActionConditionedInferenceArguments", None)
+        if not callable(setup_fn) or args_cls is None:
+            continue
+        try:
+            args = args_cls(checkpoint_dir=str(effective_checkpoint))
+        except TypeError:
+            args = args_cls()
+            if hasattr(args, "checkpoint_dir"):
+                setattr(args, "checkpoint_dir", str(effective_checkpoint))
+        model = setup_fn(args)
+        if hasattr(model, "to"):
+            try:
+                model = model.to(device)
+            except Exception:
+                pass
+        if hasattr(model, "predict_next_frame"):
+            return model
+    return None
+
+
 def load_dreamdojo_world_model(
     checkpoint_path: Path,
     adapted_checkpoint: Optional[Path] = None,
+    configured_experiment: Optional[str] = None,
     dreamdojo_repo: Optional[Path] = None,
     device: str = "cuda",
 ):
@@ -61,7 +422,8 @@ def load_dreamdojo_world_model(
 
     Returns an object with a predict_next_frame(frame, action) method.
     """
-    effective_checkpoint = adapted_checkpoint if adapted_checkpoint else checkpoint_path
+    effective_checkpoint = Path(adapted_checkpoint) if adapted_checkpoint else Path(checkpoint_path)
+    effective_checkpoint = _resolve_world_model_checkpoint_path(effective_checkpoint)
 
     if not effective_checkpoint.exists():
         raise RuntimeError(f"DreamDojo checkpoint path does not exist: {effective_checkpoint}")
@@ -72,62 +434,69 @@ def load_dreamdojo_world_model(
     else:
         logger.info("Using baseline (pretrained) checkpoint")
 
-    import sys
-
-    def _load_action_conditioned_api():
-        # DreamDojo has shipped both:
-        # 1) cosmos_predict2.action_conditioned.inference (package style)
-        # 2) cosmos_predict2.action_conditioned (module style)
-        try:
-            from cosmos_predict2.action_conditioned import inference as ac_inference
-            from cosmos_predict2.action_conditioned.inference import (
-                ActionConditionedInferenceArguments,
+    # Prefer already-installed cosmos_predict2 first, then explicit repo fallback.
+    ActionConditionedInferenceArguments, Video2WorldInference = _try_import_action_conditioned_modules()
+    if ActionConditionedInferenceArguments is None or Video2WorldInference is None:
+        if dreamdojo_repo is not None:
+            if not dreamdojo_repo.exists():
+                raise RuntimeError(
+                    "DreamDojo/cosmos_predict2 is not importable and finetune.dreamdojo_repo "
+                    f"does not exist: {dreamdojo_repo}"
+                )
+            dreamdojo_repo_str = str(dreamdojo_repo)
+            if dreamdojo_repo_str not in sys.path:
+                sys.path.insert(0, dreamdojo_repo_str)
+            ActionConditionedInferenceArguments, Video2WorldInference = (
+                _try_import_action_conditioned_modules()
             )
 
-            return ac_inference, ActionConditionedInferenceArguments
-        except Exception:
-            from cosmos_predict2 import action_conditioned as ac_inference
-            from cosmos_predict2.action_conditioned import ActionConditionedInferenceArguments
-
-            return ac_inference, ActionConditionedInferenceArguments
-
-    # Prefer already-installed cosmos_predict2 first, then explicit repo fallback.
-    try:
-        ac_inference, ActionConditionedInferenceArguments = _load_action_conditioned_api()
-    except Exception as e:
-        if dreamdojo_repo is None:
-            raise RuntimeError(
-                "DreamDojo/cosmos_predict2 is not importable. Install DreamDojo in the current "
-                "environment or pass finetune.dreamdojo_repo to enable repo-path fallback."
-            ) from e
-        if not dreamdojo_repo.exists():
-            raise RuntimeError(
-                "DreamDojo/cosmos_predict2 is not importable and finetune.dreamdojo_repo "
-                f"does not exist: {dreamdojo_repo}"
-            ) from e
-        dreamdojo_repo_str = str(dreamdojo_repo)
-        if dreamdojo_repo_str not in sys.path:
-            sys.path.insert(0, dreamdojo_repo_str)
-        try:
-            ac_inference, ActionConditionedInferenceArguments = _load_action_conditioned_api()
-        except Exception as inner:
-            raise RuntimeError(
-                "DreamDojo/cosmos_predict2 is not importable after repo-path fallback. "
-                f"Attempted finetune.dreamdojo_repo={dreamdojo_repo}"
-            ) from inner
-
-    args = ActionConditionedInferenceArguments(
-        checkpoint_dir=str(effective_checkpoint),
-    )
-    model = ac_inference.setup(args)
-    if hasattr(model, "to"):
-        model = model.to(device)
-    if not hasattr(model, "predict_next_frame"):
-        raise RuntimeError(
-            "DreamDojo model does not expose predict_next_frame(). "
-            "Update adapter to match the installed DreamDojo API."
+    if ActionConditionedInferenceArguments is None or Video2WorldInference is None:
+        legacy_model = _load_legacy_action_conditioned_model(
+            effective_checkpoint=effective_checkpoint,
+            device=device,
         )
-    return model
+        if legacy_model is not None:
+            return legacy_model
+        raise RuntimeError(
+            "DreamDojo/cosmos_predict2 is not importable. Install DreamDojo in the current "
+            "environment or pass finetune.dreamdojo_repo to enable repo-path fallback."
+        )
+
+    experiment_name = _resolve_action_conditioned_experiment(
+        checkpoint_path=effective_checkpoint,
+        configured_experiment=configured_experiment,
+        dreamdojo_repo=dreamdojo_repo,
+    )
+    checkpoint_width = _read_action_embed_width(effective_checkpoint)
+    expected_action_dim = _ACTION_DIM_BY_EXPERIMENT.get(experiment_name)
+    expected_actions_per_latent_frame: Optional[int] = None
+    if checkpoint_width is not None and expected_action_dim is not None and expected_action_dim > 0:
+        expected_actions_per_latent_frame = checkpoint_width // expected_action_dim
+        if expected_actions_per_latent_frame <= 0:
+            expected_actions_per_latent_frame = None
+    logger.info("Using action-conditioned experiment: %s", experiment_name)
+
+    inference_args = ActionConditionedInferenceArguments()
+
+    pipe = Video2WorldInference(
+        experiment_name=experiment_name,
+        ckpt_path=str(effective_checkpoint),
+        s3_credential_path="",
+        context_parallel_size=1,
+        config_file=_ACTION_CONFIG_FILE,
+        experiment_opts=_build_inference_experiment_opts(experiment_name),
+        offload_diffusion_model=False,
+        offload_text_encoder=False,
+        offload_tokenizer=False,
+    )
+    return _Video2WorldStepModel(
+        pipe=pipe,
+        guidance=float(inference_args.guidance),
+        negative_prompt=str(inference_args.negative_prompt),
+        num_steps=20,
+        expected_action_dim=expected_action_dim,
+        expected_actions_per_latent_frame=expected_actions_per_latent_frame,
+    )
 
 
 def run_rollout(

@@ -33,6 +33,16 @@ from .stages.s7_cross_site import CrossSiteStage
 
 logger = get_logger("pipeline")
 
+_WM_ONLY_DEFERRED_STAGES = {
+    "s3b_policy_finetune",
+    "s3c_policy_rl_loop",
+    "s4a_rlds_export",
+    "s4b_rollout_dataset",
+    "s4c_policy_pair_train",
+    "s4d_policy_pair_eval",
+    "s4e_trained_eval",
+}
+
 
 class ValidationPipeline:
     """Orchestrates the full validation pipeline across all facilities."""
@@ -53,6 +63,12 @@ class ValidationPipeline:
         aborted_early = False
         pipeline_start = time.monotonic()
         dry_run = os.environ.get("BLUEPRINT_DRY_RUN", "0") == "1"
+        wm_only_scope = (
+            (getattr(self.config.eval_policy, "headline_scope", "wm_only") or "wm_only")
+            .strip()
+            .lower()
+            == "wm_only"
+        )
 
         if not dry_run and self.config.cloud.max_cost_usd > 0 and self._hourly_rate_usd() is None:
             detail = (
@@ -105,6 +121,20 @@ class ValidationPipeline:
             for stage in per_facility_stages:
                 stage_key = f"{fid}/{stage.name}"
                 result_path = fac_dir / f"{stage.name}_result.json"
+                if wm_only_scope and stage.name in _WM_ONLY_DEFERRED_STAGES:
+                    skipped = StageResult(
+                        stage_name=stage.name,
+                        status="skipped",
+                        elapsed_seconds=0,
+                        detail=(
+                            "Skipped by policy: eval_policy.headline_scope=wm_only "
+                            "(OpenVLA stages deferred)."
+                        ),
+                    )
+                    skipped.save(result_path)
+                    facility_results[stage.name] = skipped
+                    all_results[stage_key] = skipped
+                    continue
 
                 if resume_from_results:
                     existing = self._load_existing_stage_result(result_path)
