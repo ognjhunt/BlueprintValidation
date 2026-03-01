@@ -126,6 +126,10 @@ def build_dreamdojo_launch_command(
     nproc = max(1, int(os.environ.get("DREAMDOJO_NPROC", "1")))
 
     resolved_checkpoint = checkpoint_path or config.dreamdojo_checkpoint
+    disable_heavy_callbacks = (
+        os.environ.get("DREAMDOJO_DISABLE_HEAVY_CALLBACKS", "1").strip().lower()
+        not in {"0", "false", "no"}
+    )
     cmd = [
         sys.executable,
         "-m",
@@ -157,6 +161,17 @@ def build_dreamdojo_launch_command(
         f"model.config.lora_target_modules={_quote_hydra_string(config.lora_target_modules)}",
         "~dataloader_train.dataloaders",
     ]
+    if disable_heavy_callbacks:
+        # These callbacks are useful for long training runs, but they can dominate short debug runs.
+        cmd.extend(
+            [
+                "~trainer.callbacks.every_n_sample_reg",
+                "~trainer.callbacks.every_n_sample_ema",
+                "~trainer.callbacks.wandb",
+                "~trainer.callbacks.wandb_10x",
+                "trainer.logging_iter=1",
+            ]
+        )
     return cmd
 
 
