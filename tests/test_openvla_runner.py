@@ -8,6 +8,30 @@ import numpy as np
 import pytest
 
 
+def test_normalize_action_chunk_pads_to_ratio():
+    from blueprint_validation.evaluation.openvla_runner import _normalize_action_chunk
+
+    arr = _normalize_action_chunk(
+        np.array([1.0, 2.0, 3.0], dtype=np.float32),
+        expected_action_dim=3,
+        actions_per_latent_frame=4,
+    )
+    assert arr.shape == (4, 3)
+    assert np.allclose(arr[0], np.array([1.0, 2.0, 3.0], dtype=np.float32))
+    assert np.allclose(arr[-1], np.array([1.0, 2.0, 3.0], dtype=np.float32))
+
+
+def test_normalize_action_chunk_raises_on_dim_mismatch():
+    from blueprint_validation.evaluation.openvla_runner import _normalize_action_chunk
+
+    with pytest.raises(RuntimeError, match="Action-space mismatch"):
+        _normalize_action_chunk(
+            np.array([1.0, 2.0, 3.0], dtype=np.float32),
+            expected_action_dim=7,
+            actions_per_latent_frame=4,
+        )
+
+
 def test_run_rollout_passes_unnorm_key():
     from blueprint_validation.evaluation.openvla_runner import run_rollout
 

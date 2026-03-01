@@ -30,6 +30,40 @@ _EXPERIMENT_BY_ACTION_DIM = {
 _ACTION_DIM_BY_EXPERIMENT = {experiment: dim for dim, experiment in _EXPERIMENT_BY_ACTION_DIM.items()}
 
 
+def _normalize_action_chunk(
+    action,
+    *,
+    expected_action_dim: Optional[int],
+    actions_per_latent_frame: Optional[int],
+) -> np.ndarray:
+    """Normalize action input into a [T, D] chunk compatible with DreamDojo."""
+    action_array = np.asarray(action, dtype=np.float32)
+    if action_array.ndim == 1:
+        action_array = action_array.reshape(1, -1)
+    elif action_array.ndim > 2:
+        action_array = action_array.reshape(-1, action_array.shape[-1])
+
+    per_step_dim = int(action_array.shape[-1])
+    if expected_action_dim is not None and per_step_dim != int(expected_action_dim):
+        raise RuntimeError(
+            "Action-space mismatch between policy and world model: "
+            f"policy action_dim={per_step_dim}, world_model action_dim={expected_action_dim}. "
+            "Use a policy and DreamDojo checkpoint with matching action dimensions."
+        )
+
+    ratio = max(int(actions_per_latent_frame or 1), 1)
+    num_steps = int(action_array.shape[0])
+    if num_steps < ratio:
+        pad = np.repeat(action_array[-1:, :], ratio - num_steps, axis=0)
+        action_array = np.concatenate([action_array, pad], axis=0)
+    elif num_steps % ratio != 0:
+        target_steps = ((num_steps + ratio - 1) // ratio) * ratio
+        pad = np.repeat(action_array[-1:, :], target_steps - num_steps, axis=0)
+        action_array = np.concatenate([action_array, pad], axis=0)
+
+    return action_array
+
+
 @dataclass
 class RolloutResult:
     task_prompt: str
@@ -357,15 +391,12 @@ class _Video2WorldStepModel:
             video_frames = torch.cat([img_tensor, padding], dim=0)
         vid_input = video_frames.to(torch.uint8).unsqueeze(0).permute(0, 2, 1, 3, 4)  # (B, C, T, H, W)
 
-        action_flat = np.asarray(action, dtype=np.float32).reshape(-1)
-        if self._expected_action_dim is not None and action_flat.size != self._expected_action_dim:
-            raise RuntimeError(
-                "Action-space mismatch between policy and world model: "
-                f"policy action_dim={action_flat.size}, world_model action_dim={self._expected_action_dim}. "
-                "Use a policy and DreamDojo checkpoint with matching action dimensions."
-            )
-        action_np = action_flat.reshape(1, -1)
-        action_tensor = torch.from_numpy(action_np).float()
+        action_array = _normalize_action_chunk(
+            action,
+            expected_action_dim=self._expected_action_dim,
+            actions_per_latent_frame=self._expected_actions_per_latent_frame,
+        )
+        action_tensor = torch.from_numpy(action_array).float()
 
         video = self._pipe.generate_vid2world(
             prompt="",
