@@ -14,14 +14,11 @@ from ..config import FinetuneConfig
 logger = get_logger("training.dreamdojo_finetune")
 
 
-def _format_hydra_string_list(raw: str) -> str:
-    """Format a comma-separated module list as a Hydra-safe quoted list."""
+def _quote_hydra_string(raw: str) -> str:
+    """Quote a scalar override value so Hydra treats commas as part of a string."""
     token = (raw or "").strip()
-    if token.startswith("[") and token.endswith("]"):
-        return token
-    parts = [p.strip() for p in token.split(",") if p.strip()]
-    quoted = ",".join(f'"{p}"' for p in parts)
-    return f"[{quoted}]"
+    escaped = token.replace("\\", "\\\\").replace("'", "\\'")
+    return f"'{escaped}'"
 
 
 def list_dreamdojo_experiments(dreamdojo_root: Path) -> List[str]:
@@ -152,7 +149,7 @@ def build_dreamdojo_launch_command(
         f"model.config.use_lora={'true' if config.use_lora else 'false'}",
         f"model.config.lora_rank={config.lora_rank}",
         f"model.config.lora_alpha={config.lora_alpha}",
-        f"model.config.lora_target_modules={_format_hydra_string_list(config.lora_target_modules)}",
+        f"model.config.lora_target_modules={_quote_hydra_string(config.lora_target_modules)}",
     ]
     return cmd
 
