@@ -17,8 +17,8 @@ logger = get_logger("training.dreamdojo_finetune")
 def _quote_hydra_string(raw: str) -> str:
     """Quote a scalar override value so Hydra treats commas as part of a string."""
     token = (raw or "").strip()
-    escaped = token.replace("\\", "\\\\").replace("'", "\\'")
-    return f"'{escaped}'"
+    escaped = token.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
 
 
 def list_dreamdojo_experiments(dreamdojo_root: Path) -> List[str]:
@@ -123,8 +123,6 @@ def build_dreamdojo_launch_command(
     max_iter = max(1, int(config.num_epochs) * steps_per_epoch)
     nproc = max(1, int(os.environ.get("DREAMDOJO_NPROC", "1")))
 
-    run_dir = output_dir / "lora_weights"
-    run_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
         "torchrun",
         "--standalone",
@@ -137,9 +135,10 @@ def build_dreamdojo_launch_command(
         "--config=cosmos_predict2/_src/predict2/action/configs/action_conditioned/config.py",
         "--",
         f"experiment={experiment_name}",
+        "job.project=blueprint_validation",
+        f"job.group={facility_id}",
         f"job.name=blueprint_{facility_id}",
         "job.wandb_mode=disabled",
-        f"++job.path_local={run_dir}",
         f"dataloader_train.dataset.dataset_path={dataset_dir}",
         f"dataloader_train.batch_size={config.batch_size}",
         f"trainer.grad_accum_iter={config.gradient_accumulation_steps}",
@@ -155,20 +154,19 @@ def build_dreamdojo_launch_command(
 
 
 def _resolve_latest_checkpoint(lora_dir: Path) -> Path | None:
-    checkpoints_dir = lora_dir / "checkpoints"
-    if not checkpoints_dir.exists():
+    if not lora_dir.exists():
         return None
 
-    checkpoint_dirs = [
-        path
-        for path in checkpoints_dir.iterdir()
-        if path.is_dir() and path.name.startswith("iter_")
-    ]
+    # DreamDojo writes under IMAGINAIRE_OUTPUT_ROOT/<project>/<group>/<name>/checkpoints.
+    iter_dirs = [path for path in lora_dir.rglob("iter_*") if path.is_dir()]
+    if iter_dirs:
+        iter_dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        return iter_dirs[0]
+
+    checkpoint_dirs = [path for path in lora_dir.rglob("checkpoints") if path.is_dir()]
     if checkpoint_dirs:
         checkpoint_dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         return checkpoint_dirs[0]
-    if any(checkpoints_dir.iterdir()):
-        return checkpoints_dir
     return None
 
 
@@ -196,6 +194,13 @@ def run_dreamdojo_finetune(
         )
     if not dataset_dir.exists():
         raise RuntimeError(f"DreamDojo dataset directory not found: {dataset_dir}")
+    try:
+        import lightning  # noqa: F401
+    except Exception as exc:  # pragma: no cover - import depends on runtime env
+        raise RuntimeError(
+            "Missing DreamDojo dependency: python package 'lightning'. "
+            "Install it in the active environment (e.g., `uv pip install lightning`)."
+        ) from exc
 
     experiment_name = resolve_dreamdojo_experiment_name(
         dreamdojo_root=dreamdojo_root,
@@ -220,12 +225,15 @@ def run_dreamdojo_finetune(
 
     start_time = time.monotonic()
     timeout_sec = int(config.max_training_hours * 3600)
+    env = os.environ.copy()
+    env["IMAGINAIRE_OUTPUT_ROOT"] = str(lora_dir)
     result = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
         cwd=str(dreamdojo_root),
         timeout=timeout_sec,
+        env=env,
     )
     elapsed = time.monotonic() - start_time
     status = "success" if result.returncode == 0 else "failed"
@@ -242,8 +250,8 @@ def run_dreamdojo_finetune(
     }
 
     if result.returncode != 0:
-        train_result["stderr"] = (result.stderr or "")[-2000:]
-        train_result["stdout"] = (result.stdout or "")[-2000:]
+        train_result["stderr"] = (result.stderr or "")[-8000:]
+        train_result["stdout"] = (result.stdout or "")[-8000:]
         logger.error("DreamDojo fine-tuning failed: %s", train_result["stderr"])
     else:
         logger.info("DreamDojo fine-tuning complete in %.1fs", elapsed)

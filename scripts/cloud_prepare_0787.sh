@@ -217,6 +217,8 @@ fi
 if [ "$INSTALL_DREAMDOJO_EXTRA" = "true" ]; then
   echo "Installing DreamDojo CUDA extra ($DREAMDOJO_EXTRA) into active environment..."
   pip_install -e "$ROOT_DIR/data/vendor/DreamDojo[$DREAMDOJO_EXTRA]"
+  echo "Ensuring DreamDojo runtime dependency (lightning) is installed..."
+  pip_install -U lightning
 
   if ! verify_dreamdojo_import; then
     echo "DreamDojo import failed; installing supplemental dependencies (piq, pytorch3d)..."

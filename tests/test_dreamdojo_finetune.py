@@ -64,16 +64,28 @@ def test_build_dreamdojo_launch_command(tmp_path):
     text = " ".join(cmd)
     assert cmd[:2] == ["torchrun", "--standalone"]
     assert "experiment=dreamdojo_site_adapt" in text
-    assert f"++job.path_local={output_dir / 'lora_weights'}" in text
+    assert "job.project=blueprint_validation" in text
+    assert "job.group=facility_a" in text
     assert f"dataloader_train.dataset.dataset_path={dataset_dir}" in text
     assert f"checkpoint.load_path={cfg.dreamdojo_checkpoint}" in text
     assert "model.config.use_lora=true" in text
-    assert "model.config.lora_target_modules='q_proj,v_proj'" in text
+    assert 'model.config.lora_target_modules="q_proj,v_proj"' in text
 
 
 def test_quote_hydra_string():
     from blueprint_validation.training.dreamdojo_finetune import _quote_hydra_string
 
-    assert _quote_hydra_string("q_proj,v_proj") == "'q_proj,v_proj'"
-    assert _quote_hydra_string(" q_proj , v_proj ") == "'q_proj , v_proj'"
-    assert _quote_hydra_string("a'b") == "'a\\'b'"
+    assert _quote_hydra_string("q_proj,v_proj") == '"q_proj,v_proj"'
+    assert _quote_hydra_string(" q_proj , v_proj ") == '"q_proj , v_proj"'
+    assert _quote_hydra_string('a"b') == '"a\\"b"'
+
+
+def test_resolve_latest_checkpoint_recurses(tmp_path):
+    from blueprint_validation.training.dreamdojo_finetune import _resolve_latest_checkpoint
+
+    lora_dir = tmp_path / "lora_weights"
+    ckpt = lora_dir / "blueprint_validation" / "facility_a" / "run_1" / "checkpoints" / "iter_000001"
+    ckpt.mkdir(parents=True)
+
+    resolved = _resolve_latest_checkpoint(lora_dir)
+    assert resolved == ckpt
