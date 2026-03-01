@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Dict
 
 import numpy as np
 import pytest
@@ -66,6 +67,7 @@ def _write_target_camera_path(
     path: Path,
     *,
     target_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    camera_center_xyz: tuple[float, float, float] | None = None,
     num_frames: int = 8,
     resolution: tuple[int, int] = (48, 64),
 ) -> None:
@@ -74,12 +76,14 @@ def _write_target_camera_path(
         save_path_to_json,
     )
 
+    center = camera_center_xyz if camera_center_xyz is not None else target_xyz
     poses = generate_manipulation_arc(
-        approach_point=np.asarray(target_xyz, dtype=np.float64),
+        approach_point=np.asarray(center, dtype=np.float64),
         arc_radius=0.6,
         height=0.7,
         num_frames=num_frames,
         look_down_deg=45.0,
+        target_z_bias_m=0.0,
         resolution=resolution,
     )
     save_path_to_json(poses, path)
@@ -666,3 +670,216 @@ def test_s2_stage1_coverage_gate_fails_when_target_has_single_angle(
     assert result.metrics["coverage_gate_passed"] is False
     assert result.metrics["coverage_targets_failing"] == 1
     assert "coverage gate failed" in (result.detail or "").lower()
+
+
+def test_s2_stage1_coverage_gate_fails_center_band(sample_config, tmp_path, monkeypatch):
+    from blueprint_validation.common import StageResult, write_json
+    from blueprint_validation.config import VariantSpec
+    from blueprint_validation.stages.s2_enrich import EnrichStage
+
+    work_dir = tmp_path
+    render_dir = work_dir / "renders"
+    render_dir.mkdir(parents=True, exist_ok=True)
+
+    video_path = render_dir / "clip_000_manipulation.mp4"
+    depth_path = render_dir / "clip_000_manipulation_depth.mp4"
+    camera_path = render_dir / "clip_000_manipulation_camera_path.json"
+    _write_textured_video(video_path, frames=8)
+    _write_textured_video(depth_path, frames=8)
+    _write_target_camera_path(
+        camera_path,
+        target_xyz=(0.0, 0.0, 0.0),
+        camera_center_xyz=(0.8, 0.0, 0.0),
+        num_frames=8,
+    )
+
+    write_json(
+        {
+            "facility": "Test Facility",
+            "clips": [
+                {
+                    "clip_name": "clip_000_manipulation",
+                    "path_type": "manipulation",
+                    "video_path": str(video_path),
+                    "depth_video_path": str(depth_path),
+                    "camera_path": str(camera_path),
+                    "resolution": [48, 64],
+                    "path_context": {"approach_point": [0.0, 0.0, 0.0]},
+                }
+            ],
+        },
+        render_dir / "render_manifest.json",
+    )
+
+    sample_config.render.stage1_coverage_gate_enabled = True
+    sample_config.render.stage1_coverage_min_visible_frame_ratio = 0.1
+    sample_config.render.stage1_coverage_min_approach_angle_bins = 2
+    sample_config.render.stage1_coverage_angle_bin_deg = 45.0
+    sample_config.render.stage1_coverage_blur_laplacian_min = 5.0
+    sample_config.render.stage1_coverage_blur_sample_every_n_frames = 1
+    sample_config.render.stage1_coverage_blur_max_samples_per_clip = 8
+    sample_config.render.stage1_coverage_min_center_band_ratio = 0.8
+    sample_config.render.stage1_coverage_center_band_x = [0.35, 0.65]
+    sample_config.render.stage1_coverage_center_band_y = [0.35, 0.65]
+    sample_config.enrich.dynamic_variants = False
+    sample_config.enrich.variants = [VariantSpec(name="v1", prompt="test variant")]
+
+    def _unexpected_enrich_call(**kwargs):
+        raise AssertionError("enrich_clip should not run when Stage-1 coverage gate fails")
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s2_enrich.enrich_clip",
+        _unexpected_enrich_call,
+    )
+
+    previous_results = {
+        "s1_render": StageResult(
+            stage_name="s1_render",
+            status="success",
+            elapsed_seconds=0,
+            outputs={"manifest_path": str(render_dir / "render_manifest.json")},
+        )
+    }
+
+    stage = EnrichStage()
+    fac = list(sample_config.facilities.values())[0]
+    result = stage.run(sample_config, fac, work_dir, previous_results)
+    assert result.status == "failed"
+    assert result.metrics["coverage_gate_passed"] is False
+    assert result.metrics["coverage_targets_center_band_failing"] == 1
+
+
+def test_s2_context_selection_prefers_target_centered_frame(
+    sample_config,
+    tmp_path,
+    monkeypatch,
+):
+    from blueprint_validation.common import write_json
+    from blueprint_validation.config import VariantSpec
+    from blueprint_validation.stages.s2_enrich import EnrichStage, _resolve_clip_context_selection
+
+    work_dir = tmp_path
+    render_dir = work_dir / "renders"
+    render_dir.mkdir(parents=True, exist_ok=True)
+
+    video_path = render_dir / "clip_000_manipulation.mp4"
+    depth_path = render_dir / "clip_000_manipulation_depth.mp4"
+    camera_path = render_dir / "clip_000_manipulation_camera_path.json"
+    _write_textured_video(video_path, frames=8)
+    _write_textured_video(depth_path, frames=8)
+    _write_target_camera_path(
+        camera_path,
+        target_xyz=(0.0, 0.0, 0.0),
+        camera_center_xyz=(0.7, 0.0, 0.0),
+        num_frames=8,
+    )
+
+    clip_entry = {
+        "clip_name": "clip_000_manipulation",
+        "path_type": "manipulation",
+        "video_path": str(video_path),
+        "depth_video_path": str(depth_path),
+        "camera_path": str(camera_path),
+        "resolution": [48, 64],
+        "path_context": {"approach_point": [0.0, 0.0, 0.0]},
+    }
+    write_json({"facility": "Test Facility", "clips": [clip_entry]}, render_dir / "render_manifest.json")
+
+    sample_config.render.stage1_coverage_gate_enabled = False
+    sample_config.enrich.dynamic_variants = False
+    sample_config.enrich.variants = [VariantSpec(name="v1", prompt="test variant")]
+    sample_config.enrich.context_frame_mode = "target_centered"
+    sample_config.enrich.context_frame_index = 0
+
+    expected_idx, expected_mode, _ = _resolve_clip_context_selection(clip_entry, sample_config)
+    captured: Dict[str, object] = {}
+
+    def _fake_enrich_clip(**kwargs):
+        captured["context_frame_index"] = kwargs.get("context_frame_index")
+        out = kwargs["output_dir"] / f"{kwargs['clip_name']}_v1.mp4"
+        _write_textured_video(out, frames=4)
+        return [
+            SimpleNamespace(
+                variant_name="v1",
+                prompt="test variant",
+                output_video_path=out,
+                input_video_path=kwargs["video_path"],
+            )
+        ]
+
+    monkeypatch.setattr("blueprint_validation.stages.s2_enrich.enrich_clip", _fake_enrich_clip)
+
+    stage = EnrichStage()
+    fac = list(sample_config.facilities.values())[0]
+    result = stage.run(sample_config, fac, work_dir, {})
+    assert result.status == "success"
+    assert captured["context_frame_index"] == expected_idx
+    assert result.metrics["context_selection_target_centered_count"] == (
+        1 if expected_mode == "target_centered" else 0
+    )
+
+
+def test_s2_context_selection_falls_back_to_fixed_when_target_missing(
+    sample_config,
+    tmp_path,
+    monkeypatch,
+):
+    from blueprint_validation.common import write_json
+    from blueprint_validation.config import VariantSpec
+    from blueprint_validation.stages.s2_enrich import EnrichStage
+
+    work_dir = tmp_path
+    render_dir = work_dir / "renders"
+    render_dir.mkdir(parents=True, exist_ok=True)
+
+    video_path = render_dir / "clip_000_manipulation.mp4"
+    depth_path = render_dir / "clip_000_manipulation_depth.mp4"
+    _write_textured_video(video_path, frames=8)
+    _write_textured_video(depth_path, frames=8)
+
+    write_json(
+        {
+            "facility": "Test Facility",
+            "clips": [
+                {
+                    "clip_name": "clip_000_manipulation",
+                    "path_type": "manipulation",
+                    "video_path": str(video_path),
+                    "depth_video_path": str(depth_path),
+                    "resolution": [48, 64],
+                    "path_context": {},
+                }
+            ],
+        },
+        render_dir / "render_manifest.json",
+    )
+
+    sample_config.render.stage1_coverage_gate_enabled = False
+    sample_config.enrich.dynamic_variants = False
+    sample_config.enrich.variants = [VariantSpec(name="v1", prompt="test variant")]
+    sample_config.enrich.context_frame_mode = "target_centered"
+    sample_config.enrich.context_frame_index = 3
+
+    captured: Dict[str, object] = {}
+
+    def _fake_enrich_clip(**kwargs):
+        captured["context_frame_index"] = kwargs.get("context_frame_index")
+        out = kwargs["output_dir"] / f"{kwargs['clip_name']}_v1.mp4"
+        _write_textured_video(out, frames=4)
+        return [
+            SimpleNamespace(
+                variant_name="v1",
+                prompt="test variant",
+                output_video_path=out,
+                input_video_path=kwargs["video_path"],
+            )
+        ]
+
+    monkeypatch.setattr("blueprint_validation.stages.s2_enrich.enrich_clip", _fake_enrich_clip)
+
+    stage = EnrichStage()
+    fac = list(sample_config.facilities.values())[0]
+    result = stage.run(sample_config, fac, work_dir, {})
+    assert result.status == "success"
+    assert captured["context_frame_index"] == 3
+    assert result.metrics["context_selection_fixed_count"] == 1

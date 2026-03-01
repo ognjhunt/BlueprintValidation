@@ -29,6 +29,14 @@ def test_config_defaults():
     assert config.render.stage1_coverage_gate_enabled is False
     assert config.render.stage1_coverage_min_visible_frame_ratio == pytest.approx(0.35)
     assert config.render.stage1_coverage_min_approach_angle_bins == 2
+    assert config.render.stage1_coverage_min_center_band_ratio == pytest.approx(0.4)
+    assert config.render.stage1_coverage_center_band_x == [0.2, 0.8]
+    assert config.render.stage1_coverage_center_band_y == [0.2, 0.8]
+    assert config.render.orientation_autocorrect_enabled is True
+    assert config.render.orientation_autocorrect_mode == "auto"
+    assert config.render.manipulation_random_xy_offset_m == pytest.approx(0.0)
+    assert config.render.non_manipulation_random_xy_offset_m == pytest.approx(1.0)
+    assert config.render.manipulation_target_z_bias_m == pytest.approx(0.0)
     assert config.finetune.num_epochs == 50
     assert config.finetune.use_lora is True
     assert config.finetune.lora_rank == 32
@@ -40,6 +48,7 @@ def test_config_defaults():
     assert config.eval_policy.unnorm_key == "bridge_orig"
     assert config.eval_policy.vlm_judge.enable_agentic_vision is True
     assert config.enrich.max_input_frames == 0
+    assert config.enrich.context_frame_mode == "target_centered"
     assert config.policy_adapter.name == "openvla_oft"
     assert str(config.policy_adapter.openvla.openvla_repo).endswith("opt/openvla-oft")
     assert config.policy_adapter.pi05.profile == "pi05_libero"
@@ -97,6 +106,14 @@ def test_config_with_all_sections(tmp_path):
             "stage1_coverage_blur_laplacian_min": 25.0,
             "stage1_coverage_blur_sample_every_n_frames": 3,
             "stage1_coverage_blur_max_samples_per_clip": 9,
+            "stage1_coverage_min_center_band_ratio": 0.5,
+            "stage1_coverage_center_band_x": [0.25, 0.75],
+            "stage1_coverage_center_band_y": [0.3, 0.7],
+            "orientation_autocorrect_enabled": True,
+            "orientation_autocorrect_mode": "warn_only",
+            "manipulation_random_xy_offset_m": 0.0,
+            "non_manipulation_random_xy_offset_m": 0.6,
+            "manipulation_target_z_bias_m": -0.05,
         },
         "robot_composite": {"enabled": True, "urdf_path": "/tmp/arm.urdf"},
         "gemini_polish": {"enabled": True, "model": "gemini-3.1-flash-image-preview"},
@@ -107,6 +124,7 @@ def test_config_with_all_sections(tmp_path):
             "max_input_frames": 17,
             "min_frame0_ssim": 0.8,
             "delete_rejected_outputs": True,
+            "context_frame_mode": "fixed",
         },
         "finetune": {
             "num_epochs": 10,
@@ -162,8 +180,17 @@ def test_config_with_all_sections(tmp_path):
     assert config.render.stage1_coverage_blur_laplacian_min == pytest.approx(25.0)
     assert config.render.stage1_coverage_blur_sample_every_n_frames == 3
     assert config.render.stage1_coverage_blur_max_samples_per_clip == 9
+    assert config.render.stage1_coverage_min_center_band_ratio == pytest.approx(0.5)
+    assert config.render.stage1_coverage_center_band_x == [0.25, 0.75]
+    assert config.render.stage1_coverage_center_band_y == [0.3, 0.7]
+    assert config.render.orientation_autocorrect_enabled is True
+    assert config.render.orientation_autocorrect_mode == "warn_only"
+    assert config.render.manipulation_random_xy_offset_m == pytest.approx(0.0)
+    assert config.render.non_manipulation_random_xy_offset_m == pytest.approx(0.6)
+    assert config.render.manipulation_target_z_bias_m == pytest.approx(-0.05)
     assert config.enrich.num_variants_per_render == 3
     assert config.enrich.context_frame_index == 7
+    assert config.enrich.context_frame_mode == "fixed"
     assert config.enrich.max_input_frames == 17
     assert config.enrich.min_frame0_ssim == pytest.approx(0.8)
     assert config.enrich.delete_rejected_outputs is True

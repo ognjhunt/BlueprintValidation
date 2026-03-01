@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import struct
 import time
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -32,12 +32,13 @@ from .rendering.scene_geometry import (
     OccupancyGrid,
     auto_populate_manipulation_zones,
     build_occupancy_grid,
+    correct_upside_down_camera_poses,
     compute_scene_transform,
-    detect_up_axis,
     filter_and_fix_poses,
     generate_scene_aware_specs,
     is_identity_transform,
     load_obbs_from_task_targets,
+    resolve_facility_orientation,
     transform_camera_path_specs,
     transform_means,
     transform_obbs,
@@ -432,17 +433,35 @@ def warmup_facility(
     summary["ply_loaded"] = True
     summary["num_gaussians"] = int(len(means_raw))
 
-    # Resolve auto up-axis from point cloud extents
-    if facility.up_axis.lower().strip() == "auto":
-        detected = detect_up_axis(means_raw)
-        summary["detected_up_axis"] = detected
-        facility = replace(facility, up_axis=detected)
+    obbs_raw: Optional[List] = None
+    if facility.task_hints_path and facility.task_hints_path.exists():
+        try:
+            obbs_raw = load_obbs_from_task_targets(facility.task_hints_path)
+        except Exception:
+            logger.warning(
+                "Failed loading OBBs for warmup orientation scoring from %s",
+                facility.task_hints_path,
+                exc_info=True,
+            )
+
+    facility, orientation_meta = resolve_facility_orientation(
+        facility=facility,
+        means_raw=means_raw,
+        obbs_raw=obbs_raw,
+        camera_look_down_deg=config.render.camera_look_down_deg,
+        orientation_autocorrect_enabled=config.render.orientation_autocorrect_enabled,
+        orientation_autocorrect_mode=config.render.orientation_autocorrect_mode,
+    )
+    summary["detected_up_axis"] = orientation_meta.get("detected_up_axis")
+    summary["resolved_up_axis"] = orientation_meta.get("resolved_up_axis")
+    summary["orientation_candidates"] = orientation_meta.get("orientation_candidates")
+    summary["orientation_score_selected"] = orientation_meta.get("orientation_score_selected")
+    summary["orientation_score_runner_up"] = orientation_meta.get("orientation_score_runner_up")
 
     # Apply scene orientation transform (e.g. Y-up → Z-up)
     scene_T = compute_scene_transform(facility)
     has_transform = not is_identity_transform(scene_T)
     summary["scene_transform"] = scene_T.tolist()
-    summary["resolved_up_axis"] = facility.up_axis
     if has_transform:
         logger.info("Applying scene transform (up_axis=%s)", facility.up_axis)
         means = transform_means(means_raw, scene_T)
@@ -471,17 +490,16 @@ def warmup_facility(
     # 3. Load OBBs from task_targets.json
     extra_specs: List[CameraPathSpec] = []
     if config.render.scene_aware:
-        if facility.task_hints_path and facility.task_hints_path.exists():
-            obbs = load_obbs_from_task_targets(facility.task_hints_path)
-            if obbs:
-                if has_transform:
-                    obbs = transform_obbs(obbs, scene_T)
-                extra_specs = generate_scene_aware_specs(obbs, occupancy)
-                facility.manipulation_zones = auto_populate_manipulation_zones(
-                    facility.manipulation_zones, obbs
-                )
-                summary["obbs_loaded"] = len(obbs)
-                summary["scene_aware_specs"] = len(extra_specs)
+        if obbs_raw:
+            obbs = obbs_raw
+            if has_transform:
+                obbs = transform_obbs(obbs, scene_T)
+            extra_specs = generate_scene_aware_specs(obbs, occupancy)
+            facility.manipulation_zones = auto_populate_manipulation_zones(
+                facility.manipulation_zones, obbs
+            )
+            summary["obbs_loaded"] = len(obbs)
+            summary["scene_aware_specs"] = len(extra_specs)
         else:
             summary["obbs_loaded"] = 0
 
@@ -492,11 +510,13 @@ def warmup_facility(
     all_specs = base_specs + extra_specs
     all_clips: List[dict] = []
     clip_index = 0
+    num_poses_roll_corrected = 0
+    num_clips_with_roll_correction = 0
 
     for path_spec in all_specs:
         for clip_num in range(config.render.num_clips_per_path):
             rng = np.random.default_rng(seed=clip_index * 42)
-            offset = rng.uniform(-1.0, 1.0, size=3)
+            offset = _sample_start_offset(config, path_spec, rng)
 
             poses = generate_path_from_spec(
                 spec=path_spec,
@@ -506,6 +526,7 @@ def warmup_facility(
                 look_down_deg=config.render.camera_look_down_deg,
                 resolution=config.render.resolution,
                 start_offset=offset,
+                manipulation_target_z_bias_m=config.render.manipulation_target_z_bias_m,
             )
 
             # Collision filter
@@ -517,6 +538,10 @@ def warmup_facility(
                 if not poses:
                     clip_index += 1
                     continue
+            poses, corrected_count = correct_upside_down_camera_poses(poses)
+            num_poses_roll_corrected += corrected_count
+            if corrected_count > 0:
+                num_clips_with_roll_correction += 1
 
             clip_name = f"clip_{clip_index:03d}_{path_spec.type}"
 
@@ -542,6 +567,8 @@ def warmup_facility(
     write_json({"clips": all_clips}, clips_path)
     summary["num_clips"] = len(all_clips)
     summary["clips_path"] = str(clips_path)
+    summary["num_poses_roll_corrected"] = int(num_poses_roll_corrected)
+    summary["num_clips_with_roll_correction"] = int(num_clips_with_roll_correction)
 
     # 5. Dynamic variant prompts via Gemini API (CPU + network, no GPU)
     try:
@@ -567,6 +594,24 @@ def warmup_facility(
         elapsed,
     )
     return summary
+
+
+def _sample_start_offset(
+    config: ValidationConfig,
+    path_spec: CameraPathSpec,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Sample deterministic XY camera offset with zero default for manipulation."""
+    span = (
+        float(config.render.manipulation_random_xy_offset_m)
+        if str(path_spec.type).strip().lower() == "manipulation"
+        else float(config.render.non_manipulation_random_xy_offset_m)
+    )
+    offset = np.zeros(3, dtype=np.float64)
+    if span <= 0.0:
+        return offset
+    offset[:2] = rng.uniform(-span, span, size=2)
+    return offset
 
 
 def load_warmup_cache(work_dir: Path) -> Optional[Dict]:

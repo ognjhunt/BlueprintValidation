@@ -101,3 +101,25 @@ def test_task_scoped_selection_resolves_label_instance_token():
     assert len(selected) == 1
     assert selected[0].instance_id == "101"
     assert stats["targets"] == 1
+
+
+def test_sample_start_offset_defaults_zero_for_manipulation(sample_config):
+    from blueprint_validation.config import CameraPathSpec
+    from blueprint_validation.stages.s1_render import _sample_start_offset
+
+    rng = np.random.default_rng(42)
+    sample_config.render.manipulation_random_xy_offset_m = 0.0
+    offset = _sample_start_offset(sample_config, CameraPathSpec(type="manipulation"), rng)
+    np.testing.assert_allclose(offset, np.zeros(3, dtype=np.float64), atol=1e-10)
+
+
+def test_sample_start_offset_non_manipulation_retains_jitter(sample_config):
+    from blueprint_validation.config import CameraPathSpec
+    from blueprint_validation.stages.s1_render import _sample_start_offset
+
+    rng = np.random.default_rng(7)
+    sample_config.render.non_manipulation_random_xy_offset_m = 1.0
+    offset = _sample_start_offset(sample_config, CameraPathSpec(type="orbit"), rng)
+    assert offset.shape == (3,)
+    assert float(abs(offset[0])) > 0 or float(abs(offset[1])) > 0
+    assert float(offset[2]) == 0.0

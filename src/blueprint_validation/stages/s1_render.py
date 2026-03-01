@@ -20,12 +20,13 @@ from ..rendering.scene_geometry import (
     OccupancyGrid,
     auto_populate_manipulation_zones,
     build_occupancy_grid,
+    correct_upside_down_camera_poses,
     compute_scene_transform,
-    detect_up_axis,
     filter_and_fix_poses,
     generate_scene_aware_specs,
     is_identity_transform,
     load_obbs_from_task_targets,
+    resolve_facility_orientation,
     transform_camera_path_specs,
     transform_c2w,
     transform_means,
@@ -168,19 +169,42 @@ class RenderStage(PipelineStage):
         cached_clips = load_cached_clips(work_dir)
         warmup_cache = load_warmup_cache(work_dir)
         extra_specs_count = 0
+        num_poses_roll_corrected = 0
+        num_clips_with_roll_correction = 0
 
-        # Resolve auto up-axis: prefer warmup-detected value, else detect now
-        if facility.up_axis.lower().strip() == "auto":
-            if warmup_cache and "detected_up_axis" in warmup_cache:
-                resolved = warmup_cache["detected_up_axis"]
-                logger.info("Using warmup-detected up_axis='%s'", resolved)
-            elif warmup_cache and "resolved_up_axis" in warmup_cache:
-                resolved = warmup_cache["resolved_up_axis"]
-                logger.info("Using warmup-resolved up_axis='%s'", resolved)
-            else:
-                splat_means_for_detect = splat.means.cpu().numpy()
-                resolved = detect_up_axis(splat_means_for_detect)
-            facility = replace(facility, up_axis=resolved)
+        splat_means_raw = splat.means.cpu().numpy()
+        obbs_for_orientation: Optional[List[OrientedBoundingBox]] = None
+        if facility.task_hints_path and facility.task_hints_path.exists():
+            try:
+                obbs_for_orientation = load_obbs_from_task_targets(facility.task_hints_path)
+            except Exception:
+                logger.warning(
+                    "Failed loading OBBs for orientation scoring from %s",
+                    facility.task_hints_path,
+                    exc_info=True,
+                )
+
+        facility, orientation_meta = resolve_facility_orientation(
+            facility=facility,
+            means_raw=splat_means_raw,
+            obbs_raw=obbs_for_orientation,
+            camera_look_down_deg=config.render.camera_look_down_deg,
+            orientation_autocorrect_enabled=config.render.orientation_autocorrect_enabled,
+            orientation_autocorrect_mode=config.render.orientation_autocorrect_mode,
+        )
+
+        if cached_clips is not None and warmup_cache is not None:
+            cached_axis = str(warmup_cache.get("resolved_up_axis", "")).strip().lower()
+            current_axis = str(facility.up_axis).strip().lower()
+            if cached_axis and cached_axis != current_axis:
+                logger.info(
+                    "Ignoring warmup cache due to orientation mismatch "
+                    "(cache=%s, current=%s)",
+                    cached_axis,
+                    current_axis,
+                )
+                cached_clips = None
+                warmup_cache = None
 
         # Compute scene orientation transform (e.g. Y-up → Z-up)
         scene_T = compute_scene_transform(facility)
@@ -194,7 +218,11 @@ class RenderStage(PipelineStage):
                 len(cached_clips),
             )
             extra_specs_count = (warmup_cache or {}).get("scene_aware_specs", 0)
-            manifest_entries = self._render_from_cache(
+            (
+                manifest_entries,
+                num_poses_roll_corrected,
+                num_clips_with_roll_correction,
+            ) = self._render_from_cache(
                 cached_clips,
                 splat,
                 render_dir,
@@ -203,7 +231,7 @@ class RenderStage(PipelineStage):
                 scene_T if has_transform else None,
             )
         else:
-            splat_means_np = splat.means.cpu().numpy()
+            splat_means_np = splat_means_raw
 
             # Transform positions for scene geometry (camera paths, occupancy)
             if has_transform:
@@ -227,7 +255,11 @@ class RenderStage(PipelineStage):
                     len(all_path_specs),
                 )
 
-            manifest_entries = self._generate_and_render(
+            (
+                manifest_entries,
+                num_poses_roll_corrected,
+                num_clips_with_roll_correction,
+            ) = self._generate_and_render(
                 config,
                 splat,
                 all_path_specs,
@@ -262,12 +294,19 @@ class RenderStage(PipelineStage):
                 "render_dir": str(render_dir),
                 "manifest_path": str(manifest_path),
                 "num_clips": len(manifest_entries),
+                "resolved_up_axis": facility.up_axis,
             },
             metrics={
                 "num_clips": len(manifest_entries),
                 "total_frames": sum(e["num_frames"] for e in manifest_entries),
                 "resolution": list(resolution),
                 "scene_aware_specs": extra_specs_count,
+                "resolved_up_axis": facility.up_axis,
+                "orientation_candidates": orientation_meta.get("orientation_candidates"),
+                "orientation_score_selected": orientation_meta.get("orientation_score_selected"),
+                "orientation_score_runner_up": orientation_meta.get("orientation_score_runner_up"),
+                "num_poses_roll_corrected": num_poses_roll_corrected,
+                "num_clips_with_roll_correction": num_clips_with_roll_correction,
             },
         )
 
@@ -279,14 +318,20 @@ class RenderStage(PipelineStage):
         resolution: tuple,
         fps: int,
         scene_T: Optional[np.ndarray] = None,
-    ) -> List[Dict]:
+    ) -> tuple[List[Dict], int, int]:
         """Render clips using pre-computed camera paths from warmup cache."""
         from ..warmup import _deserialize_camera_poses
 
         manifest_entries: List[Dict] = []
+        corrected_poses_total = 0
+        corrected_clip_count = 0
         for clip_data in cached_clips:
             clip_name = clip_data["clip_name"]
             poses = _deserialize_camera_poses(clip_data["poses"])
+            poses, corrected_count = correct_upside_down_camera_poses(poses)
+            corrected_poses_total += corrected_count
+            if corrected_count > 0:
+                corrected_clip_count += 1
 
             # Convert cameras from corrected frame back to original PLY frame
             if scene_T is not None:
@@ -329,10 +374,10 @@ class RenderStage(PipelineStage):
                     "depth_video_path": str(output.depth_video_path),
                     "camera_path": str(render_dir / f"{clip_name}_camera_path.json"),
                     "initial_camera": initial_camera,
-                    "path_context": {"source": "warmup_cache"},
-                }
-            )
-        return manifest_entries
+                        "path_context": {"source": "warmup_cache"},
+                    }
+                )
+        return manifest_entries, corrected_poses_total, corrected_clip_count
 
     def _generate_and_render(
         self,
@@ -348,10 +393,12 @@ class RenderStage(PipelineStage):
         resolution: tuple,
         fps: int,
         scene_T: Optional[np.ndarray] = None,
-    ) -> List[Dict]:
+    ) -> tuple[List[Dict], int, int]:
         """Original path: generate camera paths from scratch, then render."""
         manifest_entries: List[Dict] = []
         clip_index = 0
+        corrected_poses_total = 0
+        corrected_clip_count = 0
 
         for path_spec in all_path_specs:
             clip_repeats = int(config.render.num_clips_per_path)
@@ -362,7 +409,7 @@ class RenderStage(PipelineStage):
             for clip_num in range(clip_repeats):
                 # Add random offset for variety between clips
                 rng = np.random.default_rng(seed=clip_index * 42)
-                offset = rng.uniform(-1.0, 1.0, size=3)
+                offset = _sample_start_offset(config, path_spec, rng)
 
                 poses = generate_path_from_spec(
                     spec=path_spec,
@@ -372,6 +419,7 @@ class RenderStage(PipelineStage):
                     look_down_deg=look_down_deg,
                     resolution=resolution,
                     start_offset=offset,
+                    manipulation_target_z_bias_m=config.render.manipulation_target_z_bias_m,
                 )
 
                 # Collision filter
@@ -388,6 +436,10 @@ class RenderStage(PipelineStage):
                         )
                         clip_index += 1
                         continue
+                poses, corrected_count = correct_upside_down_camera_poses(poses)
+                corrected_poses_total += corrected_count
+                if corrected_count > 0:
+                    corrected_clip_count += 1
 
                 # Convert cameras from corrected frame to original PLY frame
                 if scene_T is not None:
@@ -441,7 +493,7 @@ class RenderStage(PipelineStage):
                 )
                 clip_index += 1
 
-        return manifest_entries
+        return manifest_entries, corrected_poses_total, corrected_clip_count
 
 
 def _camera_pose_metadata(pose) -> dict:
@@ -729,6 +781,24 @@ def _fallback_obb_indices(obbs: List[OrientedBoundingBox], limit: int) -> List[i
 
     ranked = sorted(enumerate(obbs), key=key_fn)
     return [idx for idx, _ in ranked[: max(1, int(limit))]]
+
+
+def _sample_start_offset(
+    config: ValidationConfig,
+    path_spec: CameraPathSpec,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Sample deterministic XY offset with stricter defaults for manipulation clips."""
+    span = (
+        float(config.render.manipulation_random_xy_offset_m)
+        if str(path_spec.type).strip().lower() == "manipulation"
+        else float(config.render.non_manipulation_random_xy_offset_m)
+    )
+    offset = np.zeros(3, dtype=np.float64)
+    if span <= 0.0:
+        return offset
+    offset[:2] = rng.uniform(-span, span, size=2)
+    return offset
 
 
 def _has_cuda() -> bool:

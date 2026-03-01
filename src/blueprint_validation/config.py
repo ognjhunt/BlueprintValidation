@@ -92,6 +92,14 @@ class RenderConfig:
     stage1_coverage_blur_laplacian_min: float = 20.0
     stage1_coverage_blur_sample_every_n_frames: int = 5
     stage1_coverage_blur_max_samples_per_clip: int = 12
+    stage1_coverage_min_center_band_ratio: float = 0.4
+    stage1_coverage_center_band_x: List[float] = field(default_factory=lambda: [0.2, 0.8])
+    stage1_coverage_center_band_y: List[float] = field(default_factory=lambda: [0.2, 0.8])
+    orientation_autocorrect_enabled: bool = True
+    orientation_autocorrect_mode: str = "auto"  # auto|fail_fast|warn_only
+    manipulation_random_xy_offset_m: float = 0.0
+    non_manipulation_random_xy_offset_m: float = 1.0
+    manipulation_target_z_bias_m: float = 0.0
 
 
 @dataclass
@@ -145,6 +153,8 @@ class EnrichConfig:
     # Optional explicit context frame index used for Cosmos image context anchoring.
     # If unset, Stage 2 uses a deterministic quarter-way frame for each clip.
     context_frame_index: Optional[int] = None
+    # Context frame selection policy: target_centered (manipulation-aware) or fixed.
+    context_frame_mode: str = "target_centered"
     # Optional upper bound on frames passed into Cosmos per clip.
     # Disabled when <= 0. When enabled and inputs are longer, Stage 2 trims a window
     # centered around the resolved context frame.
@@ -607,6 +617,18 @@ def load_config(path: Path) -> ValidationConfig:
             stage1_coverage_blur_max_samples_per_clip=int(
                 r.get("stage1_coverage_blur_max_samples_per_clip", 12)
             ),
+            stage1_coverage_min_center_band_ratio=float(
+                r.get("stage1_coverage_min_center_band_ratio", 0.4)
+            ),
+            stage1_coverage_center_band_x=list(r.get("stage1_coverage_center_band_x", [0.2, 0.8])),
+            stage1_coverage_center_band_y=list(r.get("stage1_coverage_center_band_y", [0.2, 0.8])),
+            orientation_autocorrect_enabled=bool(r.get("orientation_autocorrect_enabled", True)),
+            orientation_autocorrect_mode=str(r.get("orientation_autocorrect_mode", "auto")),
+            manipulation_random_xy_offset_m=float(r.get("manipulation_random_xy_offset_m", 0.0)),
+            non_manipulation_random_xy_offset_m=float(
+                r.get("non_manipulation_random_xy_offset_m", 1.0)
+            ),
+            manipulation_target_z_bias_m=float(r.get("manipulation_target_z_bias_m", 0.0)),
         )
 
     # Enrich
@@ -633,6 +655,7 @@ def load_config(path: Path) -> ValidationConfig:
             context_frame_index=(
                 int(e["context_frame_index"]) if e.get("context_frame_index") is not None else None
             ),
+            context_frame_mode=str(e.get("context_frame_mode", "target_centered")),
             max_input_frames=int(e.get("max_input_frames", 0)),
             min_frame0_ssim=float(e.get("min_frame0_ssim", 0.0)),
             delete_rejected_outputs=bool(e.get("delete_rejected_outputs", False)),

@@ -57,6 +57,14 @@ render:
   stage1_coverage_blur_laplacian_min: 20.0
   stage1_coverage_blur_sample_every_n_frames: 5
   stage1_coverage_blur_max_samples_per_clip: 12
+  stage1_coverage_min_center_band_ratio: 0.40
+  stage1_coverage_center_band_x: [0.20, 0.80]
+  stage1_coverage_center_band_y: [0.20, 0.80]
+  orientation_autocorrect_enabled: true
+  orientation_autocorrect_mode: auto
+  manipulation_random_xy_offset_m: 0.0
+  non_manipulation_random_xy_offset_m: 1.0
+  manipulation_target_z_bias_m: 0.0
 
 robot_composite:
   enabled: false
@@ -111,6 +119,7 @@ enrich:
   allow_dynamic_variant_fallback: false
   # Anchor generation to a deterministic frame from each source clip.
   context_frame_index: 9
+  context_frame_mode: target_centered
   # Trim long Stage-1 clips before Cosmos to reduce temporal drift and runtime.
   max_input_frames: 49
   # Reject generations whose first frame diverges too far from the anchor frame.

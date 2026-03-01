@@ -155,15 +155,15 @@ def generate_manipulation_arc(
     height: float,
     num_frames: int,
     look_down_deg: float = 45.0,
+    target_z_bias_m: float = 0.0,
     arc_span_deg: float = 150.0,
     resolution: tuple[int, int] = (480, 640),
     fov_deg: float = 60.0,
 ) -> List[CameraPose]:
     """Generate a tight arc camera path around a manipulation zone.
 
-    The camera orbits at gripper height around the approach point, looking
-    steeply downward at the workspace — suitable for manipulation-task
-    initial frames where DreamDojo needs a gripper-centric viewpoint.
+    The camera orbits at gripper height around the approach point and points
+    directly at the interaction target by default.
     """
     h, w = resolution
     fx = fy = w / (2.0 * math.tan(math.radians(fov_deg / 2)))
@@ -184,12 +184,11 @@ def generate_manipulation_arc(
                 height,
             ]
         )
-        look_down_rad = math.radians(look_down_deg)
         target = np.array(
             [
                 approach[0],
                 approach[1],
-                height - arc_radius * math.tan(look_down_rad),
+                approach[2] + float(target_z_bias_m),
             ]
         )
         c2w = _look_at(eye, target)
@@ -238,6 +237,7 @@ def generate_path_from_spec(
     look_down_deg: float,
     resolution: tuple[int, int],
     start_offset: Optional[np.ndarray] = None,
+    manipulation_target_z_bias_m: float = 0.0,
 ) -> List[CameraPose]:
     """Generate a camera path from a CameraPathSpec."""
     if spec.type == "orbit":
@@ -284,6 +284,7 @@ def generate_path_from_spec(
             arc_radius=spec.arc_radius_m,
             height=effective_height,
             look_down_deg=effective_look_down,
+            target_z_bias_m=float(manipulation_target_z_bias_m),
             num_frames=num_frames,
             resolution=resolution,
         )

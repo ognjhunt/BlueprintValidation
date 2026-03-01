@@ -97,3 +97,26 @@ def test_generate_path_from_spec():
     assert len(poses) == 10
     assert poses[0].width == 160
     assert poses[0].height == 120
+
+
+def test_generate_manipulation_arc_target_locked_projection_centered():
+    from blueprint_validation.rendering.camera_paths import generate_manipulation_arc
+
+    approach = np.array([0.0, 0.0, 0.5], dtype=np.float64)
+    poses = generate_manipulation_arc(
+        approach_point=approach,
+        arc_radius=0.6,
+        height=0.9,
+        num_frames=7,
+        look_down_deg=45.0,
+        target_z_bias_m=0.0,
+        resolution=(120, 160),
+    )
+    target_h = np.array([approach[0], approach[1], approach[2], 1.0], dtype=np.float64)
+    for pose in poses:
+        cam = np.linalg.inv(pose.c2w) @ target_h
+        assert cam[2] < 0.0
+        u = pose.fx * (cam[0] / -cam[2]) + pose.cx
+        v = pose.fy * (cam[1] / -cam[2]) + pose.cy
+        assert abs(float(u) - pose.cx) < 1e-4
+        assert abs(float(v) - pose.cy) < 1e-4

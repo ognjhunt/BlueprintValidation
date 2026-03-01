@@ -132,6 +132,8 @@ class EnrichStage(PipelineStage):
         total_rejected_anchor_similarity = 0
         accepted_ssim_scores: List[float] = []
         total_trimmed_inputs = 0
+        context_mode_counts = {"target_centered": 0, "fixed": 0, "deterministic": 0}
+        selected_center_scores: List[float] = []
         ssim_gate_threshold = float(config.enrich.min_frame0_ssim)
 
         for clip_entry in render_manifest["clips"]:
@@ -143,12 +145,23 @@ class EnrichStage(PipelineStage):
                 logger.warning("Video not found: %s", video_path)
                 continue
 
+            (
+                preferred_context_index,
+                selected_context_mode,
+                target_center_score,
+            ) = _resolve_clip_context_selection(clip_entry, config)
+            context_mode_counts[selected_context_mode] = (
+                context_mode_counts.get(selected_context_mode, 0) + 1
+            )
+            if target_center_score is not None:
+                selected_center_scores.append(float(target_center_score))
+
             prepared = _prepare_cosmos_input(
                 video_path=video_path,
                 depth_path=depth_path if depth_path.exists() else None,
                 clip_name=clip_name,
                 enrich_dir=enrich_dir,
-                preferred_context_frame_index=config.enrich.context_frame_index,
+                preferred_context_frame_index=preferred_context_index,
                 max_input_frames=int(config.enrich.max_input_frames),
             )
             if prepared is None:
@@ -231,6 +244,9 @@ class EnrichStage(PipelineStage):
                         "input_video_path": str(out.input_video_path),
                         "source_video_path": str(video_path),
                         "context_frame_index": context_frame_index,
+                        "selected_context_frame_index": context_frame_index,
+                        "selected_context_frame_mode": selected_context_mode,
+                        "target_center_score": target_center_score,
                         "input_total_frames": (
                             prepared.input_total_frames if prepared.input_trimmed else total_frames
                         ),
@@ -254,6 +270,7 @@ class EnrichStage(PipelineStage):
             "variants_per_clip": len(variants),
             "variant_names": [v.name for v in variants],
             "context_frame_index": sample_context_frame_index,
+            "context_frame_mode": config.enrich.context_frame_mode,
             "min_frame0_ssim": ssim_gate_threshold,
             "clips": manifest_entries,
         }
@@ -284,6 +301,19 @@ class EnrichStage(PipelineStage):
                 "mean_frame0_ssim": (
                     round(sum(accepted_ssim_scores) / len(accepted_ssim_scores), 4)
                     if accepted_ssim_scores
+                    else None
+                ),
+                "context_frame_mode": config.enrich.context_frame_mode,
+                "context_selection_target_centered_count": context_mode_counts.get(
+                    "target_centered", 0
+                ),
+                "context_selection_fixed_count": context_mode_counts.get("fixed", 0),
+                "context_selection_deterministic_count": context_mode_counts.get(
+                    "deterministic", 0
+                ),
+                "mean_target_center_score": (
+                    round(sum(selected_center_scores) / len(selected_center_scores), 4)
+                    if selected_center_scores
                     else None
                 ),
                 "variants_used": [v.name for v in variants],
@@ -563,6 +593,9 @@ def _evaluate_stage1_coverage_gate(
         ),
         "coverage_angle_bin_deg": float(config.render.stage1_coverage_angle_bin_deg),
         "coverage_blur_laplacian_min": float(config.render.stage1_coverage_blur_laplacian_min),
+        "coverage_min_center_band_ratio": float(config.render.stage1_coverage_min_center_band_ratio),
+        "coverage_center_band_x": [float(v) for v in config.render.stage1_coverage_center_band_x],
+        "coverage_center_band_y": [float(v) for v in config.render.stage1_coverage_center_band_y],
     }
 
     if not manipulation_clips:
@@ -579,6 +612,7 @@ def _evaluate_stage1_coverage_gate(
     min_angle_bins = int(config.render.stage1_coverage_min_approach_angle_bins)
     angle_bin_deg = float(config.render.stage1_coverage_angle_bin_deg)
     blur_min = float(config.render.stage1_coverage_blur_laplacian_min)
+    min_center_band_ratio = float(config.render.stage1_coverage_min_center_band_ratio)
     blur_every = max(1, int(config.render.stage1_coverage_blur_sample_every_n_frames))
     blur_max_samples = max(1, int(config.render.stage1_coverage_blur_max_samples_per_clip))
 
@@ -596,6 +630,7 @@ def _evaluate_stage1_coverage_gate(
                 "num_blurry_clips": 0,
                 "visible_frames": 0,
                 "total_frames": 0,
+                "center_band_frames": 0,
                 "angle_bins": set(),
                 "clip_names": [],
             },
@@ -618,13 +653,17 @@ def _evaluate_stage1_coverage_gate(
             blurred_clip_names.append(clip_name)
             continue
 
-        visible_frames, total_frames, angle_bins = _analyze_target_visibility(
+        visible_frames, total_frames, center_band_frames, angle_bins = _analyze_target_visibility(
             clip_entry=clip_entry,
             target_xyz=target_xyz,
             angle_bin_deg=angle_bin_deg,
+            config=config,
         )
         target_stats["visible_frames"] = int(target_stats["visible_frames"]) + visible_frames
         target_stats["total_frames"] = int(target_stats["total_frames"]) + total_frames
+        target_stats["center_band_frames"] = (
+            int(target_stats["center_band_frames"]) + center_band_frames
+        )
         current_bins = target_stats.get("angle_bins")
         if not isinstance(current_bins, set):
             current_bins = set()
@@ -636,13 +675,16 @@ def _evaluate_stage1_coverage_gate(
     for target_key, stats in by_target.items():
         total_frames = int(stats["total_frames"])
         visible_frames = int(stats["visible_frames"])
+        center_band_frames = int(stats["center_band_frames"])
         visible_ratio = (visible_frames / total_frames) if total_frames > 0 else 0.0
+        center_band_ratio = (center_band_frames / total_frames) if total_frames > 0 else 0.0
         angle_bin_count = len(stats["angle_bins"])
         blurry_count = int(stats["num_blurry_clips"])
         passed = (
             total_frames > 0
             and blurry_count == 0
             and visible_ratio >= min_visible_ratio
+            and center_band_ratio >= min_center_band_ratio
             and angle_bin_count >= min_angle_bins
         )
         summary = {
@@ -651,6 +693,7 @@ def _evaluate_stage1_coverage_gate(
             "num_clips": int(stats["num_clips"]),
             "num_blurry_clips": blurry_count,
             "visible_frame_ratio": round(float(visible_ratio), 4),
+            "coverage_center_band_ratio": round(float(center_band_ratio), 4),
             "approach_angle_bins": angle_bin_count,
             "passes": passed,
         }
@@ -665,9 +708,19 @@ def _evaluate_stage1_coverage_gate(
         "coverage_target_count": len(target_summaries),
         "coverage_targets_passing": len(target_summaries) - len(failed_targets),
         "coverage_targets_failing": len(failed_targets),
+        "coverage_targets_center_band_failing": len(
+            [
+                s
+                for s in target_summaries
+                if float(s["coverage_center_band_ratio"]) < min_center_band_ratio
+            ]
+        ),
         "coverage_blurry_clip_count": len(blurred_clip_names),
         "coverage_blurry_clip_names": sorted(blurred_clip_names),
         "coverage_targets": target_summaries,
+        "coverage_min_center_band_ratio": min_center_band_ratio,
+        "coverage_center_band_x": [float(v) for v in config.render.stage1_coverage_center_band_x],
+        "coverage_center_band_y": [float(v) for v in config.render.stage1_coverage_center_band_y],
     }
 
     if coverage_passed:
@@ -694,18 +747,48 @@ def _analyze_target_visibility(
     clip_entry: dict,
     target_xyz: object,
     angle_bin_deg: float,
-) -> tuple[int, int, set[int]]:
+    config: ValidationConfig,
+) -> tuple[int, int, int, set[int]]:
     """Estimate target visibility ratio and approach-angle diversity from camera poses."""
+    total_frames, visible_samples = _project_target_to_camera_path(clip_entry, target_xyz)
+    if total_frames <= 0:
+        return 0, 0, 0, set()
+
+    visible_frames = len(visible_samples)
+    center_band_frames = 0
+    angle_bins: set[int] = set()
+    total_bins = max(1, int(round(360.0 / max(angle_bin_deg, 1e-3))))
+    bin_size_deg = 360.0 / total_bins
+    x_lo, x_hi, y_lo, y_hi = _resolve_center_band_bounds(config)
+
+    for sample in visible_samples:
+        yaw_norm = float(sample["yaw_deg_norm"])
+        bin_idx = min(total_bins - 1, int(yaw_norm / bin_size_deg))
+        angle_bins.add(bin_idx)
+
+        u_norm = float(sample["u_norm"])
+        v_norm = float(sample["v_norm"])
+        if x_lo <= u_norm <= x_hi and y_lo <= v_norm <= y_hi:
+            center_band_frames += 1
+
+    return visible_frames, total_frames, center_band_frames, angle_bins
+
+
+def _project_target_to_camera_path(
+    clip_entry: dict,
+    target_xyz: object,
+) -> tuple[int, List[Dict[str, float]]]:
+    """Project a clip target point into all camera-path frames."""
     import numpy as np
 
     camera_path = Path(str(clip_entry.get("camera_path", "")))
     if not camera_path.exists():
-        return 0, 0, set()
+        return 0, []
 
     camera_path_data = read_json(camera_path)
     frames = camera_path_data.get("camera_path", [])
     if not isinstance(frames, list) or not frames:
-        return 0, 0, set()
+        return 0, []
 
     resolution = clip_entry.get("resolution", [480, 640])
     if isinstance(resolution, (list, tuple)) and len(resolution) == 2:
@@ -717,13 +800,11 @@ def _analyze_target_visibility(
         height, width = 480, 640
 
     target = np.asarray(target_xyz, dtype=np.float64)
-    visible_frames = 0
+    target_h = np.array([target[0], target[1], target[2], 1.0], dtype=np.float64)
     total_frames = 0
-    angle_bins: set[int] = set()
-    total_bins = max(1, int(round(360.0 / max(angle_bin_deg, 1e-3))))
-    bin_size_deg = 360.0 / total_bins
+    visible_samples: List[Dict[str, float]] = []
 
-    for frame in frames:
+    for frame_index, frame in enumerate(frames):
         c2w_raw = frame.get("camera_to_world")
         if not isinstance(c2w_raw, list) or len(c2w_raw) != 16:
             continue
@@ -735,7 +816,6 @@ def _analyze_target_visibility(
         except np.linalg.LinAlgError:
             continue
 
-        target_h = np.array([target[0], target[1], target[2], 1.0], dtype=np.float64)
         cam = w2c @ target_h
         z = float(cam[2])
         if z >= -1e-6:
@@ -745,22 +825,95 @@ def _analyze_target_visibility(
         tan_half_fov = math.tan(math.radians(max(1e-3, fov) / 2.0))
         if tan_half_fov <= 0:
             continue
+
         fx = width / (2.0 * tan_half_fov)
         fy = fx
         cx = width / 2.0
         cy = height / 2.0
         u = fx * (float(cam[0]) / -z) + cx
         v = fy * (float(cam[1]) / -z) + cy
-        if 0.0 <= u < width and 0.0 <= v < height:
-            visible_frames += 1
-            cam_pos = c2w[:3, 3]
-            delta_xy = cam_pos[:2] - target[:2]
-            yaw = math.degrees(math.atan2(float(delta_xy[1]), float(delta_xy[0])))
-            yaw_norm = (yaw + 360.0) % 360.0
-            bin_idx = min(total_bins - 1, int(yaw_norm / bin_size_deg))
-            angle_bins.add(bin_idx)
+        if not (0.0 <= u < width and 0.0 <= v < height):
+            continue
 
-    return visible_frames, total_frames, angle_bins
+        cam_pos = c2w[:3, 3]
+        delta_xy = cam_pos[:2] - target[:2]
+        yaw = math.degrees(math.atan2(float(delta_xy[1]), float(delta_xy[0])))
+        yaw_norm = (yaw + 360.0) % 360.0
+        visible_samples.append(
+            {
+                "frame_index": float(frame_index),
+                "u_norm": float(u / max(width, 1)),
+                "v_norm": float(v / max(height, 1)),
+                "yaw_deg_norm": float(yaw_norm),
+            }
+        )
+
+    return total_frames, visible_samples
+
+
+def _resolve_center_band_bounds(config: ValidationConfig) -> tuple[float, float, float, float]:
+    """Resolve normalized frame center-band bounds from config."""
+
+    def _pair(values: object, default: tuple[float, float]) -> tuple[float, float]:
+        if isinstance(values, (list, tuple)) and len(values) == 2:
+            lo, hi = float(values[0]), float(values[1])
+        else:
+            lo, hi = default
+        lo = max(0.0, min(1.0, lo))
+        hi = max(0.0, min(1.0, hi))
+        if lo > hi:
+            lo, hi = hi, lo
+        return lo, hi
+
+    x_lo, x_hi = _pair(config.render.stage1_coverage_center_band_x, (0.2, 0.8))
+    y_lo, y_hi = _pair(config.render.stage1_coverage_center_band_y, (0.2, 0.8))
+    return x_lo, x_hi, y_lo, y_hi
+
+
+def _resolve_clip_context_selection(
+    clip_entry: dict,
+    config: ValidationConfig,
+) -> tuple[int | None, str, float | None]:
+    """Resolve preferred context frame for a clip."""
+    fixed_index = (
+        int(config.enrich.context_frame_index)
+        if config.enrich.context_frame_index is not None
+        else None
+    )
+    mode = str(config.enrich.context_frame_mode or "target_centered").strip().lower()
+    if mode != "target_centered":
+        if fixed_index is not None:
+            return fixed_index, "fixed", None
+        return None, "deterministic", None
+
+    if str(clip_entry.get("path_type", "")).strip().lower() == "manipulation":
+        path_context = clip_entry.get("path_context") or {}
+        target_point = path_context.get("approach_point")
+        if isinstance(target_point, list) and len(target_point) == 3:
+            _, visible_samples = _project_target_to_camera_path(clip_entry, target_point)
+            if visible_samples:
+                x_lo, x_hi, y_lo, y_hi = _resolve_center_band_bounds(config)
+                in_band = [
+                    s
+                    for s in visible_samples
+                    if x_lo <= float(s["u_norm"]) <= x_hi and y_lo <= float(s["v_norm"]) <= y_hi
+                ]
+                pool = in_band if in_band else visible_samples
+
+                def _center_dist(sample: Dict[str, float]) -> float:
+                    du = float(sample["u_norm"]) - 0.5
+                    dv = float(sample["v_norm"]) - 0.5
+                    return math.sqrt(du * du + dv * dv)
+
+                best = min(pool, key=_center_dist)
+                best_dist = _center_dist(best)
+                max_dist = math.sqrt(0.5)
+                center_score = max(0.0, 1.0 - (best_dist / max_dist))
+                return int(best["frame_index"]), "target_centered", float(center_score)
+
+    if fixed_index is not None:
+        return fixed_index, "fixed", None
+    return None, "deterministic", None
 
 
 def _estimate_clip_blur_score(

@@ -11,9 +11,12 @@ import pytest
 from blueprint_validation.config import CameraPathSpec, FacilityConfig
 from blueprint_validation.rendering.scene_geometry import (
     OrientedBoundingBox,
+    correct_upside_down_camera_poses,
     compute_scene_transform,
     detect_up_axis,
+    inverse_up_axis,
     is_identity_transform,
+    resolve_facility_orientation,
     transform_camera_path_specs,
     transform_c2w,
     transform_means,
@@ -309,3 +312,91 @@ class TestDetectUpAxis:
         fac = _make_facility("auto")
         T = compute_scene_transform(fac)
         assert is_identity_transform(T)
+
+
+def test_inverse_up_axis():
+    assert inverse_up_axis("z") == "-z"
+    assert inverse_up_axis("-z") == "z"
+    assert inverse_up_axis("+y") == "-y"
+
+
+def test_orientation_autocorrect_prefers_inverse_when_configured_axis_is_wrong():
+    rng = np.random.default_rng(123)
+    means = rng.uniform([-5.0, -5.0, 0.0], [5.0, 5.0, 3.0], size=(800, 3)).astype(np.float64)
+    fac = FacilityConfig(
+        name="Test",
+        ply_path=Path("/tmp/test.ply"),
+        up_axis="-z",
+        floor_height_m=0.0,
+        ceiling_height_m=3.0,
+    )
+    resolved, meta = resolve_facility_orientation(
+        facility=fac,
+        means_raw=means,
+        obbs_raw=None,
+        orientation_autocorrect_enabled=True,
+        orientation_autocorrect_mode="auto",
+    )
+    assert resolved.up_axis == "z"
+    assert meta["orientation_candidates"][0]["axis"] == "z"
+    assert meta["orientation_score_selected"] > meta["orientation_score_runner_up"]
+
+
+def test_orientation_fail_fast_raises_on_mismatch():
+    rng = np.random.default_rng(456)
+    means = rng.uniform([-4.0, -3.0, 0.0], [4.0, 3.0, 2.5], size=(600, 3)).astype(np.float64)
+    fac = FacilityConfig(
+        name="Test",
+        ply_path=Path("/tmp/test.ply"),
+        up_axis="-z",
+        floor_height_m=0.0,
+        ceiling_height_m=2.5,
+    )
+    with pytest.raises(RuntimeError, match="fail_fast"):
+        resolve_facility_orientation(
+            facility=fac,
+            means_raw=means,
+            obbs_raw=None,
+            orientation_autocorrect_enabled=True,
+            orientation_autocorrect_mode="fail_fast",
+        )
+
+
+def test_orientation_warn_only_keeps_primary_axis():
+    rng = np.random.default_rng(789)
+    means = rng.uniform([-4.0, -3.0, 0.0], [4.0, 3.0, 2.5], size=(600, 3)).astype(np.float64)
+    fac = FacilityConfig(
+        name="Test",
+        ply_path=Path("/tmp/test.ply"),
+        up_axis="-z",
+        floor_height_m=0.0,
+        ceiling_height_m=2.5,
+    )
+    resolved, _ = resolve_facility_orientation(
+        facility=fac,
+        means_raw=means,
+        obbs_raw=None,
+        orientation_autocorrect_enabled=True,
+        orientation_autocorrect_mode="warn_only",
+    )
+    assert resolved.up_axis == "-z"
+
+
+def test_correct_upside_down_camera_poses_rolls_only_inverted():
+    from blueprint_validation.rendering.camera_paths import CameraPose
+
+    c2w_ok = np.eye(4, dtype=np.float64)
+    c2w_bad = np.eye(4, dtype=np.float64)
+    # Build a valid camera basis with downward-facing up vector (negative world-Z).
+    c2w_bad[:3, 0] = np.array([1.0, 0.0, 0.0], dtype=np.float64)   # right
+    c2w_bad[:3, 1] = np.array([0.0, 0.0, -1.0], dtype=np.float64)  # up (inverted)
+    c2w_bad[:3, 2] = np.array([0.0, 1.0, 0.0], dtype=np.float64)   # forward/back basis
+    poses = [
+        CameraPose(c2w=c2w_ok, fx=100.0, fy=100.0, cx=50.0, cy=40.0, width=100, height=80),
+        CameraPose(c2w=c2w_bad, fx=100.0, fy=100.0, cx=50.0, cy=40.0, width=100, height=80),
+    ]
+    corrected, num = correct_upside_down_camera_poses(poses)
+    assert num == 1
+    assert np.allclose(corrected[0].c2w, c2w_ok)
+    assert float(np.dot(corrected[0].c2w[:3, 1], np.array([0.0, 0.0, 1.0]))) >= 0.0
+    assert float(np.dot(corrected[1].c2w[:3, 1], np.array([0.0, 0.0, 1.0]))) > 0.0

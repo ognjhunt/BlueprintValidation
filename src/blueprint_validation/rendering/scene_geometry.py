@@ -6,7 +6,7 @@ import json
 import math
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -246,6 +246,237 @@ class OrientedBoundingBox:
     axes: np.ndarray  # (3, 3) — columns are local-frame axes
     confidence: float = 1.0
     category: str = "manipulation"  # "manipulation" or "articulation"
+
+
+_UP_AXIS_CANONICAL = {
+    "z": "z",
+    "+z": "z",
+    "-z": "-z",
+    "y": "y",
+    "+y": "y",
+    "-y": "-y",
+    "x": "x",
+    "+x": "x",
+    "-x": "-x",
+}
+
+_UP_AXIS_INVERSE = {
+    "z": "-z",
+    "-z": "z",
+    "y": "-y",
+    "-y": "y",
+    "x": "-x",
+    "-x": "x",
+}
+
+
+def _canonical_up_axis(axis: str) -> str:
+    key = str(axis).strip().lower()
+    return _UP_AXIS_CANONICAL.get(key, key)
+
+
+def inverse_up_axis(axis: str) -> str:
+    """Return the opposite up-axis direction (e.g. z -> -z)."""
+    canonical = _canonical_up_axis(axis)
+    return _UP_AXIS_INVERSE.get(canonical, canonical)
+
+
+def _orientation_floor_ceiling_score(
+    means_z: np.ndarray,
+    floor_height_m: float,
+    ceiling_height_m: float,
+) -> tuple[float, float, float]:
+    """Score transformed scene Z alignment to expected floor/ceiling heights."""
+    z_lo = float(np.percentile(means_z, 1))
+    z_hi = float(np.percentile(means_z, 99))
+    z_span = max(1e-3, z_hi - z_lo)
+
+    expected_floor = float(floor_height_m)
+    expected_ceiling = float(ceiling_height_m)
+    if expected_ceiling <= expected_floor:
+        expected_ceiling = expected_floor + z_span
+
+    floor_err = abs(z_lo - expected_floor) / max(z_span, 1.0)
+    ceiling_err = abs(z_hi - expected_ceiling) / max(z_span, 1.0)
+    score = max(0.0, 1.0 - 0.5 * (floor_err + ceiling_err))
+    return score, z_lo, z_hi
+
+
+def _orientation_obb_height_score(
+    transformed_obbs: Optional[List["OrientedBoundingBox"]],
+    floor_height_m: float,
+    ceiling_height_m: float,
+) -> tuple[float, int]:
+    """Score whether OBB centers land in plausible vertical range."""
+    if not transformed_obbs:
+        return 0.5, 0
+
+    floor = float(floor_height_m) - 0.2
+    ceil = float(ceiling_height_m) + 0.2
+    if ceil <= floor:
+        floor = min(floor, 0.0)
+        ceil = max(ceil, floor + 3.0)
+
+    centers = np.asarray([obb.center[2] for obb in transformed_obbs], dtype=np.float64)
+    within = np.logical_and(centers >= floor, centers <= ceil)
+    return float(within.mean()), int(len(centers))
+
+
+def _orientation_camera_up_score(
+    transformed_means: np.ndarray,
+    transformed_obbs: Optional[List["OrientedBoundingBox"]],
+    camera_look_down_deg: float,
+) -> tuple[float, float]:
+    """Probe manipulation-like poses and score camera-up alignment to world-up."""
+    try:
+        from .camera_paths import generate_manipulation_arc
+
+        target = transformed_means.mean(axis=0)
+        if transformed_obbs:
+            manip = [obb for obb in transformed_obbs if obb.category == "manipulation"]
+            if manip:
+                target = manip[0].center
+        probe_height = max(0.4, float(target[2]) + 0.3)
+        poses = generate_manipulation_arc(
+            approach_point=np.asarray(target, dtype=np.float64),
+            arc_radius=0.6,
+            height=probe_height,
+            num_frames=9,
+            look_down_deg=float(camera_look_down_deg),
+            target_z_bias_m=0.0,
+            resolution=(120, 160),
+        )
+        up_dots = [float(np.dot(p.c2w[:3, 1], np.array([0.0, 0.0, 1.0]))) for p in poses]
+        median_dot = float(np.median(np.asarray(up_dots, dtype=np.float64)))
+        return float((median_dot + 1.0) * 0.5), median_dot
+    except Exception:
+        return 0.5, 0.0
+
+
+def resolve_facility_orientation(
+    *,
+    facility: FacilityConfig,
+    means_raw: np.ndarray,
+    obbs_raw: Optional[List["OrientedBoundingBox"]] = None,
+    camera_look_down_deg: float = 20.0,
+    orientation_autocorrect_enabled: bool = True,
+    orientation_autocorrect_mode: str = "auto",
+) -> tuple[FacilityConfig, Dict[str, Any]]:
+    """Resolve orientation with optional deterministic auto-correction."""
+    detected_up_axis: Optional[str] = None
+    if facility.up_axis.lower().strip() == "auto":
+        detected_up_axis = detect_up_axis(means_raw)
+        primary_axis = _canonical_up_axis(detected_up_axis)
+    else:
+        primary_axis = _canonical_up_axis(facility.up_axis)
+
+    inverse_axis = inverse_up_axis(primary_axis)
+    candidate_axes: List[str] = [primary_axis]
+    if inverse_axis != primary_axis:
+        candidate_axes.append(inverse_axis)
+
+    candidate_rows: List[Dict[str, Any]] = []
+    for axis in candidate_axes:
+        candidate_fac = replace(facility, up_axis=axis)
+        T = compute_scene_transform(candidate_fac)
+        transformed_means = transform_means(means_raw, T)
+        transformed_obbs = transform_obbs(obbs_raw, T) if obbs_raw else None
+        floor_score, z_lo, z_hi = _orientation_floor_ceiling_score(
+            transformed_means[:, 2],
+            floor_height_m=facility.floor_height_m,
+            ceiling_height_m=facility.ceiling_height_m,
+        )
+        obb_score, obb_count = _orientation_obb_height_score(
+            transformed_obbs,
+            floor_height_m=facility.floor_height_m,
+            ceiling_height_m=facility.ceiling_height_m,
+        )
+        cam_score, cam_up_median = _orientation_camera_up_score(
+            transformed_means,
+            transformed_obbs,
+            camera_look_down_deg=camera_look_down_deg,
+        )
+        total = 0.6 * floor_score + 0.25 * obb_score + 0.15 * cam_score
+        candidate_rows.append(
+            {
+                "axis": axis,
+                "score_total": round(float(total), 6),
+                "score_floor_ceiling": round(float(floor_score), 6),
+                "score_obb_height": round(float(obb_score), 6),
+                "score_camera_up": round(float(cam_score), 6),
+                "camera_up_median_dot": round(float(cam_up_median), 6),
+                "z_percentile_1": round(float(z_lo), 6),
+                "z_percentile_99": round(float(z_hi), 6),
+                "obb_count": int(obb_count),
+            }
+        )
+
+    ranked = sorted(candidate_rows, key=lambda row: row["score_total"], reverse=True)
+    best = ranked[0]
+    runner = ranked[1] if len(ranked) > 1 else None
+    score_margin = float(best["score_total"] - runner["score_total"]) if runner else 0.0
+
+    mode = str(orientation_autocorrect_mode or "auto").strip().lower()
+    if mode not in {"auto", "fail_fast", "warn_only"}:
+        mode = "auto"
+
+    selected_axis = primary_axis
+    if orientation_autocorrect_enabled:
+        if mode == "auto":
+            selected_axis = str(best["axis"])
+        elif mode == "fail_fast":
+            if str(best["axis"]) != primary_axis:
+                raise RuntimeError(
+                    "Orientation auto-check failed in fail_fast mode: "
+                    f"primary={primary_axis}, best={best['axis']}, margin={score_margin:.4f}"
+                )
+            selected_axis = primary_axis
+        else:  # warn_only
+            selected_axis = primary_axis
+
+    resolved_facility = replace(facility, up_axis=selected_axis)
+    metadata: Dict[str, Any] = {
+        "detected_up_axis": detected_up_axis,
+        "resolved_up_axis": selected_axis,
+        "orientation_primary_axis": primary_axis,
+        "orientation_autocorrect_enabled": bool(orientation_autocorrect_enabled),
+        "orientation_autocorrect_mode": mode,
+        "orientation_candidates": ranked,
+        "orientation_score_selected": float(best["score_total"]),
+        "orientation_score_runner_up": float(runner["score_total"]) if runner else None,
+        "orientation_score_margin": round(score_margin, 6),
+    }
+    return resolved_facility, metadata
+
+
+def correct_upside_down_camera_poses(poses: list) -> tuple[list, int]:
+    """Apply 180° roll around forward axis when camera up points downward."""
+    from .camera_paths import CameraPose
+
+    corrected: list = []
+    num_corrected = 0
+    for pose in poses:
+        up_dot = float(np.dot(pose.c2w[:3, 1], np.array([0.0, 0.0, 1.0])))
+        if up_dot >= 0.0:
+            corrected.append(pose)
+            continue
+        new_c2w = pose.c2w.copy()
+        # 180° roll about forward axis flips right/up and preserves forward.
+        new_c2w[:3, 0] *= -1.0
+        new_c2w[:3, 1] *= -1.0
+        corrected.append(
+            CameraPose(
+                c2w=new_c2w,
+                fx=pose.fx,
+                fy=pose.fy,
+                cx=pose.cx,
+                cy=pose.cy,
+                width=pose.width,
+                height=pose.height,
+            )
+        )
+        num_corrected += 1
+    return corrected, num_corrected
 
 
 @dataclass
