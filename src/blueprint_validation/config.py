@@ -220,6 +220,7 @@ class FinetuneConfig:
 @dataclass
 class VLMJudgeConfig:
     model: str = "gemini-3-flash-preview"
+    fallback_models: List[str] = field(default_factory=lambda: ["gemini-2.5-flash"])
     api_key_env: str = "GOOGLE_GENAI_API_KEY"
     enable_agentic_vision: bool = True
     scoring_prompt: str = (
@@ -863,6 +864,11 @@ def load_config(path: Path) -> ValidationConfig:
             ),
             vlm_judge=VLMJudgeConfig(
                 model=vlm_raw.get("model", "gemini-3-flash-preview"),
+                fallback_models=[
+                    str(m)
+                    for m in vlm_raw.get("fallback_models", VLMJudgeConfig().fallback_models)
+                    if str(m).strip()
+                ],
                 api_key_env=vlm_raw.get("api_key_env", "GOOGLE_GENAI_API_KEY"),
                 enable_agentic_vision=vlm_raw.get("enable_agentic_vision", True),
                 scoring_prompt=vlm_raw.get("scoring_prompt", VLMJudgeConfig().scoring_prompt),

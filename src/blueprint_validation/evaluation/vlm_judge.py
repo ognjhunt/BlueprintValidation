@@ -9,7 +9,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import List, Sequence
 
 from ..common import get_logger
 from ..config import VLMJudgeConfig
@@ -163,32 +163,98 @@ def _get_gemini_client(config: VLMJudgeConfig):
     return client
 
 
-def _generate_with_retry(client, *, model, contents, config, max_retries: int = 3):
+def _is_quota_exhausted_error(exc_text: str) -> bool:
+    text = exc_text.lower()
+    quota_markers = (
+        "quota exceeded",
+        "resource_exhausted",
+        "free_tier_requests",
+        "generativelanguage.googleapis.com/generate_content_free_tier_requests",
+        "retry in",
+    )
+    return "429" in text and any(marker in text for marker in quota_markers)
+
+
+def _generate_with_retry(
+    client,
+    *,
+    model: str,
+    fallback_models: Sequence[str],
+    contents,
+    config,
+    max_retries: int = 3,
+):
     """Call generate_content with exponential backoff on transient errors."""
-    for attempt in range(max_retries):
-        try:
-            return client.models.generate_content(
-                model=model,
-                contents=contents,
-                config=config,
-            )
-        except Exception as exc:
-            exc_text = str(exc).lower()
-            transient = any(
-                kw in exc_text
-                for kw in ("rate limit", "429", "500", "503", "timeout", "unavailable", "deadline")
-            )
-            if not transient or attempt == max_retries - 1:
-                raise
-            wait = 2**attempt
-            logger.warning(
-                "Transient API error (attempt %d/%d), retrying in %ds: %s",
-                attempt + 1,
-                max_retries,
-                wait,
-                exc,
-            )
-            time.sleep(wait)
+    model_candidates: List[str] = [str(model).strip()]
+    for fallback in fallback_models:
+        candidate = str(fallback).strip()
+        if candidate and candidate not in model_candidates:
+            model_candidates.append(candidate)
+
+    last_exc: Exception | None = None
+    for model_idx, candidate_model in enumerate(model_candidates):
+        for attempt in range(max_retries):
+            try:
+                return client.models.generate_content(
+                    model=candidate_model,
+                    contents=contents,
+                    config=config,
+                )
+            except Exception as exc:
+                last_exc = exc
+                exc_text = str(exc).lower()
+                quota_exhausted = _is_quota_exhausted_error(exc_text)
+                transient = any(
+                    kw in exc_text
+                    for kw in (
+                        "rate limit",
+                        "429",
+                        "500",
+                        "503",
+                        "timeout",
+                        "unavailable",
+                        "deadline",
+                    )
+                )
+                has_fallback = model_idx < len(model_candidates) - 1
+
+                # If this model's quota is exhausted, immediately try the next fallback model.
+                if quota_exhausted and has_fallback:
+                    logger.warning(
+                        "Quota exhausted for model %s; falling back to %s.",
+                        candidate_model,
+                        model_candidates[model_idx + 1],
+                    )
+                    break
+
+                if not transient:
+                    raise
+
+                if attempt == max_retries - 1:
+                    if has_fallback:
+                        logger.warning(
+                            "Model %s failed after %d retries; falling back to %s. Last error: %s",
+                            candidate_model,
+                            max_retries,
+                            model_candidates[model_idx + 1],
+                            exc,
+                        )
+                        break
+                    raise
+
+                wait = 2**attempt
+                logger.warning(
+                    "Transient API error (model=%s attempt %d/%d), retrying in %ds: %s",
+                    candidate_model,
+                    attempt + 1,
+                    max_retries,
+                    wait,
+                    exc,
+                )
+                time.sleep(wait)
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("VLM generation failed without returning or raising an exception.")
 
 
 def _encode_video_frames(video_path: Path, max_frames: int = 16) -> List[dict]:
@@ -278,6 +344,7 @@ def score_rollout(
         response = _generate_with_retry(
             client,
             model=config.model,
+            fallback_models=config.fallback_models,
             contents=[types.Content(parts=parts, role="user")],
             config=_build_generate_config(
                 types,
@@ -355,6 +422,7 @@ def score_rollout_manipulation(
         response = _generate_with_retry(
             client,
             model=config.model,
+            fallback_models=config.fallback_models,
             contents=[types.Content(parts=parts, role="user")],
             config=_build_generate_config(
                 types,
@@ -442,6 +510,7 @@ def score_spatial_accuracy(
         response = _generate_with_retry(
             client,
             model=config.model,
+            fallback_models=config.fallback_models,
             contents=[types.Content(parts=parts, role="user")],
             config=_build_generate_config(
                 types,
@@ -507,6 +576,7 @@ def classify_facility(
         response = _generate_with_retry(
             client,
             model=config.model,
+            fallback_models=config.fallback_models,
             contents=[types.Content(parts=parts, role="user")],
             config=_build_generate_config(
                 types,

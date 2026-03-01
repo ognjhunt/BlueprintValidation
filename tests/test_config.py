@@ -46,6 +46,7 @@ def test_config_defaults():
     assert config.finetune.video_dataset_backend == "opencv"
     assert config.finetune.probe_dataloader_sample is True
     assert config.eval_policy.vlm_judge.model == "gemini-3-flash-preview"
+    assert config.eval_policy.vlm_judge.fallback_models == ["gemini-2.5-flash"]
     assert config.eval_policy.model_name == "openvla/openvla-7b"
     assert str(config.eval_policy.checkpoint_path).endswith("data/checkpoints/openvla-7b")
     assert config.eval_policy.unnorm_key == "bridge_orig"
@@ -177,7 +178,11 @@ def test_config_with_all_sections(tmp_path):
             "scripted_rollouts_per_task": 9,
             "min_absolute_difference": 1.25,
             "min_manip_success_delta_pp": 20,
-            "vlm_judge": {"model": "gemini-3-flash", "enable_agentic_vision": True},
+            "vlm_judge": {
+                "model": "gemini-3-flash",
+                "fallback_models": ["gemini-2.5-flash", "gemini-1.5-flash"],
+                "enable_agentic_vision": True,
+            },
         },
         "policy_finetune": {
             "enabled": True,
@@ -259,6 +264,10 @@ def test_config_with_all_sections(tmp_path):
     assert config.eval_policy.scripted_rollouts_per_task == 9
     assert config.eval_policy.min_absolute_difference == pytest.approx(1.25)
     assert config.eval_policy.min_manip_success_delta_pp == pytest.approx(20.0)
+    assert config.eval_policy.vlm_judge.fallback_models == [
+        "gemini-2.5-flash",
+        "gemini-1.5-flash",
+    ]
     assert config.robot_composite.enabled is True
     assert config.gemini_polish.enabled is True
     assert config.eval_policy.vlm_judge.enable_agentic_vision is True
