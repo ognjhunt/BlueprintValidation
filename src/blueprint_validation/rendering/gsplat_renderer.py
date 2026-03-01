@@ -38,6 +38,11 @@ def render_frame(
     from gsplat import rasterization
 
     device = splat.means.device
+    if device.type != "cuda":
+        raise RuntimeError(
+            "Stage 1 rendering requires a CUDA-enabled gsplat runtime, but splat tensors "
+            f"are on device='{device.type}'. Start a GPU VM and run with CUDA PyTorch/gsplat."
+        )
 
     viewmat = pose.viewmat().unsqueeze(0).to(device)  # (1, 4, 4)
     K = pose.K().unsqueeze(0).to(device)  # (1, 3, 3)
@@ -61,21 +66,30 @@ def render_frame(
                 f"render_mode={render_mode}, got {background.shape[0]}"
             )
 
-    renders, alphas, info = rasterization(
-        means=splat.means,
-        quats=splat.quats,
-        scales=torch.exp(splat.scales),
-        opacities=torch.sigmoid(splat.opacities),
-        colors=splat.sh_coeffs,
-        viewmats=viewmat,
-        Ks=K,
-        width=pose.width,
-        height=pose.height,
-        sh_degree=int(np.sqrt(splat.sh_coeffs.shape[1]) - 1),
-        backgrounds=background.unsqueeze(0),
-        render_mode=render_mode,
-        packed=False,
-    )
+    try:
+        renders, alphas, info = rasterization(
+            means=splat.means,
+            quats=splat.quats,
+            scales=torch.exp(splat.scales),
+            opacities=torch.sigmoid(splat.opacities),
+            colors=splat.sh_coeffs,
+            viewmats=viewmat,
+            Ks=K,
+            width=pose.width,
+            height=pose.height,
+            sh_degree=int(np.sqrt(splat.sh_coeffs.shape[1]) - 1),
+            backgrounds=background.unsqueeze(0),
+            render_mode=render_mode,
+            packed=False,
+        )
+    except AttributeError as exc:
+        # gsplat can import without CUDA kernels, then fail at first rasterization call.
+        if "CameraModelType" in str(exc):
+            raise RuntimeError(
+                "gsplat CUDA extension is unavailable (missing CUDA toolkit/runtime bindings). "
+                "Install CUDA-enabled gsplat or run on a provisioned GPU VM."
+            ) from exc
+        raise
 
     # renders shape: (1, H, W, 4) — RGB + expected depth
     rgb = renders[0, :, :, :3].clamp(0, 1).cpu().numpy()
