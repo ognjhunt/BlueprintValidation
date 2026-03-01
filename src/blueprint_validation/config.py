@@ -147,8 +147,15 @@ class EnrichConfig:
 class FinetuneConfig:
     dreamdojo_repo: Path = Path("/opt/DreamDojo")
     dreamdojo_checkpoint: Path = Path("./data/checkpoints/DreamDojo/2B_pretrain/")
+    # Optional isolated Python runtime for DreamDojo Stage 3 (for dependency pinning).
+    python_executable: Optional[Path] = None
     experiment_config: Optional[str] = None  # DreamDojo experiment config name
     model_size: str = "2B"
+    # video backend for Stage 3 dataloader: "opencv" uses Blueprint dataset class (no torchcodec),
+    # "vendor" keeps DreamDojo's MultiVideoActionDataset path.
+    video_dataset_backend: str = "opencv"
+    # Run a dataloader sample probe (dataset[0]) before launching training.
+    probe_dataloader_sample: bool = True
     # LoRA via Cosmos config system (model.config.use_lora / train_architecture=lora)
     use_lora: bool = True
     lora_rank: int = 32
@@ -644,8 +651,15 @@ def load_config(path: Path) -> ValidationConfig:
                 ft.get("dreamdojo_checkpoint", "./data/checkpoints/DreamDojo/2B_pretrain/"),
                 base_dir,
             ),
+            python_executable=(
+                _resolve_path(ft.get("python_executable"), base_dir)
+                if ft.get("python_executable")
+                else None
+            ),
             experiment_config=experiment_config,
             model_size=ft.get("model_size", "2B"),
+            video_dataset_backend=str(ft.get("video_dataset_backend", "opencv")),
+            probe_dataloader_sample=bool(ft.get("probe_dataloader_sample", True)),
             use_lora=ft.get("use_lora", True),
             lora_rank=ft.get("lora_rank", 32),
             lora_alpha=ft.get("lora_alpha", 32),

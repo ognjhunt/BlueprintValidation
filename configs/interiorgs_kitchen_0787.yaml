@@ -103,6 +103,8 @@ enrich:
 finetune:
   dreamdojo_repo: ../data/vendor/DreamDojo
   dreamdojo_checkpoint: ../data/checkpoints/DreamDojo/2B_pretrain/
+  video_dataset_backend: opencv
+  probe_dataloader_sample: true
   model_size: 2B
   use_lora: true
   lora_rank: 32

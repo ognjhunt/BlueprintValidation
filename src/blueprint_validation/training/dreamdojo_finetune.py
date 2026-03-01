@@ -111,6 +111,8 @@ def build_dreamdojo_launch_command(
     output_dir: Path,
     config: FinetuneConfig,
     facility_id: str,
+    python_executable: Path,
+    video_dataset_backend: str,
     checkpoint_path: Path | None = None,
 ) -> list[str]:
     """Build a portable DreamDojo training command without cluster-specific launch.sh wrappers."""
@@ -131,7 +133,7 @@ def build_dreamdojo_launch_command(
         not in {"0", "false", "no"}
     )
     cmd = [
-        sys.executable,
+        str(python_executable),
         "-m",
         "torch.distributed.run",
         "--standalone",
@@ -161,6 +163,15 @@ def build_dreamdojo_launch_command(
         f"model.config.lora_target_modules={_quote_hydra_string(config.lora_target_modules)}",
         "~dataloader_train.dataloaders",
     ]
+    if video_dataset_backend == "opencv":
+        cmd.extend(
+            [
+                "dataloader_train.dataset._target_="
+                "blueprint_validation.training.dreamdojo_video_dataset.BlueprintVideoActionDataset",
+                "dataloader_val.dataset._target_="
+                "blueprint_validation.training.dreamdojo_video_dataset.BlueprintVideoActionDataset",
+            ]
+        )
     if disable_heavy_callbacks:
         # These callbacks are useful for long training runs, but they can dominate short debug runs.
         cmd.extend(
@@ -173,6 +184,100 @@ def build_dreamdojo_launch_command(
             ]
         )
     return cmd
+
+
+def _resolve_stage3_python(config: FinetuneConfig) -> Path:
+    python_executable = Path(config.python_executable) if config.python_executable else Path(sys.executable)
+    if not python_executable.exists():
+        raise RuntimeError(
+            f"Stage 3 python_executable not found: {python_executable}. "
+            "Set finetune.python_executable to a valid runtime path."
+        )
+    return python_executable
+
+
+def _build_stage3_env(lora_dir: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    env["IMAGINAIRE_OUTPUT_ROOT"] = str(lora_dir)
+    project_src = Path(__file__).resolve().parents[2]  # .../src
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{project_src}{os.pathsep}{existing}" if existing else str(project_src)
+    return env
+
+
+def _probe_stage3_runtime(
+    *,
+    python_executable: Path,
+    dreamdojo_root: Path,
+    dataset_dir: Path,
+    video_dataset_backend: str,
+    probe_dataloader_sample: bool,
+    env: dict[str, str],
+) -> None:
+    probe_code = r"""
+from pathlib import Path
+import sys
+
+dataset_dir = Path(sys.argv[1])
+backend = sys.argv[2]
+probe_loader = sys.argv[3] == "1"
+
+import lightning  # noqa: F401
+
+sample_video = next((dataset_dir / "videos").glob("*.mp4"), None)
+if backend == "vendor":
+    import torchcodec  # noqa: F401
+    from torchcodec.decoders import VideoDecoder
+    if sample_video is not None:
+        decoder = VideoDecoder(str(sample_video), dimension_order="NHWC")
+        if len(decoder) <= 0:
+            raise RuntimeError(f"torchcodec opened {sample_video} but found zero frames")
+        _ = decoder.get_frames_in_range(0, 1).data
+elif backend == "opencv":
+    from blueprint_validation.training.dreamdojo_video_dataset import BlueprintVideoActionDataset
+
+    if probe_loader:
+        dataset = BlueprintVideoActionDataset(
+            dataset_path=str(dataset_dir),
+            num_frames=13,
+            data_split="train",
+        )
+        _ = dataset[0]
+else:
+    raise RuntimeError(f"Unsupported Stage 3 video dataset backend: {backend}")
+
+print("stage3_runtime_probe_ok")
+"""
+    try:
+        result = subprocess.run(
+            [
+                str(python_executable),
+                "-c",
+                probe_code,
+                str(dataset_dir),
+                video_dataset_backend,
+                "1" if probe_dataloader_sample else "0",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(dreamdojo_root),
+            timeout=90,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:  # pragma: no cover - runtime dependent
+        raise RuntimeError(
+            "Stage 3 runtime probe timed out. Dataloader/decode backend did not produce "
+            "a sample within 90s."
+        ) from exc
+
+    if result.returncode != 0:
+        stderr_tail = (result.stderr or "")[-2000:]
+        stdout_tail = (result.stdout or "")[-2000:]
+        raise RuntimeError(
+            "Stage 3 runtime probe failed for DreamDojo environment. "
+            f"stdout tail: {stdout_tail}\n"
+            f"stderr tail: {stderr_tail}"
+        )
 
 
 def _has_dcp_metadata(checkpoint_dir: Path) -> bool:
@@ -199,24 +304,6 @@ def _resolve_checkpoint_load_path(configured_path: Path) -> Path:
         )
         return picked
     return configured_path
-
-
-def _probe_torchcodec_decoder(dataset_dir: Path) -> None:
-    """Validate that torchcodec can decode at least one frame from dataset videos."""
-    videos_dir = dataset_dir / "videos"
-    sample_video = next(videos_dir.glob("*.mp4"), None)
-    if sample_video is None:
-        return
-
-    from torchcodec.decoders import VideoDecoder
-
-    decoder = VideoDecoder(
-        str(sample_video),
-        dimension_order="NHWC",
-    )
-    if len(decoder) <= 0:
-        raise RuntimeError(f"torchcodec opened {sample_video} but found zero frames.")
-    _ = decoder.get_frames_in_range(0, 1).data
 
 
 def _resolve_latest_checkpoint(lora_dir: Path) -> Path | None:
@@ -260,37 +347,22 @@ def run_dreamdojo_finetune(
         )
     if not dataset_dir.exists():
         raise RuntimeError(f"DreamDojo dataset directory not found: {dataset_dir}")
-    try:
-        import lightning  # noqa: F401
-    except Exception as exc:  # pragma: no cover - import depends on runtime env
+    python_executable = _resolve_stage3_python(config)
+    video_dataset_backend = (config.video_dataset_backend or "opencv").strip().lower()
+    if video_dataset_backend not in {"opencv", "vendor"}:
         raise RuntimeError(
-            "Missing DreamDojo dependency: python package 'lightning'. "
-            "Install it in the active environment (e.g., `uv pip install lightning`)."
-        ) from exc
-    skip_torchcodec_check = (
-        os.environ.get("BLUEPRINT_SKIP_TORCHCODEC_CHECK", "0").strip().lower()
-        in {"1", "true", "yes"}
+            f"Unsupported finetune.video_dataset_backend={config.video_dataset_backend!r}. "
+            "Expected one of: opencv, vendor."
+        )
+    stage3_env = _build_stage3_env(lora_dir)
+    _probe_stage3_runtime(
+        python_executable=python_executable,
+        dreamdojo_root=dreamdojo_root,
+        dataset_dir=dataset_dir,
+        video_dataset_backend=video_dataset_backend,
+        probe_dataloader_sample=config.probe_dataloader_sample,
+        env=stage3_env,
     )
-    if not skip_torchcodec_check:
-        try:
-            import torchcodec  # noqa: F401
-        except Exception as exc:  # pragma: no cover - import depends on runtime env
-            raise RuntimeError(
-                "DreamDojo runtime cannot load `torchcodec` for video decoding. "
-                "Install a torchcodec/FFmpeg stack compatible with your PyTorch build, "
-                "or set BLUEPRINT_SKIP_TORCHCODEC_CHECK=1 only if using a non-video "
-                "action dataset path. Underlying error: "
-                f"{exc}"
-            ) from exc
-        try:
-            _probe_torchcodec_decoder(dataset_dir=dataset_dir)
-        except Exception as exc:  # pragma: no cover - runtime probe depends on env/video stack
-            raise RuntimeError(
-                "DreamDojo torchcodec decode probe failed on prepared dataset videos. "
-                "This environment cannot decode training MP4s with current torchcodec/FFmpeg "
-                "bindings, and DreamDojo will loop on data loading. "
-                f"Underlying error: {exc}"
-            ) from exc
 
     experiment_name = resolve_dreamdojo_experiment_name(
         dreamdojo_root=dreamdojo_root,
@@ -310,6 +382,8 @@ def run_dreamdojo_finetune(
         output_dir=output_dir,
         config=config,
         facility_id=facility_id,
+        python_executable=python_executable,
+        video_dataset_backend=video_dataset_backend,
         checkpoint_path=checkpoint_path,
     )
 
@@ -323,15 +397,13 @@ def run_dreamdojo_finetune(
 
     start_time = time.monotonic()
     timeout_sec = int(config.max_training_hours * 3600)
-    env = os.environ.copy()
-    env["IMAGINAIRE_OUTPUT_ROOT"] = str(lora_dir)
     result = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
         cwd=str(dreamdojo_root),
         timeout=timeout_sec,
-        env=env,
+        env=stage3_env,
     )
     elapsed = time.monotonic() - start_time
     status = "success" if result.returncode == 0 else "failed"

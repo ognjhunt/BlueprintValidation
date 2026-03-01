@@ -29,6 +29,8 @@ def test_config_defaults():
     assert config.finetune.num_epochs == 50
     assert config.finetune.use_lora is True
     assert config.finetune.lora_rank == 32
+    assert config.finetune.video_dataset_backend == "opencv"
+    assert config.finetune.probe_dataloader_sample is True
     assert config.eval_policy.vlm_judge.model == "gemini-3-flash-preview"
     assert config.eval_policy.model_name == "openvla/openvla-7b"
     assert str(config.eval_policy.checkpoint_path).endswith("data/checkpoints/openvla-7b")
@@ -94,7 +96,12 @@ def test_config_with_all_sections(tmp_path):
             "min_frame0_ssim": 0.8,
             "delete_rejected_outputs": True,
         },
-        "finetune": {"num_epochs": 10, "lora_rank": 16},
+        "finetune": {
+            "num_epochs": 10,
+            "lora_rank": 16,
+            "video_dataset_backend": "vendor",
+            "probe_dataloader_sample": False,
+        },
         "eval_policy": {
             "num_rollouts": 10,
             "tasks": ["go forward"],
@@ -142,6 +149,8 @@ def test_config_with_all_sections(tmp_path):
     assert config.enrich.delete_rejected_outputs is True
     assert config.finetune.num_epochs == 10
     assert config.finetune.lora_rank == 16
+    assert config.finetune.video_dataset_backend == "vendor"
+    assert config.finetune.probe_dataloader_sample is False
     assert config.eval_policy.num_rollouts == 10
     assert config.robot_composite.enabled is True
     assert config.gemini_polish.enabled is True

@@ -171,6 +171,11 @@ enrich:
 finetune:
   dreamdojo_repo: /opt/DreamDojo
   dreamdojo_checkpoint: ../data/checkpoints/DreamDojo/2B_pretrain/
+  # Optional isolated runtime path for Stage 3 (dedicated env).
+  # python_executable: /opt/venvs/dreamdojo/bin/python
+  # Use OpenCV-backed dataset by default to avoid torchcodec runtime coupling.
+  video_dataset_backend: opencv  # opencv | vendor
+  probe_dataloader_sample: true
   # Optional DreamDojo config script path or config name (without .sh) under dreamdojo_repo/configs.
   # experiment_config: post-training/2b_720p_adapted_17f
   model_size: 2B

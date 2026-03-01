@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import sys
-
 
 def test_resolve_experiment_name_by_short_name(tmp_path):
     from blueprint_validation.training.dreamdojo_finetune import resolve_dreamdojo_experiment_name
@@ -62,9 +60,11 @@ def test_build_dreamdojo_launch_command(tmp_path):
         output_dir=output_dir,
         config=cfg,
         facility_id="facility_a",
+        python_executable=tmp_path / "venv" / "bin" / "python",
+        video_dataset_backend="opencv",
     )
     text = " ".join(cmd)
-    assert cmd[:3] == [sys.executable, "-m", "torch.distributed.run"]
+    assert cmd[:3] == [str(tmp_path / "venv" / "bin" / "python"), "-m", "torch.distributed.run"]
     assert "--standalone" in text
     assert "experiment=dreamdojo_site_adapt" in text
     assert "job.project=blueprint_validation" in text
@@ -75,6 +75,8 @@ def test_build_dreamdojo_launch_command(tmp_path):
     assert "model.config.use_lora=true" in text
     assert 'model.config.lora_target_modules="q_proj,v_proj"' in text
     assert "~dataloader_train.dataloaders" in text
+    assert "dataloader_train.dataset._target_=blueprint_validation.training.dreamdojo_video_dataset.BlueprintVideoActionDataset" in text
+    assert "dataloader_val.dataset._target_=blueprint_validation.training.dreamdojo_video_dataset.BlueprintVideoActionDataset" in text
     assert "~trainer.callbacks.wandb" in text
     assert "~trainer.callbacks.every_n_sample_reg" in text
     assert "trainer.logging_iter=1" in text
@@ -109,3 +111,16 @@ def test_resolve_checkpoint_load_path_from_parent(tmp_path):
 
     resolved = _resolve_checkpoint_load_path(root)
     assert resolved == iter_dir
+
+
+def test_resolve_stage3_python_prefers_config_path(tmp_path):
+    from blueprint_validation.config import FinetuneConfig
+    from blueprint_validation.training.dreamdojo_finetune import _resolve_stage3_python
+
+    python_bin = tmp_path / "venv" / "bin" / "python"
+    python_bin.parent.mkdir(parents=True)
+    python_bin.write_text("#!/usr/bin/env python\n")
+
+    cfg = FinetuneConfig(python_executable=python_bin)
+    resolved = _resolve_stage3_python(cfg)
+    assert resolved == python_bin
