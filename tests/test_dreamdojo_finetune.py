@@ -94,3 +94,15 @@ def test_resolve_latest_checkpoint_recurses(tmp_path):
 
     resolved = _resolve_latest_checkpoint(lora_dir)
     assert resolved == ckpt
+
+
+def test_resolve_checkpoint_load_path_from_parent(tmp_path):
+    from blueprint_validation.training.dreamdojo_finetune import _resolve_checkpoint_load_path
+
+    root = tmp_path / "2B_pretrain"
+    iter_dir = root / "2B_pretrain" / "iter_000140000"
+    (iter_dir / "model").mkdir(parents=True)
+    (iter_dir / "model" / ".metadata").write_text("ok\n")
+
+    resolved = _resolve_checkpoint_load_path(root)
+    assert resolved == iter_dir

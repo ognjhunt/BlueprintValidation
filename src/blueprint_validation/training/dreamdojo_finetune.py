@@ -111,6 +111,7 @@ def build_dreamdojo_launch_command(
     output_dir: Path,
     config: FinetuneConfig,
     facility_id: str,
+    checkpoint_path: Path | None = None,
 ) -> list[str]:
     """Build a portable DreamDojo training command without cluster-specific launch.sh wrappers."""
     train_script = dreamdojo_root / "scripts" / "train.py"
@@ -124,6 +125,7 @@ def build_dreamdojo_launch_command(
     max_iter = max(1, int(config.num_epochs) * steps_per_epoch)
     nproc = max(1, int(os.environ.get("DREAMDOJO_NPROC", "1")))
 
+    resolved_checkpoint = checkpoint_path or config.dreamdojo_checkpoint
     cmd = [
         sys.executable,
         "-m",
@@ -148,7 +150,7 @@ def build_dreamdojo_launch_command(
         f"trainer.grad_accum_iter={config.gradient_accumulation_steps}",
         f"trainer.max_iter={max_iter}",
         f"optimizer.lr={config.learning_rate}",
-        f"checkpoint.load_path={config.dreamdojo_checkpoint}",
+        f"checkpoint.load_path={resolved_checkpoint}",
         f"model.config.use_lora={'true' if config.use_lora else 'false'}",
         f"model.config.lora_rank={config.lora_rank}",
         f"model.config.lora_alpha={config.lora_alpha}",
@@ -156,6 +158,32 @@ def build_dreamdojo_launch_command(
         "~dataloader_train.dataloaders",
     ]
     return cmd
+
+
+def _has_dcp_metadata(checkpoint_dir: Path) -> bool:
+    return (checkpoint_dir / "model" / ".metadata").exists()
+
+
+def _resolve_checkpoint_load_path(configured_path: Path) -> Path:
+    """Resolve checkpoint.load_path to an iter_* directory with DCP metadata when needed."""
+    if _has_dcp_metadata(configured_path):
+        return configured_path
+
+    iter_candidates = [
+        path
+        for path in configured_path.rglob("iter_*")
+        if path.is_dir() and _has_dcp_metadata(path)
+    ]
+    if iter_candidates:
+        iter_candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        picked = iter_candidates[0]
+        logger.warning(
+            "Resolved DreamDojo checkpoint path from %s to %s",
+            configured_path,
+            picked,
+        )
+        return picked
+    return configured_path
 
 
 def _resolve_latest_checkpoint(lora_dir: Path) -> Path | None:
@@ -211,6 +239,13 @@ def run_dreamdojo_finetune(
         dreamdojo_root=dreamdojo_root,
         configured=config.experiment_config,
     )
+    checkpoint_path = _resolve_checkpoint_load_path(config.dreamdojo_checkpoint)
+    if not _has_dcp_metadata(checkpoint_path):
+        raise RuntimeError(
+            "DreamDojo checkpoint path is missing distributed-checkpoint metadata "
+            f"(expected {checkpoint_path / 'model' / '.metadata'}). "
+            "Point finetune.dreamdojo_checkpoint to an iter_* directory or rerun model setup."
+        )
     cmd = build_dreamdojo_launch_command(
         dreamdojo_root=dreamdojo_root,
         experiment_name=experiment_name,
@@ -218,6 +253,7 @@ def run_dreamdojo_finetune(
         output_dir=output_dir,
         config=config,
         facility_id=facility_id,
+        checkpoint_path=checkpoint_path,
     )
 
     logger.info(
