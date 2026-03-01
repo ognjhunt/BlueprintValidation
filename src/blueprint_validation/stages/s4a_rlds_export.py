@@ -6,6 +6,8 @@ import random
 from pathlib import Path
 from typing import Dict, List
 
+import numpy as np
+
 from ..common import StageResult, get_logger, read_json
 from ..config import FacilityConfig, ValidationConfig
 from ..training.rlds_export import (
@@ -74,13 +76,34 @@ class RLDSExportStage(PipelineStage):
         all_rollouts: List[Dict] = scores_data.get("scores", [])
 
         # Filter: only adapted-condition rollouts (training data from site-adapted world model)
-        adapted_rollouts = [r for r in all_rollouts if r.get("condition") == "adapted"]
-        if not adapted_rollouts:
+        adapted_rollouts_all = [r for r in all_rollouts if r.get("condition") == "adapted"]
+        if not adapted_rollouts_all:
             return StageResult(
                 stage_name=self.name,
                 status="failed",
                 elapsed_seconds=0,
                 detail="No adapted-condition rollouts found in Stage 4 output.",
+            )
+        adapted_rollouts, filter_counts = _filter_rollouts_for_training(
+            adapted_rollouts_all, config
+        )
+        if not adapted_rollouts:
+            return StageResult(
+                stage_name=self.name,
+                status="failed",
+                elapsed_seconds=0,
+                detail=(
+                    "No adapted-condition rollouts passed action-quality filters. "
+                    f"total_adapted={len(adapted_rollouts_all)} "
+                    f"short={filter_counts['num_filtered_short']} "
+                    f"dim_mismatch={filter_counts['num_filtered_dim_mismatch']} "
+                    f"nonfinite={filter_counts['num_filtered_nonfinite']} "
+                    f"smoothness={filter_counts['num_filtered_smoothness']}"
+                ),
+                metrics={
+                    "total_adapted_rollouts": len(adapted_rollouts_all),
+                    **filter_counts,
+                },
             )
 
         # Shuffle and split into train/eval
@@ -133,8 +156,12 @@ class RLDSExportStage(PipelineStage):
                 detail=(
                     f"No episodes passed filters (threshold={threshold}, "
                     f"min_steps={min_steps}). "
-                    f"Total adapted rollouts: {len(adapted_rollouts)}"
+                    f"Total adapted rollouts after action-quality gating: {len(adapted_rollouts)}"
                 ),
+                metrics={
+                    "total_adapted_rollouts": len(adapted_rollouts_all),
+                    **filter_counts,
+                },
             )
 
         # Convert JSONL to TFRecords for OpenVLA-OFT
@@ -167,6 +194,97 @@ class RLDSExportStage(PipelineStage):
                 "num_eval_episodes": num_eval,
                 "num_train_successes": train_meta.get("num_successes", 0),
                 "task_score_threshold": threshold,
-                "total_adapted_rollouts": len(adapted_rollouts),
+                "total_adapted_rollouts": len(adapted_rollouts_all),
+                "max_action_delta_norm": config.rollout_dataset.max_action_delta_norm,
+                "require_consistent_action_dim": (
+                    config.rollout_dataset.require_consistent_action_dim
+                ),
+                **filter_counts,
             },
         )
+
+
+def _filter_rollouts_for_training(
+    rollouts: List[Dict],
+    config: ValidationConfig,
+) -> tuple[List[Dict], Dict[str, int]]:
+    kept: List[Dict] = []
+    counts = {
+        "num_filtered_short": 0,
+        "num_filtered_dim_mismatch": 0,
+        "num_filtered_nonfinite": 0,
+        "num_filtered_smoothness": 0,
+        "num_adapted_after_filters": 0,
+    }
+    min_steps = int(config.rollout_dataset.min_steps_per_rollout)
+    require_consistent = bool(config.rollout_dataset.require_consistent_action_dim)
+    max_delta = float(config.rollout_dataset.max_action_delta_norm)
+
+    for entry in rollouts:
+        actions = entry.get("action_sequence") or []
+        if len(actions) < min_steps:
+            counts["num_filtered_short"] += 1
+            continue
+        valid, reason = _validate_action_sequence(
+            actions=actions,
+            require_consistent_action_dim=require_consistent,
+            max_action_delta_norm=max_delta,
+        )
+        if not valid:
+            if reason == "dim_mismatch":
+                counts["num_filtered_dim_mismatch"] += 1
+            elif reason == "nonfinite":
+                counts["num_filtered_nonfinite"] += 1
+            else:
+                counts["num_filtered_smoothness"] += 1
+            continue
+        kept.append(entry)
+
+    counts["num_adapted_after_filters"] = len(kept)
+    return kept, counts
+
+
+def _validate_action_sequence(
+    *,
+    actions: List[object],
+    require_consistent_action_dim: bool,
+    max_action_delta_norm: float,
+) -> tuple[bool, str | None]:
+    dims: set[int] = set()
+    for action in actions:
+        vec_size = _action_vector_size(action)
+        if vec_size is None:
+            return False, "nonfinite"
+        dims.add(vec_size)
+    if require_consistent_action_dim and len(dims) != 1:
+        return False, "dim_mismatch"
+
+    try:
+        arr = np.asarray(actions, dtype=np.float64)
+    except Exception:
+        return False, "smoothness"
+    if arr.ndim == 1:
+        arr = arr[:, None]
+    if arr.ndim != 2:
+        return False, "smoothness"
+    if not np.isfinite(arr).all():
+        return False, "nonfinite"
+    if len(arr) < 2:
+        return True, None
+    deltas = np.diff(arr, axis=0)
+    norms = np.linalg.norm(deltas, axis=1)
+    if not np.isfinite(norms).all():
+        return False, "nonfinite"
+    if float(np.max(norms)) > max_action_delta_norm:
+        return False, "smoothness"
+    return True, None
+
+
+def _action_vector_size(action: object) -> int | None:
+    try:
+        arr = np.asarray(action, dtype=np.float64)
+    except Exception:
+        return None
+    if arr.ndim == 0:
+        return 1
+    return int(arr.size)

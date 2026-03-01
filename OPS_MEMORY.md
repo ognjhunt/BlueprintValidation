@@ -114,6 +114,51 @@ the permanent fixes applied so we do not repeat them.
     so `rclone` is available for B2 mirroring.
   - one-shot validation confirmed local snapshot pull + chained B2 push succeed.
 
+### 10) Stage 2 dynamic prompt fallback can silently rewrite scene type
+- Symptom:
+  - Cosmos enrichment outputs looked like warehouse/industrial footage instead of
+    the kitchen scene.
+- Root cause:
+  - Dynamic Gemini variant generation failed, and code silently fell back to
+    hardcoded industrial prompts.
+- Permanent fix:
+  - `src/blueprint_validation/enrichment/variant_specs.py` now supports strict
+    mode that raises when dynamic variant generation fails.
+  - `src/blueprint_validation/config.py` adds
+    `enrich.allow_dynamic_variant_fallback` (default `true` for backward compatibility).
+  - `configs/interiorgs_kitchen_0787.cloud.yaml` sets
+    `allow_dynamic_variant_fallback: false` so this run fails fast instead of
+    using wrong-scene fallback prompts.
+  - Added tests in `tests/test_variant_specs.py`.
+
+### 11) Do not assume Cosmos control-depth is 180° inverted
+- Symptom:
+  - `*_control_depth.mp4` looked visually upside-down during review.
+- Root cause:
+  - This was a perception mismatch. Direct frame alignment checks showed
+    control-depth orientation matched the input depth orientation; forced 180°
+    rotation worsened alignment.
+- Permanent fix:
+  - Keep scene-specific depth-rotation hook opt-in only (disabled by default in
+    `src/blueprint_validation/stages/s2_enrich.py`).
+  - Never hard-enable depth rotation for a facility without frame-level
+    alignment verification first.
+
+### 12) Nano-banana (Gemini image pre-pass) did not recover URDF arm in Cosmos output
+- Symptom:
+  - Even after Gemini image pre-pass (`gemini-2.5-flash-image`) before Cosmos,
+    generated clips still dropped visible robot arm/end-effector.
+- Root cause:
+  - Prompt/image pre-pass alone was insufficient to enforce manipulator
+    persistence through Cosmos transfer.
+- Permanent fix:
+  - For full Stage 2 runs, prefer baseline path over nano-banana pre-pass unless
+    a new method shows measurable arm retention gains.
+  - A/B acceptance gate for future attempts:
+    - Same clip + prompt + depth input
+    - Evaluate matched frames for arm visibility
+    - Require improvement over baseline before rollout.
+
 ## Open follow-up
 - `BLUEPRINT_AUTO_SHUTDOWN_CMD` is currently an echo placeholder on the VM.
   Replace with a real `vastai stop ...` or equivalent mechanism before long runs.

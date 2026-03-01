@@ -8,6 +8,7 @@ from typing import Dict, List
 from ..common import StageResult, get_logger, read_json, write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..synthetic.gemini_image_polish import polish_clip_with_gemini
+from .manifest_resolution import ManifestCandidate, ManifestSource, resolve_manifest_source
 from .base import PipelineStage
 
 logger = get_logger("stages.s1c_gemini_polish")
@@ -29,7 +30,7 @@ class GeminiPolishStage(PipelineStage):
         work_dir: Path,
         previous_results: Dict[str, StageResult],
     ) -> StageResult:
-        del facility, previous_results
+        del facility
         if not config.gemini_polish.enabled:
             return StageResult(
                 stage_name=self.name,
@@ -38,15 +39,15 @@ class GeminiPolishStage(PipelineStage):
                 detail="gemini_polish.enabled=false",
             )
 
-        source_manifest_path = _resolve_source_manifest(work_dir)
-        if source_manifest_path is None:
+        source = _resolve_source_manifest(work_dir, previous_results)
+        if source is None:
             return StageResult(
                 stage_name=self.name,
                 status="failed",
                 elapsed_seconds=0,
                 detail="No source manifest found for Gemini polish. Run Stage 1 or Stage 1b first.",
             )
-        source_manifest = read_json(source_manifest_path)
+        source_manifest = read_json(source.source_manifest_path)
 
         out_dir = work_dir / "gemini_polish"
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -85,19 +86,31 @@ class GeminiPolishStage(PipelineStage):
             outputs={
                 "polish_dir": str(out_dir),
                 "manifest_path": str(manifest_path),
+                **source.to_metadata(),
             },
             metrics={
                 "num_input_clips": len(source_manifest.get("clips", [])),
                 "num_polished_clips": len(polished),
+                **source.to_metadata(),
             },
         )
 
 
-def _resolve_source_manifest(work_dir: Path) -> Path | None:
-    for candidate in [
-        work_dir / "robot_composite" / "composited_manifest.json",
-        work_dir / "renders" / "render_manifest.json",
-    ]:
-        if candidate.exists():
-            return candidate
-    return None
+def _resolve_source_manifest(
+    work_dir: Path,
+    previous_results: Dict[str, StageResult] | None = None,
+) -> ManifestSource | None:
+    return resolve_manifest_source(
+        work_dir=work_dir,
+        previous_results=previous_results or {},
+        candidates=[
+            ManifestCandidate(
+                stage_name="s1b_robot_composite",
+                manifest_relpath=Path("robot_composite/composited_manifest.json"),
+            ),
+            ManifestCandidate(
+                stage_name="s1_render",
+                manifest_relpath=Path("renders/render_manifest.json"),
+            ),
+        ],
+    )

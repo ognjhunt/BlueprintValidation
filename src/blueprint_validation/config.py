@@ -132,6 +132,8 @@ class EnrichConfig:
     # Dynamic variant generation: use Gemini to produce scene-appropriate prompts
     dynamic_variants: bool = True
     dynamic_variants_model: str = "gemini-3-flash-preview"
+    # If false, Stage 2 fails when dynamic variant generation is unavailable.
+    allow_dynamic_variant_fallback: bool = True
 
 
 @dataclass
@@ -584,6 +586,7 @@ def load_config(path: Path) -> ValidationConfig:
             guidance=e.get("guidance", 7.0),
             dynamic_variants=e.get("dynamic_variants", True),
             dynamic_variants_model=e.get("dynamic_variants_model", "gemini-3-flash-preview"),
+            allow_dynamic_variant_fallback=bool(e.get("allow_dynamic_variant_fallback", True)),
         )
 
     if "robot_composite" in raw:

@@ -10,9 +10,14 @@ from ..config import FacilityConfig, ValidationConfig
 from ..enrichment.cosmos_runner import enrich_clip
 from ..enrichment.variant_specs import get_variants
 from ..warmup import load_cached_variants
+from .manifest_resolution import ManifestCandidate, ManifestSource, resolve_manifest_source
 from .base import PipelineStage
 
 logger = get_logger("stages.s2_enrich")
+
+# Leave empty by default. Opt in only after direct verification that a facility's
+# depth control is inverted relative to its own RGB/depth render inputs.
+_FORCE_ROTATE_180_DEPTH_FACILITIES: set[str] = set()
 
 
 class EnrichStage(PipelineStage):
@@ -35,8 +40,8 @@ class EnrichStage(PipelineStage):
         enrich_dir.mkdir(parents=True, exist_ok=True)
 
         # Load render manifest
-        render_manifest_path = _resolve_render_manifest(work_dir)
-        if render_manifest_path is None:
+        source = _resolve_render_manifest_source(work_dir, previous_results)
+        if source is None:
             return StageResult(
                 stage_name=self.name,
                 status="failed",
@@ -47,7 +52,7 @@ class EnrichStage(PipelineStage):
                 ),
             )
 
-        render_manifest = read_json(render_manifest_path)
+        render_manifest = read_json(source.source_manifest_path)
 
         # Check for warmup-cached variant prompts before calling Gemini
         cached_variants = load_cached_variants(work_dir)
@@ -64,6 +69,7 @@ class EnrichStage(PipelineStage):
                 sample_frame_path=sample_frame_path,
                 num_variants=config.enrich.num_variants_per_render,
                 facility_description=facility.description,
+                allow_dynamic_fallback=config.enrich.allow_dynamic_variant_fallback,
             )
 
         # Limit variants to configured count
@@ -82,9 +88,16 @@ class EnrichStage(PipelineStage):
                 logger.warning("Video not found: %s", video_path)
                 continue
 
+            depth_for_cosmos = _maybe_prepare_depth_control(
+                facility_name=facility.name,
+                clip_name=clip_name,
+                depth_path=depth_path if depth_path.exists() else None,
+                enrich_dir=enrich_dir,
+            )
+
             outputs = enrich_clip(
                 video_path=video_path,
-                depth_path=depth_path if depth_path.exists() else None,
+                depth_path=depth_for_cosmos,
                 variants=variants,
                 output_dir=enrich_dir,
                 clip_name=clip_name,
@@ -127,26 +140,52 @@ class EnrichStage(PipelineStage):
                 "enrich_dir": str(enrich_dir),
                 "manifest_path": str(manifest_path),
                 "num_enriched": total_enriched,
+                **source.to_metadata(),
             },
             metrics={
                 "num_enriched_clips": total_enriched,
                 "num_failed": total_failed,
                 "variants_used": [v.name for v in variants],
+                **source.to_metadata(),
             },
         )
 
 
 def _resolve_render_manifest(work_dir: Path) -> Path | None:
-    for candidate in [
-        work_dir / "splatsim" / "interaction_manifest.json",
-        work_dir / "gaussian_augment" / "augmented_manifest.json",
-        work_dir / "gemini_polish" / "polished_manifest.json",
-        work_dir / "robot_composite" / "composited_manifest.json",
-        work_dir / "renders" / "render_manifest.json",
-    ]:
-        if candidate.exists():
-            return candidate
-    return None
+    source = _resolve_render_manifest_source(work_dir, previous_results={})
+    return source.source_manifest_path if source else None
+
+
+def _resolve_render_manifest_source(
+    work_dir: Path,
+    previous_results: Dict[str, StageResult] | None = None,
+) -> ManifestSource | None:
+    return resolve_manifest_source(
+        work_dir=work_dir,
+        previous_results=previous_results or {},
+        candidates=[
+            ManifestCandidate(
+                stage_name="s1e_splatsim_interaction",
+                manifest_relpath=Path("splatsim/interaction_manifest.json"),
+            ),
+            ManifestCandidate(
+                stage_name="s1d_gaussian_augment",
+                manifest_relpath=Path("gaussian_augment/augmented_manifest.json"),
+            ),
+            ManifestCandidate(
+                stage_name="s1c_gemini_polish",
+                manifest_relpath=Path("gemini_polish/polished_manifest.json"),
+            ),
+            ManifestCandidate(
+                stage_name="s1b_robot_composite",
+                manifest_relpath=Path("robot_composite/composited_manifest.json"),
+            ),
+            ManifestCandidate(
+                stage_name="s1_render",
+                manifest_relpath=Path("renders/render_manifest.json"),
+            ),
+        ],
+    )
 
 
 def _extract_sample_frame(manifest: dict, work_dir: Path) -> Path | None:
@@ -179,3 +218,86 @@ def _extract_sample_frame(manifest: dict, work_dir: Path) -> Path | None:
     except Exception:
         logger.debug("Failed to extract sample frame for dynamic variants", exc_info=True)
         return None
+
+
+def _maybe_prepare_depth_control(
+    facility_name: str,
+    clip_name: str,
+    depth_path: Path | None,
+    enrich_dir: Path,
+) -> Path | None:
+    """Apply scene-specific depth-control fixes before Cosmos inference."""
+    if depth_path is None:
+        return None
+    if facility_name not in _FORCE_ROTATE_180_DEPTH_FACILITIES:
+        return depth_path
+    try:
+        fixed_dir = enrich_dir / "_depth_control_fixed"
+        fixed_dir.mkdir(parents=True, exist_ok=True)
+        fixed_path = fixed_dir / f"{clip_name}_depth_rot180.mp4"
+        if fixed_path.exists() and fixed_path.stat().st_mtime >= depth_path.stat().st_mtime:
+            return fixed_path
+        _rotate_video_180(depth_path, fixed_path)
+        logger.info(
+            "Applied scene-specific depth rotation (180°) for %s clip %s: %s",
+            facility_name,
+            clip_name,
+            fixed_path,
+        )
+        return fixed_path
+    except Exception:
+        logger.warning(
+            "Depth-control fix failed for %s clip %s; using original depth video",
+            facility_name,
+            clip_name,
+            exc_info=True,
+        )
+        return depth_path
+
+
+def _rotate_video_180(input_path: Path, output_path: Path) -> None:
+    """Rotate a depth video by 180 degrees."""
+    import cv2
+
+    cap = cv2.VideoCapture(str(input_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open depth video: {input_path}")
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if not fps or fps <= 0:
+        fps = 10.0
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    if width <= 0 or height <= 0:
+        cap.release()
+        raise RuntimeError(f"Invalid depth video dimensions for {input_path}")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    writer = cv2.VideoWriter(
+        str(output_path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        float(fps),
+        (width, height),
+        isColor=False,
+    )
+    if not writer.isOpened():
+        cap.release()
+        raise RuntimeError(f"Could not open video writer for {output_path}")
+
+    frame_count = 0
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                break
+            if frame.ndim == 3:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            rotated = cv2.rotate(frame, cv2.ROTATE_180)
+            writer.write(rotated)
+            frame_count += 1
+    finally:
+        cap.release()
+        writer.release()
+
+    if frame_count == 0:
+        raise RuntimeError(f"No frames were read from depth video: {input_path}")

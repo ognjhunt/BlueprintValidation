@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -223,6 +224,66 @@ def test_stage_bootstrap_demo_manifest_created(sample_config, tmp_path):
     assert result.status == "success"
     demo_manifest = tmp_path / "gaussian_augment" / "bootstrap_demo" / "demo_manifest.json"
     assert demo_manifest.exists()
+
+
+def test_stage_prefers_previous_results_manifest_lineage(sample_config, tmp_path, monkeypatch):
+    from blueprint_validation.common import StageResult, write_json
+    from blueprint_validation.stages.s1d_gaussian_augment import GaussianAugmentStage
+
+    sample_config.robosplat.enabled = True
+
+    render_dir = tmp_path / "renders"
+    render_dir.mkdir(parents=True, exist_ok=True)
+    render_manifest = render_dir / "render_manifest.json"
+    write_json({"clips": []}, render_manifest)
+
+    # Stale higher-priority manifest on disk should be ignored when previous_results are present.
+    stale_polish = tmp_path / "gemini_polish" / "polished_manifest.json"
+    stale_polish.parent.mkdir(parents=True, exist_ok=True)
+    stale_polish.write_text("{}")
+
+    captured: dict = {}
+
+    def _fake_augment(**kwargs):
+        captured["source_manifest_path"] = kwargs["source_manifest_path"]
+        stage_dir = kwargs["stage_dir"]
+        manifest_path = stage_dir / "augmented_manifest.json"
+        write_json({"clips": []}, manifest_path)
+        return SimpleNamespace(
+            status="success",
+            manifest_path=manifest_path,
+            num_source_clips=0,
+            num_augmented_clips=0,
+            num_total_clips=0,
+            num_rejected_quality=0,
+            backend_used="legacy_scan",
+            fallback_backend=None,
+            object_source="cluster",
+            demo_source="synthetic",
+            detail="ok",
+        )
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1d_gaussian_augment.run_robosplat_augmentation",
+        _fake_augment,
+    )
+
+    previous_results = {
+        "s1_render": StageResult(
+            stage_name="s1_render",
+            status="success",
+            elapsed_seconds=0,
+            outputs={"manifest_path": str(render_manifest)},
+        )
+    }
+
+    stage = GaussianAugmentStage()
+    fac = list(sample_config.facilities.values())[0]
+    result = stage.run(sample_config, fac, tmp_path, previous_results)
+    assert result.status == "success"
+    assert captured["source_manifest_path"] == render_manifest
+    assert result.metrics["source_stage"] == "s1_render"
+    assert result.metrics["source_mode"] == "previous_results"
 
 
 def test_s2_manifest_resolution_prefers_s1d(tmp_path):

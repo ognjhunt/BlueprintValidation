@@ -8,6 +8,7 @@ from typing import Dict
 from ..augmentation.robosplat_engine import run_robosplat_augmentation
 from ..common import StageResult, get_logger
 from ..config import FacilityConfig, ValidationConfig
+from .manifest_resolution import ManifestCandidate, ManifestSource, resolve_manifest_source
 from .base import PipelineStage
 
 logger = get_logger("stages.s1d_gaussian_augment")
@@ -29,7 +30,6 @@ class GaussianAugmentStage(PipelineStage):
         work_dir: Path,
         previous_results: Dict[str, StageResult],
     ) -> StageResult:
-        del previous_results
         if not config.robosplat.enabled:
             return StageResult(
                 stage_name=self.name,
@@ -38,8 +38,8 @@ class GaussianAugmentStage(PipelineStage):
                 detail="robosplat.enabled=false",
             )
 
-        source_manifest_path = _resolve_source_manifest(work_dir)
-        if source_manifest_path is None:
+        source = _resolve_source_manifest(work_dir, previous_results)
+        if source is None:
             return StageResult(
                 stage_name=self.name,
                 status="failed",
@@ -57,7 +57,7 @@ class GaussianAugmentStage(PipelineStage):
             facility=facility,
             work_dir=work_dir,
             stage_dir=stage_dir,
-            source_manifest_path=source_manifest_path,
+            source_manifest_path=source.source_manifest_path,
         )
 
         status = result.status
@@ -68,6 +68,7 @@ class GaussianAugmentStage(PipelineStage):
             outputs={
                 "augment_dir": str(stage_dir),
                 "manifest_path": str(result.manifest_path),
+                **source.to_metadata(),
             },
             metrics={
                 "num_source_clips": result.num_source_clips,
@@ -78,17 +79,31 @@ class GaussianAugmentStage(PipelineStage):
                 "fallback_backend": result.fallback_backend,
                 "object_source": result.object_source,
                 "demo_source": result.demo_source,
+                **source.to_metadata(),
             },
             detail=result.detail,
         )
 
 
-def _resolve_source_manifest(work_dir: Path) -> Path | None:
-    for candidate in [
-        work_dir / "gemini_polish" / "polished_manifest.json",
-        work_dir / "robot_composite" / "composited_manifest.json",
-        work_dir / "renders" / "render_manifest.json",
-    ]:
-        if candidate.exists():
-            return candidate
-    return None
+def _resolve_source_manifest(
+    work_dir: Path,
+    previous_results: Dict[str, StageResult] | None = None,
+) -> ManifestSource | None:
+    return resolve_manifest_source(
+        work_dir=work_dir,
+        previous_results=previous_results or {},
+        candidates=[
+            ManifestCandidate(
+                stage_name="s1c_gemini_polish",
+                manifest_relpath=Path("gemini_polish/polished_manifest.json"),
+            ),
+            ManifestCandidate(
+                stage_name="s1b_robot_composite",
+                manifest_relpath=Path("robot_composite/composited_manifest.json"),
+            ),
+            ManifestCandidate(
+                stage_name="s1_render",
+                manifest_relpath=Path("renders/render_manifest.json"),
+            ),
+        ],
+    )

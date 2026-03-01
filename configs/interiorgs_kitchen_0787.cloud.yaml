@@ -51,7 +51,7 @@ render:
   vlm_fallback_num_views: 4
 
 robot_composite:
-  enabled: true
+  enabled: false
   urdf_path: ./robots/sample_6dof_arm.urdf
   end_effector_link: wrist_3_link
   base_xyz: [0.0, 0.0, 0.0]
@@ -96,9 +96,10 @@ enrich:
   cosmos_repo: /app/data/vendor/cosmos-transfer
   controlnet_inputs: [rgb, depth]
   num_variants_per_render: 5
-  guidance: 7.0
+  guidance: 5.0
   dynamic_variants: true
   dynamic_variants_model: gemini-3-flash-preview
+  allow_dynamic_variant_fallback: false
 
 finetune:
   dreamdojo_repo: /app/data/vendor/DreamDojo
@@ -120,7 +121,7 @@ eval_policy:
   model_name: openvla/openvla-7b
   checkpoint_path: /models/checkpoints/openvla-7b/
   unnorm_key: bridge_orig
-  num_rollouts: 50
+  num_rollouts: 100
   max_steps_per_rollout: 100
   conditions: ["baseline", "adapted"]
   min_absolute_difference: 0.5

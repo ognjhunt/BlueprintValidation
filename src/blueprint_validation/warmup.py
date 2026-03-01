@@ -397,6 +397,7 @@ def _warmup_dynamic_variants(
         num_variants=config.enrich.num_variants_per_render,
         model=config.enrich.dynamic_variants_model,
         facility_description=facility.description,
+        allow_fallback=config.enrich.allow_dynamic_variant_fallback,
     )
     return [{"name": v.name, "prompt": v.prompt} for v in variants]
 
