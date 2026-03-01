@@ -589,6 +589,45 @@ def _run_world_model_only_eval(
         )
 
     def _release_world_model(model) -> None:
+        try:
+            pipe = getattr(model, "_pipe", None)
+            inner = getattr(pipe, "model", None) if pipe is not None else None
+            if inner is not None:
+                for attr in ("net", "conditioner"):
+                    comp = getattr(inner, attr, None)
+                    if comp is not None and hasattr(comp, "to"):
+                        try:
+                            comp.to("cpu")
+                        except Exception:
+                            pass
+                tokenizer = getattr(inner, "tokenizer", None)
+                if tokenizer is not None:
+                    for attr in ("encoder", "decoder"):
+                        comp = getattr(tokenizer, attr, None)
+                        if comp is not None and hasattr(comp, "to"):
+                            try:
+                                comp.to("cpu")
+                            except Exception:
+                                pass
+                text_encoder = getattr(inner, "text_encoder", None)
+                text_model = getattr(text_encoder, "model", None) if text_encoder is not None else None
+                if text_model is not None and hasattr(text_model, "to"):
+                    try:
+                        text_model.to("cpu")
+                    except Exception:
+                        pass
+            if pipe is not None and hasattr(pipe, "model"):
+                try:
+                    del pipe.model
+                except Exception:
+                    pass
+            if hasattr(model, "_pipe"):
+                try:
+                    delattr(model, "_pipe")
+                except Exception:
+                    pass
+        except Exception:
+            pass
         del model
         try:
             import gc
@@ -598,6 +637,7 @@ def _run_world_model_only_eval(
 
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
         except Exception:
             pass
 
