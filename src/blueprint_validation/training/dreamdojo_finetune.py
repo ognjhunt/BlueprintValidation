@@ -249,6 +249,21 @@ def run_dreamdojo_finetune(
             "Missing DreamDojo dependency: python package 'lightning'. "
             "Install it in the active environment (e.g., `uv pip install lightning`)."
         ) from exc
+    skip_torchcodec_check = (
+        os.environ.get("BLUEPRINT_SKIP_TORCHCODEC_CHECK", "0").strip().lower()
+        in {"1", "true", "yes"}
+    )
+    if not skip_torchcodec_check:
+        try:
+            import torchcodec  # noqa: F401
+        except Exception as exc:  # pragma: no cover - import depends on runtime env
+            raise RuntimeError(
+                "DreamDojo runtime cannot load `torchcodec` for video decoding. "
+                "Install a torchcodec/FFmpeg stack compatible with your PyTorch build, "
+                "or set BLUEPRINT_SKIP_TORCHCODEC_CHECK=1 only if using a non-video "
+                "action dataset path. Underlying error: "
+                f"{exc}"
+            ) from exc
 
     experiment_name = resolve_dreamdojo_experiment_name(
         dreamdojo_root=dreamdojo_root,

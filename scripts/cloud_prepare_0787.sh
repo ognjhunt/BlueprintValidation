@@ -50,6 +50,20 @@ print("Verified cosmos_predict2.action_conditioned.inference import.")
 PY
 }
 
+verify_torchcodec_import() {
+  python - <<'PY'
+import traceback
+
+try:
+    import torchcodec  # noqa: F401
+    print("Verified torchcodec import/runtime.")
+except Exception as exc:  # pragma: no cover - runtime probe
+    print("Torchcodec runtime check failed.")
+    traceback.print_exc()
+    raise SystemExit(1)
+PY
+}
+
 if ! command -v hf >/dev/null 2>&1 && ! command -v huggingface-cli >/dev/null 2>&1; then
   echo "HF CLI missing; installing huggingface_hub..."
   pip_install -U huggingface_hub
@@ -226,6 +240,11 @@ if [ "$INSTALL_DREAMDOJO_EXTRA" = "true" ]; then
     pip_install --no-deps "piq==0.8.0"
     pip_install --no-build-isolation --no-deps "git+https://github.com/facebookresearch/pytorch3d.git"
     verify_dreamdojo_import
+  fi
+
+  if ! verify_torchcodec_import; then
+    echo "WARNING: torchcodec runtime probe failed. Stage 3 can hang on video datasets if torchcodec/FFmpeg is incompatible."
+    echo "         Fix runtime libs before running finetune, or set BLUEPRINT_SKIP_TORCHCODEC_CHECK=1 only for non-video action datasets."
   fi
 fi
 
