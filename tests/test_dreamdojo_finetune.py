@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 
 def test_resolve_experiment_name_by_short_name(tmp_path):
     from blueprint_validation.training.dreamdojo_finetune import resolve_dreamdojo_experiment_name
@@ -62,7 +64,8 @@ def test_build_dreamdojo_launch_command(tmp_path):
         facility_id="facility_a",
     )
     text = " ".join(cmd)
-    assert cmd[:2] == ["torchrun", "--standalone"]
+    assert cmd[:3] == [sys.executable, "-m", "torch.distributed.run"]
+    assert "--standalone" in text
     assert "experiment=dreamdojo_site_adapt" in text
     assert "job.project=blueprint_validation" in text
     assert "job.group=facility_a" in text

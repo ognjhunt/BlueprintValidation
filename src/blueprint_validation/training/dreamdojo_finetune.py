@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Dict, List
@@ -124,7 +125,9 @@ def build_dreamdojo_launch_command(
     nproc = max(1, int(os.environ.get("DREAMDOJO_NPROC", "1")))
 
     cmd = [
-        "torchrun",
+        sys.executable,
+        "-m",
+        "torch.distributed.run",
         "--standalone",
         "--nnodes",
         "1",
