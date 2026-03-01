@@ -201,6 +201,24 @@ def _resolve_checkpoint_load_path(configured_path: Path) -> Path:
     return configured_path
 
 
+def _probe_torchcodec_decoder(dataset_dir: Path) -> None:
+    """Validate that torchcodec can decode at least one frame from dataset videos."""
+    videos_dir = dataset_dir / "videos"
+    sample_video = next(videos_dir.glob("*.mp4"), None)
+    if sample_video is None:
+        return
+
+    from torchcodec.decoders import VideoDecoder
+
+    decoder = VideoDecoder(
+        str(sample_video),
+        dimension_order="NHWC",
+    )
+    if len(decoder) <= 0:
+        raise RuntimeError(f"torchcodec opened {sample_video} but found zero frames.")
+    _ = decoder.get_frames_in_range(0, 1).data
+
+
 def _resolve_latest_checkpoint(lora_dir: Path) -> Path | None:
     if not lora_dir.exists():
         return None
@@ -263,6 +281,15 @@ def run_dreamdojo_finetune(
                 "or set BLUEPRINT_SKIP_TORCHCODEC_CHECK=1 only if using a non-video "
                 "action dataset path. Underlying error: "
                 f"{exc}"
+            ) from exc
+        try:
+            _probe_torchcodec_decoder(dataset_dir=dataset_dir)
+        except Exception as exc:  # pragma: no cover - runtime probe depends on env/video stack
+            raise RuntimeError(
+                "DreamDojo torchcodec decode probe failed on prepared dataset videos. "
+                "This environment cannot decode training MP4s with current torchcodec/FFmpeg "
+                "bindings, and DreamDojo will loop on data loading. "
+                f"Underlying error: {exc}"
             ) from exc
 
     experiment_name = resolve_dreamdojo_experiment_name(
