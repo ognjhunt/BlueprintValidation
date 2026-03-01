@@ -84,6 +84,14 @@ class RenderConfig:
     task_scoped_overview_specs: int = 6
     task_scoped_fallback_specs: int = 16
     task_scoped_profile: str = "dreamdojo"
+    # Stage-1 coverage gate applied before Stage 2 enrichment.
+    stage1_coverage_gate_enabled: bool = False
+    stage1_coverage_min_visible_frame_ratio: float = 0.35
+    stage1_coverage_min_approach_angle_bins: int = 2
+    stage1_coverage_angle_bin_deg: float = 45.0
+    stage1_coverage_blur_laplacian_min: float = 20.0
+    stage1_coverage_blur_sample_every_n_frames: int = 5
+    stage1_coverage_blur_max_samples_per_clip: int = 12
 
 
 @dataclass
@@ -137,6 +145,10 @@ class EnrichConfig:
     # Optional explicit context frame index used for Cosmos image context anchoring.
     # If unset, Stage 2 uses a deterministic quarter-way frame for each clip.
     context_frame_index: Optional[int] = None
+    # Optional upper bound on frames passed into Cosmos per clip.
+    # Disabled when <= 0. When enabled and inputs are longer, Stage 2 trims a window
+    # centered around the resolved context frame.
+    max_input_frames: int = 0
     # Acceptance gate for control-faithful enrichment. Disabled when <= 0.
     min_frame0_ssim: float = 0.0
     # Delete generated output files rejected by the frame-0 SSIM gate.
@@ -578,6 +590,23 @@ def load_config(path: Path) -> ValidationConfig:
             task_scoped_overview_specs=int(r.get("task_scoped_overview_specs", 6)),
             task_scoped_fallback_specs=int(r.get("task_scoped_fallback_specs", 16)),
             task_scoped_profile=str(r.get("task_scoped_profile", "dreamdojo")),
+            stage1_coverage_gate_enabled=bool(r.get("stage1_coverage_gate_enabled", False)),
+            stage1_coverage_min_visible_frame_ratio=float(
+                r.get("stage1_coverage_min_visible_frame_ratio", 0.35)
+            ),
+            stage1_coverage_min_approach_angle_bins=int(
+                r.get("stage1_coverage_min_approach_angle_bins", 2)
+            ),
+            stage1_coverage_angle_bin_deg=float(r.get("stage1_coverage_angle_bin_deg", 45.0)),
+            stage1_coverage_blur_laplacian_min=float(
+                r.get("stage1_coverage_blur_laplacian_min", 20.0)
+            ),
+            stage1_coverage_blur_sample_every_n_frames=int(
+                r.get("stage1_coverage_blur_sample_every_n_frames", 5)
+            ),
+            stage1_coverage_blur_max_samples_per_clip=int(
+                r.get("stage1_coverage_blur_max_samples_per_clip", 12)
+            ),
         )
 
     # Enrich
@@ -604,6 +633,7 @@ def load_config(path: Path) -> ValidationConfig:
             context_frame_index=(
                 int(e["context_frame_index"]) if e.get("context_frame_index") is not None else None
             ),
+            max_input_frames=int(e.get("max_input_frames", 0)),
             min_frame0_ssim=float(e.get("min_frame0_ssim", 0.0)),
             delete_rejected_outputs=bool(e.get("delete_rejected_outputs", False)),
         )

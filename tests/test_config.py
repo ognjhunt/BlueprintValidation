@@ -26,6 +26,9 @@ def test_config_defaults():
     assert config.render.camera_height_m == 1.2
     assert config.render.task_scoped_scene_aware is False
     assert config.render.task_scoped_max_specs == 40
+    assert config.render.stage1_coverage_gate_enabled is False
+    assert config.render.stage1_coverage_min_visible_frame_ratio == pytest.approx(0.35)
+    assert config.render.stage1_coverage_min_approach_angle_bins == 2
     assert config.finetune.num_epochs == 50
     assert config.finetune.use_lora is True
     assert config.finetune.lora_rank == 32
@@ -36,6 +39,7 @@ def test_config_defaults():
     assert str(config.eval_policy.checkpoint_path).endswith("data/checkpoints/openvla-7b")
     assert config.eval_policy.unnorm_key == "bridge_orig"
     assert config.eval_policy.vlm_judge.enable_agentic_vision is True
+    assert config.enrich.max_input_frames == 0
     assert config.policy_adapter.name == "openvla_oft"
     assert str(config.policy_adapter.openvla.openvla_repo).endswith("opt/openvla-oft")
     assert config.policy_adapter.pi05.profile == "pi05_libero"
@@ -86,6 +90,13 @@ def test_config_with_all_sections(tmp_path):
             "task_scoped_overview_specs": 4,
             "task_scoped_fallback_specs": 10,
             "task_scoped_profile": "dreamdojo",
+            "stage1_coverage_gate_enabled": True,
+            "stage1_coverage_min_visible_frame_ratio": 0.4,
+            "stage1_coverage_min_approach_angle_bins": 3,
+            "stage1_coverage_angle_bin_deg": 30.0,
+            "stage1_coverage_blur_laplacian_min": 25.0,
+            "stage1_coverage_blur_sample_every_n_frames": 3,
+            "stage1_coverage_blur_max_samples_per_clip": 9,
         },
         "robot_composite": {"enabled": True, "urdf_path": "/tmp/arm.urdf"},
         "gemini_polish": {"enabled": True, "model": "gemini-3.1-flash-image-preview"},
@@ -93,6 +104,7 @@ def test_config_with_all_sections(tmp_path):
             "cosmos_model": "test-model",
             "num_variants_per_render": 3,
             "context_frame_index": 7,
+            "max_input_frames": 17,
             "min_frame0_ssim": 0.8,
             "delete_rejected_outputs": True,
         },
@@ -143,8 +155,16 @@ def test_config_with_all_sections(tmp_path):
     assert config.render.task_scoped_scene_aware is True
     assert config.render.task_scoped_max_specs == 35
     assert config.render.task_scoped_context_per_target == 1
+    assert config.render.stage1_coverage_gate_enabled is True
+    assert config.render.stage1_coverage_min_visible_frame_ratio == pytest.approx(0.4)
+    assert config.render.stage1_coverage_min_approach_angle_bins == 3
+    assert config.render.stage1_coverage_angle_bin_deg == pytest.approx(30.0)
+    assert config.render.stage1_coverage_blur_laplacian_min == pytest.approx(25.0)
+    assert config.render.stage1_coverage_blur_sample_every_n_frames == 3
+    assert config.render.stage1_coverage_blur_max_samples_per_clip == 9
     assert config.enrich.num_variants_per_render == 3
     assert config.enrich.context_frame_index == 7
+    assert config.enrich.max_input_frames == 17
     assert config.enrich.min_frame0_ssim == pytest.approx(0.8)
     assert config.enrich.delete_rejected_outputs is True
     assert config.finetune.num_epochs == 10

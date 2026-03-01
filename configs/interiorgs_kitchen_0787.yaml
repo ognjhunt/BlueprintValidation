@@ -22,7 +22,7 @@ facilities:
 render:
   resolution: [480, 640]
   fps: 10
-  num_frames: 49
+  num_frames: 73
   camera_height_m: 1.0
   camera_look_down_deg: 20
   camera_paths:
@@ -37,7 +37,7 @@ render:
   num_clips_per_path: 3
   scene_aware: true
   task_scoped_scene_aware: true
-  task_scoped_max_specs: 40
+  task_scoped_max_specs: 60
   task_scoped_context_per_target: 2
   task_scoped_overview_specs: 6
   task_scoped_fallback_specs: 16
@@ -49,6 +49,14 @@ render:
   vlm_fallback: true
   vlm_fallback_model: gemini-3-flash-preview
   vlm_fallback_num_views: 4
+  # Stage-1 quality gate applied before Stage 2.
+  stage1_coverage_gate_enabled: true
+  stage1_coverage_min_visible_frame_ratio: 0.35
+  stage1_coverage_min_approach_angle_bins: 2
+  stage1_coverage_angle_bin_deg: 45
+  stage1_coverage_blur_laplacian_min: 20.0
+  stage1_coverage_blur_sample_every_n_frames: 5
+  stage1_coverage_blur_max_samples_per_clip: 12
 
 robot_composite:
   enabled: true
@@ -95,10 +103,18 @@ enrich:
   cosmos_checkpoint: ../data/checkpoints/cosmos-transfer-2.5-2b/
   cosmos_repo: ../data/vendor/cosmos-transfer
   controlnet_inputs: [rgb, depth]
-  num_variants_per_render: 5
+  # Debug-throughput mode: keep variants low while validating full pipeline.
+  num_variants_per_render: 2
   guidance: 7.0
   dynamic_variants: true
   dynamic_variants_model: gemini-3-flash-preview
+  # Anchor generation to a deterministic frame from each source clip.
+  context_frame_index: 9
+  # Trim long Stage-1 clips before Cosmos to reduce temporal drift and runtime.
+  max_input_frames: 49
+  # Reject generations whose first frame diverges too far from the anchor frame.
+  min_frame0_ssim: 0.70
+  delete_rejected_outputs: true
 
 finetune:
   dreamdojo_repo: ../data/vendor/DreamDojo
@@ -122,7 +138,7 @@ eval_policy:
   model_name: openvla/openvla-7b
   checkpoint_path: ../data/checkpoints/openvla-7b/
   unnorm_key: bridge_orig
-  num_rollouts: 50
+  num_rollouts: 100
   max_steps_per_rollout: 100
   conditions: ["baseline", "adapted"]
   min_absolute_difference: 0.5
