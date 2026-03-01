@@ -10,7 +10,9 @@ from typing import Dict, List, Tuple
 from ..common import StageResult, get_logger, read_json, write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..enrichment.cosmos_runner import enrich_clip
+from ..enrichment.scene_index import build_scene_index, query_nearest_context_candidates
 from ..enrichment.variant_specs import get_variants
+from ..evaluation.task_start_selector import build_task_start_assignments
 from ..warmup import load_cached_variants
 from .manifest_resolution import ManifestCandidate, ManifestSource, resolve_manifest_source
 from .base import PipelineStage
@@ -100,17 +102,52 @@ class EnrichStage(PipelineStage):
                     },
                 )
 
+        source_clips, clip_selection_meta = _select_source_clips(
+            render_manifest=render_manifest,
+            config=config,
+            facility=facility,
+        )
+        if not source_clips:
+            return StageResult(
+                stage_name=self.name,
+                status="failed",
+                elapsed_seconds=0,
+                detail="No source clips available for Stage 2 enrichment",
+                outputs={**source.to_metadata()},
+                metrics={**source.to_metadata()},
+            )
+
+        scene_index_payload = None
+        scene_index_path: Path | None = None
+        if bool(config.enrich.scene_index_enabled) and bool(config.enrich.multi_view_context_enabled):
+            try:
+                scene_index_path = enrich_dir / "_scene_index" / "scene_index.json"
+                scene_index_payload = build_scene_index(
+                    render_manifest=render_manifest,
+                    output_path=scene_index_path,
+                    sample_every_n_frames=max(
+                        1, int(config.enrich.scene_index_sample_every_n_frames)
+                    ),
+                )
+            except Exception:
+                logger.warning("Failed building scene index; continuing without retrieval", exc_info=True)
+                scene_index_payload = None
+                scene_index_path = None
+
         # Check for warmup-cached variant prompts before calling Gemini
         cached_variants = load_cached_variants(work_dir)
         if cached_variants:
             logger.info("Using %d cached variant prompts from warmup", len(cached_variants))
             variants = cached_variants
         else:
-            # Extract a sample frame for dynamic variant generation
+            # Extract a sample frame for dynamic variant generation.
+            # Use selected source clips so debug/task-targeted runs anchor prompts correctly.
             sample_frame_path, sample_context_frame_index = _extract_sample_frame(
-                render_manifest,
-                work_dir,
+                clips=source_clips,
+                work_dir=work_dir,
                 context_frame_index=config.enrich.context_frame_index,
+                facility=facility,
+                enrich_dir=enrich_dir,
             )
             variants = get_variants(
                 custom_variants=config.enrich.variants or None,
@@ -132,18 +169,44 @@ class EnrichStage(PipelineStage):
         total_rejected_anchor_similarity = 0
         accepted_ssim_scores: List[float] = []
         total_trimmed_inputs = 0
+        total_orientation_fixed_clips = 0
+        total_multi_view_context_clips = 0
+        total_scene_index_retrievals = 0
         context_mode_counts = {"target_centered": 0, "fixed": 0, "deterministic": 0}
         selected_center_scores: List[float] = []
         ssim_gate_threshold = float(config.enrich.min_frame0_ssim)
 
-        for clip_entry in render_manifest["clips"]:
-            video_path = Path(clip_entry["video_path"])
-            depth_path = Path(clip_entry["depth_video_path"])
-            clip_name = clip_entry["clip_name"]
-
-            if not video_path.exists():
-                logger.warning("Video not found: %s", video_path)
+        for clip_entry in source_clips:
+            source_video_raw = str(clip_entry.get("video_path", "")).strip()
+            if not source_video_raw:
+                logger.warning("Skipping clip with missing source video path: %s", clip_entry)
                 continue
+            source_video_path = Path(source_video_raw)
+            source_depth_raw = str(clip_entry.get("depth_video_path", "")).strip()
+            source_depth_path = Path(source_depth_raw) if source_depth_raw else None
+            clip_name = str(clip_entry.get("clip_name", ""))
+            if not clip_name:
+                logger.warning("Skipping clip with missing clip_name in render manifest")
+                continue
+            if not source_video_path.exists():
+                logger.warning("Video not found: %s", source_video_path)
+                continue
+
+            oriented_video_path, oriented_depth_path, orientation_mode_applied = (
+                _resolve_oriented_inputs_for_clip(
+                    facility=facility,
+                    clip_name=clip_name,
+                    enrich_dir=enrich_dir,
+                    video_path=source_video_path,
+                    depth_path=(
+                        source_depth_path
+                        if source_depth_path is not None and source_depth_path.exists()
+                        else None
+                    ),
+                )
+            )
+            if oriented_video_path != source_video_path:
+                total_orientation_fixed_clips += 1
 
             (
                 preferred_context_index,
@@ -157,8 +220,8 @@ class EnrichStage(PipelineStage):
                 selected_center_scores.append(float(target_center_score))
 
             prepared = _prepare_cosmos_input(
-                video_path=video_path,
-                depth_path=depth_path if depth_path.exists() else None,
+                video_path=oriented_video_path,
+                depth_path=oriented_depth_path,
                 clip_name=clip_name,
                 enrich_dir=enrich_dir,
                 preferred_context_frame_index=preferred_context_index,
@@ -171,13 +234,15 @@ class EnrichStage(PipelineStage):
                 total_trimmed_inputs += 1
 
             needs_anchor_frame = (
-                prepared.preferred_context_frame_index is not None or ssim_gate_threshold > 0
+                prepared.preferred_context_frame_index is not None
+                or ssim_gate_threshold > 0
+                or bool(config.enrich.multi_view_context_enabled)
             )
             anchor_frame = None
-            context_frame_index = None
-            total_frames = None
+            selected_context_frame_index = None
+            total_frames = prepared.input_total_frames
             if needs_anchor_frame:
-                anchor_frame, context_frame_index, total_frames = _read_video_frame(
+                anchor_frame, selected_context_frame_index, total_frames = _read_video_frame(
                     video_path=prepared.video_path,
                     preferred_index=prepared.preferred_context_frame_index,
                 )
@@ -188,21 +253,68 @@ class EnrichStage(PipelineStage):
                     )
                     continue
 
-            depth_for_cosmos = _maybe_prepare_depth_control(
-                facility_name=facility.name,
-                clip_name=clip_name,
-                depth_path=prepared.depth_path,
-                enrich_dir=enrich_dir,
-            )
+            multi_view_context_indices: List[int] = []
+            image_context_path: Path | None = None
+            scene_index_retrieval_count = 0
+            context_frame_index_for_cosmos = selected_context_frame_index
+            if bool(config.enrich.multi_view_context_enabled):
+                total_multi_view_context_clips += 1
+                if total_frames <= 0:
+                    total_frames = _probe_video_frame_count(prepared.video_path)
+                anchor_index = (
+                    int(selected_context_frame_index)
+                    if selected_context_frame_index is not None
+                    else _resolve_context_frame_index(
+                        total_frames, prepared.preferred_context_frame_index
+                    )
+                )
+                selected_context_frame_index = anchor_index
+                multi_view_context_indices = _resolve_multi_view_context_indices(
+                    anchor_index=anchor_index,
+                    total_frames=total_frames,
+                    offsets=[int(v) for v in config.enrich.multi_view_context_offsets],
+                )
+                context_frames = _read_video_frames(prepared.video_path, multi_view_context_indices)
+                if scene_index_payload is not None and int(config.enrich.scene_index_k) > 0:
+                    retrieved = query_nearest_context_candidates(
+                        scene_index=scene_index_payload,
+                        anchor_clip_name=clip_name,
+                        anchor_frame_index=anchor_index,
+                        k=max(0, int(config.enrich.scene_index_k)),
+                    )
+                    scene_index_retrieval_count = len(retrieved)
+                    total_scene_index_retrievals += scene_index_retrieval_count
+                    for item in retrieved:
+                        cand_video = Path(str(item.get("video_path", "")))
+                        if _normalize_video_orientation_fix(facility.video_orientation_fix) != "none":
+                            cand_video, _, _ = _resolve_oriented_inputs_for_clip(
+                                facility=facility,
+                                clip_name=str(item.get("clip_name", "retrieved")),
+                                enrich_dir=enrich_dir,
+                                video_path=cand_video,
+                                depth_path=None,
+                            )
+                        cand_frame = _read_video_frame_at_index(
+                            cand_video,
+                            int(item.get("frame_index", 0)),
+                        )
+                        if cand_frame is not None:
+                            context_frames.append(cand_frame)
+                image_context_path = _write_context_montage(
+                    frames=context_frames,
+                    output_path=enrich_dir / "_context_montage" / f"{clip_name}_context.png",
+                )
+                context_frame_index_for_cosmos = None
 
             outputs = enrich_clip(
                 video_path=prepared.video_path,
-                depth_path=depth_for_cosmos,
+                depth_path=prepared.depth_path,
                 variants=variants,
                 output_dir=enrich_dir,
                 clip_name=clip_name,
                 config=config.enrich,
-                context_frame_index=context_frame_index,
+                context_frame_index=context_frame_index_for_cosmos,
+                image_context_path=image_context_path,
             )
 
             expected = len(variants)
@@ -242,17 +354,21 @@ class EnrichStage(PipelineStage):
                         "prompt": out.prompt,
                         "output_video_path": str(out.output_video_path),
                         "input_video_path": str(out.input_video_path),
-                        "source_video_path": str(video_path),
-                        "context_frame_index": context_frame_index,
-                        "selected_context_frame_index": context_frame_index,
+                        "source_video_path": str(source_video_path),
+                        "source_depth_video_path": source_depth_raw,
+                        "orientation_fix": orientation_mode_applied,
+                        "context_frame_index": context_frame_index_for_cosmos,
+                        "selected_context_frame_index": selected_context_frame_index,
                         "selected_context_frame_mode": selected_context_mode,
                         "target_center_score": target_center_score,
-                        "input_total_frames": (
-                            prepared.input_total_frames if prepared.input_trimmed else total_frames
-                        ),
+                        "image_context_path": str(image_context_path) if image_context_path else None,
+                        "multi_view_context_indices": multi_view_context_indices,
+                        "scene_index_retrieval_count": scene_index_retrieval_count,
+                        "input_total_frames": prepared.input_total_frames,
                         "input_trimmed": prepared.input_trimmed,
                         "input_trim_start_frame": prepared.input_trim_start_frame,
                         "input_trim_num_frames": prepared.input_trim_num_frames,
+                        "source_clip_selection_mode": clip_selection_meta.get("selection_mode"),
                         "frame0_ssim": frame0_ssim,
                     }
                 )
@@ -261,6 +377,8 @@ class EnrichStage(PipelineStage):
 
             if accepted_for_clip < expected:
                 total_failed += expected - accepted_for_clip
+
+        selected_clip_names = [str(c.get("clip_name", "")) for c in source_clips]
 
         # Write enriched manifest
         manifest_path = enrich_dir / "enriched_manifest.json"
@@ -272,6 +390,17 @@ class EnrichStage(PipelineStage):
             "context_frame_index": sample_context_frame_index,
             "context_frame_mode": config.enrich.context_frame_mode,
             "min_frame0_ssim": ssim_gate_threshold,
+            "max_source_clips": int(config.enrich.max_source_clips),
+            "source_clip_selection_mode": clip_selection_meta.get("selection_mode"),
+            "source_clip_selection_fallback": clip_selection_meta.get("fallback"),
+            "source_clip_task": config.enrich.source_clip_task,
+            "source_clip_name": config.enrich.source_clip_name,
+            "selected_source_clips": selected_clip_names,
+            "video_orientation_fix": facility.video_orientation_fix,
+            "multi_view_context_enabled": bool(config.enrich.multi_view_context_enabled),
+            "multi_view_context_offsets": [int(v) for v in config.enrich.multi_view_context_offsets],
+            "scene_index_enabled": bool(config.enrich.scene_index_enabled),
+            "scene_index_path": str(scene_index_path) if scene_index_path is not None else None,
             "clips": manifest_entries,
         }
         write_json(manifest, manifest_path)
@@ -287,6 +416,8 @@ class EnrichStage(PipelineStage):
                 "num_generated": total_generated,
                 "num_rejected_anchor_similarity": total_rejected_anchor_similarity,
                 "num_trimmed_inputs": total_trimmed_inputs,
+                "num_selected_source_clips": len(source_clips),
+                "selected_source_clips": selected_clip_names,
                 **coverage_outputs,
                 **source.to_metadata(),
             },
@@ -296,6 +427,12 @@ class EnrichStage(PipelineStage):
                 "num_failed": total_failed,
                 "num_rejected_anchor_similarity": total_rejected_anchor_similarity,
                 "num_trimmed_inputs": total_trimmed_inputs,
+                "num_orientation_fixed_clips": total_orientation_fixed_clips,
+                "num_multi_view_context_clips": total_multi_view_context_clips,
+                "num_scene_index_retrievals": total_scene_index_retrievals,
+                "num_selected_source_clips": len(source_clips),
+                "source_clip_selection_mode": clip_selection_meta.get("selection_mode"),
+                "source_clip_selection_fallback": clip_selection_meta.get("fallback"),
                 "max_input_frames": int(config.enrich.max_input_frames),
                 "min_frame0_ssim_threshold": ssim_gate_threshold,
                 "mean_frame0_ssim": (
@@ -361,18 +498,35 @@ def _resolve_render_manifest_source(
 
 
 def _extract_sample_frame(
-    manifest: dict,
+    clips: List[dict],
     work_dir: Path,
     context_frame_index: int | None = None,
+    facility: FacilityConfig | None = None,
+    enrich_dir: Path | None = None,
 ) -> Tuple[Path | None, int | None]:
-    """Extract a single frame from the first clip for dynamic variant generation."""
-    clips = manifest.get("clips", [])
+    """Extract a single frame from the first selected clip for dynamic variant generation."""
     if not clips:
         return None, None
 
-    video_path = Path(clips[0].get("video_path", ""))
+    clip = clips[0]
+    clip_name = str(clip.get("clip_name", "sample"))
+    video_raw = str(clip.get("video_path", "")).strip()
+    if not video_raw:
+        return None, None
+    video_path = Path(video_raw)
     if not video_path.exists():
         return None, None
+
+    if facility is not None and enrich_dir is not None:
+        source_depth_raw = str(clip.get("depth_video_path", "")).strip()
+        source_depth = Path(source_depth_raw) if source_depth_raw else None
+        video_path, _, _ = _resolve_oriented_inputs_for_clip(
+            facility=facility,
+            clip_name=clip_name,
+            enrich_dir=enrich_dir,
+            video_path=video_path,
+            depth_path=source_depth if source_depth is not None and source_depth.exists() else None,
+        )
 
     try:
         import cv2  # noqa: F401
@@ -391,6 +545,345 @@ def _extract_sample_frame(
     except Exception:
         logger.debug("Failed to extract sample frame for dynamic variants", exc_info=True)
         return None, None
+
+
+def _select_source_clips(
+    *,
+    render_manifest: dict,
+    config: ValidationConfig,
+    facility: FacilityConfig,
+) -> tuple[List[dict], Dict[str, object]]:
+    clips = list(render_manifest.get("clips", []))
+    if not clips:
+        return [], {"selection_mode": "all", "fallback": None}
+
+    max_source_clips = int(config.enrich.max_source_clips)
+    requested_mode = str(config.enrich.source_clip_selection_mode or "all").strip().lower()
+    if max_source_clips <= 0:
+        return clips, {"selection_mode": "all", "fallback": None}
+
+    fallback_reason: str | None = None
+    selected: List[dict] = []
+    clip_by_name = {str(c.get("clip_name", "")): c for c in clips if c.get("clip_name")}
+
+    if requested_mode == "task_targeted":
+        source_task = str(config.enrich.source_clip_task or "").strip()
+        hints_available = (
+            facility.task_hints_path is not None and Path(facility.task_hints_path).exists()
+        )
+        if source_task and hints_available:
+            try:
+                assignments = build_task_start_assignments(
+                    tasks=[source_task],
+                    num_rollouts=max_source_clips,
+                    render_manifest={"clips": clips},
+                    task_hints_path=facility.task_hints_path,
+                )
+                seen_names = set()
+                for assignment in assignments:
+                    name = str(assignment.get("clip_name", "")).strip()
+                    if not name or name in seen_names:
+                        continue
+                    clip = clip_by_name.get(name)
+                    if clip is None:
+                        continue
+                    selected.append(clip)
+                    seen_names.add(name)
+            except Exception:
+                logger.warning("Task-targeted source-clip selection failed", exc_info=True)
+                selected = []
+        if not source_task:
+            fallback_reason = "missing_task"
+        elif not hints_available:
+            fallback_reason = "missing_task_hints"
+        elif not selected:
+            fallback_reason = "selection_failed"
+        if fallback_reason is not None:
+            selected = _fallback_task_targeted_clip_order(clips)
+    elif requested_mode == "explicit":
+        explicit_name = str(config.enrich.source_clip_name or "").strip()
+        if explicit_name:
+            selected = [c for c in clips if str(c.get("clip_name", "")).strip() == explicit_name]
+        if not selected:
+            fallback_reason = "explicit_clip_not_found"
+            selected = clips
+    else:
+        selected = clips
+
+    if not selected:
+        selected = clips
+        fallback_reason = fallback_reason or "empty_selection"
+
+    deduped: List[dict] = []
+    seen = set()
+    for clip in selected:
+        name = str(clip.get("clip_name", "")).strip()
+        key = name or str(id(clip))
+        if key in seen:
+            continue
+        deduped.append(clip)
+        seen.add(key)
+
+    return deduped[: max(1, max_source_clips)], {
+        "selection_mode": requested_mode,
+        "fallback": fallback_reason,
+    }
+
+
+def _fallback_task_targeted_clip_order(clips: List[dict]) -> List[dict]:
+    manipulation = []
+    non_manipulation = []
+    for clip in clips:
+        path_type = str(clip.get("path_type", "")).strip().lower()
+        if path_type == "manipulation":
+            manipulation.append(clip)
+        else:
+            non_manipulation.append(clip)
+    return manipulation + non_manipulation
+
+
+def _resolve_oriented_inputs_for_clip(
+    *,
+    facility: FacilityConfig,
+    clip_name: str,
+    enrich_dir: Path,
+    video_path: Path,
+    depth_path: Path | None,
+) -> tuple[Path, Path | None, str]:
+    orientation_fix = _normalize_video_orientation_fix(getattr(facility, "video_orientation_fix", "none"))
+    try:
+        resolved_video = video_path
+        resolved_depth = depth_path
+        applied = "none"
+        if orientation_fix != "none":
+            resolved_video = _apply_video_orientation_fix(
+                input_path=video_path,
+                enrich_dir=enrich_dir,
+                clip_name=clip_name,
+                stream_tag="rgb",
+                orientation_fix=orientation_fix,
+                force_grayscale=False,
+            )
+            if depth_path is not None and depth_path.exists():
+                resolved_depth = _apply_video_orientation_fix(
+                    input_path=depth_path,
+                    enrich_dir=enrich_dir,
+                    clip_name=clip_name,
+                    stream_tag="depth",
+                    orientation_fix=orientation_fix,
+                    force_grayscale=True,
+                )
+            applied = orientation_fix
+        elif depth_path is not None and depth_path.exists():
+            resolved_depth = _maybe_prepare_depth_control(
+                facility_name=facility.name,
+                clip_name=clip_name,
+                depth_path=depth_path,
+                enrich_dir=enrich_dir,
+            )
+            if resolved_depth != depth_path:
+                applied = "rotate180_depth_legacy"
+        return resolved_video, resolved_depth, applied
+    except Exception:
+        logger.warning(
+            "Orientation fix failed for %s clip %s; continuing with original inputs",
+            facility.name,
+            clip_name,
+            exc_info=True,
+        )
+        return video_path, depth_path, "none"
+
+
+def _normalize_video_orientation_fix(raw: str | None) -> str:
+    value = str(raw or "none").strip().lower()
+    if value in {"none", "rotate180", "hflip", "vflip", "hvflip"}:
+        return value
+    return "none"
+
+
+def _apply_video_orientation_fix(
+    *,
+    input_path: Path,
+    enrich_dir: Path,
+    clip_name: str,
+    stream_tag: str,
+    orientation_fix: str,
+    force_grayscale: bool,
+) -> Path:
+    if orientation_fix == "none":
+        return input_path
+    fixed_dir = enrich_dir / "_orientation_fixed"
+    fixed_dir.mkdir(parents=True, exist_ok=True)
+    fixed_path = fixed_dir / f"{clip_name}_{stream_tag}_{orientation_fix}.mp4"
+    if fixed_path.exists() and fixed_path.stat().st_mtime >= input_path.stat().st_mtime:
+        return fixed_path
+    _transform_video_orientation(
+        input_path=input_path,
+        output_path=fixed_path,
+        orientation_fix=orientation_fix,
+        force_grayscale=force_grayscale,
+    )
+    return fixed_path
+
+
+def _transform_video_orientation(
+    *,
+    input_path: Path,
+    output_path: Path,
+    orientation_fix: str,
+    force_grayscale: bool,
+) -> None:
+    import cv2
+
+    cap = cv2.VideoCapture(str(input_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open video for orientation transform: {input_path}")
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if not fps or fps <= 0:
+        fps = 10.0
+
+    ok, first = cap.read()
+    if not ok or first is None:
+        cap.release()
+        raise RuntimeError(f"No frames available in video: {input_path}")
+
+    if force_grayscale and first.ndim == 3:
+        first = cv2.cvtColor(first, cv2.COLOR_BGR2GRAY)
+    first = _transform_video_frame(first, orientation_fix)
+    if first.ndim == 2:
+        height, width = first.shape
+    else:
+        height, width = first.shape[:2]
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    writer = cv2.VideoWriter(
+        str(output_path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        float(fps),
+        (width, height),
+        isColor=not force_grayscale,
+    )
+    if not writer.isOpened():
+        cap.release()
+        raise RuntimeError(f"Could not open output video writer for {output_path}")
+
+    frame_count = 0
+    try:
+        frame = first
+        while True:
+            if force_grayscale and frame.ndim == 3:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            writer.write(frame)
+            frame_count += 1
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                break
+            if force_grayscale and frame.ndim == 3:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            frame = _transform_video_frame(frame, orientation_fix)
+    finally:
+        cap.release()
+        writer.release()
+
+    if frame_count <= 0:
+        raise RuntimeError(f"No frames written during orientation transform: {input_path}")
+
+
+def _transform_video_frame(frame, orientation_fix: str):
+    import cv2
+
+    mode = _normalize_video_orientation_fix(orientation_fix)
+    if mode == "rotate180":
+        return cv2.rotate(frame, cv2.ROTATE_180)
+    if mode == "hflip":
+        return cv2.flip(frame, 1)
+    if mode == "vflip":
+        return cv2.flip(frame, 0)
+    if mode == "hvflip":
+        return cv2.flip(frame, -1)
+    return frame
+
+
+def _resolve_multi_view_context_indices(
+    *,
+    anchor_index: int,
+    total_frames: int,
+    offsets: List[int],
+) -> List[int]:
+    if total_frames <= 0:
+        return [max(0, int(anchor_index))]
+    indices: List[int] = []
+    seen = set()
+    for raw_offset in offsets:
+        idx = max(0, min(int(anchor_index) + int(raw_offset), total_frames - 1))
+        if idx in seen:
+            continue
+        indices.append(idx)
+        seen.add(idx)
+    if not indices:
+        idx = max(0, min(int(anchor_index), total_frames - 1))
+        indices = [idx]
+    return indices
+
+
+def _read_video_frame_at_index(video_path: Path, frame_index: int):
+    import cv2
+
+    if not video_path.exists():
+        return None
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        return None
+    cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, int(frame_index)))
+    ok, frame = cap.read()
+    cap.release()
+    if not ok or frame is None:
+        return None
+    return frame
+
+
+def _read_video_frames(video_path: Path, frame_indices: List[int]) -> List[object]:
+    frames: List[object] = []
+    for idx in frame_indices:
+        frame = _read_video_frame_at_index(video_path, idx)
+        if frame is not None:
+            frames.append(frame)
+    return frames
+
+
+def _write_context_montage(frames: List[object], output_path: Path) -> Path | None:
+    import cv2
+    import numpy as np
+
+    if not frames:
+        return None
+    processed = []
+    target_h, target_w = None, None
+    for frame in frames:
+        if frame is None:
+            continue
+        if frame.ndim == 2:
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        if target_h is None or target_w is None:
+            target_h, target_w = frame.shape[:2]
+        if frame.shape[:2] != (target_h, target_w):
+            frame = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+        processed.append(frame)
+    if not processed:
+        return None
+
+    cols = min(4, max(1, int(math.ceil(math.sqrt(len(processed))))))
+    rows = int(math.ceil(len(processed) / cols))
+    canvas = np.zeros((rows * target_h, cols * target_w, 3), dtype=np.uint8)
+    for i, frame in enumerate(processed):
+        r = i // cols
+        c = i % cols
+        canvas[r * target_h : (r + 1) * target_h, c * target_w : (c + 1) * target_w] = frame
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(output_path), canvas)
+    return output_path
 
 
 def _prepare_cosmos_input(
@@ -1029,7 +1522,7 @@ def _maybe_prepare_depth_control(
     depth_path: Path | None,
     enrich_dir: Path,
 ) -> Path | None:
-    """Apply scene-specific depth-control fixes before Cosmos inference."""
+    """Legacy fallback depth-only rotation path for explicitly listed facilities."""
     if depth_path is None:
         return None
     if facility_name not in _FORCE_ROTATE_180_DEPTH_FACILITIES:
@@ -1040,7 +1533,12 @@ def _maybe_prepare_depth_control(
         fixed_path = fixed_dir / f"{clip_name}_depth_rot180.mp4"
         if fixed_path.exists() and fixed_path.stat().st_mtime >= depth_path.stat().st_mtime:
             return fixed_path
-        _rotate_video_180(depth_path, fixed_path)
+        _transform_video_orientation(
+            input_path=depth_path,
+            output_path=fixed_path,
+            orientation_fix="rotate180",
+            force_grayscale=True,
+        )
         logger.info(
             "Applied scene-specific depth rotation (180°) for %s clip %s: %s",
             facility_name,
@@ -1059,48 +1557,10 @@ def _maybe_prepare_depth_control(
 
 
 def _rotate_video_180(input_path: Path, output_path: Path) -> None:
-    """Rotate a depth video by 180 degrees."""
-    import cv2
-
-    cap = cv2.VideoCapture(str(input_path))
-    if not cap.isOpened():
-        raise RuntimeError(f"Could not open depth video: {input_path}")
-
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    if not fps or fps <= 0:
-        fps = 10.0
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    if width <= 0 or height <= 0:
-        cap.release()
-        raise RuntimeError(f"Invalid depth video dimensions for {input_path}")
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    writer = cv2.VideoWriter(
-        str(output_path),
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        float(fps),
-        (width, height),
-        isColor=False,
+    """Backward-compatible wrapper for legacy depth rotate helper."""
+    _transform_video_orientation(
+        input_path=input_path,
+        output_path=output_path,
+        orientation_fix="rotate180",
+        force_grayscale=True,
     )
-    if not writer.isOpened():
-        cap.release()
-        raise RuntimeError(f"Could not open video writer for {output_path}")
-
-    frame_count = 0
-    try:
-        while True:
-            ok, frame = cap.read()
-            if not ok or frame is None:
-                break
-            if frame.ndim == 3:
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            rotated = cv2.rotate(frame, cv2.ROTATE_180)
-            writer.write(rotated)
-            frame_count += 1
-    finally:
-        cap.release()
-        writer.release()
-
-    if frame_count == 0:
-        raise RuntimeError(f"No frames were read from depth video: {input_path}")

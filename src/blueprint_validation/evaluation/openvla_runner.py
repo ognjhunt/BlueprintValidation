@@ -280,20 +280,58 @@ class _Video2WorldStepModel:
         self._expected_actions_per_latent_frame = expected_actions_per_latent_frame
         self.expected_action_dim = expected_action_dim
 
-        net = getattr(self._pipe.model, "net", None)
-        if net is not None and self._expected_actions_per_latent_frame is not None:
-            current_ratio = int(getattr(net, "_num_action_per_latent_frame", 0) or 0)
+        self._patch_action_ratio_if_needed()
+
+    def _patch_action_ratio_if_needed(self) -> None:
+        expected = self._expected_actions_per_latent_frame
+        if expected is None or expected <= 0:
+            return
+
+        model = getattr(self._pipe, "model", None)
+        if model is None:
+            return
+
+        patched = 0
+        visited_ids: set[int] = set()
+
+        def _patch_obj(obj) -> None:
+            nonlocal patched
+            if obj is None:
+                return
+            oid = id(obj)
+            if oid in visited_ids:
+                return
+            visited_ids.add(oid)
+            if not hasattr(obj, "_num_action_per_latent_frame"):
+                return
+            current_ratio = int(getattr(obj, "_num_action_per_latent_frame", 0) or 0)
             if current_ratio <= 0:
-                setattr(net, "_num_action_per_latent_frame", int(self._expected_actions_per_latent_frame))
+                setattr(obj, "_num_action_per_latent_frame", int(expected))
+                patched += 1
                 logger.warning(
                     "Patched invalid _num_action_per_latent_frame=%d to %d from checkpoint-compatible metadata.",
                     current_ratio,
-                    self._expected_actions_per_latent_frame,
+                    expected,
                 )
+
+        _patch_obj(model)
+        _patch_obj(getattr(model, "net", None))
+        modules_fn = getattr(model, "modules", None)
+        if callable(modules_fn):
+            try:
+                for module in modules_fn():
+                    _patch_obj(module)
+            except Exception:
+                pass
+
+        if patched:
+            logger.info("Patched _num_action_per_latent_frame on %d module(s).", patched)
 
     def predict_next_frame(self, current_frame: np.ndarray, action) -> np.ndarray:
         import torch
         import torchvision.transforms.functional as TVF
+
+        self._patch_action_ratio_if_needed()
 
         frame = np.asarray(current_frame)
         if frame.ndim == 2:
@@ -424,11 +462,12 @@ def load_dreamdojo_world_model(
     """
     effective_checkpoint = Path(adapted_checkpoint) if adapted_checkpoint else Path(checkpoint_path)
     effective_checkpoint = _resolve_world_model_checkpoint_path(effective_checkpoint)
+    checkpoint_for_loader = _resolve_checkpoint_model_dir(effective_checkpoint) or effective_checkpoint
 
-    if not effective_checkpoint.exists():
-        raise RuntimeError(f"DreamDojo checkpoint path does not exist: {effective_checkpoint}")
+    if not checkpoint_for_loader.exists():
+        raise RuntimeError(f"DreamDojo checkpoint path does not exist: {checkpoint_for_loader}")
 
-    logger.info("Loading DreamDojo from %s", effective_checkpoint)
+    logger.info("Loading DreamDojo from %s", checkpoint_for_loader)
     if adapted_checkpoint:
         logger.info("Using adapted (fine-tuned) checkpoint")
     else:
@@ -463,11 +502,11 @@ def load_dreamdojo_world_model(
         )
 
     experiment_name = _resolve_action_conditioned_experiment(
-        checkpoint_path=effective_checkpoint,
+        checkpoint_path=checkpoint_for_loader,
         configured_experiment=configured_experiment,
         dreamdojo_repo=dreamdojo_repo,
     )
-    checkpoint_width = _read_action_embed_width(effective_checkpoint)
+    checkpoint_width = _read_action_embed_width(checkpoint_for_loader)
     expected_action_dim = _ACTION_DIM_BY_EXPERIMENT.get(experiment_name)
     expected_actions_per_latent_frame: Optional[int] = None
     if checkpoint_width is not None and expected_action_dim is not None and expected_action_dim > 0:
@@ -480,7 +519,7 @@ def load_dreamdojo_world_model(
 
     pipe = Video2WorldInference(
         experiment_name=experiment_name,
-        ckpt_path=str(effective_checkpoint),
+        ckpt_path=str(checkpoint_for_loader),
         s3_credential_path="",
         context_parallel_size=1,
         config_file=_ACTION_CONFIG_FILE,

@@ -576,68 +576,78 @@ def _run_world_model_only_eval(
         )
 
     conditions = ["baseline", "adapted"]
-    world_models = {
-        "baseline": load_dreamdojo_world_model(
+
+    def _load_world_model_for_condition(condition: str):
+        return load_dreamdojo_world_model(
             checkpoint_path=config.finetune.dreamdojo_checkpoint,
-            adapted_checkpoint=None,
+            adapted_checkpoint=(adapted_dir if condition == "adapted" else None),
             configured_experiment=(
                 config.finetune.eval_world_experiment or config.finetune.experiment_config
             ),
             dreamdojo_repo=config.finetune.dreamdojo_repo,
             device=device,
-        ),
-        "adapted": load_dreamdojo_world_model(
-            checkpoint_path=config.finetune.dreamdojo_checkpoint,
-            adapted_checkpoint=adapted_dir,
-            configured_experiment=(
-                config.finetune.eval_world_experiment or config.finetune.experiment_config
-            ),
-            dreamdojo_repo=config.finetune.dreamdojo_repo,
-            device=device,
-        ),
-    }
-
-    world_dims = {
-        cond: _extract_world_action_dim(model) for cond, model in world_models.items()
-    }
-    if len({v for v in world_dims.values() if v is not None}) > 1:
-        return StageResult(
-            stage_name="s4_policy_eval",
-            status="failed",
-            elapsed_seconds=0,
-            detail=f"World-model action dims differ across conditions: {world_dims}",
-        )
-    action_dim = world_dims.get("baseline") or world_dims.get("adapted") or _resolve_world_action_dim_from_config(config)
-    if action_dim is None:
-        return StageResult(
-            stage_name="s4_policy_eval",
-            status="failed",
-            elapsed_seconds=0,
-            detail=(
-                "Could not resolve world-model action_dim for WM-only scripted rollouts. "
-                "Set finetune.eval_world_experiment or ensure checkpoint metadata exposes action dim."
-            ),
         )
 
-    trace_manifest = build_scripted_trace_manifest(
-        rollout_assignments,
-        action_dim=int(action_dim),
-        max_steps=max_steps,
-    )
+    def _release_world_model(model) -> None:
+        del model
+        try:
+            import gc
+
+            gc.collect()
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
 
     all_scores: List[Dict] = []
     scoring_failures: List[str] = []
     observed_action_dims: set[int] = set()
-    observed_world_dims: set[int] = {int(action_dim)}
+    observed_world_dims: set[int] = set()
+    baseline_world_dim: Optional[int] = None
+    trace_manifest: Optional[Dict[str, Dict]] = None
 
     for condition in conditions:
         logger.info("Running %s WM-only scripted rollouts", condition)
         condition_dir = eval_dir / f"{condition}_rollouts"
         condition_dir.mkdir(exist_ok=True)
-        world_model = world_models[condition]
+        world_model = _load_world_model_for_condition(condition)
         world_dim = _extract_world_action_dim(world_model)
         if world_dim is not None:
             observed_world_dims.add(int(world_dim))
+            if baseline_world_dim is None:
+                baseline_world_dim = int(world_dim)
+            elif condition == "adapted" and baseline_world_dim != int(world_dim):
+                _release_world_model(world_model)
+                return StageResult(
+                    stage_name="s4_policy_eval",
+                    status="failed",
+                    elapsed_seconds=0,
+                    detail=(
+                        "World-model action dims differ across conditions: "
+                        f"baseline={baseline_world_dim}, adapted={int(world_dim)}"
+                    ),
+                )
+
+        if trace_manifest is None:
+            action_dim = world_dim or _resolve_world_action_dim_from_config(config)
+            if action_dim is None:
+                _release_world_model(world_model)
+                return StageResult(
+                    stage_name="s4_policy_eval",
+                    status="failed",
+                    elapsed_seconds=0,
+                    detail=(
+                        "Could not resolve world-model action_dim for WM-only scripted rollouts. "
+                        "Set finetune.eval_world_experiment or ensure checkpoint metadata exposes action dim."
+                    ),
+                )
+            trace_manifest = build_scripted_trace_manifest(
+                rollout_assignments,
+                action_dim=int(action_dim),
+                max_steps=max_steps,
+            )
 
         for assignment in rollout_assignments:
             rollout_idx = int(assignment.get("rollout_index", 0))
@@ -738,6 +748,7 @@ def _run_world_model_only_eval(
                     "action_contract": action_contract,
                 }
             )
+        _release_world_model(world_model)
 
     write_json({"scores": all_scores}, eval_dir / "vlm_scores.json")
     audit_csv_path = eval_dir / "judge_audit.csv"

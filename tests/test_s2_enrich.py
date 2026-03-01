@@ -883,3 +883,320 @@ def test_s2_context_selection_falls_back_to_fixed_when_target_missing(
     assert result.status == "success"
     assert captured["context_frame_index"] == 3
     assert result.metrics["context_selection_fixed_count"] == 1
+
+
+def test_s2_task_targeted_clip_selection_prefers_manipulation_clip(
+    sample_config,
+    tmp_path,
+    monkeypatch,
+):
+    from blueprint_validation.common import write_json
+    from blueprint_validation.config import VariantSpec
+    from blueprint_validation.stages.s2_enrich import EnrichStage
+
+    work_dir = tmp_path
+    render_dir = work_dir / "renders"
+    render_dir.mkdir(parents=True, exist_ok=True)
+
+    orbit_video = render_dir / "clip_000_orbit.mp4"
+    orbit_depth = render_dir / "clip_000_orbit_depth.mp4"
+    manip_video = render_dir / "clip_001_manipulation.mp4"
+    manip_depth = render_dir / "clip_001_manipulation_depth.mp4"
+    _write_dummy_video(orbit_video, frames=6)
+    _write_dummy_video(orbit_depth, frames=6)
+    _write_dummy_video(manip_video, frames=6)
+    _write_dummy_video(manip_depth, frames=6)
+
+    write_json(
+        {
+            "facility": "Test Facility",
+            "clips": [
+                {
+                    "clip_name": "clip_000_orbit",
+                    "clip_index": 0,
+                    "path_type": "orbit",
+                    "video_path": str(orbit_video),
+                    "depth_video_path": str(orbit_depth),
+                },
+                {
+                    "clip_name": "clip_001_manipulation",
+                    "clip_index": 1,
+                    "path_type": "manipulation",
+                    "video_path": str(manip_video),
+                    "depth_video_path": str(manip_depth),
+                },
+            ],
+        },
+        render_dir / "render_manifest.json",
+    )
+
+    hints_path = work_dir / "task_targets.synthetic.json"
+    write_json(
+        {
+            "manipulation_candidates": [
+                {
+                    "instance_id": "157",
+                    "label": "trash_can",
+                    "boundingBox": {"center": [0.0, 0.0, 0.0], "extents": [0.3, 0.3, 0.5]},
+                }
+            ]
+        },
+        hints_path,
+    )
+    facility = list(sample_config.facilities.values())[0]
+    facility.task_hints_path = hints_path
+
+    sample_config.enrich.dynamic_variants = False
+    sample_config.enrich.variants = [VariantSpec(name="v1", prompt="test variant")]
+    sample_config.enrich.max_source_clips = 1
+    sample_config.enrich.source_clip_selection_mode = "task_targeted"
+    sample_config.enrich.source_clip_task = "Pick up trash_can_157 and place it in the target zone"
+
+    captured = {"clip_names": []}
+
+    def _fake_enrich_clip(**kwargs):
+        captured["clip_names"].append(kwargs["clip_name"])
+        out = kwargs["output_dir"] / f"{kwargs['clip_name']}_v1.mp4"
+        _write_dummy_video(out, frames=4)
+        return [
+            SimpleNamespace(
+                variant_name="v1",
+                prompt="test variant",
+                output_video_path=out,
+                input_video_path=kwargs["video_path"],
+            )
+        ]
+
+    monkeypatch.setattr("blueprint_validation.stages.s2_enrich.enrich_clip", _fake_enrich_clip)
+
+    stage = EnrichStage()
+    result = stage.run(sample_config, facility, work_dir, {})
+    assert result.status == "success"
+    assert captured["clip_names"] == ["clip_001_manipulation"]
+    assert result.metrics["num_selected_source_clips"] == 1
+
+
+def test_s2_orientation_fix_rotate180_applies_to_rgb_and_depth(tmp_path):
+    cv2 = pytest.importorskip("cv2")
+    from blueprint_validation.config import FacilityConfig
+    from blueprint_validation.stages.s2_enrich import _resolve_oriented_inputs_for_clip
+
+    source_rgb = tmp_path / "clip_rgb.mp4"
+    source_depth = tmp_path / "clip_depth.mp4"
+    h, w = 24, 32
+
+    writer_rgb = cv2.VideoWriter(
+        str(source_rgb),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        5,
+        (w, h),
+    )
+    rgb_frame = np.zeros((h, w, 3), dtype=np.uint8)
+    rgb_frame[0:4, 0:4] = [0, 0, 255]
+    writer_rgb.write(rgb_frame)
+    writer_rgb.release()
+
+    writer_depth = cv2.VideoWriter(
+        str(source_depth),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        5,
+        (w, h),
+        isColor=False,
+    )
+    depth_frame = np.zeros((h, w), dtype=np.uint8)
+    depth_frame[0:4, 0:4] = 255
+    writer_depth.write(depth_frame)
+    writer_depth.release()
+
+    facility = FacilityConfig(
+        name="Kitchen",
+        ply_path=tmp_path / "dummy.ply",
+        video_orientation_fix="rotate180",
+    )
+    facility.ply_path.write_bytes(b"x")
+    out_rgb, out_depth, mode = _resolve_oriented_inputs_for_clip(
+        facility=facility,
+        clip_name="clip_000_orbit",
+        enrich_dir=tmp_path / "enriched",
+        video_path=source_rgb,
+        depth_path=source_depth,
+    )
+
+    assert mode == "rotate180"
+    assert out_rgb != source_rgb
+    assert out_depth is not None
+    assert out_depth != source_depth
+
+    cap_rgb = cv2.VideoCapture(str(out_rgb))
+    ok_rgb, rotated_rgb = cap_rgb.read()
+    cap_rgb.release()
+    assert ok_rgb
+    assert rotated_rgb[h - 2, w - 2, 2] > 200
+
+    cap_depth = cv2.VideoCapture(str(out_depth))
+    ok_depth, rotated_depth = cap_depth.read()
+    cap_depth.release()
+    assert ok_depth
+    if rotated_depth.ndim == 3:
+        rotated_depth = cv2.cvtColor(rotated_depth, cv2.COLOR_BGR2GRAY)
+    assert rotated_depth[h - 2, w - 2] > 200
+
+
+def test_s2_multi_view_context_uses_image_context_path_and_omits_context_index(
+    sample_config,
+    tmp_path,
+    monkeypatch,
+):
+    from blueprint_validation.common import write_json
+    from blueprint_validation.config import VariantSpec
+    from blueprint_validation.stages.s2_enrich import EnrichStage
+
+    work_dir = tmp_path
+    render_dir = work_dir / "renders"
+    render_dir.mkdir(parents=True, exist_ok=True)
+
+    video_path = render_dir / "clip_000_orbit.mp4"
+    depth_path = render_dir / "clip_000_orbit_depth.mp4"
+    _write_textured_video(video_path, frames=12)
+    _write_textured_video(depth_path, frames=12)
+
+    write_json(
+        {
+            "facility": "Test Facility",
+            "clips": [
+                {
+                    "clip_name": "clip_000_orbit",
+                    "path_type": "orbit",
+                    "video_path": str(video_path),
+                    "depth_video_path": str(depth_path),
+                }
+            ],
+        },
+        render_dir / "render_manifest.json",
+    )
+
+    sample_config.enrich.dynamic_variants = False
+    sample_config.enrich.variants = [VariantSpec(name="v1", prompt="test variant")]
+    sample_config.enrich.multi_view_context_enabled = True
+    sample_config.enrich.multi_view_context_offsets = [-3, 0, 3]
+    sample_config.enrich.scene_index_enabled = False
+
+    captured: Dict[str, object] = {}
+
+    def _fake_enrich_clip(**kwargs):
+        captured["context_frame_index"] = kwargs.get("context_frame_index")
+        captured["image_context_path"] = kwargs.get("image_context_path")
+        out = kwargs["output_dir"] / f"{kwargs['clip_name']}_v1.mp4"
+        _write_dummy_video(out, frames=4)
+        return [
+            SimpleNamespace(
+                variant_name="v1",
+                prompt="test variant",
+                output_video_path=out,
+                input_video_path=kwargs["video_path"],
+            )
+        ]
+
+    monkeypatch.setattr("blueprint_validation.stages.s2_enrich.enrich_clip", _fake_enrich_clip)
+
+    stage = EnrichStage()
+    facility = list(sample_config.facilities.values())[0]
+    result = stage.run(sample_config, facility, work_dir, {})
+    assert result.status == "success"
+    assert captured["context_frame_index"] is None
+    assert captured["image_context_path"] is not None
+    assert Path(str(captured["image_context_path"])).exists()
+
+
+def test_s2_max_input_frames_zero_does_not_pretrim(sample_config, tmp_path, monkeypatch):
+    from blueprint_validation.common import write_json
+    from blueprint_validation.config import VariantSpec
+    from blueprint_validation.stages.s2_enrich import EnrichStage
+
+    work_dir = tmp_path
+    render_dir = work_dir / "renders"
+    render_dir.mkdir(parents=True, exist_ok=True)
+
+    source_video = render_dir / "clip_000_orbit.mp4"
+    source_depth = render_dir / "clip_000_orbit_depth.mp4"
+    _write_dummy_video(source_video, frames=9)
+    _write_dummy_video(source_depth, frames=9)
+
+    write_json(
+        {
+            "facility": "Test Facility",
+            "clips": [
+                {
+                    "clip_name": "clip_000_orbit",
+                    "video_path": str(source_video),
+                    "depth_video_path": str(source_depth),
+                }
+            ],
+        },
+        render_dir / "render_manifest.json",
+    )
+
+    sample_config.enrich.dynamic_variants = False
+    sample_config.enrich.variants = [VariantSpec(name="v1", prompt="test variant")]
+    sample_config.enrich.max_input_frames = 0
+
+    captured: Dict[str, object] = {}
+
+    def _fake_enrich_clip(**kwargs):
+        captured["video_path"] = kwargs["video_path"]
+        out = kwargs["output_dir"] / f"{kwargs['clip_name']}_v1.mp4"
+        _write_dummy_video(out, frames=4)
+        return [
+            SimpleNamespace(
+                variant_name="v1",
+                prompt="test variant",
+                output_video_path=out,
+                input_video_path=kwargs["video_path"],
+            )
+        ]
+
+    monkeypatch.setattr("blueprint_validation.stages.s2_enrich.enrich_clip", _fake_enrich_clip)
+
+    stage = EnrichStage()
+    facility = list(sample_config.facilities.values())[0]
+    result = stage.run(sample_config, facility, work_dir, {})
+    assert result.status == "success"
+    assert captured["video_path"] == source_video
+    assert result.metrics["num_trimmed_inputs"] == 0
+
+
+def test_select_source_clips_task_targeted_fallback_orders_manipulation_first(sample_config):
+    from blueprint_validation.stages.s2_enrich import _select_source_clips
+
+    sample_config.enrich.max_source_clips = 1
+    sample_config.enrich.source_clip_selection_mode = "task_targeted"
+    sample_config.enrich.source_clip_task = "Pick up trash_can_157 and place it in the target zone"
+    facility = list(sample_config.facilities.values())[0]
+    facility.task_hints_path = None
+
+    render_manifest = {
+        "clips": [
+            {"clip_name": "clip_000_orbit", "path_type": "orbit"},
+            {"clip_name": "clip_001_manipulation", "path_type": "manipulation"},
+            {"clip_name": "clip_002_sweep", "path_type": "sweep"},
+        ]
+    }
+    selected, meta = _select_source_clips(
+        render_manifest=render_manifest,
+        config=sample_config,
+        facility=facility,
+    )
+
+    assert [c["clip_name"] for c in selected] == ["clip_001_manipulation"]
+    assert meta["fallback"] == "missing_task_hints"
+
+
+def test_resolve_multi_view_context_indices_clamps_and_dedupes():
+    from blueprint_validation.stages.s2_enrich import _resolve_multi_view_context_indices
+
+    indices = _resolve_multi_view_context_indices(
+        anchor_index=4,
+        total_frames=6,
+        offsets=[-9, -2, 0, 2, 2, 20],
+    )
+    assert indices == [0, 2, 4, 5]

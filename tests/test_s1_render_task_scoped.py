@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 
 
@@ -123,3 +125,79 @@ def test_sample_start_offset_non_manipulation_retains_jitter(sample_config):
     assert offset.shape == (3,)
     assert float(abs(offset[0])) > 0 or float(abs(offset[1])) > 0
     assert float(offset[2]) == 0.0
+
+
+def test_generate_and_render_preserves_requested_frames_after_collision_filter(
+    sample_config,
+    tmp_path,
+    monkeypatch,
+):
+    from blueprint_validation.config import CameraPathSpec
+    from blueprint_validation.rendering.camera_paths import CameraPose
+    from blueprint_validation.stages.s1_render import RenderStage
+
+    sample_config.render.preserve_num_frames_after_collision_filter = True
+    sample_config.render.num_clips_per_path = 1
+
+    def _pose(x: float) -> CameraPose:
+        c2w = np.eye(4, dtype=np.float64)
+        c2w[0, 3] = x
+        return CameraPose(
+            c2w=c2w,
+            fx=50.0,
+            fy=50.0,
+            cx=32.0,
+            cy=24.0,
+            width=64,
+            height=48,
+        )
+
+    generated = [_pose(float(i)) for i in range(5)]
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render.generate_path_from_spec",
+        lambda **kwargs: list(generated),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render.filter_and_fix_poses",
+        lambda poses, *_args, **_kwargs: list(poses[:3]),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render.correct_upside_down_camera_poses",
+        lambda poses: (poses, 0),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render.save_path_to_json",
+        lambda poses, out_path: None,
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render.render_video",
+        lambda **kwargs: SimpleNamespace(
+            video_path=tmp_path / "clip.mp4",
+            depth_video_path=tmp_path / "clip_depth.mp4",
+        ),
+    )
+
+    stage = RenderStage()
+    manifest_entries, _, _ = stage._generate_and_render(
+        config=sample_config,
+        splat=object(),
+        all_path_specs=[CameraPathSpec(type="orbit", radius_m=2.0)],
+        scene_center=np.array([0.0, 0.0, 0.0], dtype=np.float64),
+        occupancy=object(),
+        render_dir=tmp_path,
+        num_frames=5,
+        camera_height=1.0,
+        look_down_deg=20.0,
+        resolution=(48, 64),
+        fps=5,
+        scene_T=None,
+    )
+
+    assert len(manifest_entries) == 1
+    entry = manifest_entries[0]
+    assert entry["requested_num_frames"] == 5
+    assert entry["pre_filter_num_frames"] == 5
+    assert entry["post_filter_num_frames"] == 3
+    assert entry["post_resample_num_frames"] == 5
+    assert entry["num_frames"] == 5

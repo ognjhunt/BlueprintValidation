@@ -26,6 +26,9 @@ def test_config_defaults():
     assert config.render.camera_height_m == 1.2
     assert config.render.task_scoped_scene_aware is False
     assert config.render.task_scoped_max_specs == 40
+    assert config.render.preserve_num_frames_after_collision_filter is True
+    assert config.render.task_scoped_num_clips_per_path == 1
+    assert config.render.task_scoped_num_frames_override == 0
     assert config.render.stage1_coverage_gate_enabled is False
     assert config.render.stage1_coverage_min_visible_frame_ratio == pytest.approx(0.35)
     assert config.render.stage1_coverage_min_approach_angle_bins == 2
@@ -53,6 +56,16 @@ def test_config_defaults():
     assert config.eval_policy.min_manip_success_delta_pp == pytest.approx(15.0)
     assert config.eval_policy.vlm_judge.enable_agentic_vision is True
     assert config.enrich.max_input_frames == 0
+    assert config.enrich.max_source_clips == 0
+    assert config.enrich.source_clip_selection_mode == "all"
+    assert config.enrich.source_clip_task is None
+    assert config.enrich.source_clip_name is None
+    assert config.enrich.multi_view_context_enabled is False
+    assert config.enrich.multi_view_context_offsets == [-12, 0, 12]
+    assert config.enrich.scene_index_enabled is False
+    assert config.enrich.scene_index_k == 3
+    assert config.enrich.scene_index_sample_every_n_frames == 8
+    assert config.enrich.cosmos_output_quality == 5
     assert config.enrich.context_frame_mode == "target_centered"
     assert config.policy_adapter.name == "openvla_oft"
     assert str(config.policy_adapter.openvla.openvla_repo).endswith("opt/openvla-oft")
@@ -83,6 +96,7 @@ def test_facility_config():
     assert len(fac.landmarks) == 2
     assert fac.up_axis == "auto"
     assert fac.scene_rotation_deg == [0.0, 0.0, 0.0]
+    assert fac.video_orientation_fix == "none"
 
 
 def test_config_with_all_sections(tmp_path):
@@ -92,7 +106,12 @@ def test_config_with_all_sections(tmp_path):
         "schema_version": "v1",
         "project_name": "Full Test",
         "facilities": {
-            "a": {"name": "A", "ply_path": "/tmp/a.ply", "task_hints_path": "/tmp/a_tasks.json"},
+            "a": {
+                "name": "A",
+                "ply_path": "/tmp/a.ply",
+                "task_hints_path": "/tmp/a_tasks.json",
+                "video_orientation_fix": "rotate180",
+            },
             "b": {"name": "B", "ply_path": "/tmp/b.ply"},
         },
         "render": {
@@ -104,6 +123,9 @@ def test_config_with_all_sections(tmp_path):
             "task_scoped_overview_specs": 4,
             "task_scoped_fallback_specs": 10,
             "task_scoped_profile": "dreamdojo",
+            "preserve_num_frames_after_collision_filter": True,
+            "task_scoped_num_clips_per_path": 2,
+            "task_scoped_num_frames_override": 97,
             "stage1_coverage_gate_enabled": True,
             "stage1_coverage_min_visible_frame_ratio": 0.4,
             "stage1_coverage_min_approach_angle_bins": 3,
@@ -130,6 +152,16 @@ def test_config_with_all_sections(tmp_path):
             "min_frame0_ssim": 0.8,
             "delete_rejected_outputs": True,
             "context_frame_mode": "fixed",
+            "max_source_clips": 1,
+            "source_clip_selection_mode": "task_targeted",
+            "source_clip_task": "Pick up trash_can_157 and place it in the target zone",
+            "source_clip_name": "clip_001_manipulation",
+            "multi_view_context_enabled": True,
+            "multi_view_context_offsets": [-9, 0, 9],
+            "scene_index_enabled": True,
+            "scene_index_k": 4,
+            "scene_index_sample_every_n_frames": 5,
+            "cosmos_output_quality": 8,
         },
         "finetune": {
             "num_epochs": 10,
@@ -183,6 +215,9 @@ def test_config_with_all_sections(tmp_path):
     assert config.render.task_scoped_scene_aware is True
     assert config.render.task_scoped_max_specs == 35
     assert config.render.task_scoped_context_per_target == 1
+    assert config.render.preserve_num_frames_after_collision_filter is True
+    assert config.render.task_scoped_num_clips_per_path == 2
+    assert config.render.task_scoped_num_frames_override == 97
     assert config.render.stage1_coverage_gate_enabled is True
     assert config.render.stage1_coverage_min_visible_frame_ratio == pytest.approx(0.4)
     assert config.render.stage1_coverage_min_approach_angle_bins == 3
@@ -202,6 +237,16 @@ def test_config_with_all_sections(tmp_path):
     assert config.enrich.context_frame_index == 7
     assert config.enrich.context_frame_mode == "fixed"
     assert config.enrich.max_input_frames == 17
+    assert config.enrich.max_source_clips == 1
+    assert config.enrich.source_clip_selection_mode == "task_targeted"
+    assert config.enrich.source_clip_task == "Pick up trash_can_157 and place it in the target zone"
+    assert config.enrich.source_clip_name == "clip_001_manipulation"
+    assert config.enrich.multi_view_context_enabled is True
+    assert config.enrich.multi_view_context_offsets == [-9, 0, 9]
+    assert config.enrich.scene_index_enabled is True
+    assert config.enrich.scene_index_k == 4
+    assert config.enrich.scene_index_sample_every_n_frames == 5
+    assert config.enrich.cosmos_output_quality == 8
     assert config.enrich.min_frame0_ssim == pytest.approx(0.8)
     assert config.enrich.delete_rejected_outputs is True
     assert config.finetune.num_epochs == 10
@@ -226,6 +271,7 @@ def test_config_with_all_sections(tmp_path):
     assert config.policy_compare.heldout_num_rollouts == 8
     assert config.policy_compare.heldout_tasks == ["Pick up the tote from the shelf"]
     assert str(config.facilities["a"].task_hints_path) == "/tmp/a_tasks.json"
+    assert config.facilities["a"].video_orientation_fix == "rotate180"
     assert "psnr" in config.eval_visual.metrics
 
 

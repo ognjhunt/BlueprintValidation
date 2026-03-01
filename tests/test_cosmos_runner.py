@@ -47,6 +47,28 @@ def test_build_controlnet_spec_with_context_frame_index(tmp_path):
     assert spec["context_frame_index"] == 9
 
 
+def test_build_controlnet_spec_with_image_context(tmp_path):
+    from blueprint_validation.enrichment.cosmos_runner import build_controlnet_spec
+
+    video = tmp_path / "input.mp4"
+    context = tmp_path / "context.png"
+    out = tmp_path / "out.mp4"
+    video.write_bytes(b"x")
+    context.write_bytes(b"x")
+
+    spec = build_controlnet_spec(
+        video_path=video,
+        depth_path=None,
+        prompt="warehouse scene",
+        output_path=out,
+        controlnet_inputs=["rgb"],
+        image_context_path=context,
+    )
+
+    assert spec["image_context_path"] == str(context)
+    assert "context_frame_index" not in spec
+
+
 def test_build_cosmos_inference_command():
     from blueprint_validation.enrichment.cosmos_runner import build_cosmos_inference_command
 
@@ -119,6 +141,7 @@ def test_run_cosmos_inference_sets_repo_pythonpath(tmp_path, monkeypatch):
         expected_output_path=expected_out,
         cosmos_checkpoint=tmp_path / "ckpt",
         cosmos_repo=repo,
+        cosmos_output_quality=8,
     )
 
     assert generated == expected_out
@@ -129,3 +152,4 @@ def test_run_cosmos_inference_sets_repo_pythonpath(tmp_path, monkeypatch):
     assert parts[0] == str(repo)
     assert parts[1] == str(repo / "packages" / "cosmos-cuda")
     assert parts[2] == str(repo / "packages" / "cosmos-oss")
+    assert seen["env"].get("COSMOS_TRANSFER_VIDEO_QUALITY") == "8"

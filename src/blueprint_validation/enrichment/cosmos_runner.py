@@ -35,6 +35,7 @@ def build_controlnet_spec(
     guidance: float = 7.0,
     controlnet_inputs: List[str] = None,
     context_frame_index: Optional[int] = None,
+    image_context_path: Optional[Path] = None,
 ) -> dict:
     """Build an inference config matching Cosmos Transfer's JSON CLI schema."""
     if controlnet_inputs is None:
@@ -49,6 +50,8 @@ def build_controlnet_spec(
     }
     if context_frame_index is not None:
         spec["context_frame_index"] = int(context_frame_index)
+    if image_context_path is not None:
+        spec["image_context_path"] = str(image_context_path)
 
     if "depth" in controls and depth_path and depth_path.exists():
         spec["depth"] = {
@@ -142,6 +145,7 @@ def run_cosmos_inference(
     cosmos_model: str = "nvidia/Cosmos-Transfer2.5-2B",
     cosmos_repo: Optional[Path] = None,
     disable_guardrails: bool = True,
+    cosmos_output_quality: Optional[int] = None,
 ) -> Path:
     """Run Cosmos Transfer 2.5 inference and return generated output video path."""
     del (
@@ -182,6 +186,16 @@ def run_cosmos_inference(
         [current_pythonpath] if current_pythonpath else []
     )
     env["PYTHONPATH"] = os.pathsep.join(merged_entries)
+    if cosmos_output_quality is not None:
+        try:
+            quality_int = int(cosmos_output_quality)
+            if quality_int > 0:
+                env["COSMOS_TRANSFER_VIDEO_QUALITY"] = str(quality_int)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Ignoring invalid cosmos_output_quality=%r (must be int-compatible)",
+                cosmos_output_quality,
+            )
 
     result = subprocess.run(
         cmd,
@@ -214,6 +228,7 @@ def enrich_clip(
     clip_name: str,
     config: EnrichConfig,
     context_frame_index: Optional[int] = None,
+    image_context_path: Optional[Path] = None,
 ) -> List[CosmosOutput]:
     """Enrich a single rendered clip with multiple visual variants."""
     outputs = []
@@ -228,6 +243,7 @@ def enrich_clip(
             guidance=config.guidance,
             controlnet_inputs=config.controlnet_inputs,
             context_frame_index=context_frame_index,
+            image_context_path=image_context_path,
         )
 
         generated_video = run_cosmos_inference(
@@ -237,6 +253,7 @@ def enrich_clip(
             cosmos_model=config.cosmos_model,
             cosmos_repo=config.cosmos_repo,
             disable_guardrails=config.disable_guardrails,
+            cosmos_output_quality=config.cosmos_output_quality,
         )
         outputs.append(
             CosmosOutput(

@@ -13,6 +13,7 @@ facilities:
       - "kitchen appliances and countertop"
       - "dining table with glassware"
       - "cabinet and cupboard storage area"
+    video_orientation_fix: rotate180
     up_axis: "z"
     floor_height_m: 0.0
     ceiling_height_m: 2.8
@@ -40,6 +41,8 @@ render:
   task_scoped_overview_specs: 6
   task_scoped_fallback_specs: 16
   task_scoped_profile: dreamdojo
+  task_scoped_num_clips_per_path: 2
+  task_scoped_num_frames_override: 97
   collision_check: true
   voxel_size_m: 0.08
   density_threshold: 3
@@ -94,9 +97,14 @@ enrich:
   allow_dynamic_variant_fallback: false
   context_frame_index: 9
   context_frame_mode: target_centered
-  max_input_frames: 49
+  max_input_frames: 0
+  cosmos_output_quality: 8
   min_frame0_ssim: 0.70
   delete_rejected_outputs: true
+  # Debug-only task-targeted one-clip mode (opt-in; keep defaults above for full enrichment):
+  # max_source_clips: 1
+  # source_clip_selection_mode: task_targeted
+  # source_clip_task: "Pick up trash_can_157 and place it in the target zone"
 
 finetune:
   dreamdojo_repo: /app/data/vendor/DreamDojo

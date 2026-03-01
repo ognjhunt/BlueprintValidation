@@ -27,6 +27,27 @@ PLY file (from BlueprintCapturePipeline)
   → Final validation report (Markdown + JSON)
 ```
 
+## Scene-Memory Mapping (Stage 1/2/3)
+
+DreamDojo in this pipeline does not maintain an explicit persistent global 3D scene map during generation. It conditions on provided video/context controls, so memory is mostly local/temporal unless we pass broader context.
+
+- Stage 1 + Stage 2 are the current practical memory approximation:
+  - Stage 1 provides broad camera coverage of the site (many trajectories/targets).
+  - Stage 2 builds variants anchored to those clips, preserving local geometry while broadening appearance diversity.
+  - Stage 3 then trains on that corpus, so recurring structure is internalized statistically (not as a global map object).
+
+To move closer to full-scene memory behavior:
+- Increase Stage 1 coverage density and trajectory/context windows:
+  - `render.task_scoped_num_clips_per_path`
+  - `render.task_scoped_num_frames_override`
+- Use multi-view Stage 2 context per task:
+  - `enrich.multi_view_context_enabled`
+  - `enrich.multi_view_context_offsets`
+- Enable retrieval-backed context hooks:
+  - `enrich.scene_index_enabled`
+  - `enrich.scene_index_k`
+  - `enrich.scene_index_sample_every_n_frames`
+
 ## Quick Start
 
 ```bash

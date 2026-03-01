@@ -37,6 +37,9 @@ class FacilityConfig:
     # Override with "z", "y", "-y", "-z", "x", or "-x" if auto-detection is wrong.
     up_axis: str = "auto"
     scene_rotation_deg: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    # Stage-2 correction for RGB/depth control orientation.
+    # Allowed: none|rotate180|hflip|vflip|hvflip
+    video_orientation_fix: str = "none"
 
 
 @dataclass
@@ -84,6 +87,11 @@ class RenderConfig:
     task_scoped_overview_specs: int = 6
     task_scoped_fallback_specs: int = 16
     task_scoped_profile: str = "dreamdojo"
+    # Keep requested clip duration after occupancy/collision filtering drops poses.
+    preserve_num_frames_after_collision_filter: bool = True
+    # Stage-1 coverage density knobs for task-scoped camera generation.
+    task_scoped_num_clips_per_path: int = 1
+    task_scoped_num_frames_override: int = 0
     # Stage-1 coverage gate applied before Stage 2 enrichment.
     stage1_coverage_gate_enabled: bool = False
     stage1_coverage_min_visible_frame_ratio: float = 0.35
@@ -159,6 +167,21 @@ class EnrichConfig:
     # Disabled when <= 0. When enabled and inputs are longer, Stage 2 trims a window
     # centered around the resolved context frame.
     max_input_frames: int = 0
+    # Optional source clip selection budget. <= 0 keeps all clips.
+    max_source_clips: int = 0
+    # all|task_targeted|explicit
+    source_clip_selection_mode: str = "all"
+    source_clip_task: Optional[str] = None
+    source_clip_name: Optional[str] = None
+    # Optional multi-view image context construction for Cosmos.
+    multi_view_context_enabled: bool = False
+    multi_view_context_offsets: List[int] = field(default_factory=lambda: [-12, 0, 12])
+    # Lightweight retrieval hook for scene-context frame suggestions.
+    scene_index_enabled: bool = False
+    scene_index_k: int = 3
+    scene_index_sample_every_n_frames: int = 8
+    # Output MP4 encoding quality passed to Cosmos inference runtime.
+    cosmos_output_quality: int = 5
     # Acceptance gate for control-faithful enrichment. Disabled when <= 0.
     min_frame0_ssim: float = 0.0
     # Delete generated output files rejected by the frame-0 SSIM gate.
@@ -507,6 +530,28 @@ def _parse_scene_rotation_deg(raw_value: Any) -> List[float]:
     return [float(v) for v in raw_value]
 
 
+_ALLOWED_VIDEO_ORIENTATION_FIXES = {"none", "rotate180", "hflip", "vflip", "hvflip"}
+
+
+def _parse_video_orientation_fix(raw_value: Any) -> str:
+    value = str(raw_value or "none").strip().lower()
+    if value not in _ALLOWED_VIDEO_ORIENTATION_FIXES:
+        allowed = ", ".join(sorted(_ALLOWED_VIDEO_ORIENTATION_FIXES))
+        raise ValueError(f"facility.video_orientation_fix must be one of: {allowed}")
+    return value
+
+
+_ALLOWED_SOURCE_CLIP_SELECTION_MODES = {"all", "task_targeted", "explicit"}
+
+
+def _parse_source_clip_selection_mode(raw_value: Any) -> str:
+    value = str(raw_value or "all").strip().lower()
+    if value not in _ALLOWED_SOURCE_CLIP_SELECTION_MODES:
+        allowed = ", ".join(sorted(_ALLOWED_SOURCE_CLIP_SELECTION_MODES))
+        raise ValueError(f"enrich.source_clip_selection_mode must be one of: {allowed}")
+    return value
+
+
 def _parse_facility(raw: Dict[str, Any], base_dir: Path) -> FacilityConfig:
     task_hints_value = raw.get("task_hints_path")
     return FacilityConfig(
@@ -520,6 +565,7 @@ def _parse_facility(raw: Dict[str, Any], base_dir: Path) -> FacilityConfig:
         manipulation_zones=_parse_manipulation_zones(raw.get("manipulation_zones", [])),
         up_axis=str(raw.get("up_axis", "auto")).strip(),
         scene_rotation_deg=_parse_scene_rotation_deg(raw.get("scene_rotation_deg")),
+        video_orientation_fix=_parse_video_orientation_fix(raw.get("video_orientation_fix", "none")),
     )
 
 
@@ -621,6 +667,11 @@ def load_config(path: Path) -> ValidationConfig:
             task_scoped_overview_specs=int(r.get("task_scoped_overview_specs", 6)),
             task_scoped_fallback_specs=int(r.get("task_scoped_fallback_specs", 16)),
             task_scoped_profile=str(r.get("task_scoped_profile", "dreamdojo")),
+            preserve_num_frames_after_collision_filter=bool(
+                r.get("preserve_num_frames_after_collision_filter", True)
+            ),
+            task_scoped_num_clips_per_path=int(r.get("task_scoped_num_clips_per_path", 1)),
+            task_scoped_num_frames_override=int(r.get("task_scoped_num_frames_override", 0)),
             stage1_coverage_gate_enabled=bool(r.get("stage1_coverage_gate_enabled", False)),
             stage1_coverage_min_visible_frame_ratio=float(
                 r.get("stage1_coverage_min_visible_frame_ratio", 0.35)
@@ -678,6 +729,24 @@ def load_config(path: Path) -> ValidationConfig:
             ),
             context_frame_mode=str(e.get("context_frame_mode", "target_centered")),
             max_input_frames=int(e.get("max_input_frames", 0)),
+            max_source_clips=int(e.get("max_source_clips", 0)),
+            source_clip_selection_mode=_parse_source_clip_selection_mode(
+                e.get("source_clip_selection_mode", "all")
+            ),
+            source_clip_task=(
+                str(e.get("source_clip_task")).strip() if e.get("source_clip_task") else None
+            ),
+            source_clip_name=(
+                str(e.get("source_clip_name")).strip() if e.get("source_clip_name") else None
+            ),
+            multi_view_context_enabled=bool(e.get("multi_view_context_enabled", False)),
+            multi_view_context_offsets=[
+                int(v) for v in e.get("multi_view_context_offsets", [-12, 0, 12])
+            ],
+            scene_index_enabled=bool(e.get("scene_index_enabled", False)),
+            scene_index_k=int(e.get("scene_index_k", 3)),
+            scene_index_sample_every_n_frames=int(e.get("scene_index_sample_every_n_frames", 8)),
+            cosmos_output_quality=int(e.get("cosmos_output_quality", 5)),
             min_frame0_ssim=float(e.get("min_frame0_ssim", 0.0)),
             delete_rejected_outputs=bool(e.get("delete_rejected_outputs", False)),
         )

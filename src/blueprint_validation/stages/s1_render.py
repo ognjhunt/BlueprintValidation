@@ -328,10 +328,14 @@ class RenderStage(PipelineStage):
         for clip_data in cached_clips:
             clip_name = clip_data["clip_name"]
             poses = _deserialize_camera_poses(clip_data["poses"])
+            requested_count = int(clip_data.get("num_frames", len(poses)))
+            pre_filter_count = len(poses)
             poses, corrected_count = correct_upside_down_camera_poses(poses)
             corrected_poses_total += corrected_count
             if corrected_count > 0:
                 corrected_clip_count += 1
+            post_filter_count = len(poses)
+            post_resample_count = len(poses)
 
             # Convert cameras from corrected frame back to original PLY frame
             if scene_T is not None:
@@ -368,14 +372,18 @@ class RenderStage(PipelineStage):
                     "path_type": clip_data["path_type"],
                     "clip_index": clip_data["clip_index"],
                     "num_frames": len(poses),
+                    "requested_num_frames": requested_count,
+                    "pre_filter_num_frames": pre_filter_count,
+                    "post_filter_num_frames": post_filter_count,
+                    "post_resample_num_frames": post_resample_count,
                     "resolution": list(resolution),
                     "fps": fps,
                     "video_path": str(output.video_path),
                     "depth_video_path": str(output.depth_video_path),
                     "camera_path": str(render_dir / f"{clip_name}_camera_path.json"),
                     "initial_camera": initial_camera,
-                        "path_context": {"source": "warmup_cache"},
-                    }
+                    "path_context": {"source": "warmup_cache"},
+                }
                 )
         return manifest_entries, corrected_poses_total, corrected_clip_count
 
@@ -404,23 +412,30 @@ class RenderStage(PipelineStage):
             clip_repeats = int(config.render.num_clips_per_path)
             # Task-scoped paths are already object-specific; render once to control cost.
             if str(getattr(path_spec, "source_tag", "")).strip().lower() == "task_scoped":
-                clip_repeats = 1
+                clip_repeats = int(config.render.task_scoped_num_clips_per_path)
             clip_repeats = max(1, clip_repeats)
             for clip_num in range(clip_repeats):
                 # Add random offset for variety between clips
                 rng = np.random.default_rng(seed=clip_index * 42)
                 offset = _sample_start_offset(config, path_spec, rng)
+                requested_count = int(num_frames)
+                if (
+                    str(getattr(path_spec, "source_tag", "")).strip().lower() == "task_scoped"
+                    and int(config.render.task_scoped_num_frames_override) > 0
+                ):
+                    requested_count = int(config.render.task_scoped_num_frames_override)
 
                 poses = generate_path_from_spec(
                     spec=path_spec,
                     scene_center=scene_center,
-                    num_frames=num_frames,
+                    num_frames=requested_count,
                     camera_height=camera_height,
                     look_down_deg=look_down_deg,
                     resolution=resolution,
                     start_offset=offset,
                     manipulation_target_z_bias_m=config.render.manipulation_target_z_bias_m,
                 )
+                pre_filter_count = len(poses)
 
                 # Collision filter
                 if occupancy is not None:
@@ -436,6 +451,15 @@ class RenderStage(PipelineStage):
                         )
                         clip_index += 1
                         continue
+                post_filter_count = len(poses)
+                if (
+                    bool(config.render.preserve_num_frames_after_collision_filter)
+                    and poses
+                    and requested_count > 0
+                    and len(poses) != requested_count
+                ):
+                    poses = _resample_poses_nearest(poses, requested_count)
+                post_resample_count = len(poses)
                 poses, corrected_count = correct_upside_down_camera_poses(poses)
                 corrected_poses_total += corrected_count
                 if corrected_count > 0:
@@ -482,6 +506,10 @@ class RenderStage(PipelineStage):
                         "path_type": path_spec.type,
                         "clip_index": clip_index,
                         "num_frames": len(poses),
+                        "requested_num_frames": requested_count,
+                        "pre_filter_num_frames": pre_filter_count,
+                        "post_filter_num_frames": post_filter_count,
+                        "post_resample_num_frames": post_resample_count,
                         "resolution": list(resolution),
                         "fps": fps,
                         "video_path": str(output.video_path),
@@ -494,6 +522,21 @@ class RenderStage(PipelineStage):
                 clip_index += 1
 
         return manifest_entries, corrected_poses_total, corrected_clip_count
+
+
+def _resample_poses_nearest(poses: List, requested_count: int) -> List:
+    """Resample camera poses to a target count via deterministic nearest-neighbor indices."""
+    if requested_count <= 0 or not poses:
+        return poses
+    if len(poses) == requested_count:
+        return poses
+    if len(poses) == 1:
+        return [poses[0] for _ in range(requested_count)]
+
+    sample_points = np.linspace(0, len(poses) - 1, num=requested_count, dtype=np.float64)
+    indices = np.rint(sample_points).astype(np.int64)
+    indices = np.clip(indices, 0, len(poses) - 1)
+    return [poses[int(i)] for i in indices.tolist()]
 
 
 def _camera_pose_metadata(pose) -> dict:
