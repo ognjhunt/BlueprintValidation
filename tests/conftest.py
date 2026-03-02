@@ -176,6 +176,8 @@ def sample_config(tmp_path):
     cfg.enrich.max_blur_reject_rate = 1.0
     cfg.enrich.green_frame_ratio_max = 1.0
     cfg.enrich.enable_visual_collapse_gate = False
+    cfg.render.stage1_quality_planner_enabled = False
+    cfg.render.stage1_quality_autoretry_enabled = False
     cfg.eval_policy.reliability.min_rollout_steps = 1
     cfg.wm_refresh_loop.max_hard_negative_fraction = 1.0
     cfg.wm_refresh_loop.require_valid_video_decode = False

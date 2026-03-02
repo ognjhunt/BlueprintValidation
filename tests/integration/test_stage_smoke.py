@@ -21,6 +21,21 @@ def test_stage3b_policy_finetune_skips_when_disabled(sample_config, tmp_path):
     assert result.status == "skipped"
 
 
+def test_stage0_strict_non_llm_requires_task_hints(sample_config, tmp_path):
+    from blueprint_validation.stages.s0_task_hints_bootstrap import TaskHintsBootstrapStage
+
+    fac = sample_config.facilities["test_facility"]
+    fac.task_hints_path = tmp_path / "missing_task_targets.synthetic.json"
+    sample_config.render.vlm_fallback = False
+    sample_config.render.stage1_strict_require_task_hints = True
+
+    work_dir = tmp_path / "outputs" / "test_facility"
+    stage = TaskHintsBootstrapStage()
+    result = stage.execute(sample_config, fac, work_dir, {})
+    assert result.status == "failed"
+    assert "strict task hints are required" in (result.detail or "")
+
+
 def test_stage2_to_stage3_handoff(sample_config, tmp_path, monkeypatch):
     pytest.importorskip("cv2")
     from blueprint_validation.enrichment.cosmos_runner import CosmosOutput

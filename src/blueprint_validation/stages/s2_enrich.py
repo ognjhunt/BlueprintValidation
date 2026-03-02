@@ -12,6 +12,12 @@ from ..config import FacilityConfig, ValidationConfig
 from ..enrichment.cosmos_runner import enrich_clip
 from ..enrichment.scene_index import build_scene_index, query_nearest_context_candidates
 from ..enrichment.variant_specs import get_variants
+from ..evaluation.camera_quality import (
+    analyze_target_visibility as _shared_analyze_target_visibility,
+    estimate_clip_blur_score as _shared_estimate_clip_blur_score,
+    project_target_to_camera_path as _shared_project_target_to_camera_path,
+    resolve_center_band_bounds as _shared_resolve_center_band_bounds,
+)
 from ..evaluation.task_start_selector import build_task_start_assignments
 from ..evaluation.video_orientation import (
     apply_video_orientation_fix as _shared_apply_video_orientation_fix,
@@ -1374,11 +1380,17 @@ def _evaluate_stage1_coverage_gate(
             target_stats["clip_names"] = clip_names
         clip_names.append(clip_name)
 
-        blur_score = _estimate_clip_blur_score(
-            video_path=Path(str(clip_entry.get("video_path", ""))),
-            sample_every_n_frames=blur_every,
-            max_samples=blur_max_samples,
-        )
+        blur_score = clip_entry.get("blur_laplacian_score")
+        try:
+            blur_score = float(blur_score) if blur_score is not None else None
+        except Exception:
+            blur_score = None
+        if blur_score is None:
+            blur_score = _estimate_clip_blur_score(
+                video_path=Path(str(clip_entry.get("video_path", ""))),
+                sample_every_n_frames=blur_every,
+                max_samples=blur_max_samples,
+            )
         is_blurry = blur_score is None or blur_score < blur_min
         if is_blurry:
             target_stats["num_blurry_clips"] = int(target_stats["num_blurry_clips"]) + 1
@@ -1482,28 +1494,39 @@ def _analyze_target_visibility(
     config: ValidationConfig,
 ) -> tuple[int, int, int, set[int]]:
     """Estimate target visibility ratio and approach-angle diversity from camera poses."""
+    cached_total = clip_entry.get("target_total_frames")
+    cached_vis_ratio = clip_entry.get("target_visibility_ratio")
+    cached_center_ratio = clip_entry.get("target_center_band_ratio")
+    cached_bins = clip_entry.get("target_approach_angle_bins")
+    try:
+        if (
+            cached_total is not None
+            and cached_vis_ratio is not None
+            and cached_center_ratio is not None
+            and cached_bins is not None
+        ):
+            total_frames = int(cached_total)
+            if total_frames > 0:
+                visible_frames = int(round(float(cached_vis_ratio) * total_frames))
+                center_band_frames = int(round(float(cached_center_ratio) * total_frames))
+                angle_bin_count = max(0, int(cached_bins))
+                return (
+                    visible_frames,
+                    total_frames,
+                    center_band_frames,
+                    set(range(angle_bin_count)),
+                )
+    except Exception:
+        pass
+
     total_frames, visible_samples = _project_target_to_camera_path(clip_entry, target_xyz)
-    if total_frames <= 0:
-        return 0, 0, 0, set()
-
-    visible_frames = len(visible_samples)
-    center_band_frames = 0
-    angle_bins: set[int] = set()
-    total_bins = max(1, int(round(360.0 / max(angle_bin_deg, 1e-3))))
-    bin_size_deg = 360.0 / total_bins
-    x_lo, x_hi, y_lo, y_hi = _resolve_center_band_bounds(config)
-
-    for sample in visible_samples:
-        yaw_norm = float(sample["yaw_deg_norm"])
-        bin_idx = min(total_bins - 1, int(yaw_norm / bin_size_deg))
-        angle_bins.add(bin_idx)
-
-        u_norm = float(sample["u_norm"])
-        v_norm = float(sample["v_norm"])
-        if x_lo <= u_norm <= x_hi and y_lo <= v_norm <= y_hi:
-            center_band_frames += 1
-
-    return visible_frames, total_frames, center_band_frames, angle_bins
+    return _shared_analyze_target_visibility(
+        total_frames=total_frames,
+        visible_samples=visible_samples,
+        angle_bin_deg=angle_bin_deg,
+        center_band_x=config.render.stage1_coverage_center_band_x,
+        center_band_y=config.render.stage1_coverage_center_band_y,
+    )
 
 
 def _project_target_to_camera_path(
@@ -1511,95 +1534,15 @@ def _project_target_to_camera_path(
     target_xyz: object,
 ) -> tuple[int, List[Dict[str, float]]]:
     """Project a clip target point into all camera-path frames."""
-    import numpy as np
-
-    camera_path = Path(str(clip_entry.get("camera_path", "")))
-    if not camera_path.exists():
-        return 0, []
-
-    camera_path_data = read_json(camera_path)
-    frames = camera_path_data.get("camera_path", [])
-    if not isinstance(frames, list) or not frames:
-        return 0, []
-
-    resolution = clip_entry.get("resolution", [480, 640])
-    if isinstance(resolution, (list, tuple)) and len(resolution) == 2:
-        height = int(resolution[0])
-        width = int(resolution[1])
-    else:
-        height, width = 480, 640
-    if height <= 0 or width <= 0:
-        height, width = 480, 640
-
-    target = np.asarray(target_xyz, dtype=np.float64)
-    target_h = np.array([target[0], target[1], target[2], 1.0], dtype=np.float64)
-    total_frames = 0
-    visible_samples: List[Dict[str, float]] = []
-
-    for frame_index, frame in enumerate(frames):
-        c2w_raw = frame.get("camera_to_world")
-        if not isinstance(c2w_raw, list) or len(c2w_raw) != 16:
-            continue
-        c2w = np.asarray(c2w_raw, dtype=np.float64).reshape(4, 4)
-        total_frames += 1
-
-        try:
-            w2c = np.linalg.inv(c2w)
-        except np.linalg.LinAlgError:
-            continue
-
-        cam = w2c @ target_h
-        z = float(cam[2])
-        if z >= -1e-6:
-            continue
-
-        fov = float(frame.get("fov", 60.0))
-        tan_half_fov = math.tan(math.radians(max(1e-3, fov) / 2.0))
-        if tan_half_fov <= 0:
-            continue
-
-        fx = width / (2.0 * tan_half_fov)
-        fy = fx
-        cx = width / 2.0
-        cy = height / 2.0
-        u = fx * (float(cam[0]) / -z) + cx
-        v = fy * (float(cam[1]) / -z) + cy
-        if not (0.0 <= u < width and 0.0 <= v < height):
-            continue
-
-        cam_pos = c2w[:3, 3]
-        delta_xy = cam_pos[:2] - target[:2]
-        yaw = math.degrees(math.atan2(float(delta_xy[1]), float(delta_xy[0])))
-        yaw_norm = (yaw + 360.0) % 360.0
-        visible_samples.append(
-            {
-                "frame_index": float(frame_index),
-                "u_norm": float(u / max(width, 1)),
-                "v_norm": float(v / max(height, 1)),
-                "yaw_deg_norm": float(yaw_norm),
-            }
-        )
-
-    return total_frames, visible_samples
+    return _shared_project_target_to_camera_path(clip_entry, target_xyz)
 
 
 def _resolve_center_band_bounds(config: ValidationConfig) -> tuple[float, float, float, float]:
     """Resolve normalized frame center-band bounds from config."""
-
-    def _pair(values: object, default: tuple[float, float]) -> tuple[float, float]:
-        if isinstance(values, (list, tuple)) and len(values) == 2:
-            lo, hi = float(values[0]), float(values[1])
-        else:
-            lo, hi = default
-        lo = max(0.0, min(1.0, lo))
-        hi = max(0.0, min(1.0, hi))
-        if lo > hi:
-            lo, hi = hi, lo
-        return lo, hi
-
-    x_lo, x_hi = _pair(config.render.stage1_coverage_center_band_x, (0.2, 0.8))
-    y_lo, y_hi = _pair(config.render.stage1_coverage_center_band_y, (0.2, 0.8))
-    return x_lo, x_hi, y_lo, y_hi
+    return _shared_resolve_center_band_bounds(
+        config.render.stage1_coverage_center_band_x,
+        config.render.stage1_coverage_center_band_y,
+    )
 
 
 def _resolve_clip_context_selection(
@@ -1654,38 +1597,11 @@ def _estimate_clip_blur_score(
     max_samples: int,
 ) -> float | None:
     """Estimate sharpness via Laplacian variance over sampled video frames."""
-    import cv2
-    import numpy as np
-
-    if not video_path.exists():
-        return None
-
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        return None
-
-    frame_index = 0
-    sampled = 0
-    scores: List[float] = []
-    try:
-        while sampled < max_samples:
-            ok, frame = cap.read()
-            if not ok or frame is None:
-                break
-            if frame_index % sample_every_n_frames != 0:
-                frame_index += 1
-                continue
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-            scores.append(lap_var)
-            sampled += 1
-            frame_index += 1
-    finally:
-        cap.release()
-
-    if not scores:
-        return None
-    return float(np.median(np.asarray(scores, dtype=np.float64)))
+    return _shared_estimate_clip_blur_score(
+        video_path=video_path,
+        sample_every_n_frames=sample_every_n_frames,
+        max_samples=max_samples,
+    )
 
 
 def _analyze_output_visual_quality(

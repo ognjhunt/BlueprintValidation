@@ -660,6 +660,7 @@ def compute_camera_height(obb: OrientedBoundingBox, offset_m: float = 0.3) -> fl
 def generate_scene_aware_specs(
     obbs: List[OrientedBoundingBox],
     occupancy: Optional[OccupancyGrid] = None,
+    target_roles_by_instance: Optional[Dict[str, str]] = None,
 ) -> List[CameraPathSpec]:
     """Generate CameraPathSpecs from OBBs — one per detected object.
 
@@ -671,6 +672,16 @@ def generate_scene_aware_specs(
         standoff = compute_standoff_distance(obb)
         cam_height = compute_camera_height(obb)
         approach = obb.center.tolist()
+        target_role = None
+        if target_roles_by_instance is not None:
+            target_role = target_roles_by_instance.get(str(obb.instance_id))
+
+        base_meta = {
+            "target_instance_id": str(obb.instance_id) if str(obb.instance_id).strip() else None,
+            "target_label": str(obb.label) if str(obb.label).strip() else None,
+            "target_category": str(obb.category) if str(obb.category).strip() else None,
+            "target_role": target_role,
+        }
 
         if obb.category == "manipulation":
             specs.append(
@@ -680,6 +691,7 @@ def generate_scene_aware_specs(
                     arc_radius_m=standoff,
                     height_override_m=cam_height,
                     look_down_override_deg=45.0,
+                    **base_meta,
                 )
             )
         elif obb.category == "articulation":
@@ -689,8 +701,10 @@ def generate_scene_aware_specs(
                     type="orbit",
                     radius_m=standoff,
                     num_orbits=1,
+                    approach_point=approach,
                     height_override_m=cam_height,
                     look_down_override_deg=25.0,
+                    **base_meta,
                 )
             )
         else:
@@ -700,8 +714,10 @@ def generate_scene_aware_specs(
                     type="orbit",
                     radius_m=standoff,
                     num_orbits=1,
+                    approach_point=approach,
                     height_override_m=cam_height,
                     look_down_override_deg=35.0,
+                    **base_meta,
                 )
             )
 

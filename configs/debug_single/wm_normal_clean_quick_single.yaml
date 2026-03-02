@@ -48,7 +48,7 @@ render:
   voxel_size_m: 0.08
   density_threshold: 3
   min_clearance_m: 0.12
-  vlm_fallback: true
+  vlm_fallback: false
   vlm_fallback_model: gemini-3-flash-preview
   vlm_fallback_num_views: 4
   stage1_coverage_gate_enabled: true
@@ -65,6 +65,12 @@ render:
   stage1_coverage_center_band_y:
   - 0.2
   - 0.8
+  stage1_quality_planner_enabled: true
+  stage1_quality_candidate_budget: medium
+  stage1_quality_autoretry_enabled: true
+  stage1_quality_max_regen_attempts: 2
+  stage1_quality_min_clip_score: 0.55
+  stage1_strict_require_task_hints: false
 robot_composite:
   enabled: false
 gemini_polish:

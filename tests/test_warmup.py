@@ -66,6 +66,8 @@ def test_warmup_facility_creates_cache(warmup_config):
     assert summary["num_gaussians"] == 100
     assert summary["num_clips"] > 0
     assert summary["elapsed_seconds"] >= 0
+    assert "quality_cache_key" in summary
+    assert isinstance(summary["quality_cache_key"], str)
 
     # Cache manifest should exist
     cache = load_warmup_cache(work_dir)
@@ -85,6 +87,7 @@ def test_warmup_cache_clips_loadable(warmup_config):
     assert "clip_name" in clip
     assert "poses" in clip
     assert "path_type" in clip
+    assert isinstance(clip.get("path_context"), dict)
 
     # Poses should be deserializable
     poses = _deserialize_camera_poses(clip["poses"])

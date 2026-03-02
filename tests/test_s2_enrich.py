@@ -921,6 +921,27 @@ def test_s2_context_selection_falls_back_to_fixed_when_target_missing(
     assert result.metrics["context_selection_fixed_count"] == 1
 
 
+def test_s2_analyze_target_visibility_prefers_cached_stage1_metrics(sample_config):
+    from blueprint_validation.stages.s2_enrich import _analyze_target_visibility
+
+    clip_entry = {
+        "target_total_frames": 20,
+        "target_visibility_ratio": 0.6,
+        "target_center_band_ratio": 0.5,
+        "target_approach_angle_bins": 4,
+    }
+    visible, total, center, angle_bins = _analyze_target_visibility(
+        clip_entry=clip_entry,
+        target_xyz=[0.0, 0.0, 0.0],
+        angle_bin_deg=45.0,
+        config=sample_config,
+    )
+    assert total == 20
+    assert visible == 12
+    assert center == 10
+    assert len(angle_bins) == 4
+
+
 def test_s2_task_targeted_clip_selection_prefers_manipulation_clip(
     sample_config,
     tmp_path,

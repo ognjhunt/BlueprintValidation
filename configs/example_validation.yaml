@@ -78,7 +78,7 @@ render:
   min_clearance_m: 0.15
   # VLM fallback: when no task_targets.json exists, render overview frames and
   # send to Gemini for object detection + depth unprojection to 3D positions.
-  vlm_fallback: true
+  vlm_fallback: false
   vlm_fallback_model: gemini-3-flash-preview
   vlm_fallback_num_views: 4
 

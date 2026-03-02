@@ -38,7 +38,7 @@ def test_task_scoped_selection_targets_context_and_overview():
         _obb("5", "hallway", (8.0, 0.0, 0.0), "navigation"),
         _obb("6", "cabinet", (6.0, 0.0, 0.0), "articulation"),
     ]
-    selected, stats = _select_task_scoped_obbs(
+    selected, stats, role_by_instance = _select_task_scoped_obbs(
         obbs=obbs,
         tasks=["Pick up mug_1 and place it on the counter"],
         max_specs=4,
@@ -53,6 +53,7 @@ def test_task_scoped_selection_targets_context_and_overview():
     assert stats["context"] == 2
     assert stats["overview"] == 1
     assert stats["fallback"] == 0
+    assert role_by_instance["1"] == "targets"
     selected_ids = {o.instance_id for o in selected}
     assert {"1", "2", "3"}.issubset(selected_ids)
 
@@ -66,7 +67,7 @@ def test_task_scoped_selection_fallback_when_no_task_targets_match():
         _obb("12", "bowl", (1.0, 0.0, 0.0), "manipulation", confidence=0.9),
         _obb("13", "cabinet", (2.0, 0.0, 0.0), "articulation", confidence=1.0),
     ]
-    selected, stats = _select_task_scoped_obbs(
+    selected, stats, role_by_instance = _select_task_scoped_obbs(
         obbs=obbs,
         tasks=["Do something unrelated"],
         max_specs=3,
@@ -78,6 +79,7 @@ def test_task_scoped_selection_fallback_when_no_task_targets_match():
     assert len(selected) == 3
     assert stats["fallback"] == 3
     assert stats["targets"] == 0
+    assert all(role_by_instance.get(o.instance_id) == "fallback" for o in selected)
     # Fallback prioritizes manipulation/articulation before navigation.
     assert selected[0].category == "manipulation"
     assert selected[1].category in {"manipulation", "articulation"}
@@ -91,7 +93,7 @@ def test_task_scoped_selection_resolves_label_instance_token():
         _obb("102", "cup", (1.0, 0.0, 0.0), "manipulation"),
         _obb("103", "cabinet", (2.0, 0.0, 0.0), "articulation"),
     ]
-    selected, stats = _select_task_scoped_obbs(
+    selected, stats, role_by_instance = _select_task_scoped_obbs(
         obbs=obbs,
         tasks=["Pick up bowl_101 and place it in the sink"],
         max_specs=2,
@@ -103,6 +105,7 @@ def test_task_scoped_selection_resolves_label_instance_token():
     assert len(selected) == 1
     assert selected[0].instance_id == "101"
     assert stats["targets"] == 1
+    assert role_by_instance["101"] == "targets"
 
 
 def test_sample_start_offset_defaults_zero_for_manipulation(sample_config):
@@ -179,7 +182,7 @@ def test_generate_and_render_preserves_requested_frames_after_collision_filter(
     )
 
     stage = RenderStage()
-    manifest_entries, _, _ = stage._generate_and_render(
+    manifest_entries, _, _, _ = stage._generate_and_render(
         config=sample_config,
         splat=object(),
         all_path_specs=[CameraPathSpec(type="orbit", radius_m=2.0)],

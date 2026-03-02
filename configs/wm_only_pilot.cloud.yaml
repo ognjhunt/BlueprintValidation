@@ -47,7 +47,7 @@ render:
   voxel_size_m: 0.08
   density_threshold: 3
   min_clearance_m: 0.12
-  vlm_fallback: true
+  vlm_fallback: false
   vlm_fallback_model: gemini-3-flash-preview
   vlm_fallback_num_views: 4
   stage1_coverage_gate_enabled: true

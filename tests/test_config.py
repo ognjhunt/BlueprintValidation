@@ -35,6 +35,13 @@ def test_config_defaults():
     assert config.render.stage1_coverage_min_center_band_ratio == pytest.approx(0.4)
     assert config.render.stage1_coverage_center_band_x == [0.2, 0.8]
     assert config.render.stage1_coverage_center_band_y == [0.2, 0.8]
+    assert config.render.vlm_fallback is False
+    assert config.render.stage1_quality_planner_enabled is True
+    assert config.render.stage1_quality_candidate_budget == "medium"
+    assert config.render.stage1_quality_autoretry_enabled is True
+    assert config.render.stage1_quality_max_regen_attempts == 2
+    assert config.render.stage1_quality_min_clip_score == pytest.approx(0.55)
+    assert config.render.stage1_strict_require_task_hints is False
     assert config.render.orientation_autocorrect_enabled is True
     assert config.render.orientation_autocorrect_mode == "auto"
     assert config.render.manipulation_random_xy_offset_m == pytest.approx(0.0)
@@ -145,6 +152,39 @@ def test_facility_config():
     assert fac.video_orientation_fix == "none"
 
 
+def test_config_parses_camera_path_target_metadata(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "camera_path_metadata.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "CameraPath Metadata",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "render": {
+                    "camera_paths": [
+                        {
+                            "type": "manipulation",
+                            "approach_point": [0.0, 0.0, 0.5],
+                            "target_instance_id": "101",
+                            "target_label": "bowl",
+                            "target_category": "manipulation",
+                            "target_role": "targets",
+                        }
+                    ]
+                },
+            }
+        )
+    )
+    config = load_config(config_path)
+    path_spec = config.render.camera_paths[0]
+    assert path_spec.target_instance_id == "101"
+    assert path_spec.target_label == "bowl"
+    assert path_spec.target_category == "manipulation"
+    assert path_spec.target_role == "targets"
+
+
 def test_config_with_all_sections(tmp_path):
     from blueprint_validation.config import load_config
 
@@ -182,6 +222,12 @@ def test_config_with_all_sections(tmp_path):
             "stage1_coverage_min_center_band_ratio": 0.5,
             "stage1_coverage_center_band_x": [0.25, 0.75],
             "stage1_coverage_center_band_y": [0.3, 0.7],
+            "stage1_quality_planner_enabled": True,
+            "stage1_quality_candidate_budget": "high",
+            "stage1_quality_autoretry_enabled": True,
+            "stage1_quality_max_regen_attempts": 3,
+            "stage1_quality_min_clip_score": 0.62,
+            "stage1_strict_require_task_hints": True,
             "orientation_autocorrect_enabled": True,
             "orientation_autocorrect_mode": "warn_only",
             "manipulation_random_xy_offset_m": 0.0,
@@ -344,6 +390,12 @@ def test_config_with_all_sections(tmp_path):
     assert config.render.stage1_coverage_min_center_band_ratio == pytest.approx(0.5)
     assert config.render.stage1_coverage_center_band_x == [0.25, 0.75]
     assert config.render.stage1_coverage_center_band_y == [0.3, 0.7]
+    assert config.render.stage1_quality_planner_enabled is True
+    assert config.render.stage1_quality_candidate_budget == "high"
+    assert config.render.stage1_quality_autoretry_enabled is True
+    assert config.render.stage1_quality_max_regen_attempts == 3
+    assert config.render.stage1_quality_min_clip_score == pytest.approx(0.62)
+    assert config.render.stage1_strict_require_task_hints is True
     assert config.render.orientation_autocorrect_enabled is True
     assert config.render.orientation_autocorrect_mode == "warn_only"
     assert config.render.manipulation_random_xy_offset_m == pytest.approx(0.0)
@@ -807,6 +859,44 @@ def test_config_rejects_invalid_min_rollout_steps(tmp_path):
     )
 
     with pytest.raises(ValueError, match="min_rollout_steps"):
+        load_config(config_path)
+
+
+def test_config_rejects_invalid_stage1_quality_candidate_budget(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "bad_stage1_budget.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Stage1 Budget",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "render": {"stage1_quality_candidate_budget": "ultra"},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="stage1_quality_candidate_budget"):
+        load_config(config_path)
+
+
+def test_config_rejects_invalid_stage1_quality_min_clip_score(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "bad_stage1_quality_min_score.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Stage1 Min Score",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "render": {"stage1_quality_min_clip_score": 1.2},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="stage1_quality_min_clip_score"):
         load_config(config_path)
 
 

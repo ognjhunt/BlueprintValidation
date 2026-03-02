@@ -419,6 +419,10 @@ def warmup_facility(
     summary: Dict = {
         "facility": facility.name,
         "ply_path": str(facility.ply_path),
+        "quality_cache_key": _quality_cache_key(
+            config=config,
+            task_hints_path=facility.task_hints_path,
+        ),
     }
 
     # 1. Load PLY as numpy (CPU-only, no torch)
@@ -557,6 +561,7 @@ def warmup_facility(
                     "clip_index": clip_index,
                     "num_frames": len(poses),
                     "camera_path_file": str(path_dir / f"{clip_name}_camera_path.json"),
+                    "path_context": _path_context_from_spec(path_spec),
                     "poses": _serialize_camera_poses(poses),
                 }
             )
@@ -658,3 +663,65 @@ def load_cached_variants(work_dir: Path) -> Optional[List[VariantSpec]]:
     except Exception:
         logger.debug("Failed to load cached variants", exc_info=True)
         return None
+
+
+def _path_context_from_spec(path_spec: CameraPathSpec) -> dict:
+    context = {
+        "type": path_spec.type,
+        "source_tag": path_spec.source_tag or "default",
+        "height_override_m": (
+            float(path_spec.height_override_m) if path_spec.height_override_m is not None else None
+        ),
+        "look_down_override_deg": (
+            float(path_spec.look_down_override_deg)
+            if path_spec.look_down_override_deg is not None
+            else None
+        ),
+    }
+    if path_spec.approach_point is not None:
+        context["approach_point"] = [float(v) for v in path_spec.approach_point]
+    if path_spec.type == "orbit":
+        context["radius_m"] = float(path_spec.radius_m)
+        context["num_orbits"] = int(path_spec.num_orbits)
+    if path_spec.type == "sweep":
+        context["length_m"] = float(path_spec.length_m)
+    if path_spec.type == "manipulation":
+        context["arc_radius_m"] = float(path_spec.arc_radius_m)
+    if path_spec.target_instance_id is not None:
+        context["target_instance_id"] = str(path_spec.target_instance_id)
+    if path_spec.target_label is not None:
+        context["target_label"] = str(path_spec.target_label)
+    if path_spec.target_category is not None:
+        context["target_category"] = str(path_spec.target_category)
+    if path_spec.target_role is not None:
+        context["target_role"] = str(path_spec.target_role)
+    return context
+
+
+def _quality_cache_key(
+    *,
+    config: ValidationConfig,
+    task_hints_path: Optional[Path],
+) -> str:
+    hints_sig = ""
+    if task_hints_path is not None and Path(task_hints_path).exists():
+        try:
+            st = Path(task_hints_path).stat()
+            hints_sig = f"{int(st.st_mtime_ns)}:{int(st.st_size)}"
+        except Exception:
+            hints_sig = "unknown"
+    bits = [
+        str(bool(config.render.stage1_quality_planner_enabled)),
+        str(config.render.stage1_quality_candidate_budget),
+        str(bool(config.render.stage1_quality_autoretry_enabled)),
+        str(int(config.render.stage1_quality_max_regen_attempts)),
+        f"{float(config.render.stage1_quality_min_clip_score):.6f}",
+        f"{float(config.render.stage1_coverage_min_visible_frame_ratio):.6f}",
+        f"{float(config.render.stage1_coverage_min_center_band_ratio):.6f}",
+        str(int(config.render.stage1_coverage_min_approach_angle_bins)),
+        f"{float(config.render.stage1_coverage_angle_bin_deg):.6f}",
+        f"{float(config.render.stage1_coverage_blur_laplacian_min):.6f}",
+        str(bool(config.render.vlm_fallback)),
+        hints_sig,
+    ]
+    return "|".join(bits)

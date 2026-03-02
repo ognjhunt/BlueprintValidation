@@ -60,6 +60,11 @@ class CameraPathSpec:
     arc_radius_m: float = 0.4
     # internal metadata: where this spec came from
     source_tag: Optional[str] = None
+    # optional target identity metadata
+    target_instance_id: Optional[str] = None
+    target_label: Optional[str] = None
+    target_category: Optional[str] = None
+    target_role: Optional[str] = None
 
 
 @dataclass
@@ -77,7 +82,7 @@ class RenderConfig:
     voxel_size_m: float = 0.1
     density_threshold: int = 3
     min_clearance_m: float = 0.15
-    vlm_fallback: bool = True
+    vlm_fallback: bool = False
     vlm_fallback_model: str = "gemini-3-flash-preview"
     vlm_fallback_num_views: int = 4
     # Task-scoped scene-aware camera generation (budget mode)
@@ -103,6 +108,13 @@ class RenderConfig:
     stage1_coverage_min_center_band_ratio: float = 0.4
     stage1_coverage_center_band_x: List[float] = field(default_factory=lambda: [0.2, 0.8])
     stage1_coverage_center_band_y: List[float] = field(default_factory=lambda: [0.2, 0.8])
+    # Stage-1 intrinsic camera-quality planning and retry controls.
+    stage1_quality_planner_enabled: bool = True
+    stage1_quality_candidate_budget: str = "medium"  # low|medium|high
+    stage1_quality_autoretry_enabled: bool = True
+    stage1_quality_max_regen_attempts: int = 2
+    stage1_quality_min_clip_score: float = 0.55
+    stage1_strict_require_task_hints: bool = False
     orientation_autocorrect_enabled: bool = True
     orientation_autocorrect_mode: str = "auto"  # auto|fail_fast|warn_only
     manipulation_random_xy_offset_m: float = 0.0
@@ -643,6 +655,7 @@ _ALLOWED_WM_REFRESH_SOURCE_CONDITIONS = {"baseline", "adapted"}
 
 
 _ALLOWED_MANIP_EVAL_MODES = {"overlay_marker", "raw"}
+_ALLOWED_STAGE1_QUALITY_CANDIDATE_BUDGETS = {"low", "medium", "high"}
 
 
 def _parse_manip_eval_mode(raw_value: Any) -> str:
@@ -650,6 +663,14 @@ def _parse_manip_eval_mode(raw_value: Any) -> str:
     if value not in _ALLOWED_MANIP_EVAL_MODES:
         allowed = ", ".join(sorted(_ALLOWED_MANIP_EVAL_MODES))
         raise ValueError(f"eval_policy.manip_eval_mode must be one of: {allowed}")
+    return value
+
+
+def _parse_stage1_quality_candidate_budget(raw_value: Any) -> str:
+    value = str(raw_value or "medium").strip().lower()
+    if value not in _ALLOWED_STAGE1_QUALITY_CANDIDATE_BUDGETS:
+        allowed = ", ".join(sorted(_ALLOWED_STAGE1_QUALITY_CANDIDATE_BUDGETS))
+        raise ValueError(f"render.stage1_quality_candidate_budget must be one of: {allowed}")
     return value
 
 
@@ -694,6 +715,10 @@ def _parse_camera_paths(raw_list: List[Dict[str, Any]], base_dir: Path) -> List[
                 approach_point=raw.get("approach_point"),
                 arc_radius_m=raw.get("arc_radius_m", 0.4),
                 source_tag=raw.get("source_tag"),
+                target_instance_id=raw.get("target_instance_id"),
+                target_label=raw.get("target_label"),
+                target_category=raw.get("target_category"),
+                target_role=raw.get("target_role"),
             )
         )
     return paths
@@ -767,7 +792,7 @@ def load_config(path: Path) -> ValidationConfig:
             voxel_size_m=float(r.get("voxel_size_m", 0.1)),
             density_threshold=int(r.get("density_threshold", 3)),
             min_clearance_m=float(r.get("min_clearance_m", 0.15)),
-            vlm_fallback=r.get("vlm_fallback", True),
+            vlm_fallback=r.get("vlm_fallback", False),
             vlm_fallback_model=r.get("vlm_fallback_model", "gemini-3-flash-preview"),
             vlm_fallback_num_views=int(r.get("vlm_fallback_num_views", 4)),
             task_scoped_scene_aware=bool(r.get("task_scoped_scene_aware", False)),
@@ -803,6 +828,14 @@ def load_config(path: Path) -> ValidationConfig:
             ),
             stage1_coverage_center_band_x=list(r.get("stage1_coverage_center_band_x", [0.2, 0.8])),
             stage1_coverage_center_band_y=list(r.get("stage1_coverage_center_band_y", [0.2, 0.8])),
+            stage1_quality_planner_enabled=bool(r.get("stage1_quality_planner_enabled", True)),
+            stage1_quality_candidate_budget=_parse_stage1_quality_candidate_budget(
+                r.get("stage1_quality_candidate_budget", "medium")
+            ),
+            stage1_quality_autoretry_enabled=bool(r.get("stage1_quality_autoretry_enabled", True)),
+            stage1_quality_max_regen_attempts=int(r.get("stage1_quality_max_regen_attempts", 2)),
+            stage1_quality_min_clip_score=float(r.get("stage1_quality_min_clip_score", 0.55)),
+            stage1_strict_require_task_hints=bool(r.get("stage1_strict_require_task_hints", False)),
             orientation_autocorrect_enabled=bool(r.get("orientation_autocorrect_enabled", True)),
             orientation_autocorrect_mode=str(r.get("orientation_autocorrect_mode", "auto")),
             manipulation_random_xy_offset_m=float(r.get("manipulation_random_xy_offset_m", 0.0)),
@@ -1463,6 +1496,15 @@ def load_config(path: Path) -> ValidationConfig:
         raise ValueError("enrich.max_blur_reject_rate must be in [0, 1]")
     if not (0.0 <= float(config.enrich.green_frame_ratio_max) <= 1.0):
         raise ValueError("enrich.green_frame_ratio_max must be in [0, 1]")
+    if int(config.render.stage1_quality_max_regen_attempts) < 0:
+        raise ValueError("render.stage1_quality_max_regen_attempts must be >= 0")
+    if not (0.0 <= float(config.render.stage1_quality_min_clip_score) <= 1.0):
+        raise ValueError("render.stage1_quality_min_clip_score must be in [0, 1]")
+    if str(config.render.stage1_quality_candidate_budget).strip().lower() not in (
+        _ALLOWED_STAGE1_QUALITY_CANDIDATE_BUDGETS
+    ):
+        allowed = ", ".join(sorted(_ALLOWED_STAGE1_QUALITY_CANDIDATE_BUDGETS))
+        raise ValueError(f"render.stage1_quality_candidate_budget must be one of: {allowed}")
     if bool(config.eval_policy.reliability.fail_on_short_rollout):
         eval_mode = (config.eval_policy.mode or "claim").strip().lower()
         effective_max_steps = int(config.eval_policy.max_steps_per_rollout)

@@ -892,6 +892,17 @@ class TaskHintsBootstrapStage(PipelineStage):
             )
 
         if not config.render.vlm_fallback:
+            if bool(config.render.stage1_strict_require_task_hints):
+                return StageResult(
+                    stage_name=self.name,
+                    status="failed",
+                    elapsed_seconds=0,
+                    detail=(
+                        "render.vlm_fallback=false and strict task hints are required, but no "
+                        "task hints were found. Generate task_targets.synthetic.json and set "
+                        "facility.task_hints_path."
+                    ),
+                )
             return StageResult(
                 stage_name=self.name,
                 status="skipped",
