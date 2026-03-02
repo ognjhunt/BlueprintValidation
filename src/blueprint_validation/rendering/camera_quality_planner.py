@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
-from typing import Dict, List, Tuple
+from dataclasses import dataclass, replace
+from typing import Dict, List
 
 import numpy as np
 
@@ -38,7 +38,15 @@ _BUDGET_TO_VARIANTS = {
 }
 
 
-def plan_best_camera_spec(
+@dataclass(frozen=True)
+class RankedCameraCandidate:
+    spec: CameraPathSpec
+    candidate_index: int
+    score: float
+    metrics: Dict[str, float]
+
+
+def rank_camera_spec_candidates(
     *,
     base_spec: CameraPathSpec,
     scene_center: np.ndarray,
@@ -55,23 +63,15 @@ def plan_best_camera_spec(
     angle_bin_deg: float,
     center_band_x: object,
     center_band_y: object,
-) -> tuple[CameraPathSpec, int, Dict[str, float]]:
-    """Return the best candidate spec for this path under deterministic bounded search."""
+) -> List[RankedCameraCandidate]:
     candidates = _generate_candidate_specs(
         base_spec=base_spec,
         camera_height=float(camera_height),
         look_down_deg=float(look_down_deg),
         budget=str(budget or "medium").strip().lower(),
     )
-    if len(candidates) <= 1:
-        return base_spec, 1, {"planner_best_score": 0.0}
-
-    best_spec = candidates[0]
-    best_score = -1e9
-    best_metrics: Dict[str, float] = {}
-    best_idx = 0
     target_xyz = _resolve_target_xyz(base_spec)
-
+    ranked: List[RankedCameraCandidate] = []
     for idx, candidate in enumerate(candidates):
         poses = generate_path_from_spec(
             spec=candidate,
@@ -93,22 +93,62 @@ def plan_best_camera_spec(
             center_band_x=center_band_x,
             center_band_y=center_band_y,
         )
-        # Tie-break by earlier index to keep deterministic behavior stable.
-        if score > best_score + 1e-9:
-            best_score = score
-            best_spec = candidate
-            best_metrics = metrics
-            best_idx = idx
-        elif abs(score - best_score) <= 1e-9 and idx < best_idx:
-            best_spec = candidate
-            best_metrics = metrics
-            best_idx = idx
+        ranked.append(
+            RankedCameraCandidate(
+                spec=candidate,
+                candidate_index=int(idx),
+                score=float(score),
+                metrics=dict(metrics),
+            )
+        )
+    ranked.sort(key=lambda row: (-float(row.score), int(row.candidate_index)))
+    return ranked
 
+
+def plan_best_camera_spec(
+    *,
+    base_spec: CameraPathSpec,
+    scene_center: np.ndarray,
+    num_frames: int,
+    camera_height: float,
+    look_down_deg: float,
+    resolution: tuple[int, int],
+    start_offset: np.ndarray | None,
+    manipulation_target_z_bias_m: float,
+    budget: str,
+    min_visible_frame_ratio: float,
+    min_center_band_ratio: float,
+    min_approach_angle_bins: int,
+    angle_bin_deg: float,
+    center_band_x: object,
+    center_band_y: object,
+) -> tuple[CameraPathSpec, int, Dict[str, float]]:
+    """Return the best candidate spec for this path under deterministic bounded search."""
+    ranked = rank_camera_spec_candidates(
+        base_spec=base_spec,
+        scene_center=scene_center,
+        num_frames=int(num_frames),
+        camera_height=float(camera_height),
+        look_down_deg=float(look_down_deg),
+        resolution=resolution,
+        start_offset=start_offset,
+        manipulation_target_z_bias_m=float(manipulation_target_z_bias_m),
+        budget=budget,
+        min_visible_frame_ratio=float(min_visible_frame_ratio),
+        min_center_band_ratio=float(min_center_band_ratio),
+        min_approach_angle_bins=int(min_approach_angle_bins),
+        angle_bin_deg=float(angle_bin_deg),
+        center_band_x=center_band_x,
+        center_band_y=center_band_y,
+    )
+    if len(ranked) <= 1:
+        return base_spec, 1, {"planner_best_score": 0.0}
+    best = ranked[0]
     planner_metrics = {
-        "planner_best_score": round(float(best_score), 6),
-        **best_metrics,
+        "planner_best_score": round(float(best.score), 6),
+        **dict(best.metrics),
     }
-    return best_spec, len(candidates), planner_metrics
+    return best.spec, len(ranked), planner_metrics
 
 
 def _generate_candidate_specs(

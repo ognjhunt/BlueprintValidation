@@ -116,3 +116,78 @@ def test_generate_with_retry_falls_back_on_quota():
     assert out["ok"] is True
     assert out["model"] == "gemini-2.5-flash"
     assert client.models.calls == ["gemini-3-flash-preview", "gemini-2.5-flash"]
+
+
+def test_build_uploaded_video_part_uses_metadata_fps():
+    from blueprint_validation.evaluation.vlm_judge import _build_uploaded_video_part
+
+    class _FakeVideoMetadata:
+        def __init__(self, *, fps):
+            self.fps = fps
+
+    class _FakeFileData:
+        def __init__(self, *, file_uri, mime_type):
+            self.file_uri = file_uri
+            self.mime_type = mime_type
+
+    class _FakePart:
+        def __init__(self, *, file_data, video_metadata):
+            self.file_data = file_data
+            self.video_metadata = video_metadata
+
+    class _FakeTypes:
+        Part = _FakePart
+        FileData = _FakeFileData
+        VideoMetadata = _FakeVideoMetadata
+
+    class Uploaded:
+        uri = "gs://bucket/sample.mp4"
+        mime_type = "video/mp4"
+
+    part = _build_uploaded_video_part(_FakeTypes, Uploaded(), video_metadata_fps=10.0)
+    assert getattr(part, "video_metadata", None) is not None
+    assert float(part.video_metadata.fps) == 10.0
+    assert str(part.file_data.file_uri) == "gs://bucket/sample.mp4"
+
+
+def test_build_uploaded_video_part_disables_when_fps_zero():
+    from blueprint_validation.evaluation.vlm_judge import _build_uploaded_video_part
+
+    class _FakeTypes:
+        class Part:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        class FileData:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        class VideoMetadata:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+    class Uploaded:
+        uri = "gs://bucket/sample.mp4"
+        mime_type = "video/mp4"
+
+    uploaded = Uploaded()
+    out = _build_uploaded_video_part(_FakeTypes, uploaded, video_metadata_fps=0.0)
+    assert out is uploaded
+
+
+def test_parse_stage1_probe_payload():
+    from blueprint_validation.evaluation.vlm_judge import _parse_stage1_probe_payload
+
+    payload = {
+        "task_score": 8,
+        "visual_score": 7,
+        "spatial_score": 6,
+        "issue_tags": ["target_off_center", "blur_or_soft_focus"],
+        "reasoning": "target drifts and frames are a bit soft",
+    }
+    task, visual, spatial, tags, reasoning = _parse_stage1_probe_payload(payload)
+    assert task == 8.0
+    assert visual == 7.0
+    assert spatial == 6.0
+    assert tags == ["target_off_center", "blur_or_soft_focus"]
+    assert "soft" in reasoning

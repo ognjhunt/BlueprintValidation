@@ -66,6 +66,16 @@ render:
   stage1_quality_max_regen_attempts: 2
   stage1_quality_min_clip_score: 0.55
   stage1_strict_require_task_hints: true
+  stage1_active_perception_enabled: true
+  stage1_active_perception_scope: all
+  stage1_active_perception_max_loops: 2
+  stage1_active_perception_fail_closed: true
+  stage1_probe_frames_override: 0
+  stage1_probe_resolution_scale: 0.0
+  stage1_vlm_min_task_score: 7.0
+  stage1_vlm_min_visual_score: 7.0
+  stage1_vlm_min_spatial_score: 6.0
+  stage1_keep_probe_videos: false
 
 robot_composite:
   enabled: false
@@ -179,6 +189,7 @@ eval_policy:
     model: gemini-3-flash-preview
     api_key_env: GOOGLE_GENAI_API_KEY
     enable_agentic_vision: true
+    video_metadata_fps: 10.0
 
 # Full action-success boost mode (scan-only, no new real data).
 # Keeps wm_only in config but runtime auto-switches to dual when enabled.

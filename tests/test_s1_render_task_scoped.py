@@ -204,3 +204,30 @@ def test_generate_and_render_preserves_requested_frames_after_collision_filter(
     assert entry["post_filter_num_frames"] == 3
     assert entry["post_resample_num_frames"] == 5
     assert entry["num_frames"] == 5
+    assert isinstance(entry.get("expected_focus_text"), str)
+    assert entry["expected_focus_text"].strip()
+    assert "vlm_probe_attempts" in entry
+    assert "vlm_probe_passed" in entry
+    assert "vlm_probe_retries_used" in entry
+    assert "vlm_probe_issue_tags_final" in entry
+    assert "vlm_probe_candidate_count" in entry
+    assert "vlm_probe_selected_fps" in entry
+    assert "vlm_probe_fail_reason" in entry
+
+
+def test_expected_focus_text_uses_role_and_target():
+    from blueprint_validation.stages.s1_render import _build_expected_focus_text
+
+    text = _build_expected_focus_text(
+        path_type="manipulation",
+        path_context={"target_role": "targets", "target_label": "bowl_101"},
+    )
+    assert "Primary target focus" in text
+    assert "bowl_101" in text
+
+
+def test_expected_focus_text_falls_back_to_path_type():
+    from blueprint_validation.stages.s1_render import _build_expected_focus_text
+
+    text = _build_expected_focus_text(path_type="sweep", path_context={})
+    assert "Sweep focus" in text

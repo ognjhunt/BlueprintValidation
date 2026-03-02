@@ -42,6 +42,16 @@ def test_config_defaults():
     assert config.render.stage1_quality_max_regen_attempts == 2
     assert config.render.stage1_quality_min_clip_score == pytest.approx(0.55)
     assert config.render.stage1_strict_require_task_hints is False
+    assert config.render.stage1_active_perception_enabled is True
+    assert config.render.stage1_active_perception_scope == "all"
+    assert config.render.stage1_active_perception_max_loops == 2
+    assert config.render.stage1_active_perception_fail_closed is True
+    assert config.render.stage1_probe_frames_override == 0
+    assert config.render.stage1_probe_resolution_scale == pytest.approx(0.0)
+    assert config.render.stage1_vlm_min_task_score == pytest.approx(7.0)
+    assert config.render.stage1_vlm_min_visual_score == pytest.approx(7.0)
+    assert config.render.stage1_vlm_min_spatial_score == pytest.approx(6.0)
+    assert config.render.stage1_keep_probe_videos is False
     assert config.render.orientation_autocorrect_enabled is True
     assert config.render.orientation_autocorrect_mode == "auto"
     assert config.render.manipulation_random_xy_offset_m == pytest.approx(0.0)
@@ -71,6 +81,7 @@ def test_config_defaults():
     assert config.eval_policy.min_absolute_difference == pytest.approx(1.0)
     assert config.eval_policy.min_manip_success_delta_pp == pytest.approx(15.0)
     assert config.eval_policy.vlm_judge.enable_agentic_vision is True
+    assert config.eval_policy.vlm_judge.video_metadata_fps == pytest.approx(10.0)
     assert config.enrich.max_input_frames == 0
     assert config.enrich.max_source_clips == 0
     assert config.enrich.min_source_clips == 8
@@ -228,6 +239,16 @@ def test_config_with_all_sections(tmp_path):
             "stage1_quality_max_regen_attempts": 3,
             "stage1_quality_min_clip_score": 0.62,
             "stage1_strict_require_task_hints": True,
+            "stage1_active_perception_enabled": True,
+            "stage1_active_perception_scope": "targeted",
+            "stage1_active_perception_max_loops": 1,
+            "stage1_active_perception_fail_closed": False,
+            "stage1_probe_frames_override": 11,
+            "stage1_probe_resolution_scale": 0.6,
+            "stage1_vlm_min_task_score": 7.5,
+            "stage1_vlm_min_visual_score": 7.2,
+            "stage1_vlm_min_spatial_score": 6.5,
+            "stage1_keep_probe_videos": True,
             "orientation_autocorrect_enabled": True,
             "orientation_autocorrect_mode": "warn_only",
             "manipulation_random_xy_offset_m": 0.0,
@@ -289,6 +310,7 @@ def test_config_with_all_sections(tmp_path):
                 "model": "gemini-3-flash",
                 "fallback_models": ["gemini-2.5-flash", "gemini-1.5-flash"],
                 "enable_agentic_vision": True,
+                "video_metadata_fps": 12.0,
             },
         },
         "policy_finetune": {
@@ -396,6 +418,16 @@ def test_config_with_all_sections(tmp_path):
     assert config.render.stage1_quality_max_regen_attempts == 3
     assert config.render.stage1_quality_min_clip_score == pytest.approx(0.62)
     assert config.render.stage1_strict_require_task_hints is True
+    assert config.render.stage1_active_perception_enabled is True
+    assert config.render.stage1_active_perception_scope == "targeted"
+    assert config.render.stage1_active_perception_max_loops == 1
+    assert config.render.stage1_active_perception_fail_closed is False
+    assert config.render.stage1_probe_frames_override == 11
+    assert config.render.stage1_probe_resolution_scale == pytest.approx(0.6)
+    assert config.render.stage1_vlm_min_task_score == pytest.approx(7.5)
+    assert config.render.stage1_vlm_min_visual_score == pytest.approx(7.2)
+    assert config.render.stage1_vlm_min_spatial_score == pytest.approx(6.5)
+    assert config.render.stage1_keep_probe_videos is True
     assert config.render.orientation_autocorrect_enabled is True
     assert config.render.orientation_autocorrect_mode == "warn_only"
     assert config.render.manipulation_random_xy_offset_m == pytest.approx(0.0)
@@ -447,6 +479,7 @@ def test_config_with_all_sections(tmp_path):
     assert config.robot_composite.enabled is True
     assert config.gemini_polish.enabled is True
     assert config.eval_policy.vlm_judge.enable_agentic_vision is True
+    assert config.eval_policy.vlm_judge.video_metadata_fps == pytest.approx(12.0)
     assert config.policy_finetune.enabled is True
     assert config.policy_finetune.max_steps == 100
     assert config.splatsim.enabled is True
@@ -897,6 +930,44 @@ def test_config_rejects_invalid_stage1_quality_min_clip_score(tmp_path):
     )
 
     with pytest.raises(ValueError, match="stage1_quality_min_clip_score"):
+        load_config(config_path)
+
+
+def test_config_rejects_invalid_stage1_active_perception_scope(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "bad_stage1_active_scope.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Stage1 Active Scope",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "render": {"stage1_active_perception_scope": "everything"},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="stage1_active_perception_scope"):
+        load_config(config_path)
+
+
+def test_config_rejects_invalid_vlm_video_metadata_fps(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "bad_vlm_video_fps.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad VLM Video FPS",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "eval_policy": {"vlm_judge": {"video_metadata_fps": 30.0}},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="video_metadata_fps"):
         load_config(config_path)
 
 

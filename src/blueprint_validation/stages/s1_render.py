@@ -13,8 +13,20 @@ from ..common import StageResult, get_logger, write_json
 from ..config import CameraPathSpec, FacilityConfig, ValidationConfig
 from ..evaluation.camera_quality import evaluate_clip_quality
 from ..evaluation.task_hints import tasks_from_task_hints
+from ..evaluation.vlm_judge import score_stage1_probe
 from ..rendering.camera_paths import generate_path_from_spec, save_path_to_json
-from ..rendering.camera_quality_planner import plan_best_camera_spec
+from ..rendering.camera_quality_planner import (
+    plan_best_camera_spec,
+    rank_camera_spec_candidates,
+)
+from ..rendering.stage1_active_perception import (
+    apply_issue_tag_corrections,
+    combined_probe_score,
+    compute_probe_resolution,
+    probe_passes_thresholds,
+    resolve_probe_budget,
+    should_probe_clip,
+)
 from ..rendering.gsplat_renderer import render_video
 from ..rendering.ply_loader import load_splat
 from ..rendering.scene_geometry import (
@@ -193,6 +205,13 @@ class RenderStage(PipelineStage):
         # Check for warmup cache — skip CPU-heavy prep if available
         cached_clips = load_cached_clips(work_dir)
         warmup_cache = load_warmup_cache(work_dir)
+        if bool(config.render.stage1_active_perception_enabled):
+            if cached_clips is not None:
+                logger.info(
+                    "Ignoring warmup cache because Stage-1 active perception is enabled."
+                )
+            cached_clips = None
+            warmup_cache = None
         extra_specs_count = 0
         num_poses_roll_corrected = 0
         num_clips_with_roll_correction = 0
@@ -316,16 +335,52 @@ class RenderStage(PipelineStage):
                 resolution,
                 fps,
                 scene_T if has_transform else None,
+                facility.description,
             )
 
-        quality_gate_passed = bool(quality_summary.get("num_quality_failures", 0) == 0)
-        quality_summary["quality_gate_passed"] = quality_gate_passed
-        if bool(config.render.stage1_quality_planner_enabled) and not quality_gate_passed:
-            detail = (
-                "Stage 1 quality gate failed after bounded regeneration. "
-                f"failed_clips={int(quality_summary.get('num_quality_failures', 0))} "
-                f"retries={int(quality_summary.get('num_quality_retries', 0))}"
+        quality_gate_passed = bool(
+            int(quality_summary.get("num_quality_failures", 0)) == 0
+            and (
+                not bool(config.render.stage1_active_perception_enabled)
+                or not bool(config.render.stage1_active_perception_fail_closed)
+                or int(quality_summary.get("num_vlm_probe_failures", 0)) == 0
             )
+        )
+        quality_summary["quality_gate_passed"] = quality_gate_passed
+        enforce_stage1_fail = (
+            bool(config.render.stage1_quality_planner_enabled)
+            or (
+                bool(config.render.stage1_active_perception_enabled)
+                and bool(config.render.stage1_active_perception_fail_closed)
+            )
+        )
+        if enforce_stage1_fail and not quality_gate_passed:
+            detail_parts = [
+                "Stage 1 quality gate failed after bounded regeneration."
+            ]
+            if int(quality_summary.get("num_quality_failures", 0)) > 0:
+                detail_parts.append(
+                    "cv_quality_failed="
+                    f"{int(quality_summary.get('num_quality_failures', 0))}"
+                )
+                detail_parts.append(
+                    "cv_retries="
+                    f"{int(quality_summary.get('num_quality_retries', 0))}"
+                )
+            if (
+                bool(config.render.stage1_active_perception_enabled)
+                and bool(config.render.stage1_active_perception_fail_closed)
+                and int(quality_summary.get("num_vlm_probe_failures", 0)) > 0
+            ):
+                detail_parts.append(
+                    "vlm_probe_failed="
+                    f"{int(quality_summary.get('num_vlm_probe_failures', 0))}"
+                )
+                detail_parts.append(
+                    "vlm_probe_retries="
+                    f"{int(quality_summary.get('num_vlm_probe_retries', 0))}"
+                )
+            detail = " ".join(detail_parts)
             manifest_path = render_dir / "render_manifest.json"
             manifest = {
                 "facility": facility.name,
@@ -457,6 +512,7 @@ class RenderStage(PipelineStage):
                 fps=fps,
             )
             initial_camera = _camera_pose_metadata(poses[0]) if poses else None
+            path_context = _cache_path_context(clip_data)
             manifest_entries.append(
                 {
                     "clip_name": clip_name,
@@ -473,7 +529,17 @@ class RenderStage(PipelineStage):
                     "depth_video_path": str(output.depth_video_path),
                     "camera_path": str(render_dir / f"{clip_name}_camera_path.json"),
                     "initial_camera": initial_camera,
-                    "path_context": _cache_path_context(clip_data),
+                    "path_context": path_context,
+                    "expected_focus_text": _build_expected_focus_text(
+                        path_type=str(clip_data.get("path_type", "")),
+                        path_context=path_context,
+                    ),
+                    **_manifest_vlm_probe_fields(
+                        _default_vlm_probe_fields(
+                            selected_fps=float(config.eval_policy.vlm_judge.video_metadata_fps),
+                            candidate_count=1,
+                        )
+                    ),
                 }
                 )
             self._annotate_entry_quality(
@@ -487,7 +553,10 @@ class RenderStage(PipelineStage):
                 clip_entry=manifest_entries[-1],
                 enforce_fail=bool(config.render.stage1_quality_planner_enabled),
             )
-        quality_summary["quality_gate_passed"] = bool(quality_summary["num_quality_failures"] == 0)
+        quality_summary["quality_gate_passed"] = bool(
+            int(quality_summary["num_quality_failures"]) == 0
+            and int(quality_summary["num_vlm_probe_failures"]) == 0
+        )
         return manifest_entries, corrected_poses_total, corrected_clip_count, quality_summary
 
     def _generate_and_render(
@@ -504,6 +573,7 @@ class RenderStage(PipelineStage):
         resolution: tuple,
         fps: int,
         scene_T: Optional[np.ndarray] = None,
+        facility_description: str = "",
     ) -> tuple[List[Dict], int, int, Dict[str, object]]:
         """Original path: generate camera paths from scratch, then render."""
         manifest_entries: List[Dict] = []
@@ -531,8 +601,9 @@ class RenderStage(PipelineStage):
                 clip_name = f"clip_{clip_index:03d}_{path_spec.type}"
                 planned_spec = path_spec
                 candidate_count_evaluated = 1
+                ranked_candidates = []
                 if bool(config.render.stage1_quality_planner_enabled):
-                    planned_spec, candidate_count_evaluated, planner_metrics = plan_best_camera_spec(
+                    ranked_candidates = rank_camera_spec_candidates(
                         base_spec=path_spec,
                         scene_center=scene_center,
                         num_frames=requested_count,
@@ -549,8 +620,64 @@ class RenderStage(PipelineStage):
                         center_band_x=config.render.stage1_coverage_center_band_x,
                         center_band_y=config.render.stage1_coverage_center_band_y,
                     )
+                    if ranked_candidates:
+                        best_candidate = ranked_candidates[0]
+                        planned_spec = best_candidate.spec
+                        candidate_count_evaluated = len(ranked_candidates)
+                        planner_metrics = {
+                            "planner_best_score": round(float(best_candidate.score), 6),
+                            **dict(best_candidate.metrics),
+                        }
+                    else:
+                        planner_metrics = {}
                 else:
                     planner_metrics = {}
+                probe_meta = _default_vlm_probe_fields(
+                    selected_fps=float(config.eval_policy.vlm_judge.video_metadata_fps),
+                    candidate_count=max(1, int(candidate_count_evaluated)),
+                )
+                path_context_for_scope = _path_context_from_spec(path_spec)
+                if (
+                    bool(config.render.stage1_active_perception_enabled)
+                    and should_probe_clip(
+                        scope=config.render.stage1_active_perception_scope,
+                        path_type=str(path_spec.type),
+                        path_context=path_context_for_scope,
+                    )
+                ):
+                    planned_spec, probe_meta = self._run_active_perception_probe(
+                        config=config,
+                        splat=splat,
+                        clip_name=clip_name,
+                        initial_spec=planned_spec,
+                        ranked_candidates=ranked_candidates,
+                        scene_center=scene_center,
+                        occupancy=occupancy,
+                        render_dir=render_dir,
+                        camera_height=camera_height,
+                        look_down_deg=look_down_deg,
+                        resolution=resolution,
+                        start_offset=offset,
+                        fps=fps,
+                        scene_T=scene_T,
+                        facility_description=facility_description,
+                    )
+                    _update_vlm_probe_summary(
+                        quality_summary=quality_summary,
+                        probe_meta=probe_meta,
+                    )
+                    if (
+                        bool(config.render.stage1_active_perception_fail_closed)
+                        and bool(probe_meta.get("vlm_probe_evaluated", False))
+                        and not bool(probe_meta.get("vlm_probe_passed", False))
+                    ):
+                        logger.warning(
+                            "Active-perception probe failed for %s: %s",
+                            clip_name,
+                            probe_meta.get("vlm_probe_fail_reason", "unknown"),
+                        )
+                        clip_index += 1
+                        continue
 
                 attempt = 0
                 entry: Dict[str, object] | None = None
@@ -613,6 +740,7 @@ class RenderStage(PipelineStage):
                         fps=fps,
                     )
                     initial_camera = _camera_pose_metadata(render_poses[0]) if render_poses else None
+                    path_context = _path_context_from_spec(planned_spec)
                     entry = {
                         "clip_name": clip_name,
                         "path_type": planned_spec.type,
@@ -628,8 +756,13 @@ class RenderStage(PipelineStage):
                         "depth_video_path": str(output.depth_video_path),
                         "camera_path": str(render_dir / f"{clip_name}_camera_path.json"),
                         "initial_camera": initial_camera,
-                        "path_context": _path_context_from_spec(planned_spec),
+                        "path_context": path_context,
+                        "expected_focus_text": _build_expected_focus_text(
+                            path_type=str(planned_spec.type),
+                            path_context=path_context,
+                        ),
                         "candidate_count_evaluated": int(candidate_count_evaluated),
+                        **_manifest_vlm_probe_fields(probe_meta),
                         **planner_metrics,
                     }
                     quality_passed = self._annotate_entry_quality(
@@ -659,7 +792,10 @@ class RenderStage(PipelineStage):
                 manifest_entries.append(entry)
                 clip_index += 1
 
-        quality_summary["quality_gate_passed"] = bool(quality_summary["num_quality_failures"] == 0)
+        quality_summary["quality_gate_passed"] = bool(
+            int(quality_summary["num_quality_failures"]) == 0
+            and int(quality_summary["num_vlm_probe_failures"]) == 0
+        )
         return manifest_entries, corrected_poses_total, corrected_clip_count, quality_summary
 
     def _build_render_poses(
@@ -740,6 +876,219 @@ class RenderStage(PipelineStage):
         clip_entry["degenerate_mix_detected"] = False
         return bool(metrics.get("quality_gate_passed", False))
 
+    def _run_active_perception_probe(
+        self,
+        *,
+        config: ValidationConfig,
+        splat,
+        clip_name: str,
+        initial_spec: CameraPathSpec,
+        ranked_candidates: List[object],
+        scene_center: np.ndarray,
+        occupancy: Optional[OccupancyGrid],
+        render_dir: Path,
+        camera_height: float,
+        look_down_deg: float,
+        resolution: tuple,
+        start_offset: np.ndarray,
+        fps: int,
+        scene_T: Optional[np.ndarray],
+        facility_description: str,
+    ) -> tuple[CameraPathSpec, Dict[str, object]]:
+        budget = resolve_probe_budget(
+            candidate_budget=config.render.stage1_quality_candidate_budget,
+            max_loops_cap=int(config.render.stage1_active_perception_max_loops),
+            probe_frames_override=int(config.render.stage1_probe_frames_override),
+            probe_resolution_scale_override=float(config.render.stage1_probe_resolution_scale),
+        )
+        probe_resolution = compute_probe_resolution(
+            base_resolution=(int(resolution[0]), int(resolution[1])),
+            scale=float(budget.probe_resolution_scale),
+        )
+        selected_fps = float(config.eval_policy.vlm_judge.video_metadata_fps)
+        probe_meta = _default_vlm_probe_fields(
+            selected_fps=selected_fps,
+            candidate_count=max(1, int(min(len(ranked_candidates), int(budget.top_k)))),
+        )
+
+        if ranked_candidates:
+            ranked_specs = [row.spec for row in ranked_candidates[: max(1, int(budget.top_k))]]
+            geometric_scores = [float(getattr(row, "score", 0.0)) for row in ranked_candidates[: max(1, int(budget.top_k))]]
+        else:
+            ranked_specs = [initial_spec]
+            geometric_scores = [0.0]
+
+        current_spec = initial_spec
+        passed = False
+        last_issue_tags: List[str] = []
+        last_fail_reason: Optional[str] = None
+        retries_used = 0
+
+        # max_loops is "correction loops"; total rounds include the initial probe round.
+        total_rounds = max(1, int(budget.max_loops) + 1)
+        for round_idx in range(total_rounds):
+            if round_idx == 0:
+                candidate_specs = ranked_specs
+                candidate_geometric = geometric_scores
+            else:
+                candidate_specs = [current_spec]
+                candidate_geometric = [0.0]
+
+            best_row: Dict[str, object] | None = None
+            for cand_idx, candidate_spec in enumerate(candidate_specs):
+                probe_meta["vlm_probe_attempts"] = int(probe_meta["vlm_probe_attempts"]) + 1
+                probe_meta["vlm_probe_evaluated"] = True
+                (
+                    poses,
+                    _pre_count,
+                    _post_filter_count,
+                    _post_resample_count,
+                    corrected_count,
+                ) = self._build_render_poses(
+                    config=config,
+                    path_spec=candidate_spec,
+                    scene_center=scene_center,
+                    occupancy=occupancy,
+                    num_frames=int(budget.probe_frames),
+                    camera_height=camera_height,
+                    look_down_deg=look_down_deg,
+                    resolution=probe_resolution,
+                    start_offset=start_offset,
+                )
+                if not poses:
+                    row = {
+                        "spec": candidate_spec,
+                        "combined_score": -1e9,
+                        "passed": False,
+                        "issue_tags": ["target_missing"],
+                        "reasoning": "probe_pose_generation_failed",
+                    }
+                    if best_row is None or float(row["combined_score"]) > float(
+                        best_row["combined_score"]
+                    ):
+                        best_row = row
+                    continue
+
+                render_poses = poses
+                if scene_T is not None:
+                    from ..rendering.camera_paths import CameraPose
+
+                    render_poses = [
+                        CameraPose(
+                            c2w=transform_c2w(p.c2w, scene_T),
+                            fx=p.fx,
+                            fy=p.fy,
+                            cx=p.cx,
+                            cy=p.cy,
+                            width=p.width,
+                            height=p.height,
+                        )
+                        for p in poses
+                    ]
+                probe_clip_name = f"{clip_name}_probe_l{round_idx}_c{cand_idx:02d}"
+                output = render_video(
+                    splat=splat,
+                    poses=render_poses,
+                    output_dir=render_dir,
+                    clip_name=probe_clip_name,
+                    fps=fps,
+                )
+                path_context = _path_context_from_spec(candidate_spec)
+                expected_focus_text = _build_expected_focus_text(
+                    path_type=str(candidate_spec.type),
+                    path_context=path_context,
+                )
+                try:
+                    probe_score = score_stage1_probe(
+                        video_path=Path(str(output.video_path)),
+                        expected_focus_text=expected_focus_text,
+                        config=config.eval_policy.vlm_judge,
+                        facility_description=facility_description,
+                    )
+                except Exception as exc:
+                    message = str(exc)
+                    lowered = message.lower()
+                    if "json" in lowered or "parse" in lowered:
+                        probe_meta["num_vlm_probe_parse_failures"] = int(
+                            probe_meta["num_vlm_probe_parse_failures"]
+                        ) + 1
+                    else:
+                        probe_meta["num_vlm_probe_api_failures"] = int(
+                            probe_meta["num_vlm_probe_api_failures"]
+                        ) + 1
+                    last_fail_reason = f"probe_scoring_failed: {message}"
+                    probe_meta["vlm_probe_fail_reason"] = last_fail_reason
+                    probe_meta["vlm_probe_passed"] = False
+                    probe_meta["vlm_probe_evaluated"] = True
+                    if not bool(config.render.stage1_keep_probe_videos):
+                        _cleanup_probe_outputs(output)
+                    return initial_spec, probe_meta
+
+                passes = probe_passes_thresholds(
+                    task_score=float(probe_score.task_score),
+                    visual_score=float(probe_score.visual_score),
+                    spatial_score=float(probe_score.spatial_score),
+                    min_task=float(config.render.stage1_vlm_min_task_score),
+                    min_visual=float(config.render.stage1_vlm_min_visual_score),
+                    min_spatial=float(config.render.stage1_vlm_min_spatial_score),
+                )
+                geom = candidate_geometric[min(cand_idx, len(candidate_geometric) - 1)]
+                combined = combined_probe_score(
+                    geometric_score=float(geom),
+                    task_score=float(probe_score.task_score),
+                    visual_score=float(probe_score.visual_score),
+                    spatial_score=float(probe_score.spatial_score),
+                )
+                row = {
+                    "spec": candidate_spec,
+                    "combined_score": float(combined),
+                    "passed": bool(passes),
+                    "issue_tags": list(probe_score.issue_tags),
+                    "reasoning": str(probe_score.reasoning or ""),
+                }
+                if best_row is None or float(row["combined_score"]) > float(best_row["combined_score"]):
+                    best_row = row
+
+                probe_meta["vlm_probe_evaluated"] = True
+                if not bool(config.render.stage1_keep_probe_videos):
+                    _cleanup_probe_outputs(output)
+
+                # Track roll-correction side-effect for visibility.
+                if corrected_count > 0:
+                    logger.debug(
+                        "Probe clip %s had roll-corrected poses: %d",
+                        probe_clip_name,
+                        corrected_count,
+                    )
+
+            if best_row is None:
+                last_fail_reason = "probe_no_candidate_results"
+                break
+
+            last_issue_tags = list(best_row.get("issue_tags", []))
+            current_spec = best_row["spec"]
+            if bool(best_row.get("passed", False)):
+                passed = True
+                break
+            if round_idx >= total_rounds - 1:
+                last_fail_reason = "probe_threshold_not_met"
+                break
+
+            retries_used += 1
+            current_spec = apply_issue_tag_corrections(
+                spec=current_spec,
+                issue_tags=last_issue_tags,
+                default_camera_height=float(camera_height),
+                default_look_down_deg=float(look_down_deg),
+            )
+
+        probe_meta["vlm_probe_passed"] = bool(passed)
+        probe_meta["vlm_probe_retries_used"] = int(max(0, retries_used))
+        probe_meta["vlm_probe_issue_tags_final"] = list(last_issue_tags)
+        if not passed:
+            probe_meta["vlm_probe_fail_reason"] = str(last_fail_reason or "probe_failed")
+        return current_spec if passed else initial_spec, probe_meta
+
 
 def _resample_poses_nearest(poses: List, requested_count: int) -> List:
     """Resample camera poses to a target count via deterministic nearest-neighbor indices."""
@@ -809,6 +1158,72 @@ def _path_context_from_spec(path_spec: CameraPathSpec) -> dict:
     if path_spec.target_role is not None:
         context["target_role"] = str(path_spec.target_role)
     return context
+
+
+def _target_focus_label(path_context: dict | None) -> str | None:
+    if not isinstance(path_context, dict):
+        return None
+    for key in ("target_label", "target_instance_id", "target_category"):
+        value = path_context.get(key)
+        text = str(value).strip() if value is not None else ""
+        if text:
+            return text
+    return None
+
+
+def _build_expected_focus_text(*, path_type: str, path_context: dict | None) -> str:
+    """Return a deterministic, human/VLM-readable description of clip intent."""
+    path_key = str(path_type or "").strip().lower()
+    role = ""
+    if isinstance(path_context, dict):
+        role = str(path_context.get("target_role", "")).strip().lower()
+    target_label = _target_focus_label(path_context)
+
+    if role == "targets":
+        if target_label:
+            return (
+                f"Primary target focus: keep {target_label} centered and clearly visible "
+                "for most of the clip."
+            )
+        return "Primary target focus: keep the task target centered and clearly visible."
+    if role == "context":
+        if target_label:
+            return (
+                f"Context focus: keep {target_label} visible alongside nearby objects and "
+                "interaction affordances."
+            )
+        return (
+            "Context focus: keep the task region visible alongside nearby objects and "
+            "interaction affordances."
+        )
+    if role == "overview":
+        return (
+            "Overview focus: capture broad scene layout and navigation anchors while preserving "
+            "task-relevant context."
+        )
+    if role == "fallback":
+        return (
+            "Fallback focus: capture clear, stable scene coverage when explicit task-target "
+            "mapping is unavailable."
+        )
+
+    if path_key == "manipulation":
+        if target_label:
+            return (
+                f"Manipulation focus: keep {target_label} and its interaction zone in frame with "
+                "a stable close-range viewpoint."
+            )
+        return (
+            "Manipulation focus: keep the task object and interaction zone in frame with a stable "
+            "close-range viewpoint."
+        )
+    if path_key == "orbit":
+        return "Orbit focus: provide stable global scene coverage for spatial orientation."
+    if path_key == "sweep":
+        return "Sweep focus: scan across the scene to expose spatial relationships and task regions."
+    if path_key == "file":
+        return "Path-file focus: follow the predefined camera path with stable, clear framing."
+    return "General focus: produce clear, stable scene coverage useful for downstream evaluation."
 
 
 def _build_task_prompt_pool(
@@ -1177,10 +1592,33 @@ def _quality_cache_key(
         str(int(config.render.stage1_coverage_min_approach_angle_bins)),
         f"{float(config.render.stage1_coverage_angle_bin_deg):.6f}",
         f"{float(config.render.stage1_coverage_blur_laplacian_min):.6f}",
+        str(bool(config.render.stage1_active_perception_enabled)),
+        str(config.render.stage1_active_perception_scope),
+        str(int(config.render.stage1_active_perception_max_loops)),
+        str(bool(config.render.stage1_active_perception_fail_closed)),
+        str(int(config.render.stage1_probe_frames_override)),
+        f"{float(config.render.stage1_probe_resolution_scale):.6f}",
+        f"{float(config.render.stage1_vlm_min_task_score):.6f}",
+        f"{float(config.render.stage1_vlm_min_visual_score):.6f}",
+        f"{float(config.render.stage1_vlm_min_spatial_score):.6f}",
+        str(bool(config.render.stage1_keep_probe_videos)),
+        f"{float(config.eval_policy.vlm_judge.video_metadata_fps):.6f}",
         str(bool(config.render.vlm_fallback)),
         hints_sig,
     ]
     return "|".join(bits)
+
+
+def _cleanup_probe_outputs(output) -> None:
+    for attr in ("video_path", "depth_video_path"):
+        value = getattr(output, attr, None)
+        if value is None:
+            continue
+        path = Path(str(value))
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("Failed deleting probe output: %s", path, exc_info=True)
 
 
 def _empty_quality_summary() -> Dict[str, object]:
@@ -1189,9 +1627,75 @@ def _empty_quality_summary() -> Dict[str, object]:
         "num_quality_failures": 0,
         "num_quality_retries": 0,
         "num_quality_recovered": 0,
+        "num_vlm_probe_evaluated": 0,
+        "num_vlm_probe_failures": 0,
+        "num_vlm_probe_retries": 0,
+        "num_vlm_probe_recovered": 0,
+        "num_vlm_probe_api_failures": 0,
+        "num_vlm_probe_parse_failures": 0,
         "num_clips_with_target_metadata": 0,
         "num_missing_target_annotations": 0,
     }
+
+
+def _default_vlm_probe_fields(*, selected_fps: float, candidate_count: int) -> Dict[str, object]:
+    return {
+        "vlm_probe_attempts": 0,
+        "vlm_probe_passed": True,
+        "vlm_probe_retries_used": 0,
+        "vlm_probe_issue_tags_final": [],
+        "vlm_probe_candidate_count": int(max(1, candidate_count)),
+        "vlm_probe_selected_fps": (
+            None if float(selected_fps) <= 0.0 else round(float(selected_fps), 3)
+        ),
+        "vlm_probe_fail_reason": None,
+        "vlm_probe_evaluated": False,
+        "num_vlm_probe_api_failures": 0,
+        "num_vlm_probe_parse_failures": 0,
+    }
+
+
+def _manifest_vlm_probe_fields(probe_meta: Dict[str, object]) -> Dict[str, object]:
+    return {
+        "vlm_probe_attempts": int(max(0, int(probe_meta.get("vlm_probe_attempts", 0) or 0))),
+        "vlm_probe_passed": bool(probe_meta.get("vlm_probe_passed", True)),
+        "vlm_probe_retries_used": int(
+            max(0, int(probe_meta.get("vlm_probe_retries_used", 0) or 0))
+        ),
+        "vlm_probe_issue_tags_final": list(probe_meta.get("vlm_probe_issue_tags_final", []) or []),
+        "vlm_probe_candidate_count": int(
+            max(1, int(probe_meta.get("vlm_probe_candidate_count", 1) or 1))
+        ),
+        "vlm_probe_selected_fps": probe_meta.get("vlm_probe_selected_fps"),
+        "vlm_probe_fail_reason": probe_meta.get("vlm_probe_fail_reason"),
+    }
+
+
+def _update_vlm_probe_summary(
+    *,
+    quality_summary: Dict[str, object],
+    probe_meta: Dict[str, object],
+) -> None:
+    if not bool(probe_meta.get("vlm_probe_evaluated", False)):
+        return
+    quality_summary["num_vlm_probe_evaluated"] = int(quality_summary["num_vlm_probe_evaluated"]) + 1
+    retries_used = int(max(0, int(probe_meta.get("vlm_probe_retries_used", 0) or 0)))
+    quality_summary["num_vlm_probe_retries"] = int(quality_summary["num_vlm_probe_retries"]) + retries_used
+    if bool(probe_meta.get("vlm_probe_passed", False)):
+        if retries_used > 0:
+            quality_summary["num_vlm_probe_recovered"] = int(
+                quality_summary["num_vlm_probe_recovered"]
+            ) + 1
+    else:
+        quality_summary["num_vlm_probe_failures"] = int(
+            quality_summary["num_vlm_probe_failures"]
+        ) + 1
+    quality_summary["num_vlm_probe_api_failures"] = int(
+        quality_summary["num_vlm_probe_api_failures"]
+    ) + int(max(0, int(probe_meta.get("num_vlm_probe_api_failures", 0) or 0)))
+    quality_summary["num_vlm_probe_parse_failures"] = int(
+        quality_summary["num_vlm_probe_parse_failures"]
+    ) + int(max(0, int(probe_meta.get("num_vlm_probe_parse_failures", 0) or 0)))
 
 
 def _update_quality_summary_from_entry(

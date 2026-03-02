@@ -14,6 +14,7 @@ from blueprint_validation.config import (
     ValidationConfig,
 )
 from blueprint_validation.warmup import (
+    _quality_cache_key,
     _deserialize_camera_poses,
     _load_ply_means_numpy,
     _serialize_camera_poses,
@@ -263,3 +264,24 @@ def test_warmup_auto_up_axis(sample_ply, tmp_path):
     assert summary["resolved_up_axis"] == "z"
     assert summary["warmup_complete"] is True
     assert summary["num_clips"] > 0
+
+
+def test_warmup_quality_cache_key_includes_active_perception_knobs(sample_ply):
+    fac = FacilityConfig(
+        name="Cache Key Facility",
+        ply_path=sample_ply,
+    )
+    config = ValidationConfig(
+        project_name="Cache Key Test",
+        facilities={"test": fac},
+        render=RenderConfig(camera_paths=[CameraPathSpec(type="orbit", radius_m=2.0)]),
+    )
+    key_base = _quality_cache_key(config=config, task_hints_path=None)
+
+    config.render.stage1_probe_frames_override = 11
+    key_probe_frames = _quality_cache_key(config=config, task_hints_path=None)
+    assert key_probe_frames != key_base
+
+    config.eval_policy.vlm_judge.video_metadata_fps = 0.0
+    key_fps = _quality_cache_key(config=config, task_hints_path=None)
+    assert key_fps != key_probe_frames

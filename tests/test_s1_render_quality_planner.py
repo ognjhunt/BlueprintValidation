@@ -40,6 +40,44 @@ def test_plan_best_camera_spec_medium_budget_evaluates_multiple_candidates():
     assert "planner_best_score" in metrics
 
 
+def test_rank_camera_spec_candidates_sorted_and_stable():
+    from blueprint_validation.config import CameraPathSpec
+    from blueprint_validation.rendering.camera_quality_planner import (
+        rank_camera_spec_candidates,
+    )
+
+    spec = CameraPathSpec(
+        type="manipulation",
+        approach_point=[0.0, 0.0, 0.5],
+        arc_radius_m=0.45,
+        height_override_m=0.75,
+        look_down_override_deg=45.0,
+    )
+    ranked = rank_camera_spec_candidates(
+        base_spec=spec,
+        scene_center=np.array([0.0, 0.0, 0.0], dtype=np.float64),
+        num_frames=9,
+        camera_height=0.8,
+        look_down_deg=35.0,
+        resolution=(64, 80),
+        start_offset=np.zeros(3, dtype=np.float64),
+        manipulation_target_z_bias_m=0.0,
+        budget="medium",
+        min_visible_frame_ratio=0.2,
+        min_center_band_ratio=0.2,
+        min_approach_angle_bins=2,
+        angle_bin_deg=45.0,
+        center_band_x=[0.2, 0.8],
+        center_band_y=[0.2, 0.8],
+    )
+    assert len(ranked) >= 5
+    assert float(ranked[0].score) >= float(ranked[-1].score)
+    # Deterministic tie-break: candidate index is non-decreasing for equal scores.
+    for i in range(1, len(ranked)):
+        if abs(float(ranked[i - 1].score) - float(ranked[i].score)) <= 1e-9:
+            assert int(ranked[i - 1].candidate_index) < int(ranked[i].candidate_index)
+
+
 def test_generate_and_render_retries_then_recovers(sample_config, tmp_path, monkeypatch):
     from blueprint_validation.config import CameraPathSpec
     from blueprint_validation.rendering.camera_paths import CameraPose

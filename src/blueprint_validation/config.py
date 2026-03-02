@@ -115,6 +115,17 @@ class RenderConfig:
     stage1_quality_max_regen_attempts: int = 2
     stage1_quality_min_clip_score: float = 0.55
     stage1_strict_require_task_hints: bool = False
+    # Stage-1 active-perception loop (native-video VLM critic + deterministic corrections).
+    stage1_active_perception_enabled: bool = True
+    stage1_active_perception_scope: str = "all"  # all|targeted|manipulation
+    stage1_active_perception_max_loops: int = 2
+    stage1_active_perception_fail_closed: bool = True
+    stage1_probe_frames_override: int = 0
+    stage1_probe_resolution_scale: float = 0.0
+    stage1_vlm_min_task_score: float = 7.0
+    stage1_vlm_min_visual_score: float = 7.0
+    stage1_vlm_min_spatial_score: float = 6.0
+    stage1_keep_probe_videos: bool = False
     orientation_autocorrect_enabled: bool = True
     orientation_autocorrect_mode: str = "auto"  # auto|fail_fast|warn_only
     manipulation_random_xy_offset_m: float = 0.0
@@ -245,6 +256,8 @@ class VLMJudgeConfig:
     fallback_models: List[str] = field(default_factory=lambda: ["gemini-2.5-flash"])
     api_key_env: str = "GOOGLE_GENAI_API_KEY"
     enable_agentic_vision: bool = True
+    # Explicit Gemini File API video metadata FPS for scoring calls (0 disables explicit fps).
+    video_metadata_fps: float = 10.0
     scoring_prompt: str = (
         "You are evaluating a robot policy rollout video.\n"
         "Score the following on a 1-10 scale:\n"
@@ -656,6 +669,7 @@ _ALLOWED_WM_REFRESH_SOURCE_CONDITIONS = {"baseline", "adapted"}
 
 _ALLOWED_MANIP_EVAL_MODES = {"overlay_marker", "raw"}
 _ALLOWED_STAGE1_QUALITY_CANDIDATE_BUDGETS = {"low", "medium", "high"}
+_ALLOWED_STAGE1_ACTIVE_PERCEPTION_SCOPES = {"all", "targeted", "manipulation"}
 
 
 def _parse_manip_eval_mode(raw_value: Any) -> str:
@@ -671,6 +685,14 @@ def _parse_stage1_quality_candidate_budget(raw_value: Any) -> str:
     if value not in _ALLOWED_STAGE1_QUALITY_CANDIDATE_BUDGETS:
         allowed = ", ".join(sorted(_ALLOWED_STAGE1_QUALITY_CANDIDATE_BUDGETS))
         raise ValueError(f"render.stage1_quality_candidate_budget must be one of: {allowed}")
+    return value
+
+
+def _parse_stage1_active_perception_scope(raw_value: Any) -> str:
+    value = str(raw_value or "all").strip().lower()
+    if value not in _ALLOWED_STAGE1_ACTIVE_PERCEPTION_SCOPES:
+        allowed = ", ".join(sorted(_ALLOWED_STAGE1_ACTIVE_PERCEPTION_SCOPES))
+        raise ValueError(f"render.stage1_active_perception_scope must be one of: {allowed}")
     return value
 
 
@@ -836,6 +858,20 @@ def load_config(path: Path) -> ValidationConfig:
             stage1_quality_max_regen_attempts=int(r.get("stage1_quality_max_regen_attempts", 2)),
             stage1_quality_min_clip_score=float(r.get("stage1_quality_min_clip_score", 0.55)),
             stage1_strict_require_task_hints=bool(r.get("stage1_strict_require_task_hints", False)),
+            stage1_active_perception_enabled=bool(r.get("stage1_active_perception_enabled", True)),
+            stage1_active_perception_scope=_parse_stage1_active_perception_scope(
+                r.get("stage1_active_perception_scope", "all")
+            ),
+            stage1_active_perception_max_loops=int(r.get("stage1_active_perception_max_loops", 2)),
+            stage1_active_perception_fail_closed=bool(
+                r.get("stage1_active_perception_fail_closed", True)
+            ),
+            stage1_probe_frames_override=int(r.get("stage1_probe_frames_override", 0)),
+            stage1_probe_resolution_scale=float(r.get("stage1_probe_resolution_scale", 0.0)),
+            stage1_vlm_min_task_score=float(r.get("stage1_vlm_min_task_score", 7.0)),
+            stage1_vlm_min_visual_score=float(r.get("stage1_vlm_min_visual_score", 7.0)),
+            stage1_vlm_min_spatial_score=float(r.get("stage1_vlm_min_spatial_score", 6.0)),
+            stage1_keep_probe_videos=bool(r.get("stage1_keep_probe_videos", False)),
             orientation_autocorrect_enabled=bool(r.get("orientation_autocorrect_enabled", True)),
             orientation_autocorrect_mode=str(r.get("orientation_autocorrect_mode", "auto")),
             manipulation_random_xy_offset_m=float(r.get("manipulation_random_xy_offset_m", 0.0)),
@@ -1037,6 +1073,7 @@ def load_config(path: Path) -> ValidationConfig:
                 ],
                 api_key_env=vlm_raw.get("api_key_env", "GOOGLE_GENAI_API_KEY"),
                 enable_agentic_vision=vlm_raw.get("enable_agentic_vision", True),
+                video_metadata_fps=float(vlm_raw.get("video_metadata_fps", 10.0)),
                 scoring_prompt=vlm_raw.get("scoring_prompt", VLMJudgeConfig().scoring_prompt),
             ),
         )
@@ -1505,6 +1542,25 @@ def load_config(path: Path) -> ValidationConfig:
     ):
         allowed = ", ".join(sorted(_ALLOWED_STAGE1_QUALITY_CANDIDATE_BUDGETS))
         raise ValueError(f"render.stage1_quality_candidate_budget must be one of: {allowed}")
+    if str(config.render.stage1_active_perception_scope).strip().lower() not in (
+        _ALLOWED_STAGE1_ACTIVE_PERCEPTION_SCOPES
+    ):
+        allowed = ", ".join(sorted(_ALLOWED_STAGE1_ACTIVE_PERCEPTION_SCOPES))
+        raise ValueError(f"render.stage1_active_perception_scope must be one of: {allowed}")
+    if int(config.render.stage1_active_perception_max_loops) < 0:
+        raise ValueError("render.stage1_active_perception_max_loops must be >= 0")
+    if int(config.render.stage1_probe_frames_override) < 0:
+        raise ValueError("render.stage1_probe_frames_override must be >= 0")
+    if not (0.0 <= float(config.render.stage1_probe_resolution_scale) <= 1.0):
+        raise ValueError("render.stage1_probe_resolution_scale must be in [0, 1]")
+    if not (0.0 <= float(config.render.stage1_vlm_min_task_score) <= 10.0):
+        raise ValueError("render.stage1_vlm_min_task_score must be in [0, 10]")
+    if not (0.0 <= float(config.render.stage1_vlm_min_visual_score) <= 10.0):
+        raise ValueError("render.stage1_vlm_min_visual_score must be in [0, 10]")
+    if not (0.0 <= float(config.render.stage1_vlm_min_spatial_score) <= 10.0):
+        raise ValueError("render.stage1_vlm_min_spatial_score must be in [0, 10]")
+    if not (0.0 <= float(config.eval_policy.vlm_judge.video_metadata_fps) <= 24.0):
+        raise ValueError("eval_policy.vlm_judge.video_metadata_fps must be in [0, 24]")
     if bool(config.eval_policy.reliability.fail_on_short_rollout):
         eval_mode = (config.eval_policy.mode or "claim").strip().lower()
         effective_max_steps = int(config.eval_policy.max_steps_per_rollout)

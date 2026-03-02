@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import json
 import os
 import re
@@ -37,6 +36,23 @@ class ManipulationJudgeScore(JudgeScore):
     lifted_clear: bool
     placed_in_target: bool
     stable_after_place: bool
+
+
+@dataclass
+class Stage1ProbeScore(JudgeScore):
+    issue_tags: List[str]
+
+
+_STAGE1_ALLOWED_ISSUE_TAGS = {
+    "target_missing",
+    "target_off_center",
+    "target_occluded",
+    "camera_too_far",
+    "camera_too_close",
+    "camera_motion_too_fast",
+    "blur_or_soft_focus",
+    "unstable_view",
+}
 
 
 def _extract_json_from_response(text: str) -> dict:
@@ -206,6 +222,33 @@ def _parse_classify_payload(payload: dict) -> tuple[str, float, str]:
     return predicted, confidence, reasoning
 
 
+def _parse_issue_tags(payload: dict) -> List[str]:
+    if "issue_tags" not in payload:
+        raise ValueError("Missing required key: issue_tags")
+    raw = payload.get("issue_tags")
+    if not isinstance(raw, list):
+        raise ValueError("issue_tags must be a JSON array")
+    deduped: List[str] = []
+    seen = set()
+    for item in raw:
+        tag = str(item).strip().lower()
+        if not tag:
+            continue
+        if tag not in _STAGE1_ALLOWED_ISSUE_TAGS:
+            raise ValueError(f"Unknown issue tag: {tag}")
+        if tag in seen:
+            continue
+        seen.add(tag)
+        deduped.append(tag)
+    return deduped
+
+
+def _parse_stage1_probe_payload(payload: dict) -> tuple[float, float, float, List[str], str]:
+    task, visual, spatial, reasoning = _parse_judge_payload(payload)
+    issue_tags = _parse_issue_tags(payload)
+    return task, visual, spatial, issue_tags, reasoning
+
+
 def _get_gemini_client(config: VLMJudgeConfig):
     """Initialize Gemini client."""
     from google import genai
@@ -216,6 +259,109 @@ def _get_gemini_client(config: VLMJudgeConfig):
 
     client = genai.Client(api_key=api_key)
     return client
+
+
+def _file_state_name(file_obj) -> str:
+    state = getattr(file_obj, "state", None)
+    if state is None:
+        return ""
+    name = getattr(state, "name", None)
+    if name:
+        return str(name).strip().upper()
+    return str(state).strip().upper()
+
+
+def _wait_for_uploaded_file_active(
+    client,
+    file_obj,
+    *,
+    timeout_s: float = 300.0,
+    poll_interval_s: float = 2.0,
+):
+    """Poll Gemini Files API until uploaded media is ACTIVE (or fails)."""
+    name = str(getattr(file_obj, "name", "")).strip()
+    if not name:
+        return file_obj
+
+    deadline = time.time() + max(1.0, float(timeout_s))
+    current = file_obj
+    while True:
+        state = _file_state_name(current)
+        if "ACTIVE" in state or "READY" in state:
+            return current
+        if "FAILED" in state or "ERROR" in state:
+            raise RuntimeError(f"Uploaded Gemini file failed processing: {name} state={state}")
+        if state and "PROCESSING" not in state:
+            # Unknown non-terminal state; treat as transient and keep polling until timeout.
+            logger.info("Waiting for Gemini file state transition: %s state=%s", name, state)
+
+        if time.time() >= deadline:
+            raise TimeoutError(
+                f"Timed out waiting for Gemini file to become ACTIVE: {name} "
+                f"(last_state={state or 'unknown'})"
+            )
+
+        time.sleep(max(0.1, float(poll_interval_s)))
+        current = client.files.get(name=name)
+
+
+def _upload_video_file(client, video_path: Path):
+    """Upload a local video file to Gemini Files API and wait until ACTIVE."""
+    if not video_path.exists():
+        raise FileNotFoundError(f"Video not found: {video_path}")
+    uploaded = client.files.upload(file=str(video_path))
+    return _wait_for_uploaded_file_active(client, uploaded)
+
+
+def _delete_uploaded_file(client, file_obj) -> None:
+    """Best-effort cleanup of uploaded Gemini file handles."""
+    name = str(getattr(file_obj, "name", "")).strip()
+    if not name:
+        return
+    try:
+        client.files.delete(name=name)
+    except Exception:
+        logger.warning("Failed to delete uploaded Gemini file: %s", name, exc_info=True)
+
+
+def _uploaded_file_uri(file_obj) -> str:
+    uri = getattr(file_obj, "uri", None)
+    if uri:
+        return str(uri).strip()
+    file_uri = getattr(file_obj, "file_uri", None)
+    if file_uri:
+        return str(file_uri).strip()
+    return ""
+
+
+def _uploaded_file_mime_type(file_obj) -> str:
+    mime = getattr(file_obj, "mime_type", None)
+    if mime:
+        return str(mime).strip()
+    mime = getattr(file_obj, "mimeType", None)
+    if mime:
+        return str(mime).strip()
+    return "video/mp4"
+
+
+def _build_uploaded_video_part(types, file_obj, *, video_metadata_fps: float):
+    """Build a Gemini video part with optional explicit fps metadata."""
+    fps = float(video_metadata_fps)
+    if fps <= 0.0:
+        return file_obj
+
+    uri = _uploaded_file_uri(file_obj)
+    if not uri:
+        logger.warning(
+            "Uploaded file URI unavailable; falling back to default video-part behavior."
+        )
+        return file_obj
+
+    mime_type = _uploaded_file_mime_type(file_obj)
+    return types.Part(
+        file_data=types.FileData(file_uri=uri, mime_type=mime_type),
+        video_metadata=types.VideoMetadata(fps=fps),
+    )
 
 
 def _is_quota_exhausted_error(exc_text: str) -> bool:
@@ -314,46 +460,21 @@ def _generate_with_retry(
     raise RuntimeError("VLM generation failed without returning or raising an exception.")
 
 
-def _encode_video_frames(video_path: Path, max_frames: int = 16) -> List[dict]:
-    """Extract and encode frames from a video for VLM input."""
-    import cv2
-
-    cap = cv2.VideoCapture(str(video_path))
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    step = max(1, total_frames // max_frames)
-
-    frames = []
-    for i in range(0, total_frames, step):
-        cap.set(cv2.CAP_PROP_POS_FRAMES, i)
-        ret, frame = cap.read()
-        if not ret:
-            break
-        # Encode as JPEG
-        _, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-        b64 = base64.b64encode(buffer).decode("utf-8")
-        frames.append(
-            {
-                "mime_type": "image/jpeg",
-                "data": b64,
-            }
-        )
-        if len(frames) >= max_frames:
-            break
-
-    cap.release()
-    return frames
-
-
 def score_rollout(
     video_path: Path,
     task_prompt: str,
     config: VLMJudgeConfig,
     facility_description: str = "",
+    *,
+    max_frames: int = 16,
+    start_frame: int = 0,
+    end_frame: int | None = None,
 ) -> JudgeScore:
     """Score a rollout video using Gemini 3 Flash with Agentic Vision.
 
-    Uses the Think-Act-Observe loop to actively inspect video frames.
+    Uses Gemini native video input (Files API) and returns strict JSON scores.
     """
+    del max_frames, start_frame, end_frame  # Deprecated args; native video path always used.
     from google.genai import types
 
     client = _get_gemini_client(config)
@@ -363,69 +484,152 @@ def score_rollout(
     if facility_description:
         prompt += f"\n\nFacility context: {facility_description}"
 
-    # Encode video frames for multimodal input
-    frames = _encode_video_frames(video_path)
-
-    # Build content parts
-    parts = []
-    parts.append(
-        types.Part.from_text(
-            text=(
-                f"I'm providing {len(frames)} frames from a robot policy rollout video. "
-                f'The robot was given the task: "{task_prompt}"\n\n{prompt}'
-            )
-        )
-    )
-
-    for i, frame_data in enumerate(frames):
-        parts.append(
-            types.Part.from_bytes(
-                data=base64.b64decode(frame_data["data"]),
-                mime_type="image/jpeg",
-            )
-        )
-
     # Configure for Agentic Vision with code execution
     errors = []
-    for attempt in range(3):
-        if attempt > 0:
-            parts.append(
-                types.Part.from_text(
-                    text=(
-                        "Retry: return JSON only with numeric task_score/visual_score/spatial_score "
-                        "between 0 and 10 and a non-empty reasoning field."
-                    )
-                )
-            )
-
-        response = _generate_with_retry(
-            client,
-            model=config.model,
-            fallback_models=config.fallback_models,
-            contents=[types.Content(parts=parts, role="user")],
-            config=_build_generate_config(
-                types,
-                enable_agentic_vision=config.enable_agentic_vision,
-                temperature=0.1,
-            ),
+    uploaded_video = _upload_video_file(client, video_path)
+    try:
+        video_part = _build_uploaded_video_part(
+            types,
+            uploaded_video,
+            video_metadata_fps=float(config.video_metadata_fps),
         )
-        try:
-            raw_text = _extract_response_text(response)
-            parsed = _extract_json_from_response(raw_text)
-            task_score, visual_score, spatial_score, reasoning = _parse_judge_payload(parsed)
-            return JudgeScore(
-                task_score=task_score,
-                visual_score=visual_score,
-                spatial_score=spatial_score,
-                reasoning=reasoning,
-                raw_response=raw_text,
+        effective_fps = (
+            float(config.video_metadata_fps) if float(config.video_metadata_fps) > 0.0 else None
+        )
+        logger.info(
+            "Scoring rollout with native Gemini video input: path=%s metadata_fps=%s",
+            video_path,
+            "default" if effective_fps is None else f"{effective_fps:.3f}",
+        )
+        for attempt in range(3):
+            contents = [
+                (
+                    "I am providing a robot policy rollout video file. "
+                    f'The robot was given the task: "{task_prompt}"\n\n{prompt}'
+                ),
+                video_part,
+            ]
+            if attempt > 0:
+                contents.append(
+                    "Retry: return JSON only with numeric task_score/visual_score/spatial_score "
+                    "between 0 and 10 and a non-empty reasoning field."
+                )
+
+            response = _generate_with_retry(
+                client,
+                model=config.model,
+                fallback_models=config.fallback_models,
+                contents=contents,
+                config=_build_generate_config(
+                    types,
+                    enable_agentic_vision=config.enable_agentic_vision,
+                    temperature=0.1,
+                ),
             )
-        except Exception as e:
-            errors.append(f"attempt={attempt + 1}: {e}")
-            continue
+            try:
+                raw_text = _extract_response_text(response)
+                parsed = _extract_json_from_response(raw_text)
+                task_score, visual_score, spatial_score, reasoning = _parse_judge_payload(parsed)
+                return JudgeScore(
+                    task_score=task_score,
+                    visual_score=visual_score,
+                    spatial_score=spatial_score,
+                    reasoning=reasoning,
+                    raw_response=raw_text,
+                )
+            except Exception as e:
+                errors.append(f"attempt={attempt + 1}: {e}")
+                continue
+    finally:
+        _delete_uploaded_file(client, uploaded_video)
 
     raise RuntimeError(
         "VLM judge failed to return valid scoring JSON after retries: " + "; ".join(errors)
+    )
+
+
+def score_stage1_probe(
+    video_path: Path,
+    expected_focus_text: str,
+    config: VLMJudgeConfig,
+    facility_description: str = "",
+) -> Stage1ProbeScore:
+    """Score Stage-1 probe clips and return structured issue tags."""
+    from google.genai import types
+
+    client = _get_gemini_client(config)
+    expected_focus = str(expected_focus_text).strip() or "task-relevant scene region"
+    prompt = (
+        "You are evaluating a Stage-1 camera probe clip for robot-world-model data quality.\n"
+        f'Expected focus: "{expected_focus}"\n\n'
+        "Return strict JSON with keys:\n"
+        '- "task_score" (0-10): how well clip focus/framing matches expected focus\n'
+        '- "visual_score" (0-10): clarity/sharpness and color quality\n'
+        '- "spatial_score" (0-10): usefulness for downstream world-model/policy training\n'
+        '- "issue_tags" (array): subset of ['
+        + ", ".join(sorted(_STAGE1_ALLOWED_ISSUE_TAGS))
+        + "]\n"
+        '- "reasoning" (string)\n'
+        "Use issue_tags=[] when no issues are detected."
+    )
+    if facility_description:
+        prompt += f"\nFacility context: {facility_description}"
+
+    errors = []
+    uploaded_video = _upload_video_file(client, video_path)
+    try:
+        video_part = _build_uploaded_video_part(
+            types,
+            uploaded_video,
+            video_metadata_fps=float(config.video_metadata_fps),
+        )
+        effective_fps = (
+            float(config.video_metadata_fps) if float(config.video_metadata_fps) > 0.0 else None
+        )
+        logger.info(
+            "Scoring Stage-1 probe with native Gemini video input: path=%s metadata_fps=%s",
+            video_path,
+            "default" if effective_fps is None else f"{effective_fps:.3f}",
+        )
+        for attempt in range(3):
+            contents = [prompt, video_part]
+            if attempt > 0:
+                contents.append(
+                    "Retry: return JSON only with required numeric fields, issue_tags array, and reasoning."
+                )
+            response = _generate_with_retry(
+                client,
+                model=config.model,
+                fallback_models=config.fallback_models,
+                contents=contents,
+                config=_build_generate_config(
+                    types,
+                    enable_agentic_vision=config.enable_agentic_vision,
+                    temperature=0.0,
+                ),
+            )
+            try:
+                raw_text = _extract_response_text(response)
+                parsed = _extract_json_from_response(raw_text)
+                task_score, visual_score, spatial_score, issue_tags, reasoning = (
+                    _parse_stage1_probe_payload(parsed)
+                )
+                return Stage1ProbeScore(
+                    task_score=task_score,
+                    visual_score=visual_score,
+                    spatial_score=spatial_score,
+                    issue_tags=issue_tags,
+                    reasoning=reasoning,
+                    raw_response=raw_text,
+                )
+            except Exception as e:
+                errors.append(f"attempt={attempt + 1}: {e}")
+                continue
+    finally:
+        _delete_uploaded_file(client, uploaded_video)
+
+    raise RuntimeError(
+        "Stage-1 probe judge failed to return valid JSON after retries: " + "; ".join(errors)
     )
 
 
@@ -455,65 +659,69 @@ def score_rollout_manipulation(
     if facility_description:
         prompt += f"\nFacility context: {facility_description}\n"
 
-    frames = _encode_video_frames(video_path)
-    parts = [types.Part.from_text(text=f"Manipulation rollout frames ({len(frames)}). {prompt}")]
-    for frame_data in frames:
-        parts.append(
-            types.Part.from_bytes(
-                data=base64.b64decode(frame_data["data"]),
-                mime_type="image/jpeg",
-            )
-        )
-
     errors = []
-    for attempt in range(3):
-        if attempt > 0:
-            parts.append(
-                types.Part.from_text(
-                    text=(
-                        "Retry: return strict JSON only, include all required boolean manipulation fields."
-                    )
-                )
-            )
-
-        response = _generate_with_retry(
-            client,
-            model=config.model,
-            fallback_models=config.fallback_models,
-            contents=[types.Content(parts=parts, role="user")],
-            config=_build_generate_config(
-                types,
-                enable_agentic_vision=config.enable_agentic_vision,
-                temperature=0.1,
-            ),
+    uploaded_video = _upload_video_file(client, video_path)
+    try:
+        video_part = _build_uploaded_video_part(
+            types,
+            uploaded_video,
+            video_metadata_fps=float(config.video_metadata_fps),
         )
-        try:
-            raw_text = _extract_response_text(response)
-            parsed = _extract_json_from_response(raw_text)
-            (
-                task_score,
-                visual_score,
-                spatial_score,
-                grasp,
-                lifted,
-                placed,
-                stable,
-                reasoning,
-            ) = _parse_manipulation_payload(parsed)
-            return ManipulationJudgeScore(
-                task_score=task_score,
-                visual_score=visual_score,
-                spatial_score=spatial_score,
-                grasp_acquired=grasp,
-                lifted_clear=lifted,
-                placed_in_target=placed,
-                stable_after_place=stable,
-                reasoning=reasoning,
-                raw_response=raw_text,
+        effective_fps = (
+            float(config.video_metadata_fps) if float(config.video_metadata_fps) > 0.0 else None
+        )
+        logger.info(
+            "Scoring manipulation rollout with native Gemini video input: path=%s metadata_fps=%s",
+            video_path,
+            "default" if effective_fps is None else f"{effective_fps:.3f}",
+        )
+        for attempt in range(3):
+            contents = [f"Manipulation rollout video. {prompt}", video_part]
+            if attempt > 0:
+                contents.append(
+                    "Retry: return strict JSON only, include all required boolean manipulation fields."
+                )
+
+            response = _generate_with_retry(
+                client,
+                model=config.model,
+                fallback_models=config.fallback_models,
+                contents=contents,
+                config=_build_generate_config(
+                    types,
+                    enable_agentic_vision=config.enable_agentic_vision,
+                    temperature=0.1,
+                ),
             )
-        except Exception as e:
-            errors.append(f"attempt={attempt + 1}: {e}")
-            continue
+            try:
+                raw_text = _extract_response_text(response)
+                parsed = _extract_json_from_response(raw_text)
+                (
+                    task_score,
+                    visual_score,
+                    spatial_score,
+                    grasp,
+                    lifted,
+                    placed,
+                    stable,
+                    reasoning,
+                ) = _parse_manipulation_payload(parsed)
+                return ManipulationJudgeScore(
+                    task_score=task_score,
+                    visual_score=visual_score,
+                    spatial_score=spatial_score,
+                    grasp_acquired=grasp,
+                    lifted_clear=lifted,
+                    placed_in_target=placed,
+                    stable_after_place=stable,
+                    reasoning=reasoning,
+                    raw_response=raw_text,
+                )
+            except Exception as e:
+                errors.append(f"attempt={attempt + 1}: {e}")
+                continue
+    finally:
+        _delete_uploaded_file(client, uploaded_video)
 
     raise RuntimeError(
         "VLM manipulation judge failed to return valid JSON after retries: " + "; ".join(errors)
@@ -533,7 +741,7 @@ def score_spatial_accuracy(
 
     landmarks_str = "\n".join(f"- {lm}" for lm in landmarks)
     prompt = (
-        f"Analyze these video frames from a generated environment.\n"
+        f"Analyze this generated-environment video.\n"
         f"The target facility is: {facility_description}\n"
         f"Expected landmarks:\n{landmarks_str}\n\n"
         f"Score on a 1-10 scale:\n"
@@ -543,52 +751,56 @@ def score_spatial_accuracy(
         f'Return JSON: {{"task_score": N, "visual_score": N, "spatial_score": N, "reasoning": "..."}}'
     )
 
-    frames = _encode_video_frames(video_path, max_frames=8)
-    parts = [types.Part.from_text(text=prompt)]
-    for frame_data in frames:
-        parts.append(
-            types.Part.from_bytes(
-                data=base64.b64decode(frame_data["data"]),
-                mime_type="image/jpeg",
-            )
-        )
-
     errors = []
-    for attempt in range(3):
-        if attempt > 0:
-            parts.append(
-                types.Part.from_text(
-                    text=(
-                        "Retry: return JSON only with task_score/visual_score/spatial_score in [0,10] "
-                        "and a non-empty reasoning string."
-                    )
-                )
-            )
-        response = _generate_with_retry(
-            client,
-            model=config.model,
-            fallback_models=config.fallback_models,
-            contents=[types.Content(parts=parts, role="user")],
-            config=_build_generate_config(
-                types,
-                enable_agentic_vision=config.enable_agentic_vision,
-                temperature=0.1,
-            ),
+    uploaded_video = _upload_video_file(client, video_path)
+    try:
+        video_part = _build_uploaded_video_part(
+            types,
+            uploaded_video,
+            video_metadata_fps=float(config.video_metadata_fps),
         )
-        try:
-            raw_text = _extract_response_text(response)
-            parsed = _extract_json_from_response(raw_text)
-            task_score, visual_score, spatial_score, reasoning = _parse_judge_payload(parsed)
-            return JudgeScore(
-                task_score=task_score,
-                visual_score=visual_score,
-                spatial_score=spatial_score,
-                reasoning=reasoning,
-                raw_response=raw_text,
+        effective_fps = (
+            float(config.video_metadata_fps) if float(config.video_metadata_fps) > 0.0 else None
+        )
+        logger.info(
+            "Scoring spatial accuracy with native Gemini video input: path=%s metadata_fps=%s",
+            video_path,
+            "default" if effective_fps is None else f"{effective_fps:.3f}",
+        )
+        for attempt in range(3):
+            contents = [prompt, video_part]
+            if attempt > 0:
+                contents.append(
+                    "Retry: return JSON only with task_score/visual_score/spatial_score in [0,10] "
+                    "and a non-empty reasoning string."
+                )
+            response = _generate_with_retry(
+                client,
+                model=config.model,
+                fallback_models=config.fallback_models,
+                contents=contents,
+                config=_build_generate_config(
+                    types,
+                    enable_agentic_vision=config.enable_agentic_vision,
+                    temperature=0.1,
+                ),
             )
-        except Exception as e:
-            errors.append(f"attempt={attempt + 1}: {e}")
-            continue
+            try:
+                raw_text = _extract_response_text(response)
+                parsed = _extract_json_from_response(raw_text)
+                task_score, visual_score, spatial_score, reasoning = _parse_judge_payload(parsed)
+                return JudgeScore(
+                    task_score=task_score,
+                    visual_score=visual_score,
+                    spatial_score=spatial_score,
+                    reasoning=reasoning,
+                    raw_response=raw_text,
+                )
+            except Exception as e:
+                errors.append(f"attempt={attempt + 1}: {e}")
+                continue
+    finally:
+        _delete_uploaded_file(client, uploaded_video)
 
     raise RuntimeError(
         "VLM spatial scorer failed to return valid JSON after retries: " + "; ".join(errors)
@@ -607,57 +819,63 @@ def classify_facility(
 
     desc_str = "\n".join(f"- Facility {fid}: {desc}" for fid, desc in facility_descriptions.items())
     prompt = (
-        f"Look at these video frames from a generated environment.\n"
+        f"Look at this generated-environment video.\n"
         f"Which facility does this most closely match?\n\n{desc_str}\n\n"
         f'Return JSON: {{"predicted_facility": "<facility_id>", "confidence": 0.0-1.0, "reasoning": "..."}}'
     )
 
-    frames = _encode_video_frames(video_path, max_frames=8)
-    parts = [types.Part.from_text(text=prompt)]
-    for frame_data in frames:
-        parts.append(
-            types.Part.from_bytes(
-                data=base64.b64decode(frame_data["data"]),
-                mime_type="image/jpeg",
-            )
-        )
-
     errors = []
-    for attempt in range(3):
-        if attempt > 0:
-            parts.append(
-                types.Part.from_text(
-                    text="Retry: return JSON only with predicted_facility, confidence (0-1), reasoning."
-                )
-            )
-        response = _generate_with_retry(
-            client,
-            model=config.model,
-            fallback_models=config.fallback_models,
-            contents=[types.Content(parts=parts, role="user")],
-            config=_build_generate_config(
-                types,
-                enable_agentic_vision=config.enable_agentic_vision,
-                temperature=0.1,
-            ),
+    uploaded_video = _upload_video_file(client, video_path)
+    try:
+        video_part = _build_uploaded_video_part(
+            types,
+            uploaded_video,
+            video_metadata_fps=float(config.video_metadata_fps),
         )
+        effective_fps = (
+            float(config.video_metadata_fps) if float(config.video_metadata_fps) > 0.0 else None
+        )
+        logger.info(
+            "Classifying facility with native Gemini video input: path=%s metadata_fps=%s",
+            video_path,
+            "default" if effective_fps is None else f"{effective_fps:.3f}",
+        )
+        for attempt in range(3):
+            contents = [prompt, video_part]
+            if attempt > 0:
+                contents.append(
+                    "Retry: return JSON only with predicted_facility, confidence (0-1), reasoning."
+                )
+            response = _generate_with_retry(
+                client,
+                model=config.model,
+                fallback_models=config.fallback_models,
+                contents=contents,
+                config=_build_generate_config(
+                    types,
+                    enable_agentic_vision=config.enable_agentic_vision,
+                    temperature=0.1,
+                ),
+            )
 
-        try:
-            raw_text = _extract_response_text(response)
             try:
-                parsed = json.loads(raw_text)
-            except json.JSONDecodeError:
-                parsed = _extract_json_from_response(raw_text)
-            predicted, confidence, reasoning = _parse_classify_payload(parsed)
-            return {
-                "predicted_facility": predicted,
-                "confidence": confidence,
-                "reasoning": reasoning,
-                "raw_response": raw_text,
-            }
-        except Exception as e:
-            errors.append(f"attempt={attempt + 1}: {e}")
-            continue
+                raw_text = _extract_response_text(response)
+                try:
+                    parsed = json.loads(raw_text)
+                except json.JSONDecodeError:
+                    parsed = _extract_json_from_response(raw_text)
+                predicted, confidence, reasoning = _parse_classify_payload(parsed)
+                return {
+                    "predicted_facility": predicted,
+                    "confidence": confidence,
+                    "reasoning": reasoning,
+                    "raw_response": raw_text,
+                }
+            except Exception as e:
+                errors.append(f"attempt={attempt + 1}: {e}")
+                continue
+    finally:
+        _delete_uploaded_file(client, uploaded_video)
 
     raise RuntimeError(
         "VLM facility classifier failed to return valid JSON after retries: " + "; ".join(errors)
