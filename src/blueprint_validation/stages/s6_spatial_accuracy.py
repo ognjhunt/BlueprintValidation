@@ -9,21 +9,11 @@ import numpy as np
 
 from ..common import StageResult, get_logger, read_json, write_json
 from ..config import FacilityConfig, ValidationConfig, VLMJudgeConfig
+from ..evaluation.reasoning_conflicts import has_reasoning_conflict
 from ..evaluation.vlm_judge import score_spatial_accuracy
 from .base import PipelineStage
 
 logger = get_logger("stages.s6_spatial_accuracy")
-
-_REASONING_CONFLICT_TOKENS = (
-    "cannot evaluate",
-    "can't evaluate",
-    "not visible",
-    "too distorted",
-    "distorted to evaluate",
-    "impossible to evaluate",
-    "unable to evaluate",
-    "indiscernible",
-)
 
 
 class SpatialAccuracyStage(PipelineStage):
@@ -86,10 +76,7 @@ class SpatialAccuracyStage(PipelineStage):
                     config=vlm_config,
                 )
                 reasoning = str(score.reasoning or "")
-                reasoning_lower = reasoning.lower()
-                reasoning_conflict = any(
-                    token in reasoning_lower for token in _REASONING_CONFLICT_TOKENS
-                )
+                reasoning_conflict = has_reasoning_conflict(reasoning)
                 spatial_score = float(score.spatial_score)
                 visual_score = float(score.visual_score)
                 task_score = float(score.task_score)

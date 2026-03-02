@@ -89,6 +89,16 @@ def test_config_defaults():
     assert config.enrich.max_blur_reject_rate == pytest.approx(0.30)
     assert config.enrich.green_frame_ratio_max == pytest.approx(0.10)
     assert config.enrich.enable_visual_collapse_gate is True
+    assert config.enrich.vlm_quality_gate_enabled is True
+    assert config.enrich.vlm_quality_fail_closed is True
+    assert config.enrich.vlm_quality_autoretry_enabled is True
+    assert config.enrich.vlm_quality_max_regen_attempts == 2
+    assert config.enrich.vlm_quality_min_task_score == pytest.approx(7.0)
+    assert config.enrich.vlm_quality_min_visual_score == pytest.approx(7.0)
+    assert config.enrich.vlm_quality_min_spatial_score == pytest.approx(6.0)
+    assert config.enrich.vlm_quality_require_reasoning_consistency is True
+    assert config.enrich.vlm_quality_retry_context_frame_stride == 6
+    assert config.enrich.vlm_quality_disable_depth_on_final_retry is True
     assert config.enrich.source_clip_selection_mode == "all"
     assert config.enrich.source_clip_task is None
     assert config.enrich.source_clip_name is None
@@ -127,6 +137,7 @@ def test_config_defaults():
     assert config.policy_rl_loop.policy_refine_near_miss_fraction == pytest.approx(0.30)
     assert config.policy_rl_loop.policy_refine_hard_negative_fraction == pytest.approx(0.10)
     assert config.policy_rl_loop.world_model_refresh_mix_with_stage2 is True
+    assert config.policy_rl_loop.world_model_refresh_require_stage2_vlm_pass is True
     assert config.policy_rl_loop.world_model_refresh_stage2_fraction == pytest.approx(0.60)
     assert config.policy_rl_loop.world_model_refresh_success_fraction == pytest.approx(0.25)
     assert config.policy_rl_loop.world_model_refresh_near_miss_fraction == pytest.approx(0.15)
@@ -140,6 +151,12 @@ def test_config_defaults():
     assert config.wm_refresh_loop.min_non_hard_rollouts == 8
     assert config.wm_refresh_loop.max_hard_negative_fraction == pytest.approx(0.75)
     assert config.wm_refresh_loop.require_valid_video_decode is True
+    assert config.wm_refresh_loop.enforce_vlm_quality_floor is True
+    assert config.wm_refresh_loop.min_refresh_task_score == pytest.approx(7.0)
+    assert config.wm_refresh_loop.min_refresh_visual_score == pytest.approx(7.0)
+    assert config.wm_refresh_loop.min_refresh_spatial_score == pytest.approx(6.0)
+    assert config.wm_refresh_loop.fail_on_reasoning_conflict is True
+    assert config.wm_refresh_loop.backfill_from_stage2_vlm_passed is True
     assert config.wm_refresh_loop.quantile_fallback_enabled is True
     assert config.wm_refresh_loop.quantile_success_threshold == pytest.approx(0.85)
     assert config.wm_refresh_loop.quantile_near_miss_threshold == pytest.approx(0.50)
@@ -267,6 +284,16 @@ def test_config_with_all_sections(tmp_path):
             "max_blur_reject_rate": 0.4,
             "green_frame_ratio_max": 0.2,
             "enable_visual_collapse_gate": False,
+            "vlm_quality_gate_enabled": False,
+            "vlm_quality_fail_closed": False,
+            "vlm_quality_autoretry_enabled": False,
+            "vlm_quality_max_regen_attempts": 1,
+            "vlm_quality_min_task_score": 6.5,
+            "vlm_quality_min_visual_score": 6.0,
+            "vlm_quality_min_spatial_score": 5.5,
+            "vlm_quality_require_reasoning_consistency": False,
+            "vlm_quality_retry_context_frame_stride": 4,
+            "vlm_quality_disable_depth_on_final_retry": False,
             "min_frame0_ssim": 0.8,
             "delete_rejected_outputs": True,
             "context_frame_mode": "fixed",
@@ -334,6 +361,7 @@ def test_config_with_all_sections(tmp_path):
             "policy_refine_near_miss_fraction": 0.25,
             "policy_refine_hard_negative_fraction": 0.05,
             "world_model_refresh_mix_with_stage2": True,
+            "world_model_refresh_require_stage2_vlm_pass": False,
             "world_model_refresh_stage2_fraction": 0.5,
             "world_model_refresh_success_fraction": 0.3,
             "world_model_refresh_near_miss_fraction": 0.2,
@@ -370,6 +398,12 @@ def test_config_with_all_sections(tmp_path):
             "min_non_hard_rollouts": 11,
             "max_hard_negative_fraction": 0.7,
             "require_valid_video_decode": False,
+            "enforce_vlm_quality_floor": False,
+            "min_refresh_task_score": 6.8,
+            "min_refresh_visual_score": 6.4,
+            "min_refresh_spatial_score": 5.9,
+            "fail_on_reasoning_conflict": False,
+            "backfill_from_stage2_vlm_passed": False,
             "quantile_fallback_enabled": True,
             "quantile_success_threshold": 0.90,
             "quantile_near_miss_threshold": 0.55,
@@ -443,6 +477,16 @@ def test_config_with_all_sections(tmp_path):
     assert config.enrich.max_blur_reject_rate == pytest.approx(0.4)
     assert config.enrich.green_frame_ratio_max == pytest.approx(0.2)
     assert config.enrich.enable_visual_collapse_gate is False
+    assert config.enrich.vlm_quality_gate_enabled is False
+    assert config.enrich.vlm_quality_fail_closed is False
+    assert config.enrich.vlm_quality_autoretry_enabled is False
+    assert config.enrich.vlm_quality_max_regen_attempts == 1
+    assert config.enrich.vlm_quality_min_task_score == pytest.approx(6.5)
+    assert config.enrich.vlm_quality_min_visual_score == pytest.approx(6.0)
+    assert config.enrich.vlm_quality_min_spatial_score == pytest.approx(5.5)
+    assert config.enrich.vlm_quality_require_reasoning_consistency is False
+    assert config.enrich.vlm_quality_retry_context_frame_stride == 4
+    assert config.enrich.vlm_quality_disable_depth_on_final_retry is False
     assert config.enrich.source_clip_selection_mode == "task_targeted"
     assert config.enrich.source_clip_task == "Pick up trash_can_157 and place it in the target zone"
     assert config.enrich.source_clip_name == "clip_001_manipulation"
@@ -496,6 +540,7 @@ def test_config_with_all_sections(tmp_path):
     assert config.policy_rl_loop.policy_refine_near_miss_fraction == pytest.approx(0.25)
     assert config.policy_rl_loop.policy_refine_hard_negative_fraction == pytest.approx(0.05)
     assert config.policy_rl_loop.world_model_refresh_mix_with_stage2 is True
+    assert config.policy_rl_loop.world_model_refresh_require_stage2_vlm_pass is False
     assert config.policy_rl_loop.world_model_refresh_stage2_fraction == pytest.approx(0.5)
     assert config.policy_rl_loop.world_model_refresh_success_fraction == pytest.approx(0.3)
     assert config.policy_rl_loop.world_model_refresh_near_miss_fraction == pytest.approx(0.2)
@@ -509,6 +554,12 @@ def test_config_with_all_sections(tmp_path):
     assert config.wm_refresh_loop.min_non_hard_rollouts == 11
     assert config.wm_refresh_loop.max_hard_negative_fraction == pytest.approx(0.7)
     assert config.wm_refresh_loop.require_valid_video_decode is False
+    assert config.wm_refresh_loop.enforce_vlm_quality_floor is False
+    assert config.wm_refresh_loop.min_refresh_task_score == pytest.approx(6.8)
+    assert config.wm_refresh_loop.min_refresh_visual_score == pytest.approx(6.4)
+    assert config.wm_refresh_loop.min_refresh_spatial_score == pytest.approx(5.9)
+    assert config.wm_refresh_loop.fail_on_reasoning_conflict is False
+    assert config.wm_refresh_loop.backfill_from_stage2_vlm_passed is False
     assert config.wm_refresh_loop.quantile_fallback_enabled is True
     assert config.wm_refresh_loop.quantile_success_threshold == pytest.approx(0.90)
     assert config.wm_refresh_loop.quantile_near_miss_threshold == pytest.approx(0.55)
@@ -895,6 +946,44 @@ def test_config_rejects_invalid_min_rollout_steps(tmp_path):
         load_config(config_path)
 
 
+def test_config_rejects_invalid_enrich_vlm_retry_stride(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "bad_enrich_vlm_retry_stride.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Enrich Retry Stride",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "enrich": {"vlm_quality_retry_context_frame_stride": 0},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="vlm_quality_retry_context_frame_stride"):
+        load_config(config_path)
+
+
+def test_config_rejects_invalid_enrich_vlm_min_score(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "bad_enrich_vlm_min_score.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Enrich VLM Min Score",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "enrich": {"vlm_quality_min_visual_score": 11.0},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="vlm_quality_min_visual_score"):
+        load_config(config_path)
+
+
 def test_config_rejects_invalid_stage1_quality_candidate_budget(tmp_path):
     from blueprint_validation.config import load_config
     import yaml
@@ -1014,4 +1103,23 @@ def test_config_rejects_invalid_wm_refresh_hard_negative_fraction(tmp_path):
     )
 
     with pytest.raises(ValueError, match="max_hard_negative_fraction"):
+        load_config(config_path)
+
+
+def test_config_rejects_invalid_wm_refresh_vlm_floor_score(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "bad_wm_refresh_vlm_floor_score.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad WM Refresh VLM Floor Score",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "wm_refresh_loop": {"min_refresh_spatial_score": 12.0},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="min_refresh_spatial_score"):
         load_config(config_path)

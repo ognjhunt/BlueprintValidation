@@ -119,6 +119,16 @@ enrich:
   max_blur_reject_rate: 0.30
   green_frame_ratio_max: 0.10
   enable_visual_collapse_gate: true
+  vlm_quality_gate_enabled: true
+  vlm_quality_fail_closed: true
+  vlm_quality_autoretry_enabled: true
+  vlm_quality_max_regen_attempts: 2
+  vlm_quality_min_task_score: 7.0
+  vlm_quality_min_visual_score: 7.0
+  vlm_quality_min_spatial_score: 6.0
+  vlm_quality_require_reasoning_consistency: true
+  vlm_quality_retry_context_frame_stride: 6
+  vlm_quality_disable_depth_on_final_retry: true
   source_clip_selection_mode: task_targeted
   source_clip_task: "Pick up the bowl from the counter and place it in the sink"
   cosmos_output_quality: 8
@@ -212,6 +222,12 @@ wm_refresh_loop:
   min_non_hard_rollouts: 8
   max_hard_negative_fraction: 0.75
   require_valid_video_decode: true
+  enforce_vlm_quality_floor: true
+  min_refresh_task_score: 7.0
+  min_refresh_visual_score: 7.0
+  min_refresh_spatial_score: 6.0
+  fail_on_reasoning_conflict: true
+  backfill_from_stage2_vlm_passed: true
   quantile_fallback_enabled: true
   quantile_success_threshold: 0.85
   quantile_near_miss_threshold: 0.50
@@ -224,6 +240,7 @@ policy_rl_loop:
   policy_refine_near_miss_fraction: 0.30
   policy_refine_hard_negative_fraction: 0.10
   world_model_refresh_mix_with_stage2: true
+  world_model_refresh_require_stage2_vlm_pass: true
   world_model_refresh_stage2_fraction: 0.60
   world_model_refresh_success_fraction: 0.25
   world_model_refresh_near_miss_fraction: 0.15

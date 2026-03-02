@@ -391,3 +391,188 @@ def test_wm_refresh_loop_enforces_hard_negative_fraction_cap(sample_config, tmp_
     assert result.metrics["degenerate_mix_detected"] is True
     assert result.metrics["num_hard_negative_rollouts"] <= 1
     assert result.metrics["max_hard_negative_fraction"] == 0.5
+
+
+def test_wm_refresh_loop_applies_vlm_floor_filter(sample_config, tmp_path, monkeypatch):
+    sample_config.eval_policy.headline_scope = "wm_only"
+    sample_config.wm_refresh_loop.enabled = True
+    sample_config.wm_refresh_loop.source_condition = "adapted"
+    sample_config.wm_refresh_loop.require_valid_video_decode = False
+    sample_config.wm_refresh_loop.enforce_vlm_quality_floor = True
+    sample_config.wm_refresh_loop.min_refresh_task_score = 7.0
+    sample_config.wm_refresh_loop.min_refresh_visual_score = 7.0
+    sample_config.wm_refresh_loop.min_refresh_spatial_score = 6.0
+    sample_config.wm_refresh_loop.fail_on_reasoning_conflict = True
+    sample_config.wm_refresh_loop.fail_on_degenerate_mix = False
+    fac = sample_config.facilities["test_facility"]
+    work_dir = tmp_path / "fac_vlm_floor"
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    video = work_dir / "rollout.mp4"
+    video.write_bytes(b"00")
+    scores_path = work_dir / "policy_eval_scores.json"
+    write_json(
+        {
+            "scores": [
+                {
+                    "condition": "adapted",
+                    "task": "pick object",
+                    "rollout_index": 0,
+                    "video_path": str(video),
+                    "task_score": 8.0,
+                    "visual_score": 8.0,
+                    "spatial_score": 7.0,
+                    "reasoning": "target is visible and stable",
+                    "is_manipulation_task": False,
+                },
+                {
+                    "condition": "adapted",
+                    "task": "pick object",
+                    "rollout_index": 1,
+                    "video_path": str(video),
+                    "task_score": 4.0,
+                    "visual_score": 5.0,
+                    "spatial_score": 5.0,
+                    "reasoning": "poor alignment",
+                    "is_manipulation_task": False,
+                },
+            ]
+        },
+        scores_path,
+    )
+    report_path = work_dir / "policy_eval_report.json"
+    write_json({"absolute_point_differential": 0.0}, report_path)
+    current_ckpt = work_dir / "finetune" / "adapted_checkpoint"
+    current_ckpt.mkdir(parents=True, exist_ok=True)
+    next_ckpt = work_dir / "wm_refresh_loop" / "iter_00" / "next_ckpt"
+    next_ckpt.mkdir(parents=True, exist_ok=True)
+
+    def _fake_refresh(**kwargs):
+        assert len(kwargs["selected_success_rows"]) + len(kwargs["near_miss_rows"]) == 1
+        manifest = kwargs["output_dir"] / "refresh_manifest.json"
+        write_json({"clips": []}, manifest)
+        return {
+            "status": "success",
+            "adapted_checkpoint_path": str(next_ckpt),
+            "refresh_manifest_path": str(manifest),
+            "mix_metrics": {"selected_total": 1},
+        }
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s3d_wm_refresh_loop.refresh_world_model_from_bucketed_rollouts",
+        _fake_refresh,
+    )
+
+    prev = {
+        "s4_policy_eval": StageResult(
+            stage_name="s4_policy_eval",
+            status="success",
+            elapsed_seconds=0.0,
+            outputs={"scores_path": str(scores_path), "report_path": str(report_path)},
+        ),
+        "s3_finetune": StageResult(
+            stage_name="s3_finetune",
+            status="success",
+            elapsed_seconds=0.0,
+            outputs={"adapted_checkpoint_path": str(current_ckpt)},
+        ),
+    }
+    result = WorldModelRefreshLoopStage().execute(sample_config, fac, work_dir, prev)
+    assert result.status == "success"
+    assert result.metrics["num_vlm_floor_filtered_rollouts"] == 1
+
+
+def test_wm_refresh_loop_backfill_viability_from_stage2(sample_config, tmp_path, monkeypatch):
+    sample_config.eval_policy.headline_scope = "wm_only"
+    sample_config.wm_refresh_loop.enabled = True
+    sample_config.wm_refresh_loop.source_condition = "adapted"
+    sample_config.wm_refresh_loop.require_valid_video_decode = False
+    sample_config.wm_refresh_loop.enforce_vlm_quality_floor = True
+    sample_config.wm_refresh_loop.fail_on_reasoning_conflict = True
+    sample_config.wm_refresh_loop.fail_on_degenerate_mix = True
+    sample_config.wm_refresh_loop.min_non_hard_rollouts = 2
+    sample_config.wm_refresh_loop.backfill_from_stage2_vlm_passed = True
+    sample_config.wm_refresh_loop.max_hard_negative_fraction = 1.0
+    sample_config.wm_refresh_loop.quantile_fallback_enabled = False
+    fac = sample_config.facilities["test_facility"]
+    work_dir = tmp_path / "fac_backfill"
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    video = work_dir / "rollout.mp4"
+    video.write_bytes(b"00")
+    scores_path = work_dir / "policy_eval_scores.json"
+    write_json(
+        {
+            "scores": [
+                {
+                    "condition": "adapted",
+                    "task": "pick object",
+                    "rollout_index": 0,
+                    "video_path": str(video),
+                    "task_score": 0.0,
+                    "visual_score": 0.0,
+                    "spatial_score": 0.0,
+                    "reasoning": "failed task",
+                    "is_manipulation_task": False,
+                }
+            ]
+        },
+        scores_path,
+    )
+    report_path = work_dir / "policy_eval_report.json"
+    write_json({"absolute_point_differential": 0.0}, report_path)
+    current_ckpt = work_dir / "finetune" / "adapted_checkpoint"
+    current_ckpt.mkdir(parents=True, exist_ok=True)
+    next_ckpt = work_dir / "wm_refresh_loop" / "iter_00" / "next_ckpt"
+    next_ckpt.mkdir(parents=True, exist_ok=True)
+
+    enriched_dir = work_dir / "enriched"
+    enriched_dir.mkdir(parents=True, exist_ok=True)
+    stage2_a = work_dir / "enriched_a.mp4"
+    stage2_b = work_dir / "enriched_b.mp4"
+    stage2_a.write_bytes(b"00")
+    stage2_b.write_bytes(b"00")
+    write_json(
+        {
+            "clips": [
+                {"output_video_path": str(stage2_a), "vlm_quality_passed": True},
+                {"output_video_path": str(stage2_b), "vlm_quality_passed": True},
+            ]
+        },
+        enriched_dir / "enriched_manifest.json",
+    )
+
+    def _fake_refresh(**kwargs):
+        manifest = kwargs["output_dir"] / "refresh_manifest.json"
+        write_json({"clips": []}, manifest)
+        return {
+            "status": "success",
+            "adapted_checkpoint_path": str(next_ckpt),
+            "refresh_manifest_path": str(manifest),
+            "mix_metrics": {"selected_total": 2},
+        }
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s3d_wm_refresh_loop.refresh_world_model_from_bucketed_rollouts",
+        _fake_refresh,
+    )
+
+    prev = {
+        "s4_policy_eval": StageResult(
+            stage_name="s4_policy_eval",
+            status="success",
+            elapsed_seconds=0.0,
+            outputs={"scores_path": str(scores_path), "report_path": str(report_path)},
+        ),
+        "s3_finetune": StageResult(
+            stage_name="s3_finetune",
+            status="success",
+            elapsed_seconds=0.0,
+            outputs={"adapted_checkpoint_path": str(current_ckpt)},
+        ),
+    }
+    result = WorldModelRefreshLoopStage().execute(sample_config, fac, work_dir, prev)
+    assert result.status == "success"
+    assert result.metrics["stage2_backfill_considered"] is True
+    assert result.metrics["num_stage2_backfill_candidates"] == 2
+    assert result.metrics["effective_non_hard_count"] >= 2

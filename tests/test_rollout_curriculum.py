@@ -131,3 +131,50 @@ def test_build_world_refresh_mix_includes_stage2_and_rollouts(sample_config, tmp
     metrics = mix["mix_metrics"]
     assert metrics["selected_total"] >= 1
     assert metrics["available_total"] >= 4
+
+
+def test_build_world_refresh_mix_requires_stage2_vlm_pass(sample_config, tmp_path):
+    from blueprint_validation.training.rollout_curriculum import build_world_refresh_mix
+
+    stage2_ok = tmp_path / "stage2_ok.mp4"
+    stage2_bad = tmp_path / "stage2_bad.mp4"
+    success_video = tmp_path / "success.mp4"
+    for path in [stage2_ok, stage2_bad, success_video]:
+        _write_tiny_video(path)
+
+    stage2_manifest = {
+        "clips": [
+            {
+                "clip_name": "clip_ok",
+                "variant_name": "daylight",
+                "output_video_path": str(stage2_ok),
+                "input_video_path": str(stage2_ok),
+                "vlm_quality_passed": True,
+            },
+            {
+                "clip_name": "clip_bad",
+                "variant_name": "night",
+                "output_video_path": str(stage2_bad),
+                "input_video_path": str(stage2_bad),
+                "vlm_quality_passed": False,
+            },
+        ]
+    }
+    selected = [{"rollout_index": 1, "task": "Pick tote", "video_path": str(success_video)}]
+
+    mix = build_world_refresh_mix(
+        stage2_manifest=stage2_manifest,
+        selected_success=selected,
+        near_miss=[],
+        hard_negative=[],
+        cfg=sample_config.policy_rl_loop,
+        seed=17,
+        require_stage2_vlm_pass=True,
+    )
+    stage2_paths = {
+        str(row.get("output_video_path", ""))
+        for row in mix["clips"]
+        if row.get("source_bucket") == "stage2"
+    }
+    assert str(stage2_ok) in stage2_paths
+    assert str(stage2_bad) not in stage2_paths

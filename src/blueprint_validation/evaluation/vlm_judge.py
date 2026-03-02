@@ -43,6 +43,11 @@ class Stage1ProbeScore(JudgeScore):
     issue_tags: List[str]
 
 
+@dataclass
+class Stage2QualityScore(JudgeScore):
+    issue_tags: List[str]
+
+
 _STAGE1_ALLOWED_ISSUE_TAGS = {
     "target_missing",
     "target_off_center",
@@ -52,6 +57,18 @@ _STAGE1_ALLOWED_ISSUE_TAGS = {
     "camera_motion_too_fast",
     "blur_or_soft_focus",
     "unstable_view",
+}
+
+_STAGE2_ALLOWED_ISSUE_TAGS = _STAGE1_ALLOWED_ISSUE_TAGS | {
+    "off_task",
+    "semantic_mismatch",
+    "green_cast",
+    "low_motion",
+    "temporal_flicker",
+    "depth_artifacts",
+    "compression_artifacts",
+    "hallucinated_objects",
+    "style_drift",
 }
 
 
@@ -222,7 +239,7 @@ def _parse_classify_payload(payload: dict) -> tuple[str, float, str]:
     return predicted, confidence, reasoning
 
 
-def _parse_issue_tags(payload: dict) -> List[str]:
+def _parse_issue_tags(payload: dict, *, allowed_tags: set[str]) -> List[str]:
     if "issue_tags" not in payload:
         raise ValueError("Missing required key: issue_tags")
     raw = payload.get("issue_tags")
@@ -234,7 +251,7 @@ def _parse_issue_tags(payload: dict) -> List[str]:
         tag = str(item).strip().lower()
         if not tag:
             continue
-        if tag not in _STAGE1_ALLOWED_ISSUE_TAGS:
+        if tag not in allowed_tags:
             raise ValueError(f"Unknown issue tag: {tag}")
         if tag in seen:
             continue
@@ -245,7 +262,13 @@ def _parse_issue_tags(payload: dict) -> List[str]:
 
 def _parse_stage1_probe_payload(payload: dict) -> tuple[float, float, float, List[str], str]:
     task, visual, spatial, reasoning = _parse_judge_payload(payload)
-    issue_tags = _parse_issue_tags(payload)
+    issue_tags = _parse_issue_tags(payload, allowed_tags=_STAGE1_ALLOWED_ISSUE_TAGS)
+    return task, visual, spatial, issue_tags, reasoning
+
+
+def _parse_stage2_quality_payload(payload: dict) -> tuple[float, float, float, List[str], str]:
+    task, visual, spatial, reasoning = _parse_judge_payload(payload)
+    issue_tags = _parse_issue_tags(payload, allowed_tags=_STAGE2_ALLOWED_ISSUE_TAGS)
     return task, visual, spatial, issue_tags, reasoning
 
 
@@ -630,6 +653,98 @@ def score_stage1_probe(
 
     raise RuntimeError(
         "Stage-1 probe judge failed to return valid JSON after retries: " + "; ".join(errors)
+    )
+
+
+def score_stage2_enriched_clip(
+    video_path: Path,
+    expected_focus_text: str,
+    variant_prompt: str,
+    config: VLMJudgeConfig,
+    facility_description: str = "",
+) -> Stage2QualityScore:
+    """Score Stage-2 enriched clips with structured issue tags."""
+    from google.genai import types
+
+    client = _get_gemini_client(config)
+    expected_focus = str(expected_focus_text).strip() or "task-relevant scene region"
+    variant = str(variant_prompt).strip()
+    prompt = (
+        "You are evaluating a Stage-2 enriched robot-world-model training clip.\n"
+        f'Expected focus: "{expected_focus}"\n'
+    )
+    if variant:
+        prompt += f'Variant intent: "{variant}"\n'
+    prompt += (
+        "\nReturn strict JSON with keys:\n"
+        '- "task_score" (0-10): whether focus/task intent is preserved\n'
+        '- "visual_score" (0-10): realism, sharpness, and artifact/color quality\n'
+        '- "spatial_score" (0-10): temporal/spatial coherence for model training\n'
+        '- "issue_tags" (array): subset of ['
+        + ", ".join(sorted(_STAGE2_ALLOWED_ISSUE_TAGS))
+        + "]\n"
+        '- "reasoning" (string)\n'
+        "Use issue_tags=[] only when no issues are present."
+    )
+    if facility_description:
+        prompt += f"\nFacility context: {facility_description}"
+
+    errors = []
+    uploaded_video = _upload_video_file(client, video_path)
+    try:
+        video_part = _build_uploaded_video_part(
+            types,
+            uploaded_video,
+            video_metadata_fps=float(config.video_metadata_fps),
+        )
+        effective_fps = (
+            float(config.video_metadata_fps) if float(config.video_metadata_fps) > 0.0 else None
+        )
+        logger.info(
+            "Scoring Stage-2 enriched clip with native Gemini video input: path=%s metadata_fps=%s",
+            video_path,
+            "default" if effective_fps is None else f"{effective_fps:.3f}",
+        )
+        for attempt in range(3):
+            contents = [prompt, video_part]
+            if attempt > 0:
+                contents.append(
+                    "Retry: return JSON only with required numeric fields, issue_tags array, and reasoning."
+                )
+            response = _generate_with_retry(
+                client,
+                model=config.model,
+                fallback_models=config.fallback_models,
+                contents=contents,
+                config=_build_generate_config(
+                    types,
+                    enable_agentic_vision=config.enable_agentic_vision,
+                    temperature=0.0,
+                ),
+            )
+            try:
+                raw_text = _extract_response_text(response)
+                parsed = _extract_json_from_response(raw_text)
+                task_score, visual_score, spatial_score, issue_tags, reasoning = (
+                    _parse_stage2_quality_payload(parsed)
+                )
+                return Stage2QualityScore(
+                    task_score=task_score,
+                    visual_score=visual_score,
+                    spatial_score=spatial_score,
+                    issue_tags=issue_tags,
+                    reasoning=reasoning,
+                    raw_response=raw_text,
+                )
+            except Exception as e:
+                errors.append(f"attempt={attempt + 1}: {e}")
+                continue
+    finally:
+        _delete_uploaded_file(client, uploaded_video)
+
+    raise RuntimeError(
+        "Stage-2 enriched clip judge failed to return valid JSON after retries: "
+        + "; ".join(errors)
     )
 
 

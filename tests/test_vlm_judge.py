@@ -191,3 +191,35 @@ def test_parse_stage1_probe_payload():
     assert spatial == 6.0
     assert tags == ["target_off_center", "blur_or_soft_focus"]
     assert "soft" in reasoning
+
+
+def test_parse_stage2_quality_payload():
+    from blueprint_validation.evaluation.vlm_judge import _parse_stage2_quality_payload
+
+    payload = {
+        "task_score": 8,
+        "visual_score": 7,
+        "spatial_score": 6,
+        "issue_tags": ["semantic_mismatch", "green_cast"],
+        "reasoning": "content drifts and a mild green tint is visible",
+    }
+    task, visual, spatial, tags, reasoning = _parse_stage2_quality_payload(payload)
+    assert task == 8.0
+    assert visual == 7.0
+    assert spatial == 6.0
+    assert tags == ["semantic_mismatch", "green_cast"]
+    assert "green" in reasoning
+
+
+def test_parse_stage2_quality_payload_rejects_unknown_issue_tag():
+    from blueprint_validation.evaluation.vlm_judge import _parse_stage2_quality_payload
+
+    payload = {
+        "task_score": 8,
+        "visual_score": 7,
+        "spatial_score": 6,
+        "issue_tags": ["totally_unknown_tag"],
+        "reasoning": "unknown tag should fail strict parser",
+    }
+    with pytest.raises(ValueError, match="Unknown issue tag"):
+        _parse_stage2_quality_payload(payload)

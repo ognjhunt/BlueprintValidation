@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -18,7 +18,9 @@ from ..evaluation.camera_quality import (
     project_target_to_camera_path as _shared_project_target_to_camera_path,
     resolve_center_band_bounds as _shared_resolve_center_band_bounds,
 )
+from ..evaluation.reasoning_conflicts import has_reasoning_conflict
 from ..evaluation.task_start_selector import build_task_start_assignments
+from ..evaluation.vlm_judge import score_stage2_enriched_clip
 from ..evaluation.video_orientation import (
     apply_video_orientation_fix as _shared_apply_video_orientation_fix,
     normalize_video_orientation_fix as _shared_normalize_video_orientation_fix,
@@ -36,6 +38,64 @@ logger = get_logger("stages.s2_enrich")
 # depth control is inverted relative to its own RGB/depth render inputs.
 _FORCE_ROTATE_180_DEPTH_FACILITIES: set[str] = set()
 _VISUAL_COLLAPSE_MIN_INTERFRAME_DELTA = 2.0
+
+
+def _clean_text(value: object) -> str:
+    text = str(value or "").strip()
+    return text
+
+
+def _derive_expected_focus_text(path_type: str, path_context: dict | None) -> str:
+    path_type_norm = str(path_type or "").strip().lower()
+    ctx = path_context if isinstance(path_context, dict) else {}
+    target_label = _clean_text(ctx.get("target_label"))
+    target_instance = _clean_text(ctx.get("target_instance_id"))
+    target_role = _clean_text(ctx.get("target_role"))
+    if target_label:
+        if target_role:
+            return (
+                f"Primary target focus: keep {target_label} ({target_role}) centered and clearly visible."
+            )
+        return f"Primary target focus: keep {target_label} centered and clearly visible."
+    if target_instance:
+        return (
+            "Primary target focus: keep the task target instance "
+            f"{target_instance} centered and clearly visible."
+        )
+    if path_type_norm == "manipulation":
+        return "Primary target focus: keep the manipulation target centered and clearly visible."
+    if path_type_norm == "orbit":
+        return "Overview focus: maintain stable scene context with the task-relevant area centered."
+    if path_type_norm == "sweep":
+        return "Coverage focus: sweep across the task workspace while keeping key objects visible."
+    return "Primary target focus: keep the task-relevant object/region centered and clearly visible."
+
+
+def _resolve_expected_focus_text(clip_entry: dict) -> tuple[str | None, str]:
+    source_text = _clean_text(clip_entry.get("expected_focus_text"))
+    if source_text:
+        return source_text, source_text
+    path_type = str(clip_entry.get("path_type", "") or "")
+    path_context = clip_entry.get("path_context", {})
+    return None, _derive_expected_focus_text(path_type, path_context if isinstance(path_context, dict) else {})
+
+
+def _resolve_retry_context_index(
+    *,
+    base_index: int | None,
+    total_frames: int,
+    stride: int,
+    retry_number: int,
+) -> int | None:
+    if base_index is None or total_frames <= 0:
+        return base_index
+    stride = max(1, int(stride))
+    retry_number = max(1, int(retry_number))
+    if retry_number % 2 == 1:
+        candidate = base_index - stride
+    else:
+        candidate = base_index + stride
+    return int(max(0, min(total_frames - 1, candidate)))
 
 
 @dataclass(frozen=True)
@@ -213,6 +273,13 @@ class EnrichStage(PipelineStage):
         total_rejected_green_cast = 0
         total_rejected_low_motion = 0
         total_visual_gate_evaluated = 0
+        num_vlm_quality_evaluated = 0
+        num_vlm_quality_failures = 0
+        num_vlm_quality_retries = 0
+        num_vlm_quality_recovered = 0
+        num_vlm_quality_api_failures = 0
+        num_vlm_quality_parse_failures = 0
+        num_vlm_quality_reasoning_conflicts = 0
         accepted_ssim_scores: List[float] = []
         accepted_blur_scores: List[float] = []
         accepted_green_ratios: List[float] = []
@@ -229,6 +296,28 @@ class EnrichStage(PipelineStage):
         max_blur_reject_rate = float(config.enrich.max_blur_reject_rate)
         green_frame_ratio_max = float(config.enrich.green_frame_ratio_max)
         blur_laplacian_min = float(config.render.stage1_coverage_blur_laplacian_min)
+        vlm_quality_gate_enabled = bool(config.enrich.vlm_quality_gate_enabled)
+        vlm_quality_fail_closed = bool(config.enrich.vlm_quality_fail_closed)
+        vlm_quality_autoretry_enabled = bool(config.enrich.vlm_quality_autoretry_enabled)
+        vlm_quality_max_regen_attempts = max(0, int(config.enrich.vlm_quality_max_regen_attempts))
+        vlm_quality_min_task_score = float(config.enrich.vlm_quality_min_task_score)
+        vlm_quality_min_visual_score = float(config.enrich.vlm_quality_min_visual_score)
+        vlm_quality_min_spatial_score = float(config.enrich.vlm_quality_min_spatial_score)
+        vlm_quality_require_reasoning_consistency = bool(
+            config.enrich.vlm_quality_require_reasoning_consistency
+        )
+        vlm_quality_retry_context_frame_stride = max(
+            1, int(config.enrich.vlm_quality_retry_context_frame_stride)
+        )
+        vlm_quality_disable_depth_on_final_retry = bool(
+            config.enrich.vlm_quality_disable_depth_on_final_retry
+        )
+        vlm_selected_fps = (
+            float(config.eval_policy.vlm_judge.video_metadata_fps)
+            if float(config.eval_policy.vlm_judge.video_metadata_fps) > 0.0
+            else None
+        )
+        unresolved_vlm_failures: List[str] = []
         # Stage 2 hard guard: clip must be decodable and non-trivially temporal.
         # World-model-specific minimum frame windows are enforced downstream where required.
         min_required_input_frames = 2
@@ -364,135 +453,352 @@ class EnrichStage(PipelineStage):
                 )
                 context_frame_index_for_cosmos = None
 
-            outputs = enrich_clip(
-                video_path=prepared.video_path,
-                depth_path=prepared.depth_path,
-                variants=variants,
-                output_dir=enrich_dir,
-                clip_name=clip_name,
-                config=config.enrich,
-                context_frame_index=context_frame_index_for_cosmos,
-                image_context_path=image_context_path,
-                min_output_frames=min_required_input_frames,
-            )
-
+            source_expected_focus_text, expected_focus_text = _resolve_expected_focus_text(clip_entry)
             expected = len(variants)
             accepted_for_clip = 0
-            total_generated += len(outputs)
-            for out in outputs:
-                frame0_ssim = None
-                if ssim_gate_threshold > 0:
-                    frame0_ssim = _compute_frame0_ssim(anchor_frame, out.output_video_path)
-                    if frame0_ssim is None or frame0_ssim < ssim_gate_threshold:
-                        total_rejected_anchor_similarity += 1
+
+            for variant in variants:
+                variant_max_attempts = 1
+                if vlm_quality_gate_enabled and vlm_quality_autoretry_enabled:
+                    variant_max_attempts += int(vlm_quality_max_regen_attempts)
+                variant_resolved = False
+                variant_has_vlm_unresolved_failure = False
+                variant_last_fail_reason = ""
+                variant_last_issue_tags: List[str] = []
+                variant_last_reasoning = ""
+                variant_last_reasoning_conflict = False
+                variant_last_task_score: float | None = None
+                variant_last_visual_score: float | None = None
+                variant_last_spatial_score: float | None = None
+
+                for attempt_idx in range(variant_max_attempts):
+                    retry_active = attempt_idx > 0
+                    if retry_active and vlm_quality_gate_enabled:
+                        num_vlm_quality_retries += 1
+
+                    attempt_context_index = context_frame_index_for_cosmos
+                    attempt_selected_context_frame_index = selected_context_frame_index
+                    attempt_image_context_path = image_context_path
+                    attempt_multi_view_context_indices = list(multi_view_context_indices)
+                    attempt_scene_index_retrieval_count = scene_index_retrieval_count
+
+                    if retry_active:
+                        shifted_context_index = _resolve_retry_context_index(
+                            base_index=selected_context_frame_index,
+                            total_frames=total_frames,
+                            stride=vlm_quality_retry_context_frame_stride,
+                            retry_number=attempt_idx,
+                        )
+                        attempt_selected_context_frame_index = shifted_context_index
+                        if bool(config.enrich.multi_view_context_enabled):
+                            if shifted_context_index is not None and total_frames > 0:
+                                attempt_multi_view_context_indices = _resolve_multi_view_context_indices(
+                                    anchor_index=int(shifted_context_index),
+                                    total_frames=total_frames,
+                                    offsets=[int(v) for v in config.enrich.multi_view_context_offsets],
+                                )
+                                attempt_frames = _read_video_frames(
+                                    prepared.video_path,
+                                    attempt_multi_view_context_indices,
+                                )
+                                if attempt_frames:
+                                    attempt_image_context_path = _write_context_montage(
+                                        frames=attempt_frames,
+                                        output_path=(
+                                            enrich_dir
+                                            / "_context_montage"
+                                            / (
+                                                f"{clip_name}_{variant.name}_retry"
+                                                f"{attempt_idx:02d}_context.png"
+                                            )
+                                        ),
+                                    )
+                            attempt_context_index = None
+                            attempt_scene_index_retrieval_count = 0
+                        else:
+                            attempt_context_index = shifted_context_index
+
+                    attempt_controlnet_inputs = [str(v) for v in config.enrich.controlnet_inputs]
+                    attempt_guidance = float(config.enrich.guidance)
+                    if retry_active and attempt_idx == (variant_max_attempts - 1):
+                        attempt_guidance = float(config.enrich.guidance) * 0.9
+                        if vlm_quality_disable_depth_on_final_retry:
+                            attempt_controlnet_inputs = [
+                                inp
+                                for inp in attempt_controlnet_inputs
+                                if str(inp).strip().lower() != "depth"
+                            ]
+                            if not attempt_controlnet_inputs:
+                                attempt_controlnet_inputs = ["rgb"]
+
+                    attempt_cfg = replace(
+                        config.enrich,
+                        controlnet_inputs=attempt_controlnet_inputs,
+                        guidance=attempt_guidance,
+                    )
+
+                    outputs = enrich_clip(
+                        video_path=prepared.video_path,
+                        depth_path=prepared.depth_path,
+                        variants=[variant],
+                        output_dir=enrich_dir,
+                        clip_name=clip_name,
+                        config=attempt_cfg,
+                        context_frame_index=attempt_context_index,
+                        image_context_path=attempt_image_context_path,
+                        min_output_frames=min_required_input_frames,
+                    )
+                    total_generated += len(outputs)
+                    if not outputs:
+                        variant_last_fail_reason = "cosmos_generation_failed"
+                        continue
+
+                    out = None
+                    for candidate in outputs:
+                        if str(getattr(candidate, "variant_name", "")).strip() == str(variant.name):
+                            out = candidate
+                            break
+                    if out is None:
+                        out = outputs[0]
+                    frame0_ssim = None
+                    if ssim_gate_threshold > 0:
+                        frame0_ssim = _compute_frame0_ssim(anchor_frame, out.output_video_path)
+                        if frame0_ssim is None or frame0_ssim < ssim_gate_threshold:
+                            total_rejected_anchor_similarity += 1
+                            variant_last_fail_reason = "ssim_reject"
+                            if config.enrich.delete_rejected_outputs:
+                                try:
+                                    out.output_video_path.unlink(missing_ok=True)
+                                except OSError:
+                                    logger.debug(
+                                        "Failed deleting rejected output: %s",
+                                        out.output_video_path,
+                                        exc_info=True,
+                                    )
+                            logger.info(
+                                "Rejected enrich output by frame-0 SSIM gate for %s/%s: "
+                                "ssim=%s threshold=%.3f",
+                                clip_name,
+                                out.variant_name,
+                                "n/a" if frame0_ssim is None else f"{frame0_ssim:.4f}",
+                                ssim_gate_threshold,
+                            )
+                            continue
+                    if frame0_ssim is not None:
+                        accepted_ssim_scores.append(frame0_ssim)
+
+                    visual_stats = _analyze_output_visual_quality(out.output_video_path)
+                    blur_laplacian_mean = None
+                    green_dominance_ratio = None
+                    interframe_delta_mean = None
+                    if visual_stats is not None:
+                        blur_laplacian_mean = visual_stats.get("blur_laplacian_mean")
+                        green_dominance_ratio = visual_stats.get("green_dominance_ratio")
+                        interframe_delta_mean = visual_stats.get("interframe_delta_mean")
+
+                    if visual_collapse_gate_enabled:
+                        total_visual_gate_evaluated += 1
+                        reject_reasons: List[str] = []
+                        if blur_laplacian_mean is None or float(blur_laplacian_mean) < blur_laplacian_min:
+                            total_rejected_blur += 1
+                            reject_reasons.append("blur")
+                        if (
+                            green_dominance_ratio is None
+                            or float(green_dominance_ratio) > green_frame_ratio_max
+                        ):
+                            total_rejected_green_cast += 1
+                            reject_reasons.append("green_cast")
+                        if (
+                            interframe_delta_mean is None
+                            or float(interframe_delta_mean) < _VISUAL_COLLAPSE_MIN_INTERFRAME_DELTA
+                        ):
+                            total_rejected_low_motion += 1
+                            reject_reasons.append("low_motion")
+                        if reject_reasons:
+                            variant_last_fail_reason = "visual_collapse_reject:" + ",".join(reject_reasons)
+                            if config.enrich.delete_rejected_outputs:
+                                try:
+                                    out.output_video_path.unlink(missing_ok=True)
+                                except OSError:
+                                    logger.debug(
+                                        "Failed deleting visual-collapse rejected output: %s",
+                                        out.output_video_path,
+                                        exc_info=True,
+                                    )
+                            logger.info(
+                                "Rejected enrich output by visual-collapse gate for %s/%s: "
+                                "reasons=%s blur_laplacian_mean=%s green_dominance_ratio=%s interframe_delta_mean=%s",
+                                clip_name,
+                                out.variant_name,
+                                ",".join(reject_reasons),
+                                "n/a"
+                                if blur_laplacian_mean is None
+                                else f"{float(blur_laplacian_mean):.4f}",
+                                "n/a"
+                                if green_dominance_ratio is None
+                                else f"{float(green_dominance_ratio):.4f}",
+                                "n/a"
+                                if interframe_delta_mean is None
+                                else f"{float(interframe_delta_mean):.4f}",
+                            )
+                            continue
+
+                    vlm_quality_passed = True
+                    vlm_quality_fail_reason: str | None = None
+                    vlm_task_score: float | None = None
+                    vlm_visual_score: float | None = None
+                    vlm_spatial_score: float | None = None
+                    vlm_reasoning = ""
+                    vlm_issue_tags: List[str] = []
+                    vlm_reasoning_conflict = False
+                    vlm_attempts = 0
+                    vlm_retries_used = max(0, attempt_idx)
+
+                    if vlm_quality_gate_enabled:
+                        vlm_attempts = attempt_idx + 1
+                        num_vlm_quality_evaluated += 1
+                        try:
+                            vlm_score = score_stage2_enriched_clip(
+                                video_path=out.output_video_path,
+                                expected_focus_text=expected_focus_text,
+                                variant_prompt=variant.prompt,
+                                config=config.eval_policy.vlm_judge,
+                                facility_description=facility.description,
+                            )
+                            vlm_task_score = float(vlm_score.task_score)
+                            vlm_visual_score = float(vlm_score.visual_score)
+                            vlm_spatial_score = float(vlm_score.spatial_score)
+                            vlm_reasoning = str(vlm_score.reasoning or "")
+                            vlm_issue_tags = [str(tag) for tag in vlm_score.issue_tags]
+                            vlm_reasoning_conflict = bool(has_reasoning_conflict(vlm_reasoning))
+                            if vlm_reasoning_conflict:
+                                num_vlm_quality_reasoning_conflicts += 1
+                            vlm_quality_passed = (
+                                vlm_task_score >= vlm_quality_min_task_score
+                                and vlm_visual_score >= vlm_quality_min_visual_score
+                                and vlm_spatial_score >= vlm_quality_min_spatial_score
+                                and (
+                                    not vlm_quality_require_reasoning_consistency
+                                    or not vlm_reasoning_conflict
+                                )
+                            )
+                            if not vlm_quality_passed:
+                                num_vlm_quality_failures += 1
+                                fail_reasons: List[str] = []
+                                if vlm_task_score < vlm_quality_min_task_score:
+                                    fail_reasons.append("task_score")
+                                if vlm_visual_score < vlm_quality_min_visual_score:
+                                    fail_reasons.append("visual_score")
+                                if vlm_spatial_score < vlm_quality_min_spatial_score:
+                                    fail_reasons.append("spatial_score")
+                                if (
+                                    vlm_quality_require_reasoning_consistency
+                                    and vlm_reasoning_conflict
+                                ):
+                                    fail_reasons.append("reasoning_conflict")
+                                vlm_quality_fail_reason = "vlm_quality_fail:" + ",".join(fail_reasons)
+                        except Exception as exc:
+                            num_vlm_quality_failures += 1
+                            num_vlm_quality_api_failures += 1
+                            exc_text = str(exc).lower()
+                            if "json" in exc_text or "parse" in exc_text:
+                                num_vlm_quality_parse_failures += 1
+                            vlm_quality_fail_reason = f"vlm_api_failure:{exc}"
+                            vlm_quality_passed = not vlm_quality_fail_closed
+                            if vlm_quality_fail_closed:
+                                variant_has_vlm_unresolved_failure = True
+
+                    if not vlm_quality_passed:
+                        variant_last_fail_reason = str(vlm_quality_fail_reason or "vlm_quality_fail")
+                        variant_last_issue_tags = list(vlm_issue_tags)
+                        variant_last_reasoning = vlm_reasoning
+                        variant_last_reasoning_conflict = bool(vlm_reasoning_conflict)
+                        variant_last_task_score = vlm_task_score
+                        variant_last_visual_score = vlm_visual_score
+                        variant_last_spatial_score = vlm_spatial_score
+                        if vlm_quality_fail_reason and str(vlm_quality_fail_reason).startswith("vlm_"):
+                            variant_has_vlm_unresolved_failure = True
                         if config.enrich.delete_rejected_outputs:
                             try:
                                 out.output_video_path.unlink(missing_ok=True)
                             except OSError:
                                 logger.debug(
-                                    "Failed deleting rejected output: %s",
+                                    "Failed deleting VLM-rejected output: %s",
                                     out.output_video_path,
                                     exc_info=True,
                                 )
-                        logger.info(
-                            "Rejected enrich output by frame-0 SSIM gate for %s/%s: "
-                            "ssim=%s threshold=%.3f",
-                            clip_name,
-                            out.variant_name,
-                            "n/a" if frame0_ssim is None else f"{frame0_ssim:.4f}",
-                            ssim_gate_threshold,
-                        )
-                        continue
-                if frame0_ssim is not None:
-                    accepted_ssim_scores.append(frame0_ssim)
-                visual_stats = _analyze_output_visual_quality(out.output_video_path)
-                blur_laplacian_mean = None
-                green_dominance_ratio = None
-                interframe_delta_mean = None
-                if visual_stats is not None:
-                    blur_laplacian_mean = visual_stats.get("blur_laplacian_mean")
-                    green_dominance_ratio = visual_stats.get("green_dominance_ratio")
-                    interframe_delta_mean = visual_stats.get("interframe_delta_mean")
-
-                if visual_collapse_gate_enabled:
-                    total_visual_gate_evaluated += 1
-                    reject_reasons: List[str] = []
-                    if blur_laplacian_mean is None or float(blur_laplacian_mean) < blur_laplacian_min:
-                        total_rejected_blur += 1
-                        reject_reasons.append("blur")
-                    if green_dominance_ratio is None or float(green_dominance_ratio) > green_frame_ratio_max:
-                        total_rejected_green_cast += 1
-                        reject_reasons.append("green_cast")
-                    if (
-                        interframe_delta_mean is None
-                        or float(interframe_delta_mean) < _VISUAL_COLLAPSE_MIN_INTERFRAME_DELTA
-                    ):
-                        total_rejected_low_motion += 1
-                        reject_reasons.append("low_motion")
-                    if reject_reasons:
-                        if config.enrich.delete_rejected_outputs:
-                            try:
-                                out.output_video_path.unlink(missing_ok=True)
-                            except OSError:
-                                logger.debug(
-                                    "Failed deleting visual-collapse rejected output: %s",
-                                    out.output_video_path,
-                                    exc_info=True,
-                                )
-                        logger.info(
-                            "Rejected enrich output by visual-collapse gate for %s/%s: "
-                            "reasons=%s blur_laplacian_mean=%s green_dominance_ratio=%s interframe_delta_mean=%s",
-                            clip_name,
-                            out.variant_name,
-                            ",".join(reject_reasons),
-                            "n/a"
-                            if blur_laplacian_mean is None
-                            else f"{float(blur_laplacian_mean):.4f}",
-                            "n/a"
-                            if green_dominance_ratio is None
-                            else f"{float(green_dominance_ratio):.4f}",
-                            "n/a"
-                            if interframe_delta_mean is None
-                            else f"{float(interframe_delta_mean):.4f}",
-                        )
                         continue
 
-                manifest_entries.append(
-                    {
-                        "clip_name": clip_name,
-                        "variant_name": out.variant_name,
-                        "prompt": out.prompt,
-                        "output_video_path": str(out.output_video_path),
-                        "input_video_path": str(out.input_video_path),
-                        "source_video_path": str(source_video_path),
-                        "source_depth_video_path": source_depth_raw,
-                        "orientation_fix": orientation_mode_applied,
-                        "context_frame_index": context_frame_index_for_cosmos,
-                        "selected_context_frame_index": selected_context_frame_index,
-                        "selected_context_frame_mode": selected_context_mode,
-                        "target_center_score": target_center_score,
-                        "image_context_path": str(image_context_path) if image_context_path else None,
-                        "multi_view_context_indices": multi_view_context_indices,
-                        "scene_index_retrieval_count": scene_index_retrieval_count,
-                        "input_total_frames": prepared.input_total_frames,
-                        "input_trimmed": prepared.input_trimmed,
-                        "input_trim_start_frame": prepared.input_trim_start_frame,
-                        "input_trim_num_frames": prepared.input_trim_num_frames,
-                        "source_clip_selection_mode": clip_selection_meta.get("selection_mode"),
-                        "frame0_ssim": frame0_ssim,
-                        "blur_laplacian_mean": blur_laplacian_mean,
-                        "green_dominance_ratio": green_dominance_ratio,
-                        "interframe_delta_mean": interframe_delta_mean,
-                    }
-                )
-                if blur_laplacian_mean is not None:
-                    accepted_blur_scores.append(float(blur_laplacian_mean))
-                if green_dominance_ratio is not None:
-                    accepted_green_ratios.append(float(green_dominance_ratio))
-                if interframe_delta_mean is not None:
-                    accepted_interframe_deltas.append(float(interframe_delta_mean))
-                total_enriched += 1
-                accepted_for_clip += 1
+                    manifest_entries.append(
+                        {
+                            "clip_name": clip_name,
+                            "variant_name": out.variant_name,
+                            "prompt": out.prompt,
+                            "output_video_path": str(out.output_video_path),
+                            "input_video_path": str(out.input_video_path),
+                            "source_video_path": str(source_video_path),
+                            "source_depth_video_path": source_depth_raw,
+                            "orientation_fix": orientation_mode_applied,
+                            "context_frame_index": attempt_context_index,
+                            "selected_context_frame_index": attempt_selected_context_frame_index,
+                            "selected_context_frame_mode": selected_context_mode,
+                            "target_center_score": target_center_score,
+                            "image_context_path": (
+                                str(attempt_image_context_path) if attempt_image_context_path else None
+                            ),
+                            "multi_view_context_indices": attempt_multi_view_context_indices,
+                            "scene_index_retrieval_count": attempt_scene_index_retrieval_count,
+                            "input_total_frames": prepared.input_total_frames,
+                            "input_trimmed": prepared.input_trimmed,
+                            "input_trim_start_frame": prepared.input_trim_start_frame,
+                            "input_trim_num_frames": prepared.input_trim_num_frames,
+                            "source_clip_selection_mode": clip_selection_meta.get("selection_mode"),
+                            "frame0_ssim": frame0_ssim,
+                            "blur_laplacian_mean": blur_laplacian_mean,
+                            "green_dominance_ratio": green_dominance_ratio,
+                            "interframe_delta_mean": interframe_delta_mean,
+                            "source_expected_focus_text": source_expected_focus_text,
+                            "expected_focus_text": expected_focus_text,
+                            "vlm_quality_task_score": vlm_task_score,
+                            "vlm_quality_visual_score": vlm_visual_score,
+                            "vlm_quality_spatial_score": vlm_spatial_score,
+                            "vlm_quality_reasoning": vlm_reasoning,
+                            "vlm_quality_reasoning_conflict": vlm_reasoning_conflict,
+                            "vlm_quality_issue_tags": vlm_issue_tags,
+                            "vlm_quality_passed": (
+                                bool(vlm_quality_passed) if vlm_quality_gate_enabled else None
+                            ),
+                            "vlm_quality_attempts": vlm_attempts,
+                            "vlm_quality_retries_used": vlm_retries_used,
+                            "vlm_quality_selected_fps": vlm_selected_fps,
+                            "vlm_quality_fail_reason": (
+                                None if vlm_quality_passed else vlm_quality_fail_reason
+                            ),
+                        }
+                    )
+                    if blur_laplacian_mean is not None:
+                        accepted_blur_scores.append(float(blur_laplacian_mean))
+                    if green_dominance_ratio is not None:
+                        accepted_green_ratios.append(float(green_dominance_ratio))
+                    if interframe_delta_mean is not None:
+                        accepted_interframe_deltas.append(float(interframe_delta_mean))
+                    total_enriched += 1
+                    accepted_for_clip += 1
+                    if vlm_quality_gate_enabled and retry_active:
+                        num_vlm_quality_recovered += 1
+                    variant_resolved = True
+                    break
+
+                if not variant_resolved and variant_has_vlm_unresolved_failure:
+                    unresolved_vlm_failures.append(
+                        (
+                            f"{clip_name}/{variant.name}: {variant_last_fail_reason or 'vlm_unresolved'} "
+                            f"(task={variant_last_task_score}, visual={variant_last_visual_score}, "
+                            f"spatial={variant_last_spatial_score}, reasoning_conflict="
+                            f"{variant_last_reasoning_conflict}, issue_tags={variant_last_issue_tags}, "
+                            f"reasoning={variant_last_reasoning[:120]})"
+                        )
+                    )
 
             if accepted_for_clip < expected:
                 total_failed += expected - accepted_for_clip
@@ -513,6 +819,12 @@ class EnrichStage(PipelineStage):
             stage_fail_reasons.append(
                 "Visual-collapse blur reject rate exceeded cap: "
                 f"{blur_reject_rate:.3f} > max_blur_reject_rate={max_blur_reject_rate:.3f}."
+            )
+        if vlm_quality_gate_enabled and vlm_quality_fail_closed and unresolved_vlm_failures:
+            sample_reason = unresolved_vlm_failures[0]
+            stage_fail_reasons.append(
+                "VLM quality gate unresolved failures under fail-closed policy: "
+                f"{len(unresolved_vlm_failures)} clip variants. Example: {sample_reason}"
             )
 
         # Write enriched manifest
@@ -535,6 +847,19 @@ class EnrichStage(PipelineStage):
             "max_blur_reject_rate": max_blur_reject_rate,
             "green_frame_ratio_max": green_frame_ratio_max,
             "enable_visual_collapse_gate": visual_collapse_gate_enabled,
+            "vlm_quality_gate_enabled": vlm_quality_gate_enabled,
+            "vlm_quality_fail_closed": vlm_quality_fail_closed,
+            "vlm_quality_autoretry_enabled": vlm_quality_autoretry_enabled,
+            "vlm_quality_max_regen_attempts": vlm_quality_max_regen_attempts,
+            "vlm_quality_min_task_score": vlm_quality_min_task_score,
+            "vlm_quality_min_visual_score": vlm_quality_min_visual_score,
+            "vlm_quality_min_spatial_score": vlm_quality_min_spatial_score,
+            "vlm_quality_require_reasoning_consistency": (
+                vlm_quality_require_reasoning_consistency
+            ),
+            "vlm_quality_retry_context_frame_stride": vlm_quality_retry_context_frame_stride,
+            "vlm_quality_disable_depth_on_final_retry": vlm_quality_disable_depth_on_final_retry,
+            "vlm_quality_selected_fps": vlm_selected_fps,
             "selected_source_clips": selected_clip_names,
             "selected_source_target_distribution": selected_clip_target_distribution,
             "video_orientation_fix": facility.video_orientation_fix,
@@ -559,6 +884,14 @@ class EnrichStage(PipelineStage):
                 "num_rejected_blur": total_rejected_blur,
                 "num_rejected_green_cast": total_rejected_green_cast,
                 "num_rejected_low_motion": total_rejected_low_motion,
+                "num_vlm_quality_evaluated": num_vlm_quality_evaluated,
+                "num_vlm_quality_failures": num_vlm_quality_failures,
+                "num_vlm_quality_retries": num_vlm_quality_retries,
+                "num_vlm_quality_recovered": num_vlm_quality_recovered,
+                "num_vlm_quality_api_failures": num_vlm_quality_api_failures,
+                "num_vlm_quality_parse_failures": num_vlm_quality_parse_failures,
+                "num_vlm_quality_reasoning_conflicts": num_vlm_quality_reasoning_conflicts,
+                "num_vlm_quality_unresolved": len(unresolved_vlm_failures),
                 "num_trimmed_inputs": total_trimmed_inputs,
                 "num_selected_source_clips": len(source_clips),
                 "selected_source_clips": selected_clip_names,
@@ -574,10 +907,33 @@ class EnrichStage(PipelineStage):
                 "num_rejected_blur": total_rejected_blur,
                 "num_rejected_green_cast": total_rejected_green_cast,
                 "num_rejected_low_motion": total_rejected_low_motion,
+                "num_vlm_quality_evaluated": num_vlm_quality_evaluated,
+                "num_vlm_quality_failures": num_vlm_quality_failures,
+                "num_vlm_quality_retries": num_vlm_quality_retries,
+                "num_vlm_quality_recovered": num_vlm_quality_recovered,
+                "num_vlm_quality_api_failures": num_vlm_quality_api_failures,
+                "num_vlm_quality_parse_failures": num_vlm_quality_parse_failures,
+                "num_vlm_quality_reasoning_conflicts": num_vlm_quality_reasoning_conflicts,
+                "num_vlm_quality_unresolved": len(unresolved_vlm_failures),
                 "blur_reject_rate": round(float(blur_reject_rate), 6),
                 "max_blur_reject_rate": max_blur_reject_rate,
                 "green_frame_ratio_max": green_frame_ratio_max,
                 "enable_visual_collapse_gate": visual_collapse_gate_enabled,
+                "vlm_quality_gate_enabled": vlm_quality_gate_enabled,
+                "vlm_quality_fail_closed": vlm_quality_fail_closed,
+                "vlm_quality_autoretry_enabled": vlm_quality_autoretry_enabled,
+                "vlm_quality_max_regen_attempts": vlm_quality_max_regen_attempts,
+                "vlm_quality_min_task_score": vlm_quality_min_task_score,
+                "vlm_quality_min_visual_score": vlm_quality_min_visual_score,
+                "vlm_quality_min_spatial_score": vlm_quality_min_spatial_score,
+                "vlm_quality_require_reasoning_consistency": (
+                    vlm_quality_require_reasoning_consistency
+                ),
+                "vlm_quality_retry_context_frame_stride": vlm_quality_retry_context_frame_stride,
+                "vlm_quality_disable_depth_on_final_retry": (
+                    vlm_quality_disable_depth_on_final_retry
+                ),
+                "vlm_quality_selected_fps": vlm_selected_fps,
                 "min_source_clips": min_source_clips,
                 "min_valid_outputs": min_valid_outputs,
                 "num_trimmed_inputs": total_trimmed_inputs,

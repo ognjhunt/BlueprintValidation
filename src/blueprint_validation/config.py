@@ -202,6 +202,24 @@ class EnrichConfig:
     green_frame_ratio_max: float = 0.10
     # Enable per-output visual-collapse heuristics (blur/green cast/low motion).
     enable_visual_collapse_gate: bool = True
+    # Native-video VLM quality gate for enriched outputs (Stage 2).
+    vlm_quality_gate_enabled: bool = True
+    # Fail Stage 2 if VLM gate cannot be evaluated or clip never passes within retries.
+    vlm_quality_fail_closed: bool = True
+    # Enable bounded per-variant auto-regeneration for failed VLM quality checks.
+    vlm_quality_autoretry_enabled: bool = True
+    # Number of regeneration attempts after initial generation (per variant clip).
+    vlm_quality_max_regen_attempts: int = 2
+    # Minimum acceptable VLM scores for enriched outputs.
+    vlm_quality_min_task_score: float = 7.0
+    vlm_quality_min_visual_score: float = 7.0
+    vlm_quality_min_spatial_score: float = 6.0
+    # Require VLM reasoning to be consistent with scalar scores.
+    vlm_quality_require_reasoning_consistency: bool = True
+    # Context-frame shift (in frames) used in deterministic retry ladder.
+    vlm_quality_retry_context_frame_stride: int = 6
+    # On final retry, optionally disable depth control to recover from depth artifacts.
+    vlm_quality_disable_depth_on_final_retry: bool = True
     # all|task_targeted|explicit
     source_clip_selection_mode: str = "all"
     source_clip_task: Optional[str] = None
@@ -450,6 +468,7 @@ class PolicyRLLoopConfig:
     policy_refine_hard_negative_fraction: float = 0.10
     world_model_refresh_enabled: bool = True
     world_model_refresh_mix_with_stage2: bool = True
+    world_model_refresh_require_stage2_vlm_pass: bool = True
     world_model_refresh_stage2_fraction: float = 0.60
     world_model_refresh_success_fraction: float = 0.25
     world_model_refresh_near_miss_fraction: float = 0.15
@@ -470,6 +489,12 @@ class WorldModelRefreshLoopConfig:
     min_non_hard_rollouts: int = 8
     max_hard_negative_fraction: float = 0.75
     require_valid_video_decode: bool = True
+    enforce_vlm_quality_floor: bool = True
+    min_refresh_task_score: float = 7.0
+    min_refresh_visual_score: float = 7.0
+    min_refresh_spatial_score: float = 6.0
+    fail_on_reasoning_conflict: bool = True
+    backfill_from_stage2_vlm_passed: bool = True
     quantile_fallback_enabled: bool = True
     quantile_success_threshold: float = 0.85
     quantile_near_miss_threshold: float = 0.50
@@ -913,6 +938,22 @@ def load_config(path: Path) -> ValidationConfig:
             max_blur_reject_rate=float(e.get("max_blur_reject_rate", 0.30)),
             green_frame_ratio_max=float(e.get("green_frame_ratio_max", 0.10)),
             enable_visual_collapse_gate=bool(e.get("enable_visual_collapse_gate", True)),
+            vlm_quality_gate_enabled=bool(e.get("vlm_quality_gate_enabled", True)),
+            vlm_quality_fail_closed=bool(e.get("vlm_quality_fail_closed", True)),
+            vlm_quality_autoretry_enabled=bool(e.get("vlm_quality_autoretry_enabled", True)),
+            vlm_quality_max_regen_attempts=int(e.get("vlm_quality_max_regen_attempts", 2)),
+            vlm_quality_min_task_score=float(e.get("vlm_quality_min_task_score", 7.0)),
+            vlm_quality_min_visual_score=float(e.get("vlm_quality_min_visual_score", 7.0)),
+            vlm_quality_min_spatial_score=float(e.get("vlm_quality_min_spatial_score", 6.0)),
+            vlm_quality_require_reasoning_consistency=bool(
+                e.get("vlm_quality_require_reasoning_consistency", True)
+            ),
+            vlm_quality_retry_context_frame_stride=int(
+                e.get("vlm_quality_retry_context_frame_stride", 6)
+            ),
+            vlm_quality_disable_depth_on_final_retry=bool(
+                e.get("vlm_quality_disable_depth_on_final_retry", True)
+            ),
             source_clip_selection_mode=_parse_source_clip_selection_mode(
                 e.get("source_clip_selection_mode", "all")
             ),
@@ -1314,6 +1355,9 @@ def load_config(path: Path) -> ValidationConfig:
             world_model_refresh_mix_with_stage2=bool(
                 pr.get("world_model_refresh_mix_with_stage2", True)
             ),
+            world_model_refresh_require_stage2_vlm_pass=bool(
+                pr.get("world_model_refresh_require_stage2_vlm_pass", True)
+            ),
             world_model_refresh_stage2_fraction=float(
                 pr.get("world_model_refresh_stage2_fraction", 0.60)
             ),
@@ -1349,6 +1393,12 @@ def load_config(path: Path) -> ValidationConfig:
             min_non_hard_rollouts=int(wr.get("min_non_hard_rollouts", 8)),
             max_hard_negative_fraction=float(wr.get("max_hard_negative_fraction", 0.75)),
             require_valid_video_decode=bool(wr.get("require_valid_video_decode", True)),
+            enforce_vlm_quality_floor=bool(wr.get("enforce_vlm_quality_floor", True)),
+            min_refresh_task_score=float(wr.get("min_refresh_task_score", 7.0)),
+            min_refresh_visual_score=float(wr.get("min_refresh_visual_score", 7.0)),
+            min_refresh_spatial_score=float(wr.get("min_refresh_spatial_score", 6.0)),
+            fail_on_reasoning_conflict=bool(wr.get("fail_on_reasoning_conflict", True)),
+            backfill_from_stage2_vlm_passed=bool(wr.get("backfill_from_stage2_vlm_passed", True)),
             quantile_fallback_enabled=bool(wr.get("quantile_fallback_enabled", True)),
             quantile_success_threshold=float(wr.get("quantile_success_threshold", 0.85)),
             quantile_near_miss_threshold=float(wr.get("quantile_near_miss_threshold", 0.50)),
@@ -1512,6 +1562,12 @@ def load_config(path: Path) -> ValidationConfig:
         raise ValueError("wm_refresh_loop.quantile_near_miss_threshold must be in [0, 1]")
     if not (0.0 <= float(config.wm_refresh_loop.quantile_success_threshold) <= 1.0):
         raise ValueError("wm_refresh_loop.quantile_success_threshold must be in [0, 1]")
+    if not (0.0 <= float(config.wm_refresh_loop.min_refresh_task_score) <= 10.0):
+        raise ValueError("wm_refresh_loop.min_refresh_task_score must be in [0, 10]")
+    if not (0.0 <= float(config.wm_refresh_loop.min_refresh_visual_score) <= 10.0):
+        raise ValueError("wm_refresh_loop.min_refresh_visual_score must be in [0, 10]")
+    if not (0.0 <= float(config.wm_refresh_loop.min_refresh_spatial_score) <= 10.0):
+        raise ValueError("wm_refresh_loop.min_refresh_spatial_score must be in [0, 10]")
     if float(config.wm_refresh_loop.quantile_success_threshold) < float(
         config.wm_refresh_loop.quantile_near_miss_threshold
     ):
@@ -1533,6 +1589,16 @@ def load_config(path: Path) -> ValidationConfig:
         raise ValueError("enrich.max_blur_reject_rate must be in [0, 1]")
     if not (0.0 <= float(config.enrich.green_frame_ratio_max) <= 1.0):
         raise ValueError("enrich.green_frame_ratio_max must be in [0, 1]")
+    if int(config.enrich.vlm_quality_max_regen_attempts) < 0:
+        raise ValueError("enrich.vlm_quality_max_regen_attempts must be >= 0")
+    if int(config.enrich.vlm_quality_retry_context_frame_stride) < 1:
+        raise ValueError("enrich.vlm_quality_retry_context_frame_stride must be >= 1")
+    if not (0.0 <= float(config.enrich.vlm_quality_min_task_score) <= 10.0):
+        raise ValueError("enrich.vlm_quality_min_task_score must be in [0, 10]")
+    if not (0.0 <= float(config.enrich.vlm_quality_min_visual_score) <= 10.0):
+        raise ValueError("enrich.vlm_quality_min_visual_score must be in [0, 10]")
+    if not (0.0 <= float(config.enrich.vlm_quality_min_spatial_score) <= 10.0):
+        raise ValueError("enrich.vlm_quality_min_spatial_score must be in [0, 10]")
     if int(config.render.stage1_quality_max_regen_attempts) < 0:
         raise ValueError("render.stage1_quality_max_regen_attempts must be >= 0")
     if not (0.0 <= float(config.render.stage1_quality_min_clip_score) <= 1.0):

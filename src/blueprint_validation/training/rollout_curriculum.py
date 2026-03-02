@@ -385,11 +385,15 @@ def build_world_refresh_mix(
     cfg: Any,
     *,
     seed: int,
+    require_stage2_vlm_pass: bool = False,
 ) -> Dict[str, Any]:
     """Build a mixed refresh manifest from Stage-2 data + rollout buckets."""
     rng = Random(int(seed))
 
-    stage2_rows = _normalize_stage2_clips(stage2_manifest or {})
+    stage2_rows = _normalize_stage2_clips(
+        stage2_manifest or {},
+        require_vlm_pass=bool(require_stage2_vlm_pass),
+    )
     success_rows = _normalize_rollout_rows(selected_success, source_bucket="selected")
     near_rows = _normalize_rollout_rows(near_miss, source_bucket="near_miss")
     hard_rows = _normalize_rollout_rows(hard_negative, source_bucket="hard_negative")
@@ -466,6 +470,7 @@ def build_world_refresh_mix(
         "target_success": success_target,
         "target_near_miss": near_target,
         "target_hard_negative": hard_target,
+        "require_stage2_vlm_pass": bool(require_stage2_vlm_pass),
     }
     return {"clips": selected, "mix_metrics": metrics}
 
@@ -531,9 +536,15 @@ def _sample_paths(
     return selected
 
 
-def _normalize_stage2_clips(manifest: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _normalize_stage2_clips(
+    manifest: Dict[str, Any],
+    *,
+    require_vlm_pass: bool = False,
+) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     for clip in manifest.get("clips", []):
+        if bool(require_vlm_pass) and clip.get("vlm_quality_passed") is not True:
+            continue
         output_video = str(clip.get("output_video_path") or "").strip()
         if not output_video:
             continue

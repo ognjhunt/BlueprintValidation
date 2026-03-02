@@ -531,3 +531,166 @@ def test_stage4d_policy_pair_eval_smoke(sample_config, tmp_path, monkeypatch):
     result = stage.execute(sample_config, fac, work_dir, {})
     assert result.status == "success"
     assert result.metrics["task_score_improvement_pct"] > 0
+
+
+def test_stage2_vlm_gate_fail_closed_smoke(sample_config, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from blueprint_validation.config import VariantSpec
+    from blueprint_validation.stages.s2_enrich import EnrichStage
+
+    fac = sample_config.facilities["test_facility"]
+    work_dir = tmp_path / "outputs" / "test_facility"
+    render_dir = work_dir / "renders"
+    render_dir.mkdir(parents=True, exist_ok=True)
+    source_video = render_dir / "clip_000_orbit.mp4"
+    source_depth = render_dir / "clip_000_orbit_depth.mp4"
+    _write_tiny_video(source_video)
+    _write_tiny_video(source_depth)
+    write_json(
+        {
+            "clips": [
+                {
+                    "clip_name": "clip_000_orbit",
+                    "path_type": "orbit",
+                    "video_path": str(source_video),
+                    "depth_video_path": str(source_depth),
+                }
+            ]
+        },
+        render_dir / "render_manifest.json",
+    )
+
+    sample_config.enrich.dynamic_variants = False
+    sample_config.enrich.variants = [VariantSpec(name="v1", prompt="test variant")]
+    sample_config.enrich.enable_visual_collapse_gate = False
+    sample_config.enrich.vlm_quality_gate_enabled = True
+    sample_config.enrich.vlm_quality_fail_closed = True
+    sample_config.enrich.vlm_quality_autoretry_enabled = False
+    sample_config.enrich.vlm_quality_max_regen_attempts = 0
+
+    def _fake_enrich_clip(**kwargs):
+        out = kwargs["output_dir"] / f"{kwargs['clip_name']}_v1.mp4"
+        _write_tiny_video(out)
+        return [
+            SimpleNamespace(
+                variant_name="v1",
+                prompt="test variant",
+                output_video_path=out,
+                input_video_path=kwargs["video_path"],
+            )
+        ]
+
+    monkeypatch.setattr("blueprint_validation.stages.s2_enrich.enrich_clip", _fake_enrich_clip)
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s2_enrich.score_stage2_enriched_clip",
+        lambda **kwargs: SimpleNamespace(
+            task_score=4.0,
+            visual_score=4.0,
+            spatial_score=4.0,
+            issue_tags=["semantic_mismatch"],
+            reasoning="off task",
+        ),
+    )
+
+    result = EnrichStage().execute(sample_config, fac, work_dir, {})
+    assert result.status == "failed"
+    assert "VLM quality gate unresolved failures" in (result.detail or "")
+
+
+def test_stage3d_backfill_viability_smoke(sample_config, tmp_path, monkeypatch):
+    from blueprint_validation.common import StageResult
+    from blueprint_validation.stages.s3d_wm_refresh_loop import WorldModelRefreshLoopStage
+
+    fac = sample_config.facilities["test_facility"]
+    work_dir = tmp_path / "outputs" / "test_facility_backfill"
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    sample_config.eval_policy.headline_scope = "wm_only"
+    sample_config.wm_refresh_loop.enabled = True
+    sample_config.wm_refresh_loop.source_condition = "adapted"
+    sample_config.wm_refresh_loop.require_valid_video_decode = False
+    sample_config.wm_refresh_loop.enforce_vlm_quality_floor = True
+    sample_config.wm_refresh_loop.fail_on_reasoning_conflict = True
+    sample_config.wm_refresh_loop.fail_on_degenerate_mix = True
+    sample_config.wm_refresh_loop.min_non_hard_rollouts = 2
+    sample_config.wm_refresh_loop.backfill_from_stage2_vlm_passed = True
+    sample_config.wm_refresh_loop.max_hard_negative_fraction = 1.0
+    sample_config.wm_refresh_loop.quantile_fallback_enabled = False
+
+    video = work_dir / "rollout.mp4"
+    video.write_bytes(b"00")
+    scores_path = work_dir / "policy_eval_scores.json"
+    write_json(
+        {
+            "scores": [
+                {
+                    "condition": "adapted",
+                    "task": "pick object",
+                    "rollout_index": 0,
+                    "video_path": str(video),
+                    "task_score": 0.0,
+                    "visual_score": 0.0,
+                    "spatial_score": 0.0,
+                    "reasoning": "failed task",
+                    "is_manipulation_task": False,
+                }
+            ]
+        },
+        scores_path,
+    )
+    report_path = work_dir / "policy_eval_report.json"
+    write_json({"absolute_point_differential": 0.0}, report_path)
+    current_ckpt = work_dir / "finetune" / "adapted_checkpoint"
+    current_ckpt.mkdir(parents=True, exist_ok=True)
+    next_ckpt = work_dir / "wm_refresh_loop" / "iter_00" / "next_ckpt"
+    next_ckpt.mkdir(parents=True, exist_ok=True)
+
+    enriched_dir = work_dir / "enriched"
+    enriched_dir.mkdir(parents=True, exist_ok=True)
+    stage2_a = work_dir / "enriched_a.mp4"
+    stage2_b = work_dir / "enriched_b.mp4"
+    stage2_a.write_bytes(b"00")
+    stage2_b.write_bytes(b"00")
+    write_json(
+        {
+            "clips": [
+                {"output_video_path": str(stage2_a), "vlm_quality_passed": True},
+                {"output_video_path": str(stage2_b), "vlm_quality_passed": True},
+            ]
+        },
+        enriched_dir / "enriched_manifest.json",
+    )
+
+    def _fake_refresh(**kwargs):
+        manifest = kwargs["output_dir"] / "refresh_manifest.json"
+        write_json({"clips": []}, manifest)
+        return {
+            "status": "success",
+            "adapted_checkpoint_path": str(next_ckpt),
+            "refresh_manifest_path": str(manifest),
+            "mix_metrics": {"selected_total": 2},
+        }
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s3d_wm_refresh_loop.refresh_world_model_from_bucketed_rollouts",
+        _fake_refresh,
+    )
+
+    prev = {
+        "s4_policy_eval": StageResult(
+            stage_name="s4_policy_eval",
+            status="success",
+            elapsed_seconds=0.0,
+            outputs={"scores_path": str(scores_path), "report_path": str(report_path)},
+        ),
+        "s3_finetune": StageResult(
+            stage_name="s3_finetune",
+            status="success",
+            elapsed_seconds=0.0,
+            outputs={"adapted_checkpoint_path": str(current_ckpt)},
+        ),
+    }
+    result = WorldModelRefreshLoopStage().execute(sample_config, fac, work_dir, prev)
+    assert result.status == "success"
+    assert result.metrics["num_stage2_backfill_candidates"] == 2

@@ -1377,3 +1377,282 @@ def test_s2_visual_collapse_gate_rejects_blur_green_and_low_motion(
     assert result.metrics["num_rejected_blur"] >= 1
     assert result.metrics["num_rejected_green_cast"] >= 1
     assert result.metrics["num_rejected_low_motion"] >= 1
+
+
+def test_s2_vlm_quality_gate_passes_and_records_manifest_fields(sample_config, tmp_path, monkeypatch):
+    from blueprint_validation.common import read_json, write_json
+    from blueprint_validation.config import VariantSpec
+    from blueprint_validation.stages.s2_enrich import EnrichStage
+
+    work_dir = tmp_path
+    render_dir = work_dir / "renders"
+    render_dir.mkdir(parents=True, exist_ok=True)
+    source_video = render_dir / "clip_000_orbit.mp4"
+    source_depth = render_dir / "clip_000_orbit_depth.mp4"
+    _write_dummy_video(source_video, frames=8)
+    _write_dummy_video(source_depth, frames=8)
+    write_json(
+        {
+            "facility": "Test Facility",
+            "clips": [
+                {
+                    "clip_name": "clip_000_orbit",
+                    "path_type": "orbit",
+                    "video_path": str(source_video),
+                    "depth_video_path": str(source_depth),
+                    "expected_focus_text": "Keep the bowl centered and visible.",
+                }
+            ],
+        },
+        render_dir / "render_manifest.json",
+    )
+
+    sample_config.enrich.dynamic_variants = False
+    sample_config.enrich.variants = [VariantSpec(name="v1", prompt="test variant")]
+    sample_config.enrich.enable_visual_collapse_gate = False
+    sample_config.enrich.vlm_quality_gate_enabled = True
+    sample_config.enrich.vlm_quality_fail_closed = True
+    sample_config.enrich.vlm_quality_autoretry_enabled = False
+    sample_config.enrich.vlm_quality_max_regen_attempts = 0
+
+    def _fake_enrich_clip(**kwargs):
+        out = kwargs["output_dir"] / f"{kwargs['clip_name']}_v1.mp4"
+        _write_dummy_video(out, frames=8)
+        return [
+            SimpleNamespace(
+                variant_name="v1",
+                prompt="test variant",
+                output_video_path=out,
+                input_video_path=kwargs["video_path"],
+            )
+        ]
+
+    monkeypatch.setattr("blueprint_validation.stages.s2_enrich.enrich_clip", _fake_enrich_clip)
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s2_enrich.score_stage2_enriched_clip",
+        lambda **kwargs: SimpleNamespace(
+            task_score=8.0,
+            visual_score=8.0,
+            spatial_score=7.0,
+            issue_tags=[],
+            reasoning="Focus is clear and stable.",
+        ),
+    )
+
+    result = EnrichStage().run(sample_config, list(sample_config.facilities.values())[0], work_dir, {})
+    assert result.status == "success"
+    assert result.metrics["num_vlm_quality_evaluated"] == 1
+    assert result.metrics["num_vlm_quality_failures"] == 0
+    manifest = read_json(work_dir / "enriched" / "enriched_manifest.json")
+    clip = manifest["clips"][0]
+    assert clip["source_expected_focus_text"] == "Keep the bowl centered and visible."
+    assert clip["expected_focus_text"] == "Keep the bowl centered and visible."
+    assert clip["vlm_quality_passed"] is True
+    assert clip["vlm_quality_task_score"] == pytest.approx(8.0)
+    assert clip["vlm_quality_retries_used"] == 0
+
+
+def test_s2_vlm_quality_gate_retries_and_recovers(sample_config, tmp_path, monkeypatch):
+    from blueprint_validation.common import read_json, write_json
+    from blueprint_validation.config import VariantSpec
+    from blueprint_validation.stages.s2_enrich import EnrichStage
+
+    work_dir = tmp_path
+    render_dir = work_dir / "renders"
+    render_dir.mkdir(parents=True, exist_ok=True)
+    source_video = render_dir / "clip_000_orbit.mp4"
+    source_depth = render_dir / "clip_000_orbit_depth.mp4"
+    _write_dummy_video(source_video, frames=8)
+    _write_dummy_video(source_depth, frames=8)
+    write_json(
+        {
+            "facility": "Test Facility",
+            "clips": [
+                {
+                    "clip_name": "clip_000_orbit",
+                    "path_type": "orbit",
+                    "video_path": str(source_video),
+                    "depth_video_path": str(source_depth),
+                }
+            ],
+        },
+        render_dir / "render_manifest.json",
+    )
+
+    sample_config.enrich.dynamic_variants = False
+    sample_config.enrich.variants = [VariantSpec(name="v1", prompt="test variant")]
+    sample_config.enrich.enable_visual_collapse_gate = False
+    sample_config.enrich.vlm_quality_gate_enabled = True
+    sample_config.enrich.vlm_quality_fail_closed = True
+    sample_config.enrich.vlm_quality_autoretry_enabled = True
+    sample_config.enrich.vlm_quality_max_regen_attempts = 1
+
+    calls = {"enrich": 0, "judge": 0}
+
+    def _fake_enrich_clip(**kwargs):
+        calls["enrich"] += 1
+        out = kwargs["output_dir"] / f"{kwargs['clip_name']}_v1.mp4"
+        _write_dummy_video(out, frames=8)
+        return [
+            SimpleNamespace(
+                variant_name="v1",
+                prompt="test variant",
+                output_video_path=out,
+                input_video_path=kwargs["video_path"],
+            )
+        ]
+
+    def _fake_score(**kwargs):
+        calls["judge"] += 1
+        if calls["judge"] == 1:
+            return SimpleNamespace(
+                task_score=5.0,
+                visual_score=5.0,
+                spatial_score=5.0,
+                issue_tags=["semantic_mismatch"],
+                reasoning="off task",
+            )
+        return SimpleNamespace(
+            task_score=8.0,
+            visual_score=8.0,
+            spatial_score=7.0,
+            issue_tags=[],
+            reasoning="good",
+        )
+
+    monkeypatch.setattr("blueprint_validation.stages.s2_enrich.enrich_clip", _fake_enrich_clip)
+    monkeypatch.setattr("blueprint_validation.stages.s2_enrich.score_stage2_enriched_clip", _fake_score)
+
+    result = EnrichStage().run(sample_config, list(sample_config.facilities.values())[0], work_dir, {})
+    assert result.status == "success"
+    assert calls["enrich"] >= 2
+    assert result.metrics["num_vlm_quality_failures"] >= 1
+    assert result.metrics["num_vlm_quality_retries"] >= 1
+    assert result.metrics["num_vlm_quality_recovered"] >= 1
+    manifest = read_json(work_dir / "enriched" / "enriched_manifest.json")
+    assert manifest["clips"][0]["vlm_quality_retries_used"] == 1
+
+
+def test_s2_vlm_quality_gate_fail_closed_on_unresolved_failure(sample_config, tmp_path, monkeypatch):
+    from blueprint_validation.common import write_json
+    from blueprint_validation.config import VariantSpec
+    from blueprint_validation.stages.s2_enrich import EnrichStage
+
+    work_dir = tmp_path
+    render_dir = work_dir / "renders"
+    render_dir.mkdir(parents=True, exist_ok=True)
+    source_video = render_dir / "clip_000_orbit.mp4"
+    source_depth = render_dir / "clip_000_orbit_depth.mp4"
+    _write_dummy_video(source_video, frames=8)
+    _write_dummy_video(source_depth, frames=8)
+    write_json(
+        {
+            "facility": "Test Facility",
+            "clips": [
+                {
+                    "clip_name": "clip_000_orbit",
+                    "path_type": "orbit",
+                    "video_path": str(source_video),
+                    "depth_video_path": str(source_depth),
+                }
+            ],
+        },
+        render_dir / "render_manifest.json",
+    )
+
+    sample_config.enrich.dynamic_variants = False
+    sample_config.enrich.variants = [VariantSpec(name="v1", prompt="test variant")]
+    sample_config.enrich.enable_visual_collapse_gate = False
+    sample_config.enrich.vlm_quality_gate_enabled = True
+    sample_config.enrich.vlm_quality_fail_closed = True
+    sample_config.enrich.vlm_quality_autoretry_enabled = True
+    sample_config.enrich.vlm_quality_max_regen_attempts = 1
+
+    def _fake_enrich_clip(**kwargs):
+        out = kwargs["output_dir"] / f"{kwargs['clip_name']}_v1.mp4"
+        _write_dummy_video(out, frames=8)
+        return [
+            SimpleNamespace(
+                variant_name="v1",
+                prompt="test variant",
+                output_video_path=out,
+                input_video_path=kwargs["video_path"],
+            )
+        ]
+
+    monkeypatch.setattr("blueprint_validation.stages.s2_enrich.enrich_clip", _fake_enrich_clip)
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s2_enrich.score_stage2_enriched_clip",
+        lambda **kwargs: SimpleNamespace(
+            task_score=5.0,
+            visual_score=5.0,
+            spatial_score=5.0,
+            issue_tags=["semantic_mismatch"],
+            reasoning="off task",
+        ),
+    )
+
+    result = EnrichStage().run(sample_config, list(sample_config.facilities.values())[0], work_dir, {})
+    assert result.status == "failed"
+    assert "VLM quality gate unresolved failures" in (result.detail or "")
+    assert result.metrics["num_vlm_quality_failures"] >= 2
+
+
+def test_s2_vlm_quality_gate_parse_failure_increments_counters(sample_config, tmp_path, monkeypatch):
+    from blueprint_validation.common import write_json
+    from blueprint_validation.config import VariantSpec
+    from blueprint_validation.stages.s2_enrich import EnrichStage
+
+    work_dir = tmp_path
+    render_dir = work_dir / "renders"
+    render_dir.mkdir(parents=True, exist_ok=True)
+    source_video = render_dir / "clip_000_orbit.mp4"
+    source_depth = render_dir / "clip_000_orbit_depth.mp4"
+    _write_dummy_video(source_video, frames=8)
+    _write_dummy_video(source_depth, frames=8)
+    write_json(
+        {
+            "facility": "Test Facility",
+            "clips": [
+                {
+                    "clip_name": "clip_000_orbit",
+                    "path_type": "orbit",
+                    "video_path": str(source_video),
+                    "depth_video_path": str(source_depth),
+                }
+            ],
+        },
+        render_dir / "render_manifest.json",
+    )
+
+    sample_config.enrich.dynamic_variants = False
+    sample_config.enrich.variants = [VariantSpec(name="v1", prompt="test variant")]
+    sample_config.enrich.enable_visual_collapse_gate = False
+    sample_config.enrich.vlm_quality_gate_enabled = True
+    sample_config.enrich.vlm_quality_fail_closed = True
+    sample_config.enrich.vlm_quality_autoretry_enabled = False
+    sample_config.enrich.vlm_quality_max_regen_attempts = 0
+
+    def _fake_enrich_clip(**kwargs):
+        out = kwargs["output_dir"] / f"{kwargs['clip_name']}_v1.mp4"
+        _write_dummy_video(out, frames=8)
+        return [
+            SimpleNamespace(
+                variant_name="v1",
+                prompt="test variant",
+                output_video_path=out,
+                input_video_path=kwargs["video_path"],
+            )
+        ]
+
+    monkeypatch.setattr("blueprint_validation.stages.s2_enrich.enrich_clip", _fake_enrich_clip)
+
+    def _raise_parse_error(**kwargs):
+        raise RuntimeError("Could not parse JSON from VLM response")
+
+    monkeypatch.setattr("blueprint_validation.stages.s2_enrich.score_stage2_enriched_clip", _raise_parse_error)
+
+    result = EnrichStage().run(sample_config, list(sample_config.facilities.values())[0], work_dir, {})
+    assert result.status == "failed"
+    assert result.metrics["num_vlm_quality_api_failures"] >= 1
+    assert result.metrics["num_vlm_quality_parse_failures"] >= 1

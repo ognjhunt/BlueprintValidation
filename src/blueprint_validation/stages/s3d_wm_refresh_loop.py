@@ -10,6 +10,7 @@ from typing import Dict, List, Optional
 
 from ..common import StageResult, get_logger, read_json, write_json
 from ..config import FacilityConfig, ValidationConfig
+from ..evaluation.reasoning_conflicts import has_reasoning_conflict
 from ..training.policy_rl_loop import refresh_world_model_from_bucketed_rollouts
 from ..training.rollout_curriculum import (
     RolloutBucketThresholds,
@@ -85,6 +86,30 @@ class WorldModelRefreshLoopStage(PipelineStage):
             for row in source_scores
             if str(row.get("video_path", "")).strip() and Path(str(row.get("video_path"))).exists()
         ]
+        num_vlm_floor_filtered_rollouts = 0
+        num_vlm_floor_reasoning_conflicts = 0
+        if bool(cfg.enforce_vlm_quality_floor):
+            filtered_scores: List[Dict] = []
+            for row in source_scores:
+                task_score = float(row.get("task_score", 0.0) or 0.0)
+                visual_score = float(row.get("visual_score", 0.0) or 0.0)
+                spatial_score = float(row.get("spatial_score", 0.0) or 0.0)
+                reasoning_conflict = has_reasoning_conflict(str(row.get("reasoning", "")))
+                if reasoning_conflict:
+                    num_vlm_floor_reasoning_conflicts += 1
+                passes_floor = (
+                    task_score >= float(cfg.min_refresh_task_score)
+                    and visual_score >= float(cfg.min_refresh_visual_score)
+                    and spatial_score >= float(cfg.min_refresh_spatial_score)
+                    and (not bool(cfg.fail_on_reasoning_conflict) or not reasoning_conflict)
+                )
+                if passes_floor:
+                    kept = dict(row)
+                    kept["reasoning_conflict"] = bool(reasoning_conflict)
+                    filtered_scores.append(kept)
+                else:
+                    num_vlm_floor_filtered_rollouts += 1
+            source_scores = filtered_scores
         expected_decode_frames = max(2, int(config.eval_policy.reliability.min_rollout_frames))
         invalid_decode_rows: List[Dict] = []
         if bool(cfg.require_valid_video_decode):
@@ -108,7 +133,7 @@ class WorldModelRefreshLoopStage(PipelineStage):
                 valid_entry["decoded_frames"] = int(decoded)
                 valid_rows.append(valid_entry)
             source_scores = valid_rows
-        if not source_scores:
+        if not source_scores and not bool(cfg.backfill_from_stage2_vlm_passed):
             decode_detail = ""
             if invalid_decode_rows:
                 sample = invalid_decode_rows[0]
@@ -129,11 +154,21 @@ class WorldModelRefreshLoopStage(PipelineStage):
                 metrics={
                     "source_condition": source_condition,
                     "num_source_rollouts": 0,
+                    "num_vlm_floor_filtered_rollouts": num_vlm_floor_filtered_rollouts,
+                    "num_vlm_floor_reasoning_conflicts": num_vlm_floor_reasoning_conflicts,
+                    "stage2_backfill_considered": False,
+                    "num_stage2_backfill_candidates": 0,
+                    "effective_non_hard_count": 0,
                     "num_invalid_decode_rollouts": len(invalid_decode_rows),
                     "expected_decode_frames": int(expected_decode_frames),
                     "require_valid_video_decode": bool(cfg.require_valid_video_decode),
                     "degenerate_mix_detected": False,
                 },
+            )
+        if not source_scores and bool(cfg.backfill_from_stage2_vlm_passed):
+            logger.warning(
+                "No rollout rows remained after pre-refresh filters; continuing with Stage-2 "
+                "VLM-passed backfill viability checks."
             )
 
         thresholds = RolloutBucketThresholds(
@@ -218,7 +253,34 @@ class WorldModelRefreshLoopStage(PipelineStage):
                 "hard_negative": len(hard_negative),
             }
 
-        if not (selected_success or near_miss or hard_negative):
+        num_positive_rollouts = len(selected_success) + len(near_miss)
+        stage2_backfill_considered = False
+        num_stage2_backfill_candidates = 0
+        effective_non_hard_count = num_positive_rollouts
+        if (
+            bool(cfg.backfill_from_stage2_vlm_passed)
+            and effective_non_hard_count < int(cfg.min_non_hard_rollouts)
+        ):
+            stage2_backfill_considered = True
+            stage2_manifest_path = work_dir / "enriched" / "enriched_manifest.json"
+            if stage2_manifest_path.exists():
+                try:
+                    stage2_manifest = read_json(stage2_manifest_path)
+                    for clip in stage2_manifest.get("clips", []):
+                        output_video = Path(str(clip.get("output_video_path", "")).strip())
+                        if not output_video.exists():
+                            continue
+                        if clip.get("vlm_quality_passed") is True:
+                            num_stage2_backfill_candidates += 1
+                except Exception:
+                    logger.warning(
+                        "Failed loading Stage-2 enriched manifest for WM refresh backfill: %s",
+                        stage2_manifest_path,
+                        exc_info=True,
+                    )
+            effective_non_hard_count = num_positive_rollouts + num_stage2_backfill_candidates
+
+        if not (selected_success or near_miss or hard_negative) and effective_non_hard_count <= 0:
             return StageResult(
                 stage_name=self.name,
                 status="failed",
@@ -238,23 +300,28 @@ class WorldModelRefreshLoopStage(PipelineStage):
                     "max_hard_negative_fraction": max_hard_negative_fraction,
                     "observed_hard_negative_fraction": observed_hard_negative_fraction,
                     "degenerate_mix_detected": degenerate_mix_detected,
+                    "num_vlm_floor_filtered_rollouts": num_vlm_floor_filtered_rollouts,
+                    "num_vlm_floor_reasoning_conflicts": num_vlm_floor_reasoning_conflicts,
+                    "stage2_backfill_considered": stage2_backfill_considered,
+                    "num_stage2_backfill_candidates": num_stage2_backfill_candidates,
+                    "effective_non_hard_count": effective_non_hard_count,
                     "num_invalid_decode_rollouts": len(invalid_decode_rows),
                     "expected_decode_frames": int(expected_decode_frames),
                     "require_valid_video_decode": bool(cfg.require_valid_video_decode),
                 },
             )
-        num_positive_rollouts = len(selected_success) + len(near_miss)
-        if bool(cfg.fail_on_degenerate_mix) and num_positive_rollouts < int(cfg.min_non_hard_rollouts):
+        if bool(cfg.fail_on_degenerate_mix) and effective_non_hard_count < int(cfg.min_non_hard_rollouts):
             return StageResult(
                 stage_name=self.name,
                 status="failed",
                 elapsed_seconds=0,
                 detail=(
                     "WM refresh blocked: degenerate rollout mix "
-                    f"(success+near_miss={num_positive_rollouts} < min_non_hard_rollouts="
+                    f"(effective_non_hard_count={effective_non_hard_count} < min_non_hard_rollouts="
                     f"{int(cfg.min_non_hard_rollouts)}). "
                     f"source_condition={source_condition}, bucketing_strategy={bucketing_strategy}, "
-                    f"hard_negative={len(hard_negative)}."
+                    f"hard_negative={len(hard_negative)}, "
+                    f"stage2_backfill_candidates={num_stage2_backfill_candidates}."
                 ),
                 metrics={
                     "source_condition": source_condition,
@@ -270,6 +337,11 @@ class WorldModelRefreshLoopStage(PipelineStage):
                     "max_hard_negative_fraction": max_hard_negative_fraction,
                     "observed_hard_negative_fraction": observed_hard_negative_fraction,
                     "degenerate_mix_detected": degenerate_mix_detected,
+                    "num_vlm_floor_filtered_rollouts": num_vlm_floor_filtered_rollouts,
+                    "num_vlm_floor_reasoning_conflicts": num_vlm_floor_reasoning_conflicts,
+                    "stage2_backfill_considered": stage2_backfill_considered,
+                    "num_stage2_backfill_candidates": num_stage2_backfill_candidates,
+                    "effective_non_hard_count": effective_non_hard_count,
                     "num_invalid_decode_rollouts": len(invalid_decode_rows),
                     "expected_decode_frames": int(expected_decode_frames),
                     "require_valid_video_decode": bool(cfg.require_valid_video_decode),
@@ -302,6 +374,11 @@ class WorldModelRefreshLoopStage(PipelineStage):
                     "max_hard_negative_fraction": max_hard_negative_fraction,
                     "observed_hard_negative_fraction": observed_hard_negative_fraction,
                     "degenerate_mix_detected": True,
+                    "num_vlm_floor_filtered_rollouts": num_vlm_floor_filtered_rollouts,
+                    "num_vlm_floor_reasoning_conflicts": num_vlm_floor_reasoning_conflicts,
+                    "stage2_backfill_considered": stage2_backfill_considered,
+                    "num_stage2_backfill_candidates": num_stage2_backfill_candidates,
+                    "effective_non_hard_count": effective_non_hard_count,
                     "num_invalid_decode_rollouts": len(invalid_decode_rows),
                     "expected_decode_frames": int(expected_decode_frames),
                     "require_valid_video_decode": bool(cfg.require_valid_video_decode),
@@ -404,6 +481,11 @@ class WorldModelRefreshLoopStage(PipelineStage):
                             "observed_hard_negative_fraction": observed_hard_negative_fraction,
                             "selected_hard_negative_fraction": selected_hard_negative_fraction,
                             "degenerate_mix_detected": degenerate_mix_detected,
+                            "num_vlm_floor_filtered_rollouts": num_vlm_floor_filtered_rollouts,
+                            "num_vlm_floor_reasoning_conflicts": num_vlm_floor_reasoning_conflicts,
+                            "stage2_backfill_considered": stage2_backfill_considered,
+                            "num_stage2_backfill_candidates": num_stage2_backfill_candidates,
+                            "effective_non_hard_count": effective_non_hard_count,
                             "num_invalid_decode_rollouts": len(invalid_decode_rows),
                             "expected_decode_frames": int(expected_decode_frames),
                             "require_valid_video_decode": bool(cfg.require_valid_video_decode),
@@ -454,6 +536,11 @@ class WorldModelRefreshLoopStage(PipelineStage):
                         "observed_hard_negative_fraction": observed_hard_negative_fraction,
                         "selected_hard_negative_fraction": final_selected_hard_negative_fraction,
                         "degenerate_mix_detected": degenerate_mix_detected,
+                        "num_vlm_floor_filtered_rollouts": num_vlm_floor_filtered_rollouts,
+                        "num_vlm_floor_reasoning_conflicts": num_vlm_floor_reasoning_conflicts,
+                        "stage2_backfill_considered": stage2_backfill_considered,
+                        "num_stage2_backfill_candidates": num_stage2_backfill_candidates,
+                        "effective_non_hard_count": effective_non_hard_count,
                         "num_invalid_decode_rollouts": len(invalid_decode_rows),
                         "expected_decode_frames": int(expected_decode_frames),
                         "require_valid_video_decode": bool(cfg.require_valid_video_decode),
@@ -494,6 +581,11 @@ class WorldModelRefreshLoopStage(PipelineStage):
                 "num_near_miss_rollouts": len(near_miss),
                 "num_hard_negative_rollouts": len(hard_negative),
                 "num_positive_rollouts": num_positive_rollouts,
+                "num_vlm_floor_filtered_rollouts": num_vlm_floor_filtered_rollouts,
+                "num_vlm_floor_reasoning_conflicts": num_vlm_floor_reasoning_conflicts,
+                "stage2_backfill_considered": stage2_backfill_considered,
+                "num_stage2_backfill_candidates": num_stage2_backfill_candidates,
+                "effective_non_hard_count": effective_non_hard_count,
                 "bucketing_strategy": bucketing_strategy,
                 "threshold_bucket_counts": threshold_bucket_counts,
                 "post_bucket_counts": post_bucket_counts,

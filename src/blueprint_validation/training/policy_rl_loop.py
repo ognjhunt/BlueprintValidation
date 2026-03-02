@@ -563,6 +563,9 @@ def _refresh_world_model(
         hard_negative=hard_negative_rows,
         cfg=config.policy_rl_loop,
         seed=int(config.policy_rl_loop.world_model_refresh_seed) + int(iteration),
+        require_stage2_vlm_pass=bool(
+            config.policy_rl_loop.world_model_refresh_require_stage2_vlm_pass
+        ),
     )
     clips = list(mix.get("clips", []))
     if not clips:
