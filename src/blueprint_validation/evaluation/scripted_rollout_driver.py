@@ -10,6 +10,7 @@ from typing import Dict, List
 import numpy as np
 
 from ..common import get_logger
+from ..video_io import open_mp4_writer
 
 logger = get_logger("evaluation.scripted_rollout_driver")
 
@@ -128,7 +129,12 @@ def run_scripted_rollout(
     output_dir.mkdir(parents=True, exist_ok=True)
     video_path = output_dir / f"{clip_name}.mp4"
     h, w = frames[0].shape[:2]
-    writer = cv2.VideoWriter(str(video_path), cv2.VideoWriter_fourcc(*"mp4v"), 10, (w, h))
+    writer = open_mp4_writer(
+        output_path=video_path,
+        fps=10.0,
+        frame_size=(w, h),
+        is_color=True,
+    )
     for frame in frames:
         writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
     writer.release()
@@ -180,4 +186,3 @@ def _is_manipulation_task(task: str) -> bool:
     lowered = (task or "").lower()
     keywords = ("pick", "grasp", "lift", "place", "stack", "regrasp", "tote", "bin")
     return any(k in lowered for k in keywords)
-

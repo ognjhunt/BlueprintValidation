@@ -19,6 +19,7 @@ from ..evaluation.video_orientation import (
     transform_video_frame as _shared_transform_video_frame,
     transform_video_orientation as _shared_transform_video_orientation,
 )
+from ..video_io import open_mp4_writer
 from ..warmup import load_cached_variants
 from .manifest_resolution import ManifestCandidate, ManifestSource, resolve_manifest_source
 from .base import PipelineStage
@@ -949,13 +950,11 @@ def _trim_video_window(
         cap.release()
         return 0
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    writer = cv2.VideoWriter(
-        str(output_path),
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        float(fps),
-        (width, height),
-        isColor=not force_grayscale,
+    writer = open_mp4_writer(
+        output_path=output_path,
+        fps=float(fps),
+        frame_size=(width, height),
+        is_color=not force_grayscale,
     )
     if not writer.isOpened():
         cap.release()

@@ -12,6 +12,7 @@ from importlib import import_module
 import numpy as np
 
 from ..common import get_logger
+from ..video_io import open_mp4_writer
 
 logger = get_logger("evaluation.openvla_runner")
 
@@ -672,8 +673,12 @@ def run_rollout(
         import cv2
 
         h, w = frames[0].shape[:2]
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(str(video_path), fourcc, 10, (w, h))
+        writer = open_mp4_writer(
+            output_path=video_path,
+            fps=10.0,
+            frame_size=(w, h),
+            is_color=True,
+        )
         for frame in frames:
             writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
         writer.release()

@@ -8,6 +8,8 @@ from typing import List, Optional
 
 import numpy as np
 
+from ..video_io import open_mp4_writer
+
 
 def run_rollout_with_adapter(
     world_model,
@@ -60,7 +62,12 @@ def run_rollout_with_adapter(
     output_dir.mkdir(parents=True, exist_ok=True)
     video_path = output_dir / f"{clip_name}.mp4"
     h, w = frames[0].shape[:2]
-    writer = cv2.VideoWriter(str(video_path), cv2.VideoWriter_fourcc(*"mp4v"), 10, (w, h))
+    writer = open_mp4_writer(
+        output_path=video_path,
+        fps=10.0,
+        frame_size=(w, h),
+        is_color=True,
+    )
     for frame in frames:
         writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
     writer.release()

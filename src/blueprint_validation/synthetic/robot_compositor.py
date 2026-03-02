@@ -12,6 +12,7 @@ from typing import Dict, List
 import numpy as np
 
 from ..common import get_logger
+from ..video_io import open_mp4_writer
 
 logger = get_logger("synthetic.robot_compositor")
 
@@ -265,12 +266,11 @@ def composite_robot_arm_into_clip(
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = cap.get(cv2.CAP_PROP_FPS) or 10.0
     num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    output_video.parent.mkdir(parents=True, exist_ok=True)
-    writer = cv2.VideoWriter(
-        str(output_video),
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        fps,
-        (width, height),
+    writer = open_mp4_writer(
+        output_path=output_video,
+        fps=float(fps),
+        frame_size=(width, height),
+        is_color=True,
     )
 
     joint_traj = _generate_joint_trajectory(

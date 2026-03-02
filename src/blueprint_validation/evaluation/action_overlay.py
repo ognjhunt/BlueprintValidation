@@ -9,6 +9,7 @@ from typing import List, Sequence
 import numpy as np
 
 from ..common import get_logger
+from ..video_io import open_mp4_writer
 
 logger = get_logger("evaluation.action_overlay")
 
@@ -37,12 +38,11 @@ def overlay_scripted_trace_on_video(
         raise RuntimeError(f"No frames available for overlay: {input_video_path}")
 
     height, width = first.shape[:2]
-    output_video_path.parent.mkdir(parents=True, exist_ok=True)
-    writer = cv2.VideoWriter(
-        str(output_video_path),
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        float(fps),
-        (width, height),
+    writer = open_mp4_writer(
+        output_path=output_video_path,
+        fps=float(fps),
+        frame_size=(width, height),
+        is_color=True,
     )
     if not writer.isOpened():
         cap.release()

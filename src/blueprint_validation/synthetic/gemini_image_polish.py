@@ -10,6 +10,7 @@ from typing import List
 import numpy as np
 
 from ..common import get_logger
+from ..video_io import open_mp4_writer
 
 logger = get_logger("synthetic.gemini_image_polish")
 
@@ -34,13 +35,12 @@ def _save_video_frames(frames, output_path: Path, fps: float) -> None:
 
     if not frames:
         raise RuntimeError("No frames to save")
-    output_path.parent.mkdir(parents=True, exist_ok=True)
     h, w = frames[0].shape[:2]
-    writer = cv2.VideoWriter(
-        str(output_path),
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        fps,
-        (w, h),
+    writer = open_mp4_writer(
+        output_path=output_path,
+        fps=float(fps),
+        frame_size=(w, h),
+        is_color=True,
     )
     for frame in frames:
         writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))

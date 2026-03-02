@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..common import get_logger
+from ..video_io import open_mp4_writer
 
 logger = get_logger("evaluation.video_orientation")
 
@@ -78,13 +79,11 @@ def transform_video_orientation(
     else:
         height, width = first.shape[:2]
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    writer = cv2.VideoWriter(
-        str(output_path),
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        float(fps),
-        (width, height),
-        isColor=not force_grayscale,
+    writer = open_mp4_writer(
+        output_path=output_path,
+        fps=float(fps),
+        frame_size=(width, height),
+        is_color=not force_grayscale,
     )
     if not writer.isOpened():
         cap.release()

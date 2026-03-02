@@ -8,6 +8,7 @@ from typing import Dict, List
 
 from ..common import read_json, write_json
 from ..config import FacilityConfig, ValidationConfig
+from ..video_io import open_mp4_writer
 
 
 def run_splatsim_pybullet_backend(
@@ -290,12 +291,11 @@ def _annotate_interaction_video(
         cap.release()
         return False
 
-    output_video.parent.mkdir(parents=True, exist_ok=True)
-    writer = cv2.VideoWriter(
-        str(output_video),
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        fps,
-        (width, height),
+    writer = open_mp4_writer(
+        output_path=output_video,
+        fps=float(fps),
+        frame_size=(width, height),
+        is_color=True,
     )
     if not writer.isOpened():
         cap.release()

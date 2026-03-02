@@ -10,6 +10,7 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from ..config import RoboSplatScanConfig
+from ..video_io import open_mp4_writer
 
 
 @dataclass
@@ -146,8 +147,12 @@ def _write_video(path: Path, frames: List[np.ndarray], fps: int, color: bool) ->
         raise RuntimeError(f"Cannot write empty video: {path}")
 
     h, w = frames[0].shape[:2]
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(str(path), fourcc, max(1, fps), (w, h), isColor=color)
+    writer = open_mp4_writer(
+        output_path=path,
+        fps=float(max(1, fps)),
+        frame_size=(w, h),
+        is_color=color,
+    )
     for frame in frames:
         if color:
             writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))

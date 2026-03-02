@@ -9,6 +9,7 @@ from typing import Any, List, Optional
 import numpy as np
 
 from ..common import get_logger
+from ..video_io import open_mp4_writer
 from .camera_paths import CameraPose
 from .ply_loader import GaussianSplatData
 
@@ -137,8 +138,12 @@ def render_video(
     # Save RGB video
     h, w = rgb_frames[0].shape[:2]
     video_path = output_dir / f"{clip_name}.mp4"
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(str(video_path), fourcc, fps, (w, h))
+    writer = open_mp4_writer(
+        output_path=video_path,
+        fps=float(fps),
+        frame_size=(w, h),
+        is_color=True,
+    )
     for frame in rgb_frames:
         writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
     writer.release()
@@ -153,7 +158,12 @@ def render_video(
     else:
         depth_norm = np.zeros_like(depth_stack, dtype=np.uint8)
 
-    writer = cv2.VideoWriter(str(depth_video_path), fourcc, fps, (w, h), isColor=False)
+    writer = open_mp4_writer(
+        output_path=depth_video_path,
+        fps=float(fps),
+        frame_size=(w, h),
+        is_color=False,
+    )
     for frame in depth_norm:
         writer.write(frame)
     writer.release()
