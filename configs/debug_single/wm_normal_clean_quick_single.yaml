@@ -140,6 +140,8 @@ eval_policy:
   conditions:
   - baseline
   - adapted
+  min_assignment_quality_score: 0.35
+  require_object_grounded_manip_tasks: true
   min_absolute_difference: 1.0
   min_manip_success_delta_pp: 15.0
   reliability:
@@ -147,8 +149,10 @@ eval_policy:
     keyframe_reanchor_every: 4
     min_replay_pass_rate: 0.7
     min_controllability_pass_rate: 0.7
-    enforce_stage_success: false
+    enforce_stage_success: true
     max_scoring_failure_rate: 0.02
+    fail_on_short_rollout: true
+    min_rollout_frames: 13
   tasks:
   - Navigate to the kitchen counter area
   - Approach the refrigerator
@@ -179,7 +183,7 @@ wm_refresh_loop:
   source_condition: adapted
   fail_if_refresh_fails: true
   fail_on_degenerate_mix: true
-  min_non_hard_rollouts: 4
+  min_non_hard_rollouts: 8
   quantile_fallback_enabled: true
   quantile_success_threshold: 0.85
   quantile_near_miss_threshold: 0.5
@@ -215,7 +219,7 @@ eval_visual:
 eval_spatial:
   num_sample_frames: 4
   vlm_model: gemini-3-flash-preview
-  min_valid_samples: 2
+  min_valid_samples: 3
   fail_on_reasoning_conflict: true
 eval_crosssite:
   num_clips_per_model: 30

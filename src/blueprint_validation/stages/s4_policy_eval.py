@@ -239,6 +239,19 @@ class PolicyEvalStage(PipelineStage):
         max_steps = int(config.eval_policy.max_steps_per_rollout)
         if claim_mode:
             max_steps = min(max_steps, int(config.eval_policy.reliability.max_horizon_steps))
+        min_rollout_frames = int(config.eval_policy.reliability.min_rollout_frames)
+        fail_on_short_rollout = bool(config.eval_policy.reliability.fail_on_short_rollout)
+        if fail_on_short_rollout and (max_steps + 1) < min_rollout_frames:
+            return StageResult(
+                stage_name=self.name,
+                status="failed",
+                elapsed_seconds=0,
+                detail=(
+                    "Configured rollout horizon is too short for reliability checks: "
+                    f"max_steps={max_steps} -> max_frames={max_steps + 1}, "
+                    f"required_min_rollout_frames={min_rollout_frames}."
+                ),
+            )
 
         device = "cuda" if _has_cuda() else "cpu"
         if headline_scope == "wm_only":
@@ -262,6 +275,8 @@ class PolicyEvalStage(PipelineStage):
                 claim_mode=claim_mode,
                 unresolved_manip_tasks_dropped=unresolved_manip_tasks_dropped,
                 num_rejected_task_start_assignments=num_rejected_task_start_assignments,
+                min_rollout_frames=min_rollout_frames,
+                fail_on_short_rollout=fail_on_short_rollout,
             )
 
         policy_adapter = get_policy_adapter(config.policy_adapter)
@@ -274,6 +289,8 @@ class PolicyEvalStage(PipelineStage):
 
         all_scores: List[Dict] = []
         scoring_failures: List[str] = []
+        short_rollout_failures: List[str] = []
+        min_observed_rollout_frames: Optional[int] = None
         observed_action_dims: set[int] = set()
         observed_policy_dims: set[int] = set()
         observed_world_dims: set[int] = set()
@@ -387,6 +404,24 @@ class PolicyEvalStage(PipelineStage):
                     scoring_failures.append(msg)
                     logger.warning(msg)
                     continue
+                rollout_frame_count: Optional[int] = None
+                if fail_on_short_rollout:
+                    rollout_frame_count = _video_frame_count(rollout.video_path)
+                    if (
+                        min_observed_rollout_frames is None
+                        or rollout_frame_count < min_observed_rollout_frames
+                    ):
+                        min_observed_rollout_frames = rollout_frame_count
+                    if rollout_frame_count < min_rollout_frames:
+                        msg = (
+                            "Rollout video too short for reliable scoring: "
+                            f"{clip_name} has {rollout_frame_count} frames "
+                            f"(required >= {min_rollout_frames})"
+                        )
+                        logger.warning(msg)
+                        scoring_failures.append(msg)
+                        short_rollout_failures.append(msg)
+                        continue
 
                 try:
                     if _is_manipulation_task(task):
@@ -420,6 +455,7 @@ class PolicyEvalStage(PipelineStage):
                         "reasoning": score.reasoning,
                         "video_path": str(rollout.video_path),
                         "num_steps": rollout.num_steps,
+                        "rollout_frame_count": rollout_frame_count,
                         "action_sequence": getattr(rollout, "action_sequence", []),
                         "start_clip_index": clip_index,
                         "start_clip_name": clip_stub,
@@ -575,6 +611,12 @@ class PolicyEvalStage(PipelineStage):
             "num_scoring_failures": len(scoring_failures),
             "scoring_failure_rate": round(float(scoring_failure_rate), 6),
             "num_valid_scored_rows": len(all_scores),
+            "num_short_rollouts": len(short_rollout_failures),
+            "min_rollout_frames_required": int(min_rollout_frames),
+            "fail_on_short_rollout": bool(fail_on_short_rollout),
+            "min_observed_rollout_frames": (
+                int(min_observed_rollout_frames) if min_observed_rollout_frames is not None else None
+            ),
             "used_adapted_policy_checkpoint": adapted_policy_checkpoint is not None,
             "adapted_policy_checkpoint": (
                 str(adapted_policy_checkpoint) if adapted_policy_checkpoint else None
@@ -616,6 +658,11 @@ class PolicyEvalStage(PipelineStage):
             and not bool(reliability_gate.get("passed", False))
         ):
             detail_lines.append(f"Reliability gate failed: {reliability_gate.get('reason', '')}".strip())
+        if fail_on_short_rollout and short_rollout_failures:
+            detail_lines.append(
+                f"Short rollout guard failed for {len(short_rollout_failures)} rollouts "
+                f"(required_min_rollout_frames={min_rollout_frames})."
+            )
 
         return StageResult(
             stage_name=self.name,
@@ -627,6 +674,7 @@ class PolicyEvalStage(PipelineStage):
                     not bool(config.eval_policy.reliability.enforce_stage_success)
                     or bool(reliability_gate.get("passed", False))
                 )
+                and (not fail_on_short_rollout or not short_rollout_failures)
                 else "failed"
             ),
             elapsed_seconds=0,
@@ -663,6 +711,8 @@ def _run_world_model_only_eval(
     claim_mode: bool,
     unresolved_manip_tasks_dropped: int,
     num_rejected_task_start_assignments: int,
+    min_rollout_frames: int,
+    fail_on_short_rollout: bool,
 ) -> StageResult:
     rollout_driver = (config.eval_policy.rollout_driver or "scripted").strip().lower()
     if rollout_driver not in {"scripted", "both"}:
@@ -744,6 +794,8 @@ def _run_world_model_only_eval(
 
     all_scores: List[Dict] = []
     scoring_failures: List[str] = []
+    short_rollout_failures: List[str] = []
+    min_observed_rollout_frames: Optional[int] = None
     observed_action_dims: set[int] = set()
     observed_world_dims: set[int] = set()
     baseline_world_dim: Optional[int] = None
@@ -830,6 +882,24 @@ def _run_world_model_only_eval(
                 scoring_failures.append(msg)
                 logger.warning(msg)
                 continue
+            rollout_frame_count: Optional[int] = None
+            if fail_on_short_rollout:
+                rollout_frame_count = _video_frame_count(rollout.video_path)
+                if (
+                    min_observed_rollout_frames is None
+                    or rollout_frame_count < min_observed_rollout_frames
+                ):
+                    min_observed_rollout_frames = rollout_frame_count
+                if rollout_frame_count < min_rollout_frames:
+                    msg = (
+                        "Rollout video too short for reliable scoring: "
+                        f"{clip_name} has {rollout_frame_count} frames "
+                        f"(required >= {min_rollout_frames})"
+                    )
+                    logger.warning(msg)
+                    scoring_failures.append(msg)
+                    short_rollout_failures.append(msg)
+                    continue
 
             try:
                 overlay_mode = "raw"
@@ -879,6 +949,7 @@ def _run_world_model_only_eval(
                     "reasoning": score.reasoning,
                     "video_path": str(rollout.video_path),
                     "num_steps": rollout.num_steps,
+                    "rollout_frame_count": rollout_frame_count,
                     "action_sequence": getattr(rollout, "action_sequence", []),
                     "start_clip_index": clip_index,
                     "start_clip_name": clip_stub,
@@ -1023,6 +1094,12 @@ def _run_world_model_only_eval(
         "num_scoring_failures": len(scoring_failures),
         "scoring_failure_rate": round(float(scoring_failure_rate), 6),
         "num_valid_scored_rows": len(all_scores),
+        "num_short_rollouts": len(short_rollout_failures),
+        "min_rollout_frames_required": int(min_rollout_frames),
+        "fail_on_short_rollout": bool(fail_on_short_rollout),
+        "min_observed_rollout_frames": (
+            int(min_observed_rollout_frames) if min_observed_rollout_frames is not None else None
+        ),
         "used_adapted_policy_checkpoint": False,
         "adapted_policy_checkpoint": None,
         "requested_rollouts_per_condition": requested_rollouts,
@@ -1067,6 +1144,11 @@ def _run_world_model_only_eval(
         and not bool(reliability_gate.get("passed", False))
     ):
         detail_lines.append(f"Reliability gate failed: {reliability_gate.get('reason', '')}".strip())
+    if fail_on_short_rollout and short_rollout_failures:
+        detail_lines.append(
+            f"Short rollout guard failed for {len(short_rollout_failures)} rollouts "
+            f"(required_min_rollout_frames={min_rollout_frames})."
+        )
 
     return StageResult(
         stage_name="s4_policy_eval",
@@ -1078,6 +1160,7 @@ def _run_world_model_only_eval(
                 not bool(config.eval_policy.reliability.enforce_stage_success)
                 or bool(reliability_gate.get("passed", False))
             )
+            and (not fail_on_short_rollout or not short_rollout_failures)
             else "failed"
         ),
         elapsed_seconds=0,
@@ -1091,6 +1174,28 @@ def _run_world_model_only_eval(
         metrics=metrics,
         detail="\n".join(line for line in detail_lines if line),
     )
+
+
+def _video_frame_count(video_path: Path) -> int:
+    try:
+        import cv2
+
+        cap = cv2.VideoCapture(str(video_path))
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        if frame_count > 0:
+            cap.release()
+            return frame_count
+        # Fallback when container metadata is missing.
+        decoded = 0
+        while True:
+            ok, _ = cap.read()
+            if not ok:
+                break
+            decoded += 1
+        cap.release()
+        return int(decoded)
+    except Exception:
+        return 0
 
 
 def _extract_initial_frames(render_manifest: dict) -> List[np.ndarray]:

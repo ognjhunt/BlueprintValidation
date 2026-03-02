@@ -58,6 +58,8 @@ def test_config_defaults():
     assert config.eval_policy.require_object_grounded_manip_tasks is True
     assert config.eval_policy.reliability.enforce_stage_success is False
     assert config.eval_policy.reliability.max_scoring_failure_rate == pytest.approx(0.02)
+    assert config.eval_policy.reliability.fail_on_short_rollout is False
+    assert config.eval_policy.reliability.min_rollout_frames == 13
     assert config.eval_policy.min_absolute_difference == pytest.approx(1.0)
     assert config.eval_policy.min_manip_success_delta_pp == pytest.approx(15.0)
     assert config.eval_policy.vlm_judge.enable_agentic_vision is True
@@ -207,6 +209,7 @@ def test_config_with_all_sections(tmp_path):
         },
         "eval_policy": {
             "num_rollouts": 10,
+            "mode": "research",
             "tasks": ["go forward"],
             "headline_scope": "dual",
             "rollout_driver": "both",
@@ -219,6 +222,8 @@ def test_config_with_all_sections(tmp_path):
             "reliability": {
                 "enforce_stage_success": True,
                 "max_scoring_failure_rate": 0.01,
+                "fail_on_short_rollout": True,
+                "min_rollout_frames": 17,
             },
             "vlm_judge": {
                 "model": "gemini-3-flash",
@@ -357,6 +362,8 @@ def test_config_with_all_sections(tmp_path):
     assert config.eval_policy.require_object_grounded_manip_tasks is False
     assert config.eval_policy.reliability.enforce_stage_success is True
     assert config.eval_policy.reliability.max_scoring_failure_rate == pytest.approx(0.01)
+    assert config.eval_policy.reliability.fail_on_short_rollout is True
+    assert config.eval_policy.reliability.min_rollout_frames == 17
     assert config.eval_policy.min_absolute_difference == pytest.approx(1.25)
     assert config.eval_policy.min_manip_success_delta_pp == pytest.approx(20.0)
     assert config.eval_policy.vlm_judge.fallback_models == [
@@ -693,4 +700,49 @@ def test_config_rejects_invalid_spatial_min_valid_samples(tmp_path):
     )
 
     with pytest.raises(ValueError, match="eval_spatial.min_valid_samples"):
+        load_config(config_path)
+
+
+def test_config_rejects_invalid_min_rollout_frames(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "bad_min_rollout_frames.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Min Rollout Frames",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "eval_policy": {"reliability": {"min_rollout_frames": 1}},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="min_rollout_frames"):
+        load_config(config_path)
+
+
+def test_config_rejects_short_rollout_horizon_when_guard_enabled(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "bad_short_rollout_guard.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Short Rollout Guard",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "eval_policy": {
+                    "mode": "research",
+                    "max_steps_per_rollout": 4,
+                    "reliability": {
+                        "fail_on_short_rollout": True,
+                        "min_rollout_frames": 13,
+                    },
+                },
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="max_steps_per_rollout"):
         load_config(config_path)

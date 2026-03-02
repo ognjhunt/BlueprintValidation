@@ -241,6 +241,8 @@ class PolicyEvalReliabilityConfig:
     min_controllability_pass_rate: float = 0.70
     enforce_stage_success: bool = False
     max_scoring_failure_rate: float = 0.02
+    fail_on_short_rollout: bool = False
+    min_rollout_frames: int = 13
 
 
 @dataclass
@@ -965,6 +967,12 @@ def load_config(path: Path) -> ValidationConfig:
                 max_scoring_failure_rate=float(
                     (ep.get("reliability", {}) or {}).get("max_scoring_failure_rate", 0.02)
                 ),
+                fail_on_short_rollout=bool(
+                    (ep.get("reliability", {}) or {}).get("fail_on_short_rollout", False)
+                ),
+                min_rollout_frames=int(
+                    (ep.get("reliability", {}) or {}).get("min_rollout_frames", 13)
+                ),
             ),
             vlm_judge=VLMJudgeConfig(
                 model=vlm_raw.get("model", "gemini-3-flash-preview"),
@@ -1418,6 +1426,22 @@ def load_config(path: Path) -> ValidationConfig:
         )
     if not (0.0 <= float(config.eval_policy.reliability.max_scoring_failure_rate) <= 1.0):
         raise ValueError("eval_policy.reliability.max_scoring_failure_rate must be in [0, 1]")
+    if int(config.eval_policy.reliability.min_rollout_frames) < 2:
+        raise ValueError("eval_policy.reliability.min_rollout_frames must be >= 2")
+    if bool(config.eval_policy.reliability.fail_on_short_rollout):
+        eval_mode = (config.eval_policy.mode or "claim").strip().lower()
+        effective_max_steps = int(config.eval_policy.max_steps_per_rollout)
+        if eval_mode == "claim":
+            effective_max_steps = min(
+                effective_max_steps,
+                int(config.eval_policy.reliability.max_horizon_steps),
+            )
+        required_frames = int(config.eval_policy.reliability.min_rollout_frames)
+        if effective_max_steps + 1 < required_frames:
+            raise ValueError(
+                "eval_policy.max_steps_per_rollout (after claim-mode horizon clamp) is too low "
+                f"for reliability.min_rollout_frames={required_frames}"
+            )
     if int(config.eval_spatial.min_valid_samples) < 1:
         raise ValueError("eval_spatial.min_valid_samples must be >= 1")
 

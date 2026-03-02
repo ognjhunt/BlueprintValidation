@@ -133,10 +133,12 @@ eval_policy:
   headline_scope: wm_only
   rollout_driver: scripted
   scripted_rollouts_per_task: 12
-  mode: claim
+  mode: research
   num_rollouts: 100
-  max_steps_per_rollout: 100
+  max_steps_per_rollout: 32
   conditions: ["baseline", "adapted"]
+  min_assignment_quality_score: 0.35
+  require_object_grounded_manip_tasks: true
   min_absolute_difference: 1.0
   min_manip_success_delta_pp: 15.0
   reliability:
@@ -146,6 +148,8 @@ eval_policy:
     min_controllability_pass_rate: 0.70
     enforce_stage_success: true
     max_scoring_failure_rate: 0.02
+    fail_on_short_rollout: true
+    min_rollout_frames: 13
   tasks:
     - "Navigate to the kitchen counter area"
     - "Approach the refrigerator"
