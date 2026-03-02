@@ -53,6 +53,11 @@ def test_config_defaults():
     assert config.eval_policy.headline_scope == "wm_only"
     assert config.eval_policy.rollout_driver == "scripted"
     assert config.eval_policy.scripted_rollouts_per_task == 12
+    assert config.eval_policy.manip_eval_mode == "overlay_marker"
+    assert config.eval_policy.min_assignment_quality_score == pytest.approx(0.0)
+    assert config.eval_policy.require_object_grounded_manip_tasks is True
+    assert config.eval_policy.reliability.enforce_stage_success is False
+    assert config.eval_policy.reliability.max_scoring_failure_rate == pytest.approx(0.02)
     assert config.eval_policy.min_absolute_difference == pytest.approx(1.0)
     assert config.eval_policy.min_manip_success_delta_pp == pytest.approx(15.0)
     assert config.eval_policy.vlm_judge.enable_agentic_vision is True
@@ -102,6 +107,16 @@ def test_config_defaults():
     assert config.policy_rl_loop.world_model_refresh_min_total_clips == 128
     assert config.policy_rl_loop.world_model_refresh_max_total_clips == 512
     assert config.policy_rl_loop.world_model_refresh_seed == 17
+    assert config.wm_refresh_loop.enabled is False
+    assert config.wm_refresh_loop.iterations == 1
+    assert config.wm_refresh_loop.source_condition == "adapted"
+    assert config.wm_refresh_loop.fail_on_degenerate_mix is True
+    assert config.wm_refresh_loop.min_non_hard_rollouts == 8
+    assert config.wm_refresh_loop.quantile_fallback_enabled is True
+    assert config.wm_refresh_loop.quantile_success_threshold == pytest.approx(0.85)
+    assert config.wm_refresh_loop.quantile_near_miss_threshold == pytest.approx(0.50)
+    assert config.eval_spatial.min_valid_samples == 3
+    assert config.eval_spatial.fail_on_reasoning_conflict is True
 
 
 def test_facility_config():
@@ -196,8 +211,15 @@ def test_config_with_all_sections(tmp_path):
             "headline_scope": "dual",
             "rollout_driver": "both",
             "scripted_rollouts_per_task": 9,
+            "manip_eval_mode": "raw",
+            "min_assignment_quality_score": 0.25,
+            "require_object_grounded_manip_tasks": False,
             "min_absolute_difference": 1.25,
             "min_manip_success_delta_pp": 20,
+            "reliability": {
+                "enforce_stage_success": True,
+                "max_scoring_failure_rate": 0.01,
+            },
             "vlm_judge": {
                 "model": "gemini-3-flash",
                 "fallback_models": ["gemini-2.5-flash", "gemini-1.5-flash"],
@@ -252,11 +274,28 @@ def test_config_with_all_sections(tmp_path):
             "hard_negative_target_fraction": 0.1,
             "per_task_max_episodes": 3,
         },
+        "wm_refresh_loop": {
+            "enabled": True,
+            "iterations": 2,
+            "source_condition": "baseline",
+            "fail_if_refresh_fails": True,
+            "fail_on_degenerate_mix": True,
+            "min_non_hard_rollouts": 11,
+            "quantile_fallback_enabled": True,
+            "quantile_success_threshold": 0.90,
+            "quantile_near_miss_threshold": 0.55,
+        },
         "policy_compare": {
             "heldout_num_rollouts": 8,
             "heldout_tasks": ["Pick up the tote from the shelf"],
         },
         "eval_visual": {"metrics": ["psnr", "ssim"]},
+        "eval_spatial": {
+            "num_sample_frames": 12,
+            "vlm_model": "gemini-3-flash-preview",
+            "min_valid_samples": 5,
+            "fail_on_reasoning_conflict": False,
+        },
         "eval_crosssite": {"num_clips_per_model": 5},
     }
 
@@ -313,6 +352,11 @@ def test_config_with_all_sections(tmp_path):
     assert config.eval_policy.headline_scope == "dual"
     assert config.eval_policy.rollout_driver == "both"
     assert config.eval_policy.scripted_rollouts_per_task == 9
+    assert config.eval_policy.manip_eval_mode == "raw"
+    assert config.eval_policy.min_assignment_quality_score == pytest.approx(0.25)
+    assert config.eval_policy.require_object_grounded_manip_tasks is False
+    assert config.eval_policy.reliability.enforce_stage_success is True
+    assert config.eval_policy.reliability.max_scoring_failure_rate == pytest.approx(0.01)
     assert config.eval_policy.min_absolute_difference == pytest.approx(1.25)
     assert config.eval_policy.min_manip_success_delta_pp == pytest.approx(20.0)
     assert config.eval_policy.vlm_judge.fallback_models == [
@@ -344,6 +388,14 @@ def test_config_with_all_sections(tmp_path):
     assert config.policy_rl_loop.world_model_refresh_min_total_clips == 64
     assert config.policy_rl_loop.world_model_refresh_max_total_clips == 256
     assert config.policy_rl_loop.world_model_refresh_seed == 23
+    assert config.wm_refresh_loop.enabled is True
+    assert config.wm_refresh_loop.iterations == 2
+    assert config.wm_refresh_loop.source_condition == "baseline"
+    assert config.wm_refresh_loop.fail_on_degenerate_mix is True
+    assert config.wm_refresh_loop.min_non_hard_rollouts == 11
+    assert config.wm_refresh_loop.quantile_fallback_enabled is True
+    assert config.wm_refresh_loop.quantile_success_threshold == pytest.approx(0.90)
+    assert config.wm_refresh_loop.quantile_near_miss_threshold == pytest.approx(0.55)
     assert config.action_boost.enabled is True
     assert config.action_boost.compute_profile == "aggressive"
     assert config.policy_compare.heldout_num_rollouts == 8
@@ -351,6 +403,8 @@ def test_config_with_all_sections(tmp_path):
     assert str(config.facilities["a"].task_hints_path) == "/tmp/a_tasks.json"
     assert config.facilities["a"].video_orientation_fix == "rotate180"
     assert "psnr" in config.eval_visual.metrics
+    assert config.eval_spatial.min_valid_samples == 5
+    assert config.eval_spatial.fail_on_reasoning_conflict is False
 
 
 def test_legacy_robosplat_scan_maps_to_robosplat(tmp_path):
@@ -560,4 +614,83 @@ def test_config_rejects_invalid_rollout_selection_mode(tmp_path):
     )
 
     with pytest.raises(ValueError, match="rollout_dataset.selection_mode"):
+        load_config(config_path)
+
+
+def test_config_rejects_invalid_manip_eval_mode(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "bad_manip_eval_mode.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Manip Eval Mode",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "eval_policy": {"manip_eval_mode": "overlay_magic"},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="eval_policy.manip_eval_mode"):
+        load_config(config_path)
+
+
+def test_config_rejects_invalid_scoring_failure_rate(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "bad_scoring_failure_rate.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Reliability",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "eval_policy": {"reliability": {"max_scoring_failure_rate": 1.5}},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="max_scoring_failure_rate"):
+        load_config(config_path)
+
+
+def test_config_rejects_invalid_wm_refresh_quantiles(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "bad_wm_refresh_quantiles.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad WM Refresh Quantiles",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "wm_refresh_loop": {
+                    "quantile_success_threshold": 0.4,
+                    "quantile_near_miss_threshold": 0.6,
+                },
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="quantile_success_threshold"):
+        load_config(config_path)
+
+
+def test_config_rejects_invalid_spatial_min_valid_samples(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "bad_spatial_min_valid_samples.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Spatial Config",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "eval_spatial": {"min_valid_samples": 0},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="eval_spatial.min_valid_samples"):
         load_config(config_path)

@@ -602,6 +602,30 @@ def _refresh_world_model(
     return result
 
 
+def refresh_world_model_from_bucketed_rollouts(
+    *,
+    config: ValidationConfig,
+    facility: FacilityConfig,
+    work_dir: Path,
+    selected_success_rows: List[Dict],
+    near_miss_rows: List[Dict],
+    hard_negative_rows: List[Dict],
+    output_dir: Path,
+    iteration: int,
+) -> Dict:
+    """Public wrapper for world-model refresh from bucketed rollout sets."""
+    return _refresh_world_model(
+        config=config,
+        facility=facility,
+        work_dir=work_dir,
+        selected_success_rows=selected_success_rows,
+        near_miss_rows=near_miss_rows,
+        hard_negative_rows=hard_negative_rows,
+        output_dir=output_dir,
+        iteration=iteration,
+    )
+
+
 def _resolve_render_manifest(work_dir: Path) -> Path:
     for candidate in [
         work_dir / "gaussian_augment" / "augmented_manifest.json",

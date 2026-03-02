@@ -50,6 +50,83 @@ def bucket_rollout(
     return "hard_negative"
 
 
+def bucket_rollouts_by_quantile(
+    rows: List[Dict[str, Any]],
+    *,
+    success_quantile: float,
+    near_miss_quantile: float,
+) -> Dict[str, Any]:
+    """Re-bucket rollout rows by task-score quantiles.
+
+    This is used as a fallback when strict threshold bucketing produces no
+    success/near-miss rows and WM refresh would become degenerate.
+    """
+    if not rows:
+        return {
+            "success": [],
+            "near_miss": [],
+            "hard_negative": [],
+            "success_threshold": None,
+            "near_miss_threshold": None,
+        }
+
+    valid_scores: List[float] = []
+    for row in rows:
+        try:
+            score = float(row.get("task_score", 0.0) or 0.0)
+        except Exception:
+            score = 0.0
+        if np.isfinite(score):
+            valid_scores.append(score)
+    if not valid_scores:
+        return {
+            "success": [],
+            "near_miss": [],
+            "hard_negative": [dict(row) for row in rows],
+            "success_threshold": None,
+            "near_miss_threshold": None,
+        }
+
+    success_q = float(np.clip(success_quantile, 0.0, 1.0))
+    near_q = float(np.clip(near_miss_quantile, 0.0, 1.0))
+    if success_q < near_q:
+        success_q = near_q
+
+    success_threshold = float(np.quantile(valid_scores, success_q))
+    near_threshold = float(np.quantile(valid_scores, near_q))
+    if success_threshold < near_threshold:
+        success_threshold = near_threshold
+
+    success_rows: List[Dict[str, Any]] = []
+    near_rows: List[Dict[str, Any]] = []
+    hard_rows: List[Dict[str, Any]] = []
+    for row in rows:
+        entry = dict(row)
+        try:
+            score = float(entry.get("task_score", 0.0) or 0.0)
+        except Exception:
+            score = 0.0
+        if not np.isfinite(score):
+            score = 0.0
+        if score >= success_threshold:
+            entry["rollout_bucket"] = "success"
+            success_rows.append(entry)
+        elif score >= near_threshold:
+            entry["rollout_bucket"] = "near_miss"
+            near_rows.append(entry)
+        else:
+            entry["rollout_bucket"] = "hard_negative"
+            hard_rows.append(entry)
+
+    return {
+        "success": success_rows,
+        "near_miss": near_rows,
+        "hard_negative": hard_rows,
+        "success_threshold": success_threshold,
+        "near_miss_threshold": near_threshold,
+    }
+
+
 def validate_action_sequence(
     *,
     actions: List[object],

@@ -1,5 +1,5 @@
 schema_version: v1
-project_name: "WM-Only Pilot (Budget-Capped)"
+project_name: "WM-Only Strict Fresh (Data Quality Recovery)"
 
 facilities:
   kitchen_0787:
@@ -144,6 +144,8 @@ eval_policy:
     keyframe_reanchor_every: 4
     min_replay_pass_rate: 0.70
     min_controllability_pass_rate: 0.70
+    enforce_stage_success: true
+    max_scoring_failure_rate: 0.02
   tasks:
     - "Navigate to the kitchen counter area"
     - "Approach the refrigerator"
@@ -177,6 +179,11 @@ wm_refresh_loop:
   iterations: 1
   source_condition: adapted
   fail_if_refresh_fails: true
+  fail_on_degenerate_mix: true
+  min_non_hard_rollouts: 8
+  quantile_fallback_enabled: true
+  quantile_success_threshold: 0.85
+  quantile_near_miss_threshold: 0.50
 
 policy_finetune:
   enabled: false
@@ -211,6 +218,8 @@ eval_visual:
 eval_spatial:
   num_sample_frames: 20
   vlm_model: gemini-3-flash-preview
+  min_valid_samples: 3
+  fail_on_reasoning_conflict: true
 
 eval_crosssite:
   num_clips_per_model: 30

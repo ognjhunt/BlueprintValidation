@@ -14,6 +14,17 @@ from .base import PipelineStage
 
 logger = get_logger("stages.s6_spatial_accuracy")
 
+_REASONING_CONFLICT_TOKENS = (
+    "cannot evaluate",
+    "can't evaluate",
+    "not visible",
+    "too distorted",
+    "distorted to evaluate",
+    "impossible to evaluate",
+    "unable to evaluate",
+    "indiscernible",
+)
+
 
 class SpatialAccuracyStage(PipelineStage):
     @property
@@ -74,6 +85,11 @@ class SpatialAccuracyStage(PipelineStage):
                     landmarks=facility.landmarks,
                     config=vlm_config,
                 )
+                reasoning = str(score.reasoning or "")
+                reasoning_lower = reasoning.lower()
+                reasoning_conflict = any(
+                    token in reasoning_lower for token in _REASONING_CONFLICT_TOKENS
+                )
                 scores.append(
                     {
                         "clip_name": clip.get("clip_name", ""),
@@ -81,33 +97,56 @@ class SpatialAccuracyStage(PipelineStage):
                         "spatial_score": score.spatial_score,
                         "visual_score": score.visual_score,
                         "task_score": score.task_score,
-                        "reasoning": score.reasoning,
+                        "reasoning": reasoning,
+                        "reasoning_conflict": reasoning_conflict,
                     }
                 )
             except Exception as e:
                 logger.warning("Spatial scoring failed for %s: %s", video_path.name, e)
 
         # Aggregate
-        if scores:
-            mean_spatial = float(np.mean([s["spatial_score"] for s in scores]))
-            mean_visual = float(np.mean([s["visual_score"] for s in scores]))
-            mean_landmark = float(np.mean([s["task_score"] for s in scores]))
+        valid_scores = [row for row in scores if not bool(row.get("reasoning_conflict", False))]
+        if valid_scores:
+            mean_spatial = float(np.mean([s["spatial_score"] for s in valid_scores]))
+            mean_visual = float(np.mean([s["visual_score"] for s in valid_scores]))
+            mean_landmark = float(np.mean([s["task_score"] for s in valid_scores]))
         else:
             mean_spatial = mean_visual = mean_landmark = 0.0
 
+        num_reasoning_conflicts = sum(
+            1 for row in scores if bool(row.get("reasoning_conflict", False))
+        )
+        num_valid_samples = len(valid_scores)
         metrics = {
             "mean_spatial_score": round(mean_spatial, 3),
             "mean_visual_score": round(mean_visual, 3),
             "mean_landmark_score": round(mean_landmark, 3),
             "num_evaluated": len(scores),
+            "num_valid_samples": num_valid_samples,
+            "num_reasoning_conflicts": num_reasoning_conflicts,
         }
 
         write_json({"metrics": metrics, "scores": scores}, spatial_dir / "spatial_accuracy.json")
 
+        detail_parts: List[str] = []
+        if num_valid_samples < int(config.eval_spatial.min_valid_samples):
+            detail_parts.append(
+                "Insufficient valid spatial samples: "
+                f"{num_valid_samples} < min_valid_samples={int(config.eval_spatial.min_valid_samples)}"
+            )
+        if bool(config.eval_spatial.fail_on_reasoning_conflict) and num_reasoning_conflicts > 0:
+            detail_parts.append(
+                f"Reasoning conflicts detected in {num_reasoning_conflicts} scored rows."
+            )
+        stage_failed = bool(detail_parts) or not bool(scores)
+        if not scores and not detail_parts:
+            detail_parts.append("No spatial scores were produced.")
+
         return StageResult(
             stage_name=self.name,
-            status="success" if scores else "failed",
+            status="failed" if stage_failed else "success",
             elapsed_seconds=0,
             outputs={"spatial_dir": str(spatial_dir)},
             metrics=metrics,
+            detail=" ".join(detail_parts).strip(),
         )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -21,6 +22,7 @@ from .stages.s2_enrich import EnrichStage
 from .stages.s3_finetune import FinetuneStage
 from .stages.s3b_policy_finetune import PolicyFinetuneStage
 from .stages.s3c_policy_rl_loop import PolicyRLLoopStage
+from .stages.s3d_wm_refresh_loop import WorldModelRefreshLoopStage
 from .stages.s4_policy_eval import PolicyEvalStage
 from .stages.s4a_rlds_export import RLDSExportStage
 from .stages.s4b_rollout_dataset import RolloutDatasetStage
@@ -67,9 +69,12 @@ class ValidationPipeline:
     ) -> Dict[str, StageResult]:
         """Run all stages for all facilities, then cross-site test."""
         all_results: Dict[str, StageResult] = {}
+        stage_provenance: Dict[str, Dict[str, str | None]] = {}
         failed_stage_keys: list[str] = []
         aborted_early = False
         pipeline_start = time.monotonic()
+        run_started_at = datetime.now(timezone.utc).isoformat()
+        run_mode = "resume" if resume_from_results else "fresh"
         dry_run = os.environ.get("BLUEPRINT_DRY_RUN", "0") == "1"
         action_boost = self._apply_action_boost_runtime_overrides()
         wm_only_scope = (
@@ -79,7 +84,60 @@ class ValidationPipeline:
             == "wm_only"
         )
 
-        if not dry_run and self.config.cloud.max_cost_usd > 0 and self._hourly_rate_usd() is None:
+        strict_fresh_guard = (
+            not resume_from_results
+            and bool(getattr(self.config.eval_policy.reliability, "enforce_stage_success", False))
+        )
+        if (
+            resume_from_results
+            and bool(getattr(self.config.eval_policy.reliability, "enforce_stage_success", False))
+        ):
+            detail = (
+                "Strict reliability mode forbids resume runs for canonical metrics. "
+                "Re-run without --resume in a fresh work directory."
+            )
+            key = "pipeline/run_mode_guard"
+            all_results[key] = StageResult(
+                stage_name="run_mode_guard",
+                status="failed",
+                elapsed_seconds=0,
+                detail=detail,
+            )
+            stage_provenance[key] = {"source": "executed", "result_path": None}
+            failed_stage_keys.append(key)
+            aborted_early = True
+        if strict_fresh_guard:
+            stale_result_paths: list[str] = []
+            for fid in self.config.facilities:
+                fac_dir = self.work_dir / fid
+                if not fac_dir.exists():
+                    continue
+                stale_result_paths.extend(
+                    str(path) for path in sorted(fac_dir.glob("*_result.json"))
+                )
+            if stale_result_paths:
+                detail = (
+                    "Fresh strict mode requires an empty facility result set when --resume is disabled. "
+                    f"Found {len(stale_result_paths)} pre-existing *_result.json files."
+                )
+                key = "pipeline/fresh_workdir_guard"
+                all_results[key] = StageResult(
+                    stage_name="fresh_workdir_guard",
+                    status="failed",
+                    elapsed_seconds=0,
+                    detail=detail,
+                    outputs={"stale_result_paths": stale_result_paths},
+                )
+                stage_provenance[key] = {"source": "executed", "result_path": None}
+                failed_stage_keys.append(key)
+                aborted_early = True
+
+        if (
+            not aborted_early
+            and not dry_run
+            and self.config.cloud.max_cost_usd > 0
+            and self._hourly_rate_usd() is None
+        ):
             detail = (
                 "cloud.max_cost_usd is set but BLUEPRINT_GPU_HOURLY_RATE_USD is unset; "
                 "refusing to run without enforceable budget guard."
@@ -93,6 +151,7 @@ class ValidationPipeline:
                 elapsed_seconds=0,
                 detail=detail,
             )
+            stage_provenance[key] = {"source": "executed", "result_path": None}
             self._maybe_trigger_auto_shutdown(detail)
             aborted_early = True
 
@@ -107,6 +166,7 @@ class ValidationPipeline:
             EnrichStage(),  # S2: Cosmos Transfer variants
             FinetuneStage(),  # S3: DreamDojo LoRA fine-tune
             PolicyEvalStage(),  # S4: frozen policy eval (baseline + adapted)
+            WorldModelRefreshLoopStage(),  # S3d: WM-only near-miss/success world refresh loop
             RLDSExportStage(),  # S4a: export adapted rollouts -> RLDS TFRecords
             PolicyFinetuneStage(),  # S3b: OpenVLA-OFT fine-tune on pipeline-generated data
             PolicyRLLoopStage(),  # S3c: iterative RL loop + world-model refresh
@@ -148,6 +208,10 @@ class ValidationPipeline:
                     result.save(result_path)
                     facility_results[stage.name] = result
                     all_results[stage_key] = result
+                    stage_provenance[stage_key] = {
+                        "source": "executed",
+                        "result_path": str(result_path),
+                    }
                     if result.status == "failed":
                         failed_stage_keys.append(stage_key)
                         if fail_fast:
@@ -171,6 +235,10 @@ class ValidationPipeline:
                         )
                         facility_results[stage.name] = existing
                         all_results[stage_key] = existing
+                        stage_provenance[stage_key] = {
+                            "source": "resumed",
+                            "result_path": str(result_path),
+                        }
                         if existing.status == "failed":
                             failed_stage_keys.append(stage_key)
                             if fail_fast:
@@ -205,6 +273,67 @@ class ValidationPipeline:
                     result.save(result_path)
                 facility_results[stage.name] = result
                 all_results[stage_key] = result
+                stage_provenance[stage_key] = {
+                    "source": "executed",
+                    "result_path": str(result_path),
+                }
+
+                if (
+                    stage.name == "s3d_wm_refresh_loop"
+                    and result.status == "success"
+                    and not resume_from_results
+                ):
+                    s4_result_path = fac_dir / "s4_policy_eval_result.json"
+                    s4_archive_path = fac_dir / "s4_policy_eval_pre_refresh_result.json"
+                    if s4_result_path.exists():
+                        shutil.copy2(s4_result_path, s4_archive_path)
+                    post_refresh_s4 = PolicyEvalStage().execute(
+                        config=self.config,
+                        facility=fconfig,
+                        work_dir=fac_dir,
+                        previous_results=facility_results,
+                    )
+                    post_refresh_s4.save(s4_result_path)
+                    synced_post_refresh_s4 = self._maybe_run_post_stage_sync_hook(
+                        result=post_refresh_s4,
+                        stage_key=f"{fid}/s4_policy_eval",
+                        facility_id=fid,
+                        facility_work_dir=fac_dir,
+                        result_path=s4_result_path,
+                    )
+                    if synced_post_refresh_s4 != post_refresh_s4:
+                        synced_post_refresh_s4.save(s4_result_path)
+                    post_refresh_s4 = self._enforce_action_boost_required_stage_result(
+                        result=synced_post_refresh_s4,
+                        stage_name="s4_policy_eval",
+                        action_boost=action_boost,
+                    )
+                    if post_refresh_s4 != synced_post_refresh_s4:
+                        post_refresh_s4.save(s4_result_path)
+                    facility_results["s4_policy_eval"] = post_refresh_s4
+                    all_results[f"{fid}/s4_policy_eval"] = post_refresh_s4
+                    stage_provenance[f"{fid}/s4_policy_eval"] = {
+                        "source": "executed",
+                        "result_path": str(s4_result_path),
+                    }
+
+                    if post_refresh_s4.status == "failed":
+                        failed_key = f"{fid}/s4_policy_eval"
+                        if failed_key not in failed_stage_keys:
+                            failed_stage_keys.append(failed_key)
+                        logger.error(
+                            "Post-refresh Stage s4_policy_eval failed for %s: %s.",
+                            fid,
+                            post_refresh_s4.detail,
+                        )
+                        if fail_fast:
+                            logger.error(
+                                "Aborting remaining pipeline stages because fail_fast=true "
+                                "(post-refresh failure: %s).",
+                                failed_key,
+                            )
+                            aborted_early = True
+                            break
 
                 if result.status == "failed":
                     failed_key = stage_key
@@ -236,6 +365,7 @@ class ValidationPipeline:
                         elapsed_seconds=0,
                         detail=detail,
                     )
+                    stage_provenance[budget_key] = {"source": "executed", "result_path": None}
                     self._maybe_trigger_auto_shutdown(detail)
                     aborted_early = True
                     break
@@ -269,19 +399,35 @@ class ValidationPipeline:
                 post_sync_cs_result.save(cross_site_result_path)
             cs_result = post_sync_cs_result
             all_results["cross_site/s7_cross_site"] = cs_result
+            stage_provenance["cross_site/s7_cross_site"] = {
+                "source": "executed",
+                "result_path": str(cross_site_result_path),
+            }
             if cs_result.status == "failed":
                 failed_stage_keys.append("cross_site/s7_cross_site")
         else:
             logger.info("Skipping cross-site test (requires 2+ facilities)")
 
         # Write pipeline summary
+        run_finished_at = datetime.now(timezone.utc).isoformat()
+        stages_summary = {}
+        for stage_key, stage_result in all_results.items():
+            payload = stage_result.to_dict()
+            payload["provenance"] = stage_provenance.get(
+                stage_key,
+                {"source": "executed", "result_path": None},
+            )
+            stages_summary[stage_key] = payload
         summary = {
             "num_facilities": len(self.config.facilities),
             "facility_ids": list(self.config.facilities.keys()),
-            "stages": {k: v.to_dict() for k, v in all_results.items()},
+            "stages": stages_summary,
             "overall_status": "failed" if failed_stage_keys else "success",
             "fail_fast": fail_fast,
             "resume_from_results": resume_from_results,
+            "run_mode": run_mode,
+            "run_started_at": run_started_at,
+            "run_finished_at": run_finished_at,
             "aborted_early": aborted_early,
             "failed_stage_keys": failed_stage_keys,
         }

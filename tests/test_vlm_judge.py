@@ -1,5 +1,7 @@
 """Tests for VLM judge scoring (with mocked responses)."""
 
+import pytest
+
 
 def test_extract_json_from_clean():
     from blueprint_validation.evaluation.vlm_judge import _extract_json_from_response
@@ -33,13 +35,12 @@ def test_extract_json_from_mixed():
     assert result["task_score"] == 5
 
 
-def test_extract_json_fallback():
+def test_extract_json_invalid_raises():
     from blueprint_validation.evaluation.vlm_judge import _extract_json_from_response
 
     text = "I could not analyze the video properly."
-    result = _extract_json_from_response(text)
-    assert result["task_score"] == 0
-    assert "could not analyze" in result["reasoning"]
+    with pytest.raises(ValueError, match="Could not parse JSON"):
+        _extract_json_from_response(text)
 
 
 def test_judge_score_dataclass():

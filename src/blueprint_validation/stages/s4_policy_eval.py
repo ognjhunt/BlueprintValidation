@@ -5,7 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Dict, List
+import re
+from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -15,6 +16,7 @@ from ..evaluation.openvla_runner import (
     load_dreamdojo_world_model,
 )
 from ..evaluation.judge_audit import write_judge_audit_csv
+from ..evaluation.action_overlay import overlay_scripted_trace_on_video
 from ..evaluation.task_hints import (
     balance_eval_tasks,
     recommended_rollouts_per_condition,
@@ -28,7 +30,6 @@ from ..evaluation.task_start_selector import (
     shared_manifest_is_compatible,
 )
 from ..evaluation.vlm_judge import (
-    JudgeScore,
     ManipulationJudgeScore,
     score_rollout,
     score_rollout_manipulation,
@@ -104,6 +105,21 @@ class PolicyEvalStage(PipelineStage):
         render_manifest = read_json(render_manifest_path)
 
         tasks, hint_count = _build_task_list(config, facility)
+        unresolved_manip_tasks_dropped = 0
+        if bool(config.eval_policy.require_object_grounded_manip_tasks):
+            filtered_tasks: List[str] = []
+            for task in tasks:
+                if _is_manipulation_task(task) and not _is_object_grounded_manip_task(task):
+                    unresolved_manip_tasks_dropped += 1
+                    continue
+                filtered_tasks.append(task)
+            tasks = filtered_tasks
+            if not tasks:
+                tasks = [
+                    "Navigate forward through the corridor",
+                    "Turn left at the intersection",
+                    "Approach the nearest obstacle",
+                ]
 
         requested_rollouts = int(config.eval_policy.num_rollouts)
         planned_rollouts = recommended_rollouts_per_condition(
@@ -113,6 +129,12 @@ class PolicyEvalStage(PipelineStage):
         )
 
         shared_manifest_path = eval_dir / "shared_task_start_manifest.json"
+        selector_config = {
+            "min_assignment_quality_score": float(config.eval_policy.min_assignment_quality_score),
+            "require_object_grounded_manip_tasks": bool(
+                config.eval_policy.require_object_grounded_manip_tasks
+            ),
+        }
         shared_manifest = load_shared_task_start_manifest(shared_manifest_path)
         reused_shared_manifest = False
         rollout_assignments: List[dict] = []
@@ -120,6 +142,10 @@ class PolicyEvalStage(PipelineStage):
             shared_manifest,
             facility_name=facility.name,
             render_manifest_path=render_manifest_path,
+            render_manifest=render_manifest,
+            tasks=tasks,
+            video_orientation_fix=facility.video_orientation_fix,
+            selector_config=selector_config,
         ):
             rollout_assignments = list(shared_manifest.get("assignments", []))
             reused_shared_manifest = bool(rollout_assignments)
@@ -130,6 +156,11 @@ class PolicyEvalStage(PipelineStage):
                 num_rollouts=planned_rollouts,
                 render_manifest=render_manifest,
                 task_hints_path=facility.task_hints_path,
+                min_assignment_quality_score=float(config.eval_policy.min_assignment_quality_score),
+                require_object_grounded_manip_tasks=bool(
+                    config.eval_policy.require_object_grounded_manip_tasks
+                ),
+                video_orientation_fix=facility.video_orientation_fix,
             )
             save_shared_task_start_manifest(
                 path=shared_manifest_path,
@@ -140,6 +171,42 @@ class PolicyEvalStage(PipelineStage):
                 planned_rollouts=planned_rollouts,
                 tasks=tasks,
                 assignments=rollout_assignments,
+                render_manifest=render_manifest,
+                video_orientation_fix=facility.video_orientation_fix,
+                selector_config=selector_config,
+            )
+        else:
+            # Ensure older manifests still carry explicit orientation metadata at runtime.
+            normalized_fix = str(getattr(facility, "video_orientation_fix", "none"))
+            for assignment in rollout_assignments:
+                assignment.setdefault("video_orientation_fix", normalized_fix)
+
+        invalid_assignments = [
+            assignment
+            for assignment in rollout_assignments
+            if str(assignment.get("assignment_reject_reason") or "").strip()
+        ]
+        num_rejected_task_start_assignments = len(invalid_assignments)
+        if invalid_assignments:
+            logger.warning(
+                "Dropping %d fallback task-start assignments that failed strict selector constraints.",
+                num_rejected_task_start_assignments,
+            )
+            rollout_assignments = [
+                assignment
+                for assignment in rollout_assignments
+                if not str(assignment.get("assignment_reject_reason") or "").strip()
+            ]
+        if not rollout_assignments:
+            return StageResult(
+                stage_name=self.name,
+                status="failed",
+                elapsed_seconds=0,
+                detail=(
+                    "No valid rollout assignments met task-start quality/grounding constraints. "
+                    "Relax eval_policy.min_assignment_quality_score or "
+                    "eval_policy.require_object_grounded_manip_tasks."
+                ),
             )
 
         frame_cache = load_initial_frames_for_assignments(rollout_assignments)
@@ -193,6 +260,8 @@ class PolicyEvalStage(PipelineStage):
                 max_steps=max_steps,
                 device=device,
                 claim_mode=claim_mode,
+                unresolved_manip_tasks_dropped=unresolved_manip_tasks_dropped,
+                num_rejected_task_start_assignments=num_rejected_task_start_assignments,
             )
 
         policy_adapter = get_policy_adapter(config.policy_adapter)
@@ -338,7 +407,7 @@ class PolicyEvalStage(PipelineStage):
                     msg = f"VLM scoring failed for {clip_name}: {e}"
                     logger.warning(msg)
                     scoring_failures.append(msg)
-                    score = JudgeScore(0, 0, 0, str(e), "")
+                    continue
 
                 all_scores.append(
                     {
@@ -357,6 +426,12 @@ class PolicyEvalStage(PipelineStage):
                         "start_path_type": str(assignment.get("path_type", "unknown")),
                         "target_instance_id": assignment.get("target_instance_id"),
                         "target_label": assignment.get("target_label"),
+                        "target_grounded": bool(assignment.get("target_grounded", False)),
+                        "assignment_quality_score": assignment.get("assignment_quality_score"),
+                        "assignment_reject_reason": assignment.get("assignment_reject_reason"),
+                        "start_frame_orientation_fix_applied": assignment.get(
+                            "start_frame_orientation_fix_applied", "none"
+                        ),
                         "is_manipulation_task": _is_manipulation_task(task),
                         "grasp_acquired": (
                             score.grasp_acquired
@@ -379,6 +454,8 @@ class PolicyEvalStage(PipelineStage):
                             else None
                         ),
                         "action_contract": action_contract,
+                        "overlay_video_path": None,
+                        "overlay_mode": "raw",
                     }
                 )
 
@@ -449,7 +526,13 @@ class PolicyEvalStage(PipelineStage):
                 "policy/world/dataset action dimensions are missing or inconsistent."
             )
 
-        reliability_gate = _build_reliability_gate(config, all_scores)
+        total_scoring_attempts = len(all_scores) + len(scoring_failures)
+        scoring_failure_rate = len(scoring_failures) / max(total_scoring_attempts, 1)
+        reliability_gate = _build_reliability_gate(
+            config,
+            all_scores,
+            scoring_failure_rate=scoring_failure_rate,
+        )
         manip_delta_pp = (
             (per_condition.get("adapted", {}).get("manipulation_success_rate", 0.0) or 0.0)
             - (per_condition.get("baseline", {}).get("manipulation_success_rate", 0.0) or 0.0)
@@ -490,6 +573,8 @@ class PolicyEvalStage(PipelineStage):
             "num_rollouts_baseline": len(baseline_scores),
             "num_rollouts_adapted": len(adapted_scores),
             "num_scoring_failures": len(scoring_failures),
+            "scoring_failure_rate": round(float(scoring_failure_rate), 6),
+            "num_valid_scored_rows": len(all_scores),
             "used_adapted_policy_checkpoint": adapted_policy_checkpoint is not None,
             "adapted_policy_checkpoint": (
                 str(adapted_policy_checkpoint) if adapted_policy_checkpoint else None
@@ -519,15 +604,29 @@ class PolicyEvalStage(PipelineStage):
             "deferred_claims": [],
             "confidence_intervals": _build_confidence_intervals(baseline_scores, adapted_scores),
             "heldout_manifest_hash": _manifest_hash(shared_manifest_path),
+            "num_unresolved_manip_tasks_dropped": int(unresolved_manip_tasks_dropped),
+            "num_rejected_task_start_assignments": int(num_rejected_task_start_assignments),
+            "low_score_breakdown": _build_low_score_breakdown(all_scores),
         }
 
         write_json(metrics, eval_dir / "policy_eval_report.json")
+        detail_lines = list(scoring_failures[:5])
+        if (
+            bool(config.eval_policy.reliability.enforce_stage_success)
+            and not bool(reliability_gate.get("passed", False))
+        ):
+            detail_lines.append(f"Reliability gate failed: {reliability_gate.get('reason', '')}".strip())
 
         return StageResult(
             stage_name=self.name,
             status=(
                 "success"
-                if all_scores and (not claim_mode or claim_passed)
+                if all_scores
+                and (not claim_mode or claim_passed)
+                and (
+                    not bool(config.eval_policy.reliability.enforce_stage_success)
+                    or bool(reliability_gate.get("passed", False))
+                )
                 else "failed"
             ),
             elapsed_seconds=0,
@@ -539,7 +638,7 @@ class PolicyEvalStage(PipelineStage):
                 "judge_audit_csv": str(audit_csv_path),
             },
             metrics=metrics,
-            detail="\n".join(scoring_failures[:5]),
+            detail="\n".join(line for line in detail_lines if line),
         )
 
 
@@ -562,6 +661,8 @@ def _run_world_model_only_eval(
     max_steps: int,
     device: str,
     claim_mode: bool,
+    unresolved_manip_tasks_dropped: int,
+    num_rejected_task_start_assignments: int,
 ) -> StageResult:
     rollout_driver = (config.eval_policy.rollout_driver or "scripted").strip().lower()
     if rollout_driver not in {"scripted", "both"}:
@@ -731,16 +832,30 @@ def _run_world_model_only_eval(
                 continue
 
             try:
+                overlay_mode = "raw"
+                scored_video_path = rollout.video_path
+                overlay_video_path = None
                 if _is_manipulation_task(task):
+                    if str(config.eval_policy.manip_eval_mode).strip().lower() == "overlay_marker":
+                        overlay_mode = "overlay_marker"
+                        overlay_video_path = (
+                            condition_dir / "overlay" / f"{clip_name}_overlay.mp4"
+                        )
+                        scored_video_path = overlay_scripted_trace_on_video(
+                            input_video_path=rollout.video_path,
+                            output_video_path=overlay_video_path,
+                            action_sequence=trace.get("action_sequence", []),
+                            target_label=str(assignment.get("target_label") or ""),
+                        )
                     score = score_rollout_manipulation(
-                        video_path=rollout.video_path,
+                        video_path=scored_video_path,
                         task_prompt=task,
                         config=config.eval_policy.vlm_judge,
                         facility_description=facility.description,
                     )
                 else:
                     score = score_rollout(
-                        video_path=rollout.video_path,
+                        video_path=scored_video_path,
                         task_prompt=task,
                         config=config.eval_policy.vlm_judge,
                         facility_description=facility.description,
@@ -749,7 +864,7 @@ def _run_world_model_only_eval(
                 msg = f"VLM scoring failed for {clip_name}: {e}"
                 logger.warning(msg)
                 scoring_failures.append(msg)
-                score = JudgeScore(0, 0, 0, str(e), "")
+                continue
 
             all_scores.append(
                 {
@@ -770,6 +885,12 @@ def _run_world_model_only_eval(
                     "start_path_type": str(assignment.get("path_type", "unknown")),
                     "target_instance_id": assignment.get("target_instance_id"),
                     "target_label": assignment.get("target_label"),
+                    "target_grounded": bool(assignment.get("target_grounded", False)),
+                    "assignment_quality_score": assignment.get("assignment_quality_score"),
+                    "assignment_reject_reason": assignment.get("assignment_reject_reason"),
+                    "start_frame_orientation_fix_applied": assignment.get(
+                        "start_frame_orientation_fix_applied", "none"
+                    ),
                     "is_manipulation_task": _is_manipulation_task(task),
                     "grasp_acquired": (
                         score.grasp_acquired if isinstance(score, ManipulationJudgeScore) else None
@@ -786,6 +907,8 @@ def _run_world_model_only_eval(
                         else None
                     ),
                     "action_contract": action_contract,
+                    "overlay_video_path": str(overlay_video_path) if overlay_video_path else None,
+                    "overlay_mode": overlay_mode,
                 }
             )
         _release_world_model(world_model)
@@ -849,7 +972,13 @@ def _run_world_model_only_eval(
     if not action_contract["compliant"]:
         action_contract["reason"] = "world/dataset action dimensions are missing or inconsistent."
 
-    reliability_gate = _build_reliability_gate(config, all_scores)
+    total_scoring_attempts = len(all_scores) + len(scoring_failures)
+    scoring_failure_rate = len(scoring_failures) / max(total_scoring_attempts, 1)
+    reliability_gate = _build_reliability_gate(
+        config,
+        all_scores,
+        scoring_failure_rate=scoring_failure_rate,
+    )
     manip_delta_pp = (
         (per_condition.get("adapted", {}).get("manipulation_success_rate", 0.0) or 0.0)
         - (per_condition.get("baseline", {}).get("manipulation_success_rate", 0.0) or 0.0)
@@ -892,6 +1021,8 @@ def _run_world_model_only_eval(
         "num_rollouts_baseline": len(baseline_scores),
         "num_rollouts_adapted": len(adapted_scores),
         "num_scoring_failures": len(scoring_failures),
+        "scoring_failure_rate": round(float(scoring_failure_rate), 6),
+        "num_valid_scored_rows": len(all_scores),
         "used_adapted_policy_checkpoint": False,
         "adapted_policy_checkpoint": None,
         "requested_rollouts_per_condition": requested_rollouts,
@@ -925,12 +1056,30 @@ def _run_world_model_only_eval(
         ],
         "confidence_intervals": _build_confidence_intervals(baseline_scores, adapted_scores),
         "heldout_manifest_hash": _manifest_hash(shared_manifest_path),
+        "num_unresolved_manip_tasks_dropped": int(unresolved_manip_tasks_dropped),
+        "num_rejected_task_start_assignments": int(num_rejected_task_start_assignments),
+        "low_score_breakdown": _build_low_score_breakdown(all_scores),
     }
     write_json(metrics, eval_dir / "policy_eval_report.json")
+    detail_lines = list(scoring_failures[:5])
+    if (
+        bool(config.eval_policy.reliability.enforce_stage_success)
+        and not bool(reliability_gate.get("passed", False))
+    ):
+        detail_lines.append(f"Reliability gate failed: {reliability_gate.get('reason', '')}".strip())
 
     return StageResult(
         stage_name="s4_policy_eval",
-        status=("success" if all_scores and (not claim_mode or claim_passed) else "failed"),
+        status=(
+            "success"
+            if all_scores
+            and (not claim_mode or claim_passed)
+            and (
+                not bool(config.eval_policy.reliability.enforce_stage_success)
+                or bool(reliability_gate.get("passed", False))
+            )
+            else "failed"
+        ),
         elapsed_seconds=0,
         outputs={
             "eval_dir": str(eval_dir),
@@ -940,7 +1089,7 @@ def _run_world_model_only_eval(
             "judge_audit_csv": str(audit_csv_path),
         },
         metrics=metrics,
-        detail="\n".join(scoring_failures[:5]),
+        detail="\n".join(line for line in detail_lines if line),
     )
 
 
@@ -1010,6 +1159,14 @@ def _is_manipulation_task(task: str) -> bool:
     lowered = task.lower()
     keywords = ["pick", "grasp", "lift", "place", "stack", "regrasp", "tote", "bin"]
     return any(k in lowered for k in keywords)
+
+
+def _is_object_grounded_manip_task(task: str) -> bool:
+    if not _is_manipulation_task(task):
+        return True
+    lowered = str(task or "").lower()
+    # Grounded object token patterns: bowl_101, trash_can_157, etc.
+    return bool(re.search(r"\b[a-z0-9_]+_[0-9]{2,}\b", lowered))
 
 
 def _manipulation_success_rate(scores: List[Dict]) -> float:
@@ -1198,13 +1355,23 @@ def _single_or_none(values: set[int]) -> int | None:
     return None
 
 
-def _build_reliability_gate(config: ValidationConfig, scores: List[Dict]) -> Dict:
+def _build_reliability_gate(
+    config: ValidationConfig,
+    scores: List[Dict],
+    *,
+    scoring_failure_rate: float = 0.0,
+) -> Dict:
     if not scores:
         return {
             "replay_pass_rate": 0.0,
             "controllability_pass_rate": 0.0,
             "passed": False,
-            "reason": "No rollouts available.",
+            "reason": "No valid scored rollouts available.",
+            "scoring_failure_rate": round(float(scoring_failure_rate), 6),
+            "max_scoring_failure_rate": round(
+                float(config.eval_policy.reliability.max_scoring_failure_rate), 6
+            ),
+            "num_valid_scores": 0,
         }
     replay_passes = 0
     controllability_passes = 0
@@ -1224,16 +1391,32 @@ def _build_reliability_gate(config: ValidationConfig, scores: List[Dict]) -> Dic
                 pass
     replay_rate = replay_passes / max(len(scores), 1)
     ctrl_rate = controllability_passes / max(len(scores), 1)
+    failure_rate_ok = float(scoring_failure_rate) <= float(
+        config.eval_policy.reliability.max_scoring_failure_rate
+    )
     passed = (
         replay_rate >= float(config.eval_policy.reliability.min_replay_pass_rate)
         and ctrl_rate >= float(config.eval_policy.reliability.min_controllability_pass_rate)
+        and failure_rate_ok
     )
-    reason = "" if passed else "Replay/controllability rates below configured thresholds."
+    reasons: List[str] = []
+    if replay_rate < float(config.eval_policy.reliability.min_replay_pass_rate):
+        reasons.append("replay_pass_rate below threshold")
+    if ctrl_rate < float(config.eval_policy.reliability.min_controllability_pass_rate):
+        reasons.append("controllability_pass_rate below threshold")
+    if not failure_rate_ok:
+        reasons.append("scoring_failure_rate above threshold")
+    reason = "" if passed else "; ".join(reasons)
     return {
         "replay_pass_rate": round(float(replay_rate), 6),
         "controllability_pass_rate": round(float(ctrl_rate), 6),
         "passed": bool(passed),
         "reason": reason,
+        "scoring_failure_rate": round(float(scoring_failure_rate), 6),
+        "max_scoring_failure_rate": round(
+            float(config.eval_policy.reliability.max_scoring_failure_rate), 6
+        ),
+        "num_valid_scores": len(scores),
     }
 
 
@@ -1252,6 +1435,56 @@ def _build_confidence_intervals(baseline_scores: List[Dict], adapted_scores: Lis
         "paired_mean_delta": round(mean, 6),
         "paired_95ci_low": round(mean - margin, 6),
         "paired_95ci_high": round(mean + margin, 6),
+    }
+
+
+def _build_low_score_breakdown(scores: List[Dict]) -> Dict:
+    low_rows = [
+        row
+        for row in scores
+        if float(row.get("task_score", 0.0)) <= 1.0
+        or float(row.get("visual_score", 0.0)) <= 1.0
+        or float(row.get("spatial_score", 0.0)) <= 1.0
+    ]
+    categories = {
+        "ceiling_or_upside_down": 0,
+        "off_target_or_not_visible": 0,
+        "blur_or_indiscernible": 0,
+        "missing_robot_or_target_object": 0,
+    }
+    examples: List[Dict] = []
+    for row in low_rows:
+        reasoning = str(row.get("reasoning", "")).lower()
+        if any(tok in reasoning for tok in ("ceiling", "upside down", "upside-down")):
+            categories["ceiling_or_upside_down"] += 1
+        if any(
+            tok in reasoning
+            for tok in (
+                "does not show",
+                "do not show",
+                "not visible",
+                "impossible to evaluate",
+                "cannot evaluate",
+            )
+        ):
+            categories["off_target_or_not_visible"] += 1
+        if any(tok in reasoning for tok in ("blur", "blurry", "indiscernible", "abstract", "unclear")):
+            categories["blur_or_indiscernible"] += 1
+        if any(tok in reasoning for tok in ("no robot", "target zone", "target object", "no visible")):
+            categories["missing_robot_or_target_object"] += 1
+        if len(examples) < 8:
+            examples.append(
+                {
+                    "condition": row.get("condition"),
+                    "task": row.get("task"),
+                    "start_clip_name": row.get("start_clip_name"),
+                    "reasoning_excerpt": str(row.get("reasoning", ""))[:240],
+                }
+            )
+    return {
+        "num_low_score_rows": len(low_rows),
+        "category_counts": categories,
+        "examples": examples,
     }
 
 

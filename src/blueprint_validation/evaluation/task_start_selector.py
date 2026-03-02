@@ -4,13 +4,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
+import json
 from pathlib import Path
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
 from ..common import get_logger, read_json, write_json
+from .video_orientation import (
+    apply_video_orientation_fix,
+    normalize_video_orientation_fix,
+)
 
 logger = get_logger("evaluation.task_start_selector")
 
@@ -29,6 +35,9 @@ def build_task_start_assignments(
     num_rollouts: int,
     render_manifest: dict,
     task_hints_path: Optional[Path],
+    min_assignment_quality_score: float = 0.0,
+    require_object_grounded_manip_tasks: bool = False,
+    video_orientation_fix: str = "none",
 ) -> List[dict]:
     """Assign each rollout to a task and the best matching initial camera clip."""
     clips = list(render_manifest.get("clips", []))
@@ -39,15 +48,18 @@ def build_task_start_assignments(
     clip_usage: Dict[int, int] = {}
     assignments: List[dict] = []
 
+    normalized_orientation_fix = normalize_video_orientation_fix(video_orientation_fix)
     for rollout_index in range(num_rollouts):
         task = tasks[rollout_index % len(tasks)]
         task_kind = _task_kind(task)
         target = _resolve_task_target(task, target_index)
-        clip = _select_best_clip(
+        clip, assignment_quality_score, fallback_reason, target_grounded = _select_best_clip(
             clips=clips,
             task_kind=task_kind,
             target=target,
             clip_usage=clip_usage,
+            min_assignment_quality_score=float(min_assignment_quality_score),
+            require_object_grounded_manip_tasks=bool(require_object_grounded_manip_tasks),
         )
         clip_index = int(clip.get("clip_index", rollout_index))
         clip_usage[clip_index] = clip_usage.get(clip_index, 0) + 1
@@ -62,14 +74,22 @@ def build_task_start_assignments(
                 "video_path": str(clip.get("video_path", "")),
                 "target_instance_id": target.instance_id if target else None,
                 "target_label": target.label if target else None,
+                "target_grounded": bool(target_grounded),
+                "assignment_quality_score": round(float(assignment_quality_score), 6),
+                "assignment_reject_reason": fallback_reason,
+                "video_orientation_fix": normalized_orientation_fix,
             }
         )
     return assignments
 
 
-def load_initial_frames_for_assignments(assignments: List[dict]) -> Dict[int, np.ndarray]:
+def load_initial_frames_for_assignments(
+    assignments: List[dict],
+    orientation_cache_dir: Optional[Path] = None,
+) -> Dict[int, np.ndarray]:
     """Decode initial RGB frame for each unique clip referenced by assignments."""
     frames: Dict[int, np.ndarray] = {}
+    orientation_applied: Dict[Tuple[str, str], Path] = {}
     for item in assignments:
         clip_index = int(item.get("clip_index", -1))
         if clip_index < 0 or clip_index in frames:
@@ -80,7 +100,39 @@ def load_initial_frames_for_assignments(assignments: List[dict]) -> Dict[int, np
         video_path = Path(video_path_raw)
         if not video_path.exists():
             continue
-        frame = _load_first_frame(video_path)
+        orientation_fix = normalize_video_orientation_fix(str(item.get("video_orientation_fix", "none")))
+        clip_name = str(item.get("clip_name", f"clip_{clip_index:03d}"))
+        oriented_path = video_path
+        if orientation_fix != "none":
+            key = (str(video_path), orientation_fix)
+            if key in orientation_applied:
+                oriented_path = orientation_applied[key]
+            else:
+                cache_dir = orientation_cache_dir or (video_path.parent / "_orientation_fixed_eval")
+                try:
+                    oriented_path = apply_video_orientation_fix(
+                        input_path=video_path,
+                        cache_dir=cache_dir,
+                        clip_name=clip_name,
+                        stream_tag="rgb",
+                        orientation_fix=orientation_fix,
+                        force_grayscale=False,
+                    )
+                    orientation_applied[key] = oriented_path
+                    item["start_frame_orientation_fix_applied"] = orientation_fix
+                except Exception:
+                    logger.warning(
+                        "Failed applying evaluation orientation fix for clip %s (%s)",
+                        clip_name,
+                        orientation_fix,
+                        exc_info=True,
+                    )
+                    item["start_frame_orientation_fix_applied"] = "none"
+                    oriented_path = video_path
+        else:
+            item["start_frame_orientation_fix_applied"] = "none"
+
+        frame = _load_first_frame(oriented_path)
         if frame is None:
             continue
         frames[clip_index] = frame
@@ -141,17 +193,24 @@ def save_shared_task_start_manifest(
     planned_rollouts: int,
     tasks: List[str],
     assignments: List[dict],
+    render_manifest: Optional[dict] = None,
+    video_orientation_fix: str = "none",
+    selector_config: Optional[dict] = None,
 ) -> None:
     payload = {
-        "version": 1,
+        "version": 2,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "facility": facility_name,
         "render_manifest_path": str(render_manifest_path),
+        "render_manifest_hash": _stable_payload_hash(render_manifest) if render_manifest else None,
         "task_profile": task_profile,
         "requested_rollouts": int(requested_rollouts),
         "planned_rollouts": int(planned_rollouts),
         "num_unique_tasks": len(tasks),
         "tasks": tasks,
+        "task_list_hash": _stable_payload_hash(tasks),
+        "video_orientation_fix": normalize_video_orientation_fix(video_orientation_fix),
+        "selector_config_hash": _stable_payload_hash(selector_config or {}),
         "assignments": assignments,
     }
     write_json(payload, path)
@@ -162,11 +221,29 @@ def shared_manifest_is_compatible(
     *,
     facility_name: str,
     render_manifest_path: Path,
+    render_manifest: Optional[dict] = None,
+    tasks: Optional[List[str]] = None,
+    video_orientation_fix: Optional[str] = None,
+    selector_config: Optional[dict] = None,
 ) -> bool:
     if str(manifest.get("facility", "")) != facility_name:
         return False
     if str(manifest.get("render_manifest_path", "")) != str(render_manifest_path):
         return False
+    if render_manifest is not None:
+        if manifest.get("render_manifest_hash") != _stable_payload_hash(render_manifest):
+            return False
+    if tasks is not None:
+        if manifest.get("task_list_hash") != _stable_payload_hash(tasks):
+            return False
+    if video_orientation_fix is not None:
+        if normalize_video_orientation_fix(str(manifest.get("video_orientation_fix", "none"))) != (
+            normalize_video_orientation_fix(video_orientation_fix)
+        ):
+            return False
+    if selector_config is not None:
+        if manifest.get("selector_config_hash") != _stable_payload_hash(selector_config):
+            return False
     return bool(manifest.get("assignments"))
 
 
@@ -283,19 +360,47 @@ def _select_best_clip(
     task_kind: str,
     target: Optional[TargetRegion],
     clip_usage: Dict[int, int],
-) -> dict:
-    ranked: List[tuple[float, int, dict]] = []
+    min_assignment_quality_score: float,
+    require_object_grounded_manip_tasks: bool,
+) -> tuple[dict, float, Optional[str], bool]:
+    ranked: List[tuple[float, int, dict, bool]] = []
+    eligible: List[tuple[float, int, dict, bool]] = []
     for clip in clips:
         clip_index = int(clip.get("clip_index", 0))
         usage_penalty = 0.20 * clip_usage.get(clip_index, 0)
-        score = _score_clip_for_task(clip, task_kind=task_kind, target=target) - usage_penalty
-        ranked.append((score, clip_index, clip))
+        score, target_grounded = _score_clip_for_task(clip, task_kind=task_kind, target=target)
+        score -= usage_penalty
+        row = (score, clip_index, clip, target_grounded)
+        ranked.append(row)
+        if score < float(min_assignment_quality_score):
+            continue
+        if task_kind == "manipulation" and require_object_grounded_manip_tasks and not target_grounded:
+            continue
+        eligible.append(row)
 
     ranked.sort(key=lambda x: (-x[0], x[1]))
-    return ranked[0][2]
+    if eligible:
+        eligible.sort(key=lambda x: (-x[0], x[1]))
+        score, _, clip, grounded = eligible[0]
+        return clip, float(score), None, bool(grounded)
+
+    if not ranked:
+        # Should never happen because callers guard non-empty clips.
+        raise RuntimeError("No clips available to score for task start assignment.")
+
+    score, _, clip, grounded = ranked[0]
+    fallback_reason = "below_quality_threshold_fallback"
+    if task_kind == "manipulation" and require_object_grounded_manip_tasks and not grounded:
+        fallback_reason = "no_grounded_candidate_fallback"
+    return clip, float(score), fallback_reason, bool(grounded)
 
 
-def _score_clip_for_task(clip: dict, *, task_kind: str, target: Optional[TargetRegion]) -> float:
+def _score_clip_for_task(
+    clip: dict,
+    *,
+    task_kind: str,
+    target: Optional[TargetRegion],
+) -> tuple[float, bool]:
     path_type = str(clip.get("path_type", "")).strip().lower()
     if task_kind == "manipulation":
         score = {"manipulation": 2.0, "orbit": 0.8, "sweep": 0.5}.get(path_type, 0.2)
@@ -306,33 +411,68 @@ def _score_clip_for_task(clip: dict, *, task_kind: str, target: Optional[TargetR
     else:
         score = 0.3
 
+    ceiling_flag = bool(clip.get("ceiling_dominance_flag", False))
+    if ceiling_flag:
+        score -= 2.5
+
+    # Prefer clips that already carry Stage-1 quality evidence when available.
+    score += 0.6 * _clip_metric_float(clip, "clip_quality_score", default=0.0)
+    score += 1.2 * _clip_metric_float(clip, "target_center_band_ratio", default=0.0)
+    score += 1.5 * _clip_metric_float(clip, "target_visibility_ratio", default=0.0)
+
+    target_grounded = True
     if target is None:
-        return score
+        if task_kind == "manipulation":
+            score -= 1.5
+            target_grounded = False
+        return score, target_grounded
 
     cam = clip.get("initial_camera")
     if not isinstance(cam, dict):
-        return score
+        return score - 0.8, False
     position = _as_vec3(cam.get("position"))
     forward = _as_vec3(cam.get("forward"))
     if position is None:
-        return score
+        return score - 0.8, False
 
     target_vec = target.center - position
     dist = float(np.linalg.norm(target_vec))
-    score -= 0.18 * dist
+    score -= 0.22 * dist
+    if dist > 4.0:
+        target_grounded = False
 
     if forward is not None and dist > 1e-6:
         facing = float(np.dot(target_vec / dist, forward / (np.linalg.norm(forward) + 1e-8)))
-        score += 2.5 * facing
+        score += 2.8 * facing
         if facing < -0.2:
-            score -= 2.0
+            score -= 2.4
+            target_grounded = False
+        elif facing < 0.15:
+            target_grounded = False
+    else:
+        target_grounded = False
 
     path_context = clip.get("path_context")
     if isinstance(path_context, dict):
         approach_point = _as_vec3(path_context.get("approach_point"))
         if approach_point is not None:
-            score -= 0.08 * float(np.linalg.norm(target.center - approach_point))
-    return score
+            approach_dist = float(np.linalg.norm(target.center - approach_point))
+            score -= 0.10 * approach_dist
+            if approach_dist < 1.0:
+                score += 0.6
+            elif approach_dist > 2.5:
+                target_grounded = False
+        elif path_type == "manipulation":
+            score -= 0.8
+            target_grounded = False
+    elif path_type == "manipulation":
+        score -= 0.8
+        target_grounded = False
+
+    if ceiling_flag and task_kind == "manipulation":
+        target_grounded = False
+
+    return score, target_grounded
 
 
 def _as_vec3(value) -> Optional[np.ndarray]:
@@ -342,3 +482,16 @@ def _as_vec3(value) -> Optional[np.ndarray]:
         return np.asarray([float(v) for v in value], dtype=np.float64)
     except (TypeError, ValueError):
         return None
+
+
+def _clip_metric_float(clip: dict, key: str, *, default: float = 0.0) -> float:
+    value = clip.get(key, default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _stable_payload_hash(payload: object) -> str:
+    normalized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.md5(normalized.encode("utf-8")).hexdigest()

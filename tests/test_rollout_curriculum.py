@@ -45,6 +45,25 @@ def test_bucket_rollout_uses_manipulation_flags():
     assert bucket_rollout(hard, thr) == "hard_negative"
 
 
+def test_bucket_rollouts_by_quantile_creates_non_hard_mix():
+    from blueprint_validation.training.rollout_curriculum import bucket_rollouts_by_quantile
+
+    rows = [
+        {"rollout_index": idx, "task": "Pick tote", "task_score": score}
+        for idx, score in enumerate([0.0, 1.0, 2.0, 3.0, 4.0])
+    ]
+    result = bucket_rollouts_by_quantile(
+        rows,
+        success_quantile=0.8,
+        near_miss_quantile=0.4,
+    )
+    assert result["success"]
+    assert result["near_miss"]
+    assert result["success_threshold"] is not None
+    assert result["near_miss_threshold"] is not None
+    assert len(result["success"]) + len(result["near_miss"]) + len(result["hard_negative"]) == len(rows)
+
+
 def test_sample_policy_curriculum_generates_disjoint_splits(sample_config, tmp_path):
     from blueprint_validation.training.rollout_curriculum import sample_policy_curriculum
 

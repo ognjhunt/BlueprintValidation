@@ -239,6 +239,8 @@ class PolicyEvalReliabilityConfig:
     keyframe_reanchor_every: int = 4
     min_replay_pass_rate: float = 0.70
     min_controllability_pass_rate: float = 0.70
+    enforce_stage_success: bool = False
+    max_scoring_failure_rate: float = 0.02
 
 
 @dataclass
@@ -256,6 +258,9 @@ class PolicyEvalConfig:
     scripted_rollouts_per_task: int = 12
     mode: str = "claim"  # claim|research
     required_action_dim: int = 7
+    manip_eval_mode: str = "overlay_marker"  # overlay_marker|raw
+    min_assignment_quality_score: float = 0.0
+    require_object_grounded_manip_tasks: bool = True
     min_absolute_difference: float = 1.0  # minimum raw score difference for PASS
     min_manip_success_delta_pp: float = 15.0
     require_native_action_compat: bool = True
@@ -418,6 +423,19 @@ class PolicyRLLoopConfig:
 
 
 @dataclass
+class WorldModelRefreshLoopConfig:
+    enabled: bool = False
+    iterations: int = 1
+    source_condition: str = "adapted"  # baseline|adapted
+    fail_if_refresh_fails: bool = True
+    fail_on_degenerate_mix: bool = True
+    min_non_hard_rollouts: int = 8
+    quantile_fallback_enabled: bool = True
+    quantile_success_threshold: float = 0.85
+    quantile_near_miss_threshold: float = 0.50
+
+
+@dataclass
 class RolloutDatasetConfig:
     enabled: bool = True
     seed: int = 17
@@ -485,6 +503,8 @@ class VisualFidelityConfig:
 class SpatialAccuracyConfig:
     num_sample_frames: int = 20
     vlm_model: str = "gemini-3-flash-preview"
+    min_valid_samples: int = 3
+    fail_on_reasoning_conflict: bool = True
 
 
 @dataclass
@@ -520,6 +540,7 @@ class ValidationConfig:
     splatsim: SplatSimConfig = field(default_factory=SplatSimConfig)
     action_boost: ActionBoostConfig = field(default_factory=ActionBoostConfig)
     policy_rl_loop: PolicyRLLoopConfig = field(default_factory=PolicyRLLoopConfig)
+    wm_refresh_loop: WorldModelRefreshLoopConfig = field(default_factory=WorldModelRefreshLoopConfig)
     rollout_dataset: RolloutDatasetConfig = field(default_factory=RolloutDatasetConfig)
     policy_compare: PolicyCompareConfig = field(default_factory=PolicyCompareConfig)
     eval_visual: VisualFidelityConfig = field(default_factory=VisualFidelityConfig)
@@ -600,6 +621,28 @@ def _parse_rollout_selection_mode(raw_value: Any) -> str:
     if value not in _ALLOWED_ROLLOUT_SELECTION_MODES:
         allowed = ", ".join(sorted(_ALLOWED_ROLLOUT_SELECTION_MODES))
         raise ValueError(f"rollout_dataset.selection_mode must be one of: {allowed}")
+    return value
+
+
+_ALLOWED_WM_REFRESH_SOURCE_CONDITIONS = {"baseline", "adapted"}
+
+
+_ALLOWED_MANIP_EVAL_MODES = {"overlay_marker", "raw"}
+
+
+def _parse_manip_eval_mode(raw_value: Any) -> str:
+    value = str(raw_value or "overlay_marker").strip().lower()
+    if value not in _ALLOWED_MANIP_EVAL_MODES:
+        allowed = ", ".join(sorted(_ALLOWED_MANIP_EVAL_MODES))
+        raise ValueError(f"eval_policy.manip_eval_mode must be one of: {allowed}")
+    return value
+
+
+def _parse_wm_refresh_source_condition(raw_value: Any) -> str:
+    value = str(raw_value or "adapted").strip().lower()
+    if value not in _ALLOWED_WM_REFRESH_SOURCE_CONDITIONS:
+        allowed = ", ".join(sorted(_ALLOWED_WM_REFRESH_SOURCE_CONDITIONS))
+        raise ValueError(f"wm_refresh_loop.source_condition must be one of: {allowed}")
     return value
 
 
@@ -893,6 +936,11 @@ def load_config(path: Path) -> ValidationConfig:
             scripted_rollouts_per_task=int(ep.get("scripted_rollouts_per_task", 12)),
             mode=str(ep.get("mode", "claim")),
             required_action_dim=int(ep.get("required_action_dim", 7)),
+            manip_eval_mode=_parse_manip_eval_mode(ep.get("manip_eval_mode", "overlay_marker")),
+            min_assignment_quality_score=float(ep.get("min_assignment_quality_score", 0.0)),
+            require_object_grounded_manip_tasks=bool(
+                ep.get("require_object_grounded_manip_tasks", True)
+            ),
             min_absolute_difference=float(ep.get("min_absolute_difference", 1.0)),
             min_manip_success_delta_pp=float(ep.get("min_manip_success_delta_pp", 15.0)),
             require_native_action_compat=bool(ep.get("require_native_action_compat", True)),
@@ -910,6 +958,12 @@ def load_config(path: Path) -> ValidationConfig:
                     (ep.get("reliability", {}) or {}).get(
                         "min_controllability_pass_rate", 0.70
                     )
+                ),
+                enforce_stage_success=bool(
+                    (ep.get("reliability", {}) or {}).get("enforce_stage_success", False)
+                ),
+                max_scoring_failure_rate=float(
+                    (ep.get("reliability", {}) or {}).get("max_scoring_failure_rate", 0.02)
                 ),
             ),
             vlm_judge=VLMJudgeConfig(
@@ -1183,6 +1237,22 @@ def load_config(path: Path) -> ValidationConfig:
             ),
         )
 
+    if "wm_refresh_loop" in raw:
+        wr = raw["wm_refresh_loop"]
+        config.wm_refresh_loop = WorldModelRefreshLoopConfig(
+            enabled=bool(wr.get("enabled", False)),
+            iterations=int(wr.get("iterations", 1)),
+            source_condition=_parse_wm_refresh_source_condition(
+                wr.get("source_condition", "adapted")
+            ),
+            fail_if_refresh_fails=bool(wr.get("fail_if_refresh_fails", True)),
+            fail_on_degenerate_mix=bool(wr.get("fail_on_degenerate_mix", True)),
+            min_non_hard_rollouts=int(wr.get("min_non_hard_rollouts", 8)),
+            quantile_fallback_enabled=bool(wr.get("quantile_fallback_enabled", True)),
+            quantile_success_threshold=float(wr.get("quantile_success_threshold", 0.85)),
+            quantile_near_miss_threshold=float(wr.get("quantile_near_miss_threshold", 0.50)),
+        )
+
     if "rollout_dataset" in raw:
         rd = raw["rollout_dataset"]
         config.rollout_dataset = RolloutDatasetConfig(
@@ -1257,6 +1327,8 @@ def load_config(path: Path) -> ValidationConfig:
         config.eval_spatial = SpatialAccuracyConfig(
             num_sample_frames=es.get("num_sample_frames", 20),
             vlm_model=es.get("vlm_model", "gemini-3-flash-preview"),
+            min_valid_samples=int(es.get("min_valid_samples", 3)),
+            fail_on_reasoning_conflict=bool(es.get("fail_on_reasoning_conflict", True)),
         )
 
     # Cross-site
@@ -1329,5 +1401,24 @@ def load_config(path: Path) -> ValidationConfig:
             "policy_rl_loop.world_model_refresh_max_total_clips must be >= "
             "policy_rl_loop.world_model_refresh_min_total_clips"
         )
+    if int(config.wm_refresh_loop.iterations) < 1:
+        raise ValueError("wm_refresh_loop.iterations must be >= 1")
+    if int(config.wm_refresh_loop.min_non_hard_rollouts) < 0:
+        raise ValueError("wm_refresh_loop.min_non_hard_rollouts must be >= 0")
+    if not (0.0 <= float(config.wm_refresh_loop.quantile_near_miss_threshold) <= 1.0):
+        raise ValueError("wm_refresh_loop.quantile_near_miss_threshold must be in [0, 1]")
+    if not (0.0 <= float(config.wm_refresh_loop.quantile_success_threshold) <= 1.0):
+        raise ValueError("wm_refresh_loop.quantile_success_threshold must be in [0, 1]")
+    if float(config.wm_refresh_loop.quantile_success_threshold) < float(
+        config.wm_refresh_loop.quantile_near_miss_threshold
+    ):
+        raise ValueError(
+            "wm_refresh_loop.quantile_success_threshold must be >= "
+            "wm_refresh_loop.quantile_near_miss_threshold"
+        )
+    if not (0.0 <= float(config.eval_policy.reliability.max_scoring_failure_rate) <= 1.0):
+        raise ValueError("eval_policy.reliability.max_scoring_failure_rate must be in [0, 1]")
+    if int(config.eval_spatial.min_valid_samples) < 1:
+        raise ValueError("eval_spatial.min_valid_samples must be >= 1")
 
     return config

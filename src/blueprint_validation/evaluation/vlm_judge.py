@@ -6,6 +6,7 @@ import base64
 import json
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,10 @@ from ..common import get_logger
 from ..config import VLMJudgeConfig
 
 logger = get_logger("evaluation.vlm_judge")
+
+_USAGE_LOCK = threading.Lock()
+_USAGE_CALL_COUNT = 0
+_USAGE_TOTAL_TOKENS = 0
 
 
 @dataclass
@@ -58,8 +63,9 @@ def _extract_json_from_response(text: str) -> dict:
         except json.JSONDecodeError:
             pass
 
-    logger.warning("Could not parse JSON from VLM response: %s", text[:200])
-    return {"task_score": 0, "visual_score": 0, "spatial_score": 0, "reasoning": text}
+    snippet = str(text[:200]).replace("\n", " ")
+    logger.warning("Could not parse JSON from VLM response: %s", snippet)
+    raise ValueError("Could not parse JSON from VLM response")
 
 
 def _extract_response_text(response) -> str:
@@ -74,6 +80,55 @@ def _extract_response_text(response) -> str:
         if chunks:
             return "\n".join(chunks)
     return ""
+
+
+def _extract_usage_int(usage_obj, *keys: str) -> int | None:
+    for key in keys:
+        if hasattr(usage_obj, key):
+            try:
+                return int(getattr(usage_obj, key))
+            except Exception:
+                continue
+        if isinstance(usage_obj, dict) and key in usage_obj:
+            try:
+                return int(usage_obj[key])
+            except Exception:
+                continue
+    return None
+
+
+def _log_usage_metadata(model_name: str, response) -> None:
+    usage = getattr(response, "usage_metadata", None)
+    if usage is None:
+        usage = getattr(response, "usageMetadata", None)
+    if usage is None:
+        return
+
+    prompt_tokens = _extract_usage_int(usage, "prompt_token_count", "promptTokenCount")
+    candidate_tokens = _extract_usage_int(
+        usage, "candidates_token_count", "candidatesTokenCount"
+    )
+    total_tokens = _extract_usage_int(usage, "total_token_count", "totalTokenCount")
+    if total_tokens is None:
+        if prompt_tokens is None and candidate_tokens is None:
+            return
+        total_tokens = int((prompt_tokens or 0) + (candidate_tokens or 0))
+
+    with _USAGE_LOCK:
+        global _USAGE_CALL_COUNT, _USAGE_TOTAL_TOKENS
+        _USAGE_CALL_COUNT += 1
+        _USAGE_TOTAL_TOKENS += int(total_tokens)
+        avg_tokens = _USAGE_TOTAL_TOKENS / max(1, _USAGE_CALL_COUNT)
+
+    logger.info(
+        "VLM token usage model=%s prompt=%s candidates=%s total=%s avg_total_per_call=%.1f calls=%d",
+        model_name,
+        prompt_tokens if prompt_tokens is not None else "n/a",
+        candidate_tokens if candidate_tokens is not None else "n/a",
+        total_tokens,
+        avg_tokens,
+        _USAGE_CALL_COUNT,
+    )
 
 
 def _build_code_execution_tool(types):
@@ -195,11 +250,13 @@ def _generate_with_retry(
     for model_idx, candidate_model in enumerate(model_candidates):
         for attempt in range(max_retries):
             try:
-                return client.models.generate_content(
+                response = client.models.generate_content(
                     model=candidate_model,
                     contents=contents,
                     config=config,
                 )
+                _log_usage_metadata(candidate_model, response)
+                return response
             except Exception as exc:
                 last_exc = exc
                 exc_text = str(exc).lower()
@@ -352,9 +409,9 @@ def score_rollout(
                 temperature=0.1,
             ),
         )
-        raw_text = _extract_response_text(response)
-        parsed = _extract_json_from_response(raw_text)
         try:
+            raw_text = _extract_response_text(response)
+            parsed = _extract_json_from_response(raw_text)
             task_score, visual_score, spatial_score, reasoning = _parse_judge_payload(parsed)
             return JudgeScore(
                 task_score=task_score,
@@ -430,9 +487,9 @@ def score_rollout_manipulation(
                 temperature=0.1,
             ),
         )
-        raw_text = _extract_response_text(response)
-        parsed = _extract_json_from_response(raw_text)
         try:
+            raw_text = _extract_response_text(response)
+            parsed = _extract_json_from_response(raw_text)
             (
                 task_score,
                 visual_score,
@@ -518,9 +575,9 @@ def score_spatial_accuracy(
                 temperature=0.1,
             ),
         )
-        raw_text = _extract_response_text(response)
-        parsed = _extract_json_from_response(raw_text)
         try:
+            raw_text = _extract_response_text(response)
+            parsed = _extract_json_from_response(raw_text)
             task_score, visual_score, spatial_score, reasoning = _parse_judge_payload(parsed)
             return JudgeScore(
                 task_score=task_score,
@@ -585,13 +642,12 @@ def classify_facility(
             ),
         )
 
-        raw_text = _extract_response_text(response)
         try:
-            parsed = json.loads(raw_text)
-        except json.JSONDecodeError:
-            parsed = _extract_json_from_response(raw_text)
-
-        try:
+            raw_text = _extract_response_text(response)
+            try:
+                parsed = json.loads(raw_text)
+            except json.JSONDecodeError:
+                parsed = _extract_json_from_response(raw_text)
             predicted, confidence, reasoning = _parse_classify_payload(parsed)
             return {
                 "predicted_facility": predicted,

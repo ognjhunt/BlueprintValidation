@@ -81,6 +81,7 @@ class BlueprintVideoActionDataset(Dataset):
         self.num_frames = int(num_frames)
         self.randomize = bool(randomize and data_split == "train")
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._warned_short_videos: set[str] = set()
 
     def __len__(self) -> int:
         return len(self.episodes)
@@ -104,10 +105,21 @@ class BlueprintVideoActionDataset(Dataset):
                     break
                 frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
                 frames.append(frame_rgb)
-            if len(frames) != self.num_frames:
-                raise RuntimeError(
-                    f"Decoded {len(frames)} frames, expected {self.num_frames} from {video_path}"
-                )
+            if not frames:
+                raise RuntimeError(f"Decoded 0 frames from {video_path}")
+            if len(frames) < self.num_frames:
+                # Debug/eval rollouts can be shorter than DreamDojo's fixed training window.
+                # Pad by repeating the final decoded frame so downstream loaders stay robust.
+                short_key = str(video_path)
+                if short_key not in self._warned_short_videos:
+                    self._warned_short_videos.add(short_key)
+                    print(
+                        f"[BlueprintVideoActionDataset] short clip padded: "
+                        f"{len(frames)} -> {self.num_frames} frames ({video_path})"
+                    )
+                pad_count = self.num_frames - len(frames)
+                last_frame = frames[-1]
+                frames.extend([last_frame.copy() for _ in range(pad_count)])
             return np.stack(frames, axis=0)  # T,H,W,C uint8
         finally:
             cap.release()

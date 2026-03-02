@@ -139,6 +139,7 @@ def _patch_pipeline_stages_with_dummies(monkeypatch, call_counts):
         "EnrichStage": "s2_enrich",
         "FinetuneStage": "s3_finetune",
         "PolicyEvalStage": "s4_policy_eval",
+        "WorldModelRefreshLoopStage": "s3d_wm_refresh_loop",
         "RLDSExportStage": "s4a_rlds_export",
         "PolicyFinetuneStage": "s3b_policy_finetune",
         "PolicyRLLoopStage": "s3c_policy_rl_loop",
@@ -223,7 +224,7 @@ def test_pipeline_post_stage_sync_hook(sample_config, tmp_path, monkeypatch):
     pipeline.run_all(resume_from_results=False)
 
     lines = hook_log.read_text().strip().splitlines()
-    assert len(lines) == 18
+    assert len(lines) == 20
     assert any(line.startswith("test_facility/s1_render|success") for line in lines)
 
 
@@ -309,6 +310,9 @@ def test_pipeline_action_boost_require_full_converts_skipped_to_failed(
     monkeypatch.setattr(pipeline_mod, "EnrichStage", lambda: DummyStage("s2_enrich"))
     monkeypatch.setattr(pipeline_mod, "FinetuneStage", lambda: DummyStage("s3_finetune"))
     monkeypatch.setattr(pipeline_mod, "PolicyEvalStage", lambda: DummyStage("s4_policy_eval"))
+    monkeypatch.setattr(
+        pipeline_mod, "WorldModelRefreshLoopStage", lambda: DummyStage("s3d_wm_refresh_loop")
+    )
     monkeypatch.setattr(pipeline_mod, "RLDSExportStage", lambda: DummyStage("s4a_rlds_export", status="skipped"))
     monkeypatch.setattr(pipeline_mod, "PolicyFinetuneStage", lambda: DummyStage("s3b_policy_finetune"))
     monkeypatch.setattr(pipeline_mod, "PolicyRLLoopStage", lambda: DummyStage("s3c_policy_rl_loop"))
@@ -327,3 +331,59 @@ def test_pipeline_action_boost_require_full_converts_skipped_to_failed(
     pipeline = pipeline_mod.ValidationPipeline(sample_config, tmp_path / "outputs")
     results = pipeline.run_all(resume_from_results=False)
     assert results["test_facility/s4a_rlds_export"].status == "failed"
+
+
+def test_pipeline_summary_includes_run_metadata_and_stage_provenance(
+    sample_config, tmp_path, monkeypatch
+):
+    import json
+
+    call_counts = {}
+    pipeline_mod = _patch_pipeline_stages_with_dummies(monkeypatch, call_counts)
+    sample_config.cloud.max_cost_usd = 0
+    work_dir = tmp_path / "outputs"
+    pipeline = pipeline_mod.ValidationPipeline(sample_config, work_dir)
+    pipeline.run_all(resume_from_results=False)
+
+    summary = json.loads((work_dir / "pipeline_summary.json").read_text())
+    assert summary["run_mode"] == "fresh"
+    assert summary["run_started_at"]
+    assert summary["run_finished_at"]
+    for stage_payload in summary["stages"].values():
+        provenance = stage_payload.get("provenance", {})
+        assert provenance.get("source") == "executed"
+        assert provenance.get("result_path")
+
+
+def test_pipeline_summary_marks_resumed_stage_provenance(sample_config, tmp_path, monkeypatch):
+    import json
+
+    call_counts = {}
+    pipeline_mod = _patch_pipeline_stages_with_dummies(monkeypatch, call_counts)
+    sample_config.cloud.max_cost_usd = 0
+    work_dir = tmp_path / "outputs"
+    pipeline = pipeline_mod.ValidationPipeline(sample_config, work_dir)
+    pipeline.run_all(resume_from_results=False)
+    pipeline.run_all(resume_from_results=True)
+
+    summary = json.loads((work_dir / "pipeline_summary.json").read_text())
+    assert summary["run_mode"] == "resume"
+    assert any(
+        stage_payload.get("provenance", {}).get("source") == "resumed"
+        for stage_payload in summary["stages"].values()
+    )
+
+
+def test_pipeline_strict_fresh_guard_blocks_stale_stage_results(sample_config, tmp_path, monkeypatch):
+    call_counts = {}
+    pipeline_mod = _patch_pipeline_stages_with_dummies(monkeypatch, call_counts)
+    sample_config.cloud.max_cost_usd = 0
+    sample_config.eval_policy.reliability.enforce_stage_success = True
+    work_dir = tmp_path / "outputs"
+    stale = work_dir / "test_facility" / "s1_render_result.json"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text('{"stage_name":"s1_render","status":"success"}')
+
+    pipeline = pipeline_mod.ValidationPipeline(sample_config, work_dir)
+    results = pipeline.run_all(resume_from_results=False)
+    assert results["pipeline/fresh_workdir_guard"].status == "failed"
