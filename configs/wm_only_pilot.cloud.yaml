@@ -13,7 +13,7 @@ facilities:
       - "kitchen appliances and countertop"
       - "dining table with glassware"
       - "cabinet and cupboard storage area"
-    video_orientation_fix: rotate180
+    video_orientation_fix: vflip
     up_axis: "z"
     floor_height_m: 0.0
     ceiling_height_m: 2.8
