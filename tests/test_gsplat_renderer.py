@@ -25,6 +25,7 @@ class _DummyPose:
         return torch.eye(3, dtype=torch.float32)
 
 
+@pytest.mark.gpu
 def test_render_frame_expands_background_for_rgb_ed(monkeypatch):
     captured = {}
 

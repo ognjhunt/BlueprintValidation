@@ -34,8 +34,8 @@ def test_stage2_to_stage3_handoff(sample_config, tmp_path, monkeypatch):
 
     input_video = render_dir / "clip_000_orbit.mp4"
     depth_video = render_dir / "clip_000_orbit_depth.mp4"
-    input_video.write_bytes(b"x")
-    depth_video.write_bytes(b"x")
+    _write_tiny_video(input_video)
+    _write_tiny_video(depth_video)
     write_json(
         {
             "clips": [
@@ -51,8 +51,7 @@ def test_stage2_to_stage3_handoff(sample_config, tmp_path, monkeypatch):
 
     def fake_enrich_clip(**kwargs):
         out = work_dir / "enriched" / "clip_000_orbit_daylight.mp4"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_bytes(b"x")
+        _write_tiny_video(out)
         return [
             CosmosOutput(
                 variant_name="daylight",
@@ -192,8 +191,6 @@ def test_stage4_policy_eval_deterministic_metrics(sample_config, tmp_path, monke
 
 
 def test_stage4_policy_eval_wm_only_uses_scripted_driver(sample_config, tmp_path, monkeypatch):
-    from pathlib import Path
-
     from blueprint_validation.common import StageResult
     from blueprint_validation.evaluation.vlm_judge import JudgeScore
     from blueprint_validation.stages.s4_policy_eval import PolicyEvalStage
