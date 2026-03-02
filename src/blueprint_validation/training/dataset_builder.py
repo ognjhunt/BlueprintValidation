@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import List
 
 from ..common import get_logger, read_json, write_json
+from ..video_io import ensure_h264_video
 
 logger = get_logger("training.dataset_builder")
 
@@ -16,6 +17,7 @@ def build_dreamdojo_dataset(
     enriched_manifest_path: Path,
     output_dir: Path,
     facility_name: str,
+    min_decoded_frames: int = 13,
 ) -> Path:
     """Convert enriched video manifest into DreamDojo training dataset format.
 
@@ -44,6 +46,13 @@ def build_dreamdojo_dataset(
         # Copy video to dataset directory
         dst = videos_dir / src.name
         shutil.copy2(src, dst)
+        checked = ensure_h264_video(
+            input_path=dst,
+            min_decoded_frames=max(1, int(min_decoded_frames)),
+            replace_source=True,
+        )
+        if checked.path != dst:
+            dst = checked.path
 
         # Write corresponding meta text file (prompt)
         prompt = entry.get("prompt", "")

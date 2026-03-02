@@ -90,15 +90,24 @@ class SpatialAccuracyStage(PipelineStage):
                 reasoning_conflict = any(
                     token in reasoning_lower for token in _REASONING_CONFLICT_TOKENS
                 )
+                spatial_score = float(score.spatial_score)
+                visual_score = float(score.visual_score)
+                task_score = float(score.task_score)
+                if reasoning_conflict:
+                    # Do not trust scalar scores when the judge text says the sample is unusable.
+                    spatial_score = 0.0
+                    visual_score = 0.0
+                    task_score = 0.0
                 scores.append(
                     {
                         "clip_name": clip.get("clip_name", ""),
                         "variant": clip.get("variant_name", ""),
-                        "spatial_score": score.spatial_score,
-                        "visual_score": score.visual_score,
-                        "task_score": score.task_score,
+                        "spatial_score": spatial_score,
+                        "visual_score": visual_score,
+                        "task_score": task_score,
                         "reasoning": reasoning,
                         "reasoning_conflict": reasoning_conflict,
+                        "valid_sample": not reasoning_conflict,
                     }
                 )
             except Exception as e:

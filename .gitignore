@@ -26,6 +26,7 @@ Thumbs.db
 
 # Data (large files, model weights, outputs)
 data/
+artifacts/
 *.ply
 *.mp4
 *.avi

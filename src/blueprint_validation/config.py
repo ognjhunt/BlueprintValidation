@@ -169,6 +169,16 @@ class EnrichConfig:
     max_input_frames: int = 0
     # Optional source clip selection budget. <= 0 keeps all clips.
     max_source_clips: int = 0
+    # Strict minimum selected source clips after selection/filtering.
+    min_source_clips: int = 8
+    # Strict minimum accepted enriched outputs after quality gating.
+    min_valid_outputs: int = 8
+    # Maximum tolerated fraction of blur-gate rejects.
+    max_blur_reject_rate: float = 0.30
+    # Maximum tolerated fraction of green-dominant pixels in outputs.
+    green_frame_ratio_max: float = 0.10
+    # Enable per-output visual-collapse heuristics (blur/green cast/low motion).
+    enable_visual_collapse_gate: bool = True
     # all|task_targeted|explicit
     source_clip_selection_mode: str = "all"
     source_clip_task: Optional[str] = None
@@ -243,6 +253,7 @@ class PolicyEvalReliabilityConfig:
     max_scoring_failure_rate: float = 0.02
     fail_on_short_rollout: bool = False
     min_rollout_frames: int = 13
+    min_rollout_steps: int = 12
 
 
 @dataclass
@@ -432,6 +443,8 @@ class WorldModelRefreshLoopConfig:
     fail_if_refresh_fails: bool = True
     fail_on_degenerate_mix: bool = True
     min_non_hard_rollouts: int = 8
+    max_hard_negative_fraction: float = 0.75
+    require_valid_video_decode: bool = True
     quantile_fallback_enabled: bool = True
     quantile_success_threshold: float = 0.85
     quantile_near_miss_threshold: float = 0.50
@@ -826,6 +839,11 @@ def load_config(path: Path) -> ValidationConfig:
             context_frame_mode=str(e.get("context_frame_mode", "target_centered")),
             max_input_frames=int(e.get("max_input_frames", 0)),
             max_source_clips=int(e.get("max_source_clips", 0)),
+            min_source_clips=int(e.get("min_source_clips", 8)),
+            min_valid_outputs=int(e.get("min_valid_outputs", 8)),
+            max_blur_reject_rate=float(e.get("max_blur_reject_rate", 0.30)),
+            green_frame_ratio_max=float(e.get("green_frame_ratio_max", 0.10)),
+            enable_visual_collapse_gate=bool(e.get("enable_visual_collapse_gate", True)),
             source_clip_selection_mode=_parse_source_clip_selection_mode(
                 e.get("source_clip_selection_mode", "all")
             ),
@@ -972,6 +990,9 @@ def load_config(path: Path) -> ValidationConfig:
                 ),
                 min_rollout_frames=int(
                     (ep.get("reliability", {}) or {}).get("min_rollout_frames", 13)
+                ),
+                min_rollout_steps=int(
+                    (ep.get("reliability", {}) or {}).get("min_rollout_steps", 12)
                 ),
             ),
             vlm_judge=VLMJudgeConfig(
@@ -1256,6 +1277,8 @@ def load_config(path: Path) -> ValidationConfig:
             fail_if_refresh_fails=bool(wr.get("fail_if_refresh_fails", True)),
             fail_on_degenerate_mix=bool(wr.get("fail_on_degenerate_mix", True)),
             min_non_hard_rollouts=int(wr.get("min_non_hard_rollouts", 8)),
+            max_hard_negative_fraction=float(wr.get("max_hard_negative_fraction", 0.75)),
+            require_valid_video_decode=bool(wr.get("require_valid_video_decode", True)),
             quantile_fallback_enabled=bool(wr.get("quantile_fallback_enabled", True)),
             quantile_success_threshold=float(wr.get("quantile_success_threshold", 0.85)),
             quantile_near_miss_threshold=float(wr.get("quantile_near_miss_threshold", 0.50)),
@@ -1413,6 +1436,8 @@ def load_config(path: Path) -> ValidationConfig:
         raise ValueError("wm_refresh_loop.iterations must be >= 1")
     if int(config.wm_refresh_loop.min_non_hard_rollouts) < 0:
         raise ValueError("wm_refresh_loop.min_non_hard_rollouts must be >= 0")
+    if not (0.0 <= float(config.wm_refresh_loop.max_hard_negative_fraction) <= 1.0):
+        raise ValueError("wm_refresh_loop.max_hard_negative_fraction must be in [0, 1]")
     if not (0.0 <= float(config.wm_refresh_loop.quantile_near_miss_threshold) <= 1.0):
         raise ValueError("wm_refresh_loop.quantile_near_miss_threshold must be in [0, 1]")
     if not (0.0 <= float(config.wm_refresh_loop.quantile_success_threshold) <= 1.0):
@@ -1428,6 +1453,16 @@ def load_config(path: Path) -> ValidationConfig:
         raise ValueError("eval_policy.reliability.max_scoring_failure_rate must be in [0, 1]")
     if int(config.eval_policy.reliability.min_rollout_frames) < 2:
         raise ValueError("eval_policy.reliability.min_rollout_frames must be >= 2")
+    if int(config.eval_policy.reliability.min_rollout_steps) < 1:
+        raise ValueError("eval_policy.reliability.min_rollout_steps must be >= 1")
+    if int(config.enrich.min_source_clips) < 0:
+        raise ValueError("enrich.min_source_clips must be >= 0")
+    if int(config.enrich.min_valid_outputs) < 0:
+        raise ValueError("enrich.min_valid_outputs must be >= 0")
+    if not (0.0 <= float(config.enrich.max_blur_reject_rate) <= 1.0):
+        raise ValueError("enrich.max_blur_reject_rate must be in [0, 1]")
+    if not (0.0 <= float(config.enrich.green_frame_ratio_max) <= 1.0):
+        raise ValueError("enrich.green_frame_ratio_max must be in [0, 1]")
     if bool(config.eval_policy.reliability.fail_on_short_rollout):
         eval_mode = (config.eval_policy.mode or "claim").strip().lower()
         effective_max_steps = int(config.eval_policy.max_steps_per_rollout)
@@ -1441,6 +1476,12 @@ def load_config(path: Path) -> ValidationConfig:
             raise ValueError(
                 "eval_policy.max_steps_per_rollout (after claim-mode horizon clamp) is too low "
                 f"for reliability.min_rollout_frames={required_frames}"
+            )
+        required_steps = int(config.eval_policy.reliability.min_rollout_steps)
+        if effective_max_steps < required_steps:
+            raise ValueError(
+                "eval_policy.max_steps_per_rollout (after claim-mode horizon clamp) is too low "
+                f"for reliability.min_rollout_steps={required_steps}"
             )
     if int(config.eval_spatial.min_valid_samples) < 1:
         raise ValueError("eval_spatial.min_valid_samples must be >= 1")

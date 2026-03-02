@@ -60,11 +60,17 @@ def test_config_defaults():
     assert config.eval_policy.reliability.max_scoring_failure_rate == pytest.approx(0.02)
     assert config.eval_policy.reliability.fail_on_short_rollout is False
     assert config.eval_policy.reliability.min_rollout_frames == 13
+    assert config.eval_policy.reliability.min_rollout_steps == 12
     assert config.eval_policy.min_absolute_difference == pytest.approx(1.0)
     assert config.eval_policy.min_manip_success_delta_pp == pytest.approx(15.0)
     assert config.eval_policy.vlm_judge.enable_agentic_vision is True
     assert config.enrich.max_input_frames == 0
     assert config.enrich.max_source_clips == 0
+    assert config.enrich.min_source_clips == 8
+    assert config.enrich.min_valid_outputs == 8
+    assert config.enrich.max_blur_reject_rate == pytest.approx(0.30)
+    assert config.enrich.green_frame_ratio_max == pytest.approx(0.10)
+    assert config.enrich.enable_visual_collapse_gate is True
     assert config.enrich.source_clip_selection_mode == "all"
     assert config.enrich.source_clip_task is None
     assert config.enrich.source_clip_name is None
@@ -114,6 +120,8 @@ def test_config_defaults():
     assert config.wm_refresh_loop.source_condition == "adapted"
     assert config.wm_refresh_loop.fail_on_degenerate_mix is True
     assert config.wm_refresh_loop.min_non_hard_rollouts == 8
+    assert config.wm_refresh_loop.max_hard_negative_fraction == pytest.approx(0.75)
+    assert config.wm_refresh_loop.require_valid_video_decode is True
     assert config.wm_refresh_loop.quantile_fallback_enabled is True
     assert config.wm_refresh_loop.quantile_success_threshold == pytest.approx(0.85)
     assert config.wm_refresh_loop.quantile_near_miss_threshold == pytest.approx(0.50)
@@ -187,6 +195,11 @@ def test_config_with_all_sections(tmp_path):
             "num_variants_per_render": 3,
             "context_frame_index": 7,
             "max_input_frames": 17,
+            "min_source_clips": 2,
+            "min_valid_outputs": 2,
+            "max_blur_reject_rate": 0.4,
+            "green_frame_ratio_max": 0.2,
+            "enable_visual_collapse_gate": False,
             "min_frame0_ssim": 0.8,
             "delete_rejected_outputs": True,
             "context_frame_mode": "fixed",
@@ -224,6 +237,7 @@ def test_config_with_all_sections(tmp_path):
                 "max_scoring_failure_rate": 0.01,
                 "fail_on_short_rollout": True,
                 "min_rollout_frames": 17,
+                "min_rollout_steps": 11,
             },
             "vlm_judge": {
                 "model": "gemini-3-flash",
@@ -286,6 +300,8 @@ def test_config_with_all_sections(tmp_path):
             "fail_if_refresh_fails": True,
             "fail_on_degenerate_mix": True,
             "min_non_hard_rollouts": 11,
+            "max_hard_negative_fraction": 0.7,
+            "require_valid_video_decode": False,
             "quantile_fallback_enabled": True,
             "quantile_success_threshold": 0.90,
             "quantile_near_miss_threshold": 0.55,
@@ -338,6 +354,11 @@ def test_config_with_all_sections(tmp_path):
     assert config.enrich.context_frame_mode == "fixed"
     assert config.enrich.max_input_frames == 17
     assert config.enrich.max_source_clips == 1
+    assert config.enrich.min_source_clips == 2
+    assert config.enrich.min_valid_outputs == 2
+    assert config.enrich.max_blur_reject_rate == pytest.approx(0.4)
+    assert config.enrich.green_frame_ratio_max == pytest.approx(0.2)
+    assert config.enrich.enable_visual_collapse_gate is False
     assert config.enrich.source_clip_selection_mode == "task_targeted"
     assert config.enrich.source_clip_task == "Pick up trash_can_157 and place it in the target zone"
     assert config.enrich.source_clip_name == "clip_001_manipulation"
@@ -364,6 +385,7 @@ def test_config_with_all_sections(tmp_path):
     assert config.eval_policy.reliability.max_scoring_failure_rate == pytest.approx(0.01)
     assert config.eval_policy.reliability.fail_on_short_rollout is True
     assert config.eval_policy.reliability.min_rollout_frames == 17
+    assert config.eval_policy.reliability.min_rollout_steps == 11
     assert config.eval_policy.min_absolute_difference == pytest.approx(1.25)
     assert config.eval_policy.min_manip_success_delta_pp == pytest.approx(20.0)
     assert config.eval_policy.vlm_judge.fallback_models == [
@@ -400,6 +422,8 @@ def test_config_with_all_sections(tmp_path):
     assert config.wm_refresh_loop.source_condition == "baseline"
     assert config.wm_refresh_loop.fail_on_degenerate_mix is True
     assert config.wm_refresh_loop.min_non_hard_rollouts == 11
+    assert config.wm_refresh_loop.max_hard_negative_fraction == pytest.approx(0.7)
+    assert config.wm_refresh_loop.require_valid_video_decode is False
     assert config.wm_refresh_loop.quantile_fallback_enabled is True
     assert config.wm_refresh_loop.quantile_success_threshold == pytest.approx(0.90)
     assert config.wm_refresh_loop.quantile_near_miss_threshold == pytest.approx(0.55)
@@ -745,4 +769,88 @@ def test_config_rejects_short_rollout_horizon_when_guard_enabled(tmp_path):
     )
 
     with pytest.raises(ValueError, match="max_steps_per_rollout"):
+        load_config(config_path)
+
+
+def test_config_rejects_invalid_enrich_blur_reject_rate(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "bad_blur_reject_rate.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Blur Reject Rate",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "enrich": {"max_blur_reject_rate": 1.2},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="max_blur_reject_rate"):
+        load_config(config_path)
+
+
+def test_config_rejects_invalid_min_rollout_steps(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "bad_min_rollout_steps.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Min Rollout Steps",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "eval_policy": {"reliability": {"min_rollout_steps": 0}},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="min_rollout_steps"):
+        load_config(config_path)
+
+
+def test_config_rejects_short_rollout_step_horizon_when_guard_enabled(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "bad_short_rollout_step_guard.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Short Rollout Step Guard",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "eval_policy": {
+                    "mode": "research",
+                    "max_steps_per_rollout": 4,
+                    "reliability": {
+                        "fail_on_short_rollout": True,
+                        "min_rollout_frames": 5,
+                        "min_rollout_steps": 8,
+                    },
+                },
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="min_rollout_steps"):
+        load_config(config_path)
+
+
+def test_config_rejects_invalid_wm_refresh_hard_negative_fraction(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "bad_wm_refresh_hard_negative_fraction.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad WM Refresh Hard Negative Fraction",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "wm_refresh_loop": {"max_hard_negative_fraction": 1.5},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="max_hard_negative_fraction"):
         load_config(config_path)

@@ -104,6 +104,11 @@ enrich:
   context_frame_index: 8
   context_frame_mode: target_centered
   max_input_frames: 0
+  min_source_clips: 1
+  min_valid_outputs: 1
+  max_blur_reject_rate: 0.9
+  green_frame_ratio_max: 0.25
+  enable_visual_collapse_gate: true
   cosmos_output_quality: 8
   min_frame0_ssim: 0.5
   delete_rejected_outputs: true
@@ -153,6 +158,7 @@ eval_policy:
     max_scoring_failure_rate: 0.02
     fail_on_short_rollout: true
     min_rollout_frames: 13
+    min_rollout_steps: 4
   tasks:
   - Navigate to the kitchen counter area
   - Approach the refrigerator
@@ -184,6 +190,8 @@ wm_refresh_loop:
   fail_if_refresh_fails: true
   fail_on_degenerate_mix: true
   min_non_hard_rollouts: 8
+  max_hard_negative_fraction: 0.9
+  require_valid_video_decode: true
   quantile_fallback_enabled: true
   quantile_success_threshold: 0.85
   quantile_near_miss_threshold: 0.5

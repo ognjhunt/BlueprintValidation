@@ -8,7 +8,7 @@ from typing import List, Optional
 
 import numpy as np
 
-from ..video_io import open_mp4_writer
+from ..video_io import ensure_h264_video, open_mp4_writer
 
 
 def run_rollout_with_adapter(
@@ -71,6 +71,12 @@ def run_rollout_with_adapter(
     for frame in frames:
         writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
     writer.release()
+    checked_video = ensure_h264_video(
+        input_path=video_path,
+        min_decoded_frames=len(frames),
+        replace_source=True,
+    )
+    video_path = checked_video.path
     policy_dim = len(actions[0]) if actions else None
     world_dim = getattr(world_model, "expected_action_dim", None)
     if world_dim is None:

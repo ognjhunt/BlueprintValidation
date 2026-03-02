@@ -240,6 +240,7 @@ class PolicyEvalStage(PipelineStage):
         if claim_mode:
             max_steps = min(max_steps, int(config.eval_policy.reliability.max_horizon_steps))
         min_rollout_frames = int(config.eval_policy.reliability.min_rollout_frames)
+        min_rollout_steps = int(config.eval_policy.reliability.min_rollout_steps)
         fail_on_short_rollout = bool(config.eval_policy.reliability.fail_on_short_rollout)
         if fail_on_short_rollout and (max_steps + 1) < min_rollout_frames:
             return StageResult(
@@ -250,6 +251,16 @@ class PolicyEvalStage(PipelineStage):
                     "Configured rollout horizon is too short for reliability checks: "
                     f"max_steps={max_steps} -> max_frames={max_steps + 1}, "
                     f"required_min_rollout_frames={min_rollout_frames}."
+                ),
+            )
+        if fail_on_short_rollout and max_steps < min_rollout_steps:
+            return StageResult(
+                stage_name=self.name,
+                status="failed",
+                elapsed_seconds=0,
+                detail=(
+                    "Configured rollout horizon is too short for reliability checks: "
+                    f"max_steps={max_steps}, required_min_rollout_steps={min_rollout_steps}."
                 ),
             )
 
@@ -276,6 +287,7 @@ class PolicyEvalStage(PipelineStage):
                 unresolved_manip_tasks_dropped=unresolved_manip_tasks_dropped,
                 num_rejected_task_start_assignments=num_rejected_task_start_assignments,
                 min_rollout_frames=min_rollout_frames,
+                min_rollout_steps=min_rollout_steps,
                 fail_on_short_rollout=fail_on_short_rollout,
             )
 
@@ -290,7 +302,9 @@ class PolicyEvalStage(PipelineStage):
         all_scores: List[Dict] = []
         scoring_failures: List[str] = []
         short_rollout_failures: List[str] = []
+        short_step_rollout_failures: List[str] = []
         min_observed_rollout_frames: Optional[int] = None
+        min_observed_rollout_steps: Optional[int] = None
         observed_action_dims: set[int] = set()
         observed_policy_dims: set[int] = set()
         observed_world_dims: set[int] = set()
@@ -404,6 +418,22 @@ class PolicyEvalStage(PipelineStage):
                     scoring_failures.append(msg)
                     logger.warning(msg)
                     continue
+                rollout_step_count = int(getattr(rollout, "num_steps", 0) or 0)
+                if (
+                    min_observed_rollout_steps is None
+                    or rollout_step_count < min_observed_rollout_steps
+                ):
+                    min_observed_rollout_steps = rollout_step_count
+                if fail_on_short_rollout and rollout_step_count < min_rollout_steps:
+                    msg = (
+                        "Rollout trajectory too short for reliable scoring: "
+                        f"{clip_name} has {rollout_step_count} steps "
+                        f"(required >= {min_rollout_steps})"
+                    )
+                    logger.warning(msg)
+                    scoring_failures.append(msg)
+                    short_step_rollout_failures.append(msg)
+                    continue
                 rollout_frame_count: Optional[int] = None
                 if fail_on_short_rollout:
                     rollout_frame_count = _video_frame_count(rollout.video_path)
@@ -454,7 +484,7 @@ class PolicyEvalStage(PipelineStage):
                         "spatial_score": score.spatial_score,
                         "reasoning": score.reasoning,
                         "video_path": str(rollout.video_path),
-                        "num_steps": rollout.num_steps,
+                        "num_steps": rollout_step_count,
                         "rollout_frame_count": rollout_frame_count,
                         "action_sequence": getattr(rollout, "action_sequence", []),
                         "start_clip_index": clip_index,
@@ -612,10 +642,15 @@ class PolicyEvalStage(PipelineStage):
             "scoring_failure_rate": round(float(scoring_failure_rate), 6),
             "num_valid_scored_rows": len(all_scores),
             "num_short_rollouts": len(short_rollout_failures),
+            "num_short_step_rollouts": len(short_step_rollout_failures),
             "min_rollout_frames_required": int(min_rollout_frames),
+            "min_rollout_steps_required": int(min_rollout_steps),
             "fail_on_short_rollout": bool(fail_on_short_rollout),
             "min_observed_rollout_frames": (
                 int(min_observed_rollout_frames) if min_observed_rollout_frames is not None else None
+            ),
+            "min_observed_rollout_steps": (
+                int(min_observed_rollout_steps) if min_observed_rollout_steps is not None else None
             ),
             "used_adapted_policy_checkpoint": adapted_policy_checkpoint is not None,
             "adapted_policy_checkpoint": (
@@ -663,6 +698,11 @@ class PolicyEvalStage(PipelineStage):
                 f"Short rollout guard failed for {len(short_rollout_failures)} rollouts "
                 f"(required_min_rollout_frames={min_rollout_frames})."
             )
+        if fail_on_short_rollout and short_step_rollout_failures:
+            detail_lines.append(
+                f"Short step-rollout guard failed for {len(short_step_rollout_failures)} rollouts "
+                f"(required_min_rollout_steps={min_rollout_steps})."
+            )
 
         return StageResult(
             stage_name=self.name,
@@ -675,6 +715,7 @@ class PolicyEvalStage(PipelineStage):
                     or bool(reliability_gate.get("passed", False))
                 )
                 and (not fail_on_short_rollout or not short_rollout_failures)
+                and (not fail_on_short_rollout or not short_step_rollout_failures)
                 else "failed"
             ),
             elapsed_seconds=0,
@@ -712,6 +753,7 @@ def _run_world_model_only_eval(
     unresolved_manip_tasks_dropped: int,
     num_rejected_task_start_assignments: int,
     min_rollout_frames: int,
+    min_rollout_steps: int,
     fail_on_short_rollout: bool,
 ) -> StageResult:
     rollout_driver = (config.eval_policy.rollout_driver or "scripted").strip().lower()
@@ -795,7 +837,9 @@ def _run_world_model_only_eval(
     all_scores: List[Dict] = []
     scoring_failures: List[str] = []
     short_rollout_failures: List[str] = []
+    short_step_rollout_failures: List[str] = []
     min_observed_rollout_frames: Optional[int] = None
+    min_observed_rollout_steps: Optional[int] = None
     observed_action_dims: set[int] = set()
     observed_world_dims: set[int] = set()
     baseline_world_dim: Optional[int] = None
@@ -882,6 +926,22 @@ def _run_world_model_only_eval(
                 scoring_failures.append(msg)
                 logger.warning(msg)
                 continue
+            rollout_step_count = int(getattr(rollout, "num_steps", 0) or 0)
+            if (
+                min_observed_rollout_steps is None
+                or rollout_step_count < min_observed_rollout_steps
+            ):
+                min_observed_rollout_steps = rollout_step_count
+            if fail_on_short_rollout and rollout_step_count < min_rollout_steps:
+                msg = (
+                    "Rollout trajectory too short for reliable scoring: "
+                    f"{clip_name} has {rollout_step_count} steps "
+                    f"(required >= {min_rollout_steps})"
+                )
+                logger.warning(msg)
+                scoring_failures.append(msg)
+                short_step_rollout_failures.append(msg)
+                continue
             rollout_frame_count: Optional[int] = None
             if fail_on_short_rollout:
                 rollout_frame_count = _video_frame_count(rollout.video_path)
@@ -948,7 +1008,7 @@ def _run_world_model_only_eval(
                     "spatial_score": score.spatial_score,
                     "reasoning": score.reasoning,
                     "video_path": str(rollout.video_path),
-                    "num_steps": rollout.num_steps,
+                    "num_steps": rollout_step_count,
                     "rollout_frame_count": rollout_frame_count,
                     "action_sequence": getattr(rollout, "action_sequence", []),
                     "start_clip_index": clip_index,
@@ -1095,10 +1155,15 @@ def _run_world_model_only_eval(
         "scoring_failure_rate": round(float(scoring_failure_rate), 6),
         "num_valid_scored_rows": len(all_scores),
         "num_short_rollouts": len(short_rollout_failures),
+        "num_short_step_rollouts": len(short_step_rollout_failures),
         "min_rollout_frames_required": int(min_rollout_frames),
+        "min_rollout_steps_required": int(min_rollout_steps),
         "fail_on_short_rollout": bool(fail_on_short_rollout),
         "min_observed_rollout_frames": (
             int(min_observed_rollout_frames) if min_observed_rollout_frames is not None else None
+        ),
+        "min_observed_rollout_steps": (
+            int(min_observed_rollout_steps) if min_observed_rollout_steps is not None else None
         ),
         "used_adapted_policy_checkpoint": False,
         "adapted_policy_checkpoint": None,
@@ -1149,6 +1214,11 @@ def _run_world_model_only_eval(
             f"Short rollout guard failed for {len(short_rollout_failures)} rollouts "
             f"(required_min_rollout_frames={min_rollout_frames})."
         )
+    if fail_on_short_rollout and short_step_rollout_failures:
+        detail_lines.append(
+            f"Short step-rollout guard failed for {len(short_step_rollout_failures)} rollouts "
+            f"(required_min_rollout_steps={min_rollout_steps})."
+        )
 
     return StageResult(
         stage_name="s4_policy_eval",
@@ -1161,6 +1231,7 @@ def _run_world_model_only_eval(
                 or bool(reliability_gate.get("passed", False))
             )
             and (not fail_on_short_rollout or not short_rollout_failures)
+            and (not fail_on_short_rollout or not short_step_rollout_failures)
             else "failed"
         ),
         elapsed_seconds=0,

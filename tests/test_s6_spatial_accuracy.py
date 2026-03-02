@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+from blueprint_validation.common import read_json
 from blueprint_validation.stages.s6_spatial_accuracy import SpatialAccuracyStage
 
 
@@ -35,6 +36,10 @@ def test_spatial_accuracy_fails_on_reasoning_conflict(sample_config, tmp_path, m
     assert result.status == "failed"
     assert result.metrics["num_reasoning_conflicts"] == 1
     assert result.metrics["num_valid_samples"] == 0
+    payload = read_json(work_dir / "spatial_accuracy" / "spatial_accuracy.json")
+    assert payload["scores"][0]["spatial_score"] == 0.0
+    assert payload["scores"][0]["visual_score"] == 0.0
+    assert payload["scores"][0]["task_score"] == 0.0
 
 
 def test_spatial_accuracy_enforces_min_valid_samples(sample_config, tmp_path, monkeypatch):

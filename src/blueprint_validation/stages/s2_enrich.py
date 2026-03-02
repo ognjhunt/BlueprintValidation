@@ -19,7 +19,7 @@ from ..evaluation.video_orientation import (
     transform_video_frame as _shared_transform_video_frame,
     transform_video_orientation as _shared_transform_video_orientation,
 )
-from ..video_io import open_mp4_writer
+from ..video_io import ensure_h264_video, open_mp4_writer
 from ..warmup import load_cached_variants
 from .manifest_resolution import ManifestCandidate, ManifestSource, resolve_manifest_source
 from .base import PipelineStage
@@ -29,6 +29,7 @@ logger = get_logger("stages.s2_enrich")
 # Leave empty by default. Opt in only after direct verification that a facility's
 # depth control is inverted relative to its own RGB/depth render inputs.
 _FORCE_ROTATE_180_DEPTH_FACILITIES: set[str] = set()
+_VISUAL_COLLAPSE_MIN_INTERFRAME_DELTA = 2.0
 
 
 @dataclass(frozen=True)
@@ -123,6 +124,34 @@ class EnrichStage(PipelineStage):
                 outputs={**source.to_metadata()},
                 metrics={**source.to_metadata()},
             )
+        selected_clip_target_distribution = _summarize_target_distribution(source_clips)
+        min_source_clips = max(0, int(config.enrich.min_source_clips))
+        if min_source_clips > 0 and len(source_clips) < min_source_clips:
+            return StageResult(
+                stage_name=self.name,
+                status="failed",
+                elapsed_seconds=0,
+                detail=(
+                    "Insufficient selected source clips for Stage 2 strict gate: "
+                    f"{len(source_clips)} < min_source_clips={min_source_clips}."
+                ),
+                outputs={
+                    **source.to_metadata(),
+                    "num_selected_source_clips": len(source_clips),
+                    "selected_source_clips": [str(c.get("clip_name", "")) for c in source_clips],
+                    "selected_source_target_distribution": selected_clip_target_distribution,
+                    **coverage_outputs,
+                },
+                metrics={
+                    **source.to_metadata(),
+                    "num_selected_source_clips": len(source_clips),
+                    "selected_source_target_distribution": selected_clip_target_distribution,
+                    "source_clip_selection_mode": clip_selection_meta.get("selection_mode"),
+                    "source_clip_selection_fallback": clip_selection_meta.get("fallback"),
+                    "min_source_clips": min_source_clips,
+                    **coverage_metrics,
+                },
+            )
 
         scene_index_payload = None
         scene_index_path: Path | None = None
@@ -174,7 +203,14 @@ class EnrichStage(PipelineStage):
         total_generated = 0
         total_failed = 0
         total_rejected_anchor_similarity = 0
+        total_rejected_blur = 0
+        total_rejected_green_cast = 0
+        total_rejected_low_motion = 0
+        total_visual_gate_evaluated = 0
         accepted_ssim_scores: List[float] = []
+        accepted_blur_scores: List[float] = []
+        accepted_green_ratios: List[float] = []
+        accepted_interframe_deltas: List[float] = []
         total_trimmed_inputs = 0
         total_orientation_fixed_clips = 0
         total_multi_view_context_clips = 0
@@ -182,6 +218,14 @@ class EnrichStage(PipelineStage):
         context_mode_counts = {"target_centered": 0, "fixed": 0, "deterministic": 0}
         selected_center_scores: List[float] = []
         ssim_gate_threshold = float(config.enrich.min_frame0_ssim)
+        min_valid_outputs = max(0, int(config.enrich.min_valid_outputs))
+        visual_collapse_gate_enabled = bool(config.enrich.enable_visual_collapse_gate)
+        max_blur_reject_rate = float(config.enrich.max_blur_reject_rate)
+        green_frame_ratio_max = float(config.enrich.green_frame_ratio_max)
+        blur_laplacian_min = float(config.render.stage1_coverage_blur_laplacian_min)
+        # Stage 2 hard guard: clip must be decodable and non-trivially temporal.
+        # World-model-specific minimum frame windows are enforced downstream where required.
+        min_required_input_frames = 2
 
         for clip_entry in source_clips:
             source_video_raw = str(clip_entry.get("video_path", "")).strip()
@@ -233,6 +277,7 @@ class EnrichStage(PipelineStage):
                 enrich_dir=enrich_dir,
                 preferred_context_frame_index=preferred_context_index,
                 max_input_frames=int(config.enrich.max_input_frames),
+                min_required_frames=min_required_input_frames,
             )
             if prepared is None:
                 logger.warning("Failed to prepare Cosmos inputs for clip: %s", clip_name)
@@ -322,6 +367,7 @@ class EnrichStage(PipelineStage):
                 config=config.enrich,
                 context_frame_index=context_frame_index_for_cosmos,
                 image_context_path=image_context_path,
+                min_output_frames=min_required_input_frames,
             )
 
             expected = len(variants)
@@ -353,6 +399,57 @@ class EnrichStage(PipelineStage):
                         continue
                 if frame0_ssim is not None:
                     accepted_ssim_scores.append(frame0_ssim)
+                visual_stats = _analyze_output_visual_quality(out.output_video_path)
+                blur_laplacian_mean = None
+                green_dominance_ratio = None
+                interframe_delta_mean = None
+                if visual_stats is not None:
+                    blur_laplacian_mean = visual_stats.get("blur_laplacian_mean")
+                    green_dominance_ratio = visual_stats.get("green_dominance_ratio")
+                    interframe_delta_mean = visual_stats.get("interframe_delta_mean")
+
+                if visual_collapse_gate_enabled:
+                    total_visual_gate_evaluated += 1
+                    reject_reasons: List[str] = []
+                    if blur_laplacian_mean is None or float(blur_laplacian_mean) < blur_laplacian_min:
+                        total_rejected_blur += 1
+                        reject_reasons.append("blur")
+                    if green_dominance_ratio is None or float(green_dominance_ratio) > green_frame_ratio_max:
+                        total_rejected_green_cast += 1
+                        reject_reasons.append("green_cast")
+                    if (
+                        interframe_delta_mean is None
+                        or float(interframe_delta_mean) < _VISUAL_COLLAPSE_MIN_INTERFRAME_DELTA
+                    ):
+                        total_rejected_low_motion += 1
+                        reject_reasons.append("low_motion")
+                    if reject_reasons:
+                        if config.enrich.delete_rejected_outputs:
+                            try:
+                                out.output_video_path.unlink(missing_ok=True)
+                            except OSError:
+                                logger.debug(
+                                    "Failed deleting visual-collapse rejected output: %s",
+                                    out.output_video_path,
+                                    exc_info=True,
+                                )
+                        logger.info(
+                            "Rejected enrich output by visual-collapse gate for %s/%s: "
+                            "reasons=%s blur_laplacian_mean=%s green_dominance_ratio=%s interframe_delta_mean=%s",
+                            clip_name,
+                            out.variant_name,
+                            ",".join(reject_reasons),
+                            "n/a"
+                            if blur_laplacian_mean is None
+                            else f"{float(blur_laplacian_mean):.4f}",
+                            "n/a"
+                            if green_dominance_ratio is None
+                            else f"{float(green_dominance_ratio):.4f}",
+                            "n/a"
+                            if interframe_delta_mean is None
+                            else f"{float(interframe_delta_mean):.4f}",
+                        )
+                        continue
 
                 manifest_entries.append(
                     {
@@ -377,8 +474,17 @@ class EnrichStage(PipelineStage):
                         "input_trim_num_frames": prepared.input_trim_num_frames,
                         "source_clip_selection_mode": clip_selection_meta.get("selection_mode"),
                         "frame0_ssim": frame0_ssim,
+                        "blur_laplacian_mean": blur_laplacian_mean,
+                        "green_dominance_ratio": green_dominance_ratio,
+                        "interframe_delta_mean": interframe_delta_mean,
                     }
                 )
+                if blur_laplacian_mean is not None:
+                    accepted_blur_scores.append(float(blur_laplacian_mean))
+                if green_dominance_ratio is not None:
+                    accepted_green_ratios.append(float(green_dominance_ratio))
+                if interframe_delta_mean is not None:
+                    accepted_interframe_deltas.append(float(interframe_delta_mean))
                 total_enriched += 1
                 accepted_for_clip += 1
 
@@ -386,6 +492,22 @@ class EnrichStage(PipelineStage):
                 total_failed += expected - accepted_for_clip
 
         selected_clip_names = [str(c.get("clip_name", "")) for c in source_clips]
+        blur_reject_rate = (
+            float(total_rejected_blur) / float(total_visual_gate_evaluated)
+            if total_visual_gate_evaluated > 0
+            else 0.0
+        )
+        stage_fail_reasons: List[str] = []
+        if min_valid_outputs > 0 and total_enriched < min_valid_outputs:
+            stage_fail_reasons.append(
+                "Insufficient valid enriched outputs: "
+                f"{total_enriched} < min_valid_outputs={min_valid_outputs}."
+            )
+        if visual_collapse_gate_enabled and blur_reject_rate > max_blur_reject_rate:
+            stage_fail_reasons.append(
+                "Visual-collapse blur reject rate exceeded cap: "
+                f"{blur_reject_rate:.3f} > max_blur_reject_rate={max_blur_reject_rate:.3f}."
+            )
 
         # Write enriched manifest
         manifest_path = enrich_dir / "enriched_manifest.json"
@@ -402,7 +524,13 @@ class EnrichStage(PipelineStage):
             "source_clip_selection_fallback": clip_selection_meta.get("fallback"),
             "source_clip_task": config.enrich.source_clip_task,
             "source_clip_name": config.enrich.source_clip_name,
+            "min_source_clips": min_source_clips,
+            "min_valid_outputs": min_valid_outputs,
+            "max_blur_reject_rate": max_blur_reject_rate,
+            "green_frame_ratio_max": green_frame_ratio_max,
+            "enable_visual_collapse_gate": visual_collapse_gate_enabled,
             "selected_source_clips": selected_clip_names,
+            "selected_source_target_distribution": selected_clip_target_distribution,
             "video_orientation_fix": facility.video_orientation_fix,
             "multi_view_context_enabled": bool(config.enrich.multi_view_context_enabled),
             "multi_view_context_offsets": [int(v) for v in config.enrich.multi_view_context_offsets],
@@ -414,7 +542,7 @@ class EnrichStage(PipelineStage):
 
         return StageResult(
             stage_name=self.name,
-            status="success" if total_enriched > 0 else "failed",
+            status="success" if total_enriched > 0 and not stage_fail_reasons else "failed",
             elapsed_seconds=0,
             outputs={
                 "enrich_dir": str(enrich_dir),
@@ -422,9 +550,13 @@ class EnrichStage(PipelineStage):
                 "num_enriched": total_enriched,
                 "num_generated": total_generated,
                 "num_rejected_anchor_similarity": total_rejected_anchor_similarity,
+                "num_rejected_blur": total_rejected_blur,
+                "num_rejected_green_cast": total_rejected_green_cast,
+                "num_rejected_low_motion": total_rejected_low_motion,
                 "num_trimmed_inputs": total_trimmed_inputs,
                 "num_selected_source_clips": len(source_clips),
                 "selected_source_clips": selected_clip_names,
+                "selected_source_target_distribution": selected_clip_target_distribution,
                 **coverage_outputs,
                 **source.to_metadata(),
             },
@@ -433,18 +565,44 @@ class EnrichStage(PipelineStage):
                 "num_generated": total_generated,
                 "num_failed": total_failed,
                 "num_rejected_anchor_similarity": total_rejected_anchor_similarity,
+                "num_rejected_blur": total_rejected_blur,
+                "num_rejected_green_cast": total_rejected_green_cast,
+                "num_rejected_low_motion": total_rejected_low_motion,
+                "blur_reject_rate": round(float(blur_reject_rate), 6),
+                "max_blur_reject_rate": max_blur_reject_rate,
+                "green_frame_ratio_max": green_frame_ratio_max,
+                "enable_visual_collapse_gate": visual_collapse_gate_enabled,
+                "min_source_clips": min_source_clips,
+                "min_valid_outputs": min_valid_outputs,
                 "num_trimmed_inputs": total_trimmed_inputs,
                 "num_orientation_fixed_clips": total_orientation_fixed_clips,
                 "num_multi_view_context_clips": total_multi_view_context_clips,
                 "num_scene_index_retrievals": total_scene_index_retrievals,
                 "num_selected_source_clips": len(source_clips),
+                "selected_source_target_distribution": selected_clip_target_distribution,
                 "source_clip_selection_mode": clip_selection_meta.get("selection_mode"),
                 "source_clip_selection_fallback": clip_selection_meta.get("fallback"),
                 "max_input_frames": int(config.enrich.max_input_frames),
+                "min_required_input_frames": int(min_required_input_frames),
                 "min_frame0_ssim_threshold": ssim_gate_threshold,
                 "mean_frame0_ssim": (
                     round(sum(accepted_ssim_scores) / len(accepted_ssim_scores), 4)
                     if accepted_ssim_scores
+                    else None
+                ),
+                "mean_blur_laplacian_mean": (
+                    round(sum(accepted_blur_scores) / len(accepted_blur_scores), 4)
+                    if accepted_blur_scores
+                    else None
+                ),
+                "mean_green_dominance_ratio": (
+                    round(sum(accepted_green_ratios) / len(accepted_green_ratios), 4)
+                    if accepted_green_ratios
+                    else None
+                ),
+                "mean_interframe_delta_mean": (
+                    round(sum(accepted_interframe_deltas) / len(accepted_interframe_deltas), 4)
+                    if accepted_interframe_deltas
                     else None
                 ),
                 "context_frame_mode": config.enrich.context_frame_mode,
@@ -464,6 +622,7 @@ class EnrichStage(PipelineStage):
                 **coverage_metrics,
                 **source.to_metadata(),
             },
+            detail=" ".join(stage_fail_reasons),
         )
 
 
@@ -564,10 +723,14 @@ def _select_source_clips(
     if not clips:
         return [], {"selection_mode": "all", "fallback": None}
 
-    max_source_clips = int(config.enrich.max_source_clips)
     requested_mode = str(config.enrich.source_clip_selection_mode or "all").strip().lower()
-    if max_source_clips <= 0:
-        return clips, {"selection_mode": "all", "fallback": None}
+    max_source_clips = int(config.enrich.max_source_clips)
+    selection_limit = max_source_clips if max_source_clips > 0 else len(clips)
+    requested_rollouts = max(
+        1,
+        selection_limit,
+        max(0, int(config.enrich.min_source_clips)),
+    )
 
     fallback_reason: str | None = None
     selected: List[dict] = []
@@ -582,7 +745,7 @@ def _select_source_clips(
             try:
                 assignments = build_task_start_assignments(
                     tasks=[source_task],
-                    num_rollouts=max_source_clips,
+                    num_rollouts=requested_rollouts,
                     render_manifest={"clips": clips},
                     task_hints_path=facility.task_hints_path,
                 )
@@ -607,6 +770,11 @@ def _select_source_clips(
             fallback_reason = "selection_failed"
         if fallback_reason is not None:
             selected = _fallback_task_targeted_clip_order(clips)
+        selected = _rebalance_task_targeted_selection(
+            selected=selected,
+            all_clips=clips,
+            limit=selection_limit,
+        )
     elif requested_mode == "explicit":
         explicit_name = str(config.enrich.source_clip_name or "").strip()
         if explicit_name:
@@ -631,9 +799,13 @@ def _select_source_clips(
         deduped.append(clip)
         seen.add(key)
 
-    return deduped[: max(1, max_source_clips)], {
+    selected_limited = deduped[: max(1, selection_limit)]
+    target_distribution = _summarize_target_distribution(selected_limited)
+    return selected_limited, {
         "selection_mode": requested_mode,
         "fallback": fallback_reason,
+        "target_distribution": target_distribution,
+        "num_unique_targets": len(target_distribution),
     }
 
 
@@ -647,6 +819,92 @@ def _fallback_task_targeted_clip_order(clips: List[dict]) -> List[dict]:
         else:
             non_manipulation.append(clip)
     return manipulation + non_manipulation
+
+
+def _rebalance_task_targeted_selection(
+    *,
+    selected: List[dict],
+    all_clips: List[dict],
+    limit: int,
+) -> List[dict]:
+    """Favor broad target coverage before selecting duplicate-target clips."""
+    limit = max(1, int(limit))
+    ordered_pool: List[dict] = []
+    seen_names: set[str] = set()
+    for clip in list(selected) + _fallback_task_targeted_clip_order(all_clips):
+        name = str(clip.get("clip_name", "")).strip()
+        if not name or name in seen_names:
+            continue
+        ordered_pool.append(clip)
+        seen_names.add(name)
+
+    if not ordered_pool:
+        return []
+
+    by_target: Dict[str, List[dict]] = {}
+    target_order: List[str] = []
+    for clip in ordered_pool:
+        key = _clip_target_key(clip)
+        if key not in by_target:
+            by_target[key] = []
+            target_order.append(key)
+        by_target[key].append(clip)
+
+    rebalanced: List[dict] = []
+    # First pass: one clip per unique target.
+    for key in target_order:
+        clips_for_target = by_target.get(key, [])
+        if not clips_for_target:
+            continue
+        rebalanced.append(clips_for_target.pop(0))
+        if len(rebalanced) >= limit:
+            return rebalanced
+    # Second pass: fill remaining slots from residual clips.
+    for key in target_order:
+        for clip in by_target.get(key, []):
+            rebalanced.append(clip)
+            if len(rebalanced) >= limit:
+                return rebalanced
+    return rebalanced[:limit]
+
+
+def _summarize_target_distribution(clips: List[dict]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for clip in clips:
+        key = _clip_target_key(clip)
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _clip_target_key(clip: dict) -> str:
+    path_context = clip.get("path_context") or {}
+    if isinstance(path_context, dict):
+        inst = str(path_context.get("target_instance_id", "")).strip()
+        if inst:
+            return f"instance:{inst}"
+        label = str(path_context.get("target_label", "")).strip()
+        if label:
+            return f"label:{label}"
+        point = path_context.get("approach_point")
+        if isinstance(point, list) and len(point) >= 3:
+            try:
+                xyz = [round(float(v), 3) for v in point[:3]]
+            except Exception:
+                xyz = None
+            if xyz is not None:
+                return f"approach:{xyz[0]:.3f},{xyz[1]:.3f},{xyz[2]:.3f}"
+
+    inst = str(clip.get("target_instance_id", "")).strip()
+    if inst:
+        return f"instance:{inst}"
+    label = str(clip.get("target_label", "")).strip()
+    if label:
+        return f"label:{label}"
+    path_type = str(clip.get("path_type", "")).strip().lower()
+    if path_type:
+        return f"path:{path_type}"
+    clip_name = str(clip.get("clip_name", "")).strip()
+    return clip_name or "unknown"
 
 
 def _resolve_oriented_inputs_for_clip(
@@ -831,8 +1089,28 @@ def _prepare_cosmos_input(
     enrich_dir: Path,
     preferred_context_frame_index: int | None,
     max_input_frames: int,
+    min_required_frames: int,
 ) -> PreparedCosmosInput | None:
     """Prepare Cosmos inputs with optional pre-trim for long clips."""
+    min_frames = max(1, int(min_required_frames))
+
+    def _enforce_h264(
+        *,
+        source_path: Path,
+        label: str,
+        replace_source: bool = False,
+    ):
+        return ensure_h264_video(
+            input_path=source_path,
+            min_decoded_frames=min_frames,
+            output_path=(
+                enrich_dir / "_h264_inputs" / f"{clip_name}_{label}_h264.mp4"
+                if not replace_source
+                else None
+            ),
+            replace_source=replace_source,
+        )
+
     total_frames = _probe_video_frame_count(video_path)
     if total_frames <= 0:
         return None
@@ -843,11 +1121,23 @@ def _prepare_cosmos_input(
     )
     max_frames = max(0, int(max_input_frames))
     if max_frames <= 0 or total_frames <= max_frames:
+        rgb_checked = _enforce_h264(
+            source_path=video_path,
+            label="rgb",
+            replace_source=True,
+        )
+        depth_checked: Path | None = None
+        if depth_path is not None and depth_path.exists():
+            depth_checked = _enforce_h264(
+                source_path=depth_path,
+                label="depth",
+                replace_source=True,
+            ).path
         return PreparedCosmosInput(
-            video_path=video_path,
-            depth_path=depth_path,
+            video_path=rgb_checked.path,
+            depth_path=depth_checked,
             preferred_context_frame_index=untrimmed_context_index,
-            input_total_frames=total_frames,
+            input_total_frames=rgb_checked.decoded_frames,
             input_trimmed=False,
             input_trim_start_frame=None,
             input_trim_num_frames=None,
@@ -882,15 +1172,28 @@ def _prepare_cosmos_input(
         if written_depth <= 0:
             trimmed_depth = None
 
-    context_in_trim = max(0, min(resolved_index - trim_start, written_video - 1))
+    rgb_checked = _enforce_h264(
+        source_path=trimmed_video,
+        label="rgb_trim",
+        replace_source=True,
+    )
+    depth_checked: Path | None = None
+    if trimmed_depth is not None and trimmed_depth.exists():
+        depth_checked = _enforce_h264(
+            source_path=trimmed_depth,
+            label="depth_trim",
+            replace_source=True,
+        ).path
+
+    context_in_trim = max(0, min(resolved_index - trim_start, rgb_checked.decoded_frames - 1))
     return PreparedCosmosInput(
-        video_path=trimmed_video,
-        depth_path=trimmed_depth,
+        video_path=rgb_checked.path,
+        depth_path=depth_checked,
         preferred_context_frame_index=context_in_trim,
-        input_total_frames=written_video,
+        input_total_frames=rgb_checked.decoded_frames,
         input_trimmed=True,
         input_trim_start_frame=trim_start,
-        input_trim_num_frames=written_video,
+        input_trim_num_frames=rgb_checked.decoded_frames,
     )
 
 
@@ -1383,6 +1686,63 @@ def _estimate_clip_blur_score(
     if not scores:
         return None
     return float(np.median(np.asarray(scores, dtype=np.float64)))
+
+
+def _analyze_output_visual_quality(
+    video_path: Path,
+    *,
+    max_frames: int = 24,
+) -> Dict[str, float] | None:
+    """Compute lightweight visual-collapse heuristics for a generated output clip."""
+    import cv2
+    import numpy as np
+
+    if not video_path.exists():
+        return None
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        return None
+
+    blur_scores: List[float] = []
+    green_ratios: List[float] = []
+    interframe_deltas: List[float] = []
+    prev_gray = None
+    decoded = 0
+    try:
+        while decoded < max(1, int(max_frames)):
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                break
+            decoded += 1
+            if frame.ndim == 2:
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            blur_scores.append(float(cv2.Laplacian(gray, cv2.CV_64F).var()))
+
+            b = frame[:, :, 0].astype(np.float32)
+            g = frame[:, :, 1].astype(np.float32)
+            r = frame[:, :, 2].astype(np.float32)
+            green_mask = (g > (r + 20.0)) & (g > (b + 20.0)) & (g > 60.0)
+            green_ratios.append(float(np.mean(green_mask)))
+
+            if prev_gray is not None:
+                delta = cv2.absdiff(gray, prev_gray)
+                interframe_deltas.append(float(np.mean(delta)))
+            prev_gray = gray
+    finally:
+        cap.release()
+
+    if not blur_scores:
+        return None
+    return {
+        "blur_laplacian_mean": float(np.mean(np.asarray(blur_scores, dtype=np.float64))),
+        "green_dominance_ratio": float(np.mean(np.asarray(green_ratios, dtype=np.float64))),
+        "interframe_delta_mean": (
+            float(np.mean(np.asarray(interframe_deltas, dtype=np.float64)))
+            if interframe_deltas
+            else 0.0
+        ),
+    }
 
 
 def _read_video_frame(

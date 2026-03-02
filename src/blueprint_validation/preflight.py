@@ -926,6 +926,7 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
 
     # External tools
     checks.append(check_external_tool("ffmpeg"))
+    checks.append(check_external_tool("ffprobe"))
 
     # Facility PLY files
     for fid, fconf in config.facilities.items():

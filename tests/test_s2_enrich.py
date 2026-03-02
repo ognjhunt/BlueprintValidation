@@ -63,6 +63,42 @@ def _write_textured_video(path: Path, frames: int = 8) -> None:
     writer.release()
 
 
+def _write_checkerboard_video(path: Path, frames: int = 8) -> None:
+    cv2 = pytest.importorskip("cv2")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    h, w = 48, 64
+    writer = cv2.VideoWriter(
+        str(path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        5,
+        (w, h),
+    )
+    yy, xx = np.indices((h, w))
+    base = ((xx + yy) % 2).astype(np.uint8) * 255
+    frame = np.stack([base, np.roll(base, 1, axis=1), np.roll(base, 2, axis=0)], axis=-1)
+    for _ in range(frames):
+        writer.write(frame)
+    writer.release()
+
+
+def _write_green_cast_video(path: Path, frames: int = 8) -> None:
+    cv2 = pytest.importorskip("cv2")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    h, w = 48, 64
+    writer = cv2.VideoWriter(
+        str(path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        5,
+        (w, h),
+    )
+    rng = np.random.default_rng(11)
+    for _ in range(frames):
+        frame = rng.integers(0, 120, size=(h, w, 3), dtype=np.uint8)
+        frame[:, :, 1] = np.clip(frame[:, :, 1].astype(np.int16) + 130, 0, 255).astype(np.uint8)
+        writer.write(frame)
+    writer.release()
+
+
 def _write_target_camera_path(
     path: Path,
     *,
@@ -1200,3 +1236,123 @@ def test_resolve_multi_view_context_indices_clamps_and_dedupes():
         offsets=[-9, -2, 0, 2, 2, 20],
     )
     assert indices == [0, 2, 4, 5]
+
+
+def test_s2_fails_when_selected_source_clips_below_min_source_clips(sample_config, tmp_path):
+    from blueprint_validation.common import write_json
+    from blueprint_validation.config import VariantSpec
+    from blueprint_validation.stages.s2_enrich import EnrichStage
+
+    work_dir = tmp_path
+    render_dir = work_dir / "renders"
+    render_dir.mkdir(parents=True, exist_ok=True)
+    source_video = render_dir / "clip_000_orbit.mp4"
+    source_depth = render_dir / "clip_000_orbit_depth.mp4"
+    _write_dummy_video(source_video, frames=6)
+    _write_dummy_video(source_depth, frames=6)
+    write_json(
+        {
+            "facility": "Test Facility",
+            "clips": [
+                {
+                    "clip_name": "clip_000_orbit",
+                    "path_type": "orbit",
+                    "video_path": str(source_video),
+                    "depth_video_path": str(source_depth),
+                }
+            ],
+        },
+        render_dir / "render_manifest.json",
+    )
+
+    sample_config.enrich.dynamic_variants = False
+    sample_config.enrich.variants = [VariantSpec(name="v1", prompt="test variant")]
+    sample_config.enrich.min_source_clips = 2
+
+    result = EnrichStage().run(sample_config, list(sample_config.facilities.values())[0], work_dir, {})
+    assert result.status == "failed"
+    assert result.metrics["num_selected_source_clips"] == 1
+    assert "selected_source_target_distribution" in result.metrics
+
+
+def test_s2_visual_collapse_gate_rejects_blur_green_and_low_motion(
+    sample_config,
+    tmp_path,
+    monkeypatch,
+):
+    from blueprint_validation.common import write_json
+    from blueprint_validation.config import VariantSpec
+    from blueprint_validation.stages.s2_enrich import EnrichStage
+
+    work_dir = tmp_path
+    render_dir = work_dir / "renders"
+    render_dir.mkdir(parents=True, exist_ok=True)
+    source_video = render_dir / "clip_000_orbit.mp4"
+    source_depth = render_dir / "clip_000_orbit_depth.mp4"
+    _write_textured_video(source_video, frames=8)
+    _write_textured_video(source_depth, frames=8)
+    write_json(
+        {
+            "facility": "Test Facility",
+            "clips": [
+                {
+                    "clip_name": "clip_000_orbit",
+                    "path_type": "orbit",
+                    "video_path": str(source_video),
+                    "depth_video_path": str(source_depth),
+                }
+            ],
+        },
+        render_dir / "render_manifest.json",
+    )
+
+    sample_config.enrich.dynamic_variants = False
+    sample_config.enrich.variants = [
+        VariantSpec(name="blur", prompt="blur"),
+        VariantSpec(name="green", prompt="green"),
+        VariantSpec(name="low_motion", prompt="low motion"),
+    ]
+    sample_config.enrich.min_frame0_ssim = 0.0
+    sample_config.enrich.enable_visual_collapse_gate = True
+    sample_config.enrich.min_valid_outputs = 1
+    sample_config.enrich.max_blur_reject_rate = 1.0
+    sample_config.enrich.green_frame_ratio_max = 0.10
+    sample_config.enrich.delete_rejected_outputs = False
+
+    def _fake_enrich_clip(**kwargs):
+        out_dir = kwargs["output_dir"]
+        clip_name = kwargs["clip_name"]
+        blur_path = out_dir / f"{clip_name}_blur.mp4"
+        green_path = out_dir / f"{clip_name}_green.mp4"
+        low_motion_path = out_dir / f"{clip_name}_low_motion.mp4"
+        _write_solid_video(blur_path, value=80, frames=8)
+        _write_green_cast_video(green_path, frames=8)
+        _write_checkerboard_video(low_motion_path, frames=8)
+        return [
+            SimpleNamespace(
+                variant_name="blur",
+                prompt="blur",
+                output_video_path=blur_path,
+                input_video_path=kwargs["video_path"],
+            ),
+            SimpleNamespace(
+                variant_name="green",
+                prompt="green",
+                output_video_path=green_path,
+                input_video_path=kwargs["video_path"],
+            ),
+            SimpleNamespace(
+                variant_name="low_motion",
+                prompt="low_motion",
+                output_video_path=low_motion_path,
+                input_video_path=kwargs["video_path"],
+            ),
+        ]
+
+    monkeypatch.setattr("blueprint_validation.stages.s2_enrich.enrich_clip", _fake_enrich_clip)
+
+    result = EnrichStage().run(sample_config, list(sample_config.facilities.values())[0], work_dir, {})
+    assert result.status == "failed"
+    assert result.metrics["num_rejected_blur"] >= 1
+    assert result.metrics["num_rejected_green_cast"] >= 1
+    assert result.metrics["num_rejected_low_motion"] >= 1

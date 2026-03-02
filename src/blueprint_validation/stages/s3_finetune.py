@@ -49,6 +49,7 @@ class FinetuneStage(PipelineStage):
             enriched_manifest_path=enriched_manifest,
             output_dir=finetune_dir,
             facility_name=facility.name,
+            min_decoded_frames=max(2, int(config.eval_policy.reliability.min_rollout_frames)),
         )
 
         # Run fine-tuning

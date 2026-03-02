@@ -170,6 +170,15 @@ def sample_config(tmp_path):
     cfg.eval_policy.headline_scope = "dual"
     # Keep legacy pipeline behavior in fixture-level tests unless a test opts in.
     cfg.action_boost.enabled = False
+    # Default fixture behavior stays permissive; strict gates are opted into per-test.
+    cfg.enrich.min_source_clips = 1
+    cfg.enrich.min_valid_outputs = 1
+    cfg.enrich.max_blur_reject_rate = 1.0
+    cfg.enrich.green_frame_ratio_max = 1.0
+    cfg.enrich.enable_visual_collapse_gate = False
+    cfg.eval_policy.reliability.min_rollout_steps = 1
+    cfg.wm_refresh_loop.max_hard_negative_fraction = 1.0
+    cfg.wm_refresh_loop.require_valid_video_decode = False
     return cfg
 
 

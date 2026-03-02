@@ -234,3 +234,160 @@ def test_wm_refresh_loop_fails_when_mix_is_degenerate(sample_config, tmp_path):
     result = stage.execute(sample_config, fac, work_dir, prev)
     assert result.status == "failed"
     assert "degenerate rollout mix" in result.detail.lower()
+
+
+def test_wm_refresh_loop_filters_invalid_decode_rollouts(sample_config, tmp_path, monkeypatch):
+    sample_config.eval_policy.headline_scope = "wm_only"
+    sample_config.wm_refresh_loop.enabled = True
+    sample_config.wm_refresh_loop.source_condition = "adapted"
+    sample_config.wm_refresh_loop.require_valid_video_decode = True
+    fac = sample_config.facilities["test_facility"]
+    work_dir = tmp_path / "fac"
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    video = work_dir / "rollout.mp4"
+    video.write_bytes(b"00")
+    scores_path = work_dir / "policy_eval_scores.json"
+    write_json(
+        {
+            "scores": [
+                {
+                    "condition": "adapted",
+                    "task": "pick object",
+                    "rollout_index": 0,
+                    "video_path": str(video),
+                    "task_score": 8.0,
+                    "is_manipulation_task": False,
+                }
+            ]
+        },
+        scores_path,
+    )
+    report_path = work_dir / "policy_eval_report.json"
+    write_json({"absolute_point_differential": 0.0}, report_path)
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s3d_wm_refresh_loop.decode_video_frame_count",
+        lambda *_args, **_kwargs: 2,
+    )
+
+    prev = {
+        "s4_policy_eval": StageResult(
+            stage_name="s4_policy_eval",
+            status="success",
+            elapsed_seconds=0.0,
+            outputs={"scores_path": str(scores_path), "report_path": str(report_path)},
+        )
+    }
+    result = WorldModelRefreshLoopStage().execute(sample_config, fac, work_dir, prev)
+    assert result.status == "failed"
+    assert "Decoded 2 frames, expected 13" in result.detail
+    assert result.metrics["num_invalid_decode_rollouts"] == 1
+
+
+def test_wm_refresh_loop_enforces_hard_negative_fraction_cap(sample_config, tmp_path, monkeypatch):
+    sample_config.eval_policy.headline_scope = "wm_only"
+    sample_config.wm_refresh_loop.enabled = True
+    sample_config.wm_refresh_loop.source_condition = "adapted"
+    sample_config.wm_refresh_loop.require_valid_video_decode = False
+    sample_config.wm_refresh_loop.max_hard_negative_fraction = 0.5
+    sample_config.wm_refresh_loop.min_non_hard_rollouts = 1
+    fac = sample_config.facilities["test_facility"]
+    work_dir = tmp_path / "fac"
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    video = work_dir / "rollout.mp4"
+    video.write_bytes(b"00")
+    scores_path = work_dir / "policy_eval_scores.json"
+    write_json(
+        {
+            "scores": [
+                {
+                    "condition": "adapted",
+                    "task": "pick object",
+                    "rollout_index": 0,
+                    "video_path": str(video),
+                    "task_score": 8.0,
+                    "is_manipulation_task": False,
+                },
+                {
+                    "condition": "adapted",
+                    "task": "pick object",
+                    "rollout_index": 1,
+                    "video_path": str(video),
+                    "task_score": 0.0,
+                    "is_manipulation_task": True,
+                    "grasp_acquired": False,
+                    "lifted_clear": False,
+                    "placed_in_target": False,
+                },
+                {
+                    "condition": "adapted",
+                    "task": "pick object",
+                    "rollout_index": 2,
+                    "video_path": str(video),
+                    "task_score": 0.0,
+                    "is_manipulation_task": True,
+                    "grasp_acquired": False,
+                    "lifted_clear": False,
+                    "placed_in_target": False,
+                },
+                {
+                    "condition": "adapted",
+                    "task": "pick object",
+                    "rollout_index": 3,
+                    "video_path": str(video),
+                    "task_score": 0.0,
+                    "is_manipulation_task": True,
+                    "grasp_acquired": False,
+                    "lifted_clear": False,
+                    "placed_in_target": False,
+                },
+            ]
+        },
+        scores_path,
+    )
+    report_path = work_dir / "policy_eval_report.json"
+    write_json({"absolute_point_differential": 0.0}, report_path)
+
+    current_ckpt = work_dir / "finetune" / "adapted_checkpoint"
+    current_ckpt.mkdir(parents=True, exist_ok=True)
+    next_ckpt = work_dir / "wm_refresh_loop" / "iter_00" / "next_ckpt"
+    next_ckpt.mkdir(parents=True, exist_ok=True)
+
+    def _fake_refresh(**kwargs):
+        # Cap of 0.5 with one positive rollout allows at most one hard negative.
+        assert len(kwargs["hard_negative_rows"]) <= 1
+        manifest = kwargs["output_dir"] / "refresh_manifest.json"
+        write_json({"clips": []}, manifest)
+        return {
+            "status": "success",
+            "adapted_checkpoint_path": str(next_ckpt),
+            "refresh_manifest_path": str(manifest),
+            "mix_metrics": {"selected_total": 2, "selected_hard_negative": 1},
+        }
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s3d_wm_refresh_loop.refresh_world_model_from_bucketed_rollouts",
+        _fake_refresh,
+    )
+
+    prev = {
+        "s4_policy_eval": StageResult(
+            stage_name="s4_policy_eval",
+            status="success",
+            elapsed_seconds=0.0,
+            outputs={"scores_path": str(scores_path), "report_path": str(report_path)},
+        ),
+        "s3_finetune": StageResult(
+            stage_name="s3_finetune",
+            status="success",
+            elapsed_seconds=0.0,
+            outputs={"adapted_checkpoint_path": str(current_ckpt)},
+        ),
+    }
+    result = WorldModelRefreshLoopStage().execute(sample_config, fac, work_dir, prev)
+    assert result.status == "success"
+    assert result.metrics["degenerate_mix_detected"] is True
+    assert result.metrics["num_hard_negative_rollouts"] <= 1
+    assert result.metrics["max_hard_negative_fraction"] == 0.5

@@ -12,7 +12,7 @@ from importlib import import_module
 import numpy as np
 
 from ..common import get_logger
-from ..video_io import open_mp4_writer
+from ..video_io import ensure_h264_video, open_mp4_writer
 
 logger = get_logger("evaluation.openvla_runner")
 
@@ -682,6 +682,12 @@ def run_rollout(
         for frame in frames:
             writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
         writer.release()
+        checked_video = ensure_h264_video(
+            input_path=video_path,
+            min_decoded_frames=len(frames),
+            replace_source=True,
+        )
+        video_path = checked_video.path
 
     return RolloutResult(
         task_prompt=task_prompt,

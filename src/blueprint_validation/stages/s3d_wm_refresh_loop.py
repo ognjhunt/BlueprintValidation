@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import math
 from pathlib import Path
 import shutil
 from typing import Dict, List, Optional
@@ -15,6 +16,7 @@ from ..training.rollout_curriculum import (
     bucket_rollout,
     bucket_rollouts_by_quantile,
 )
+from ..video_io import decode_video_frame_count
 from .base import PipelineStage
 
 logger = get_logger("stages.s3d_wm_refresh_loop")
@@ -83,7 +85,38 @@ class WorldModelRefreshLoopStage(PipelineStage):
             for row in source_scores
             if str(row.get("video_path", "")).strip() and Path(str(row.get("video_path"))).exists()
         ]
+        expected_decode_frames = max(2, int(config.eval_policy.reliability.min_rollout_frames))
+        invalid_decode_rows: List[Dict] = []
+        if bool(cfg.require_valid_video_decode):
+            valid_rows: List[Dict] = []
+            for row in source_scores:
+                video_path = Path(str(row.get("video_path", "")).strip())
+                decoded = decode_video_frame_count(video_path)
+                if decoded < expected_decode_frames:
+                    invalid_entry = dict(row)
+                    invalid_entry["decoded_frames"] = int(decoded)
+                    invalid_entry["required_frames"] = int(expected_decode_frames)
+                    invalid_decode_rows.append(invalid_entry)
+                    logger.warning(
+                        "Decoded %d frames, expected %d for rollout video: %s",
+                        decoded,
+                        expected_decode_frames,
+                        video_path,
+                    )
+                    continue
+                valid_entry = dict(row)
+                valid_entry["decoded_frames"] = int(decoded)
+                valid_rows.append(valid_entry)
+            source_scores = valid_rows
         if not source_scores:
+            decode_detail = ""
+            if invalid_decode_rows:
+                sample = invalid_decode_rows[0]
+                decode_detail = (
+                    " "
+                    f"Decoded {int(sample.get('decoded_frames', 0))} frames, expected "
+                    f"{int(sample.get('required_frames', expected_decode_frames))}."
+                )
             return StageResult(
                 stage_name=self.name,
                 status="failed",
@@ -91,7 +124,16 @@ class WorldModelRefreshLoopStage(PipelineStage):
                 detail=(
                     f"No rollout rows available for source_condition='{source_condition}' "
                     "with existing video paths."
+                    f"{decode_detail}"
                 ),
+                metrics={
+                    "source_condition": source_condition,
+                    "num_source_rollouts": 0,
+                    "num_invalid_decode_rollouts": len(invalid_decode_rows),
+                    "expected_decode_frames": int(expected_decode_frames),
+                    "require_valid_video_decode": bool(cfg.require_valid_video_decode),
+                    "degenerate_mix_detected": False,
+                },
             )
 
         thresholds = RolloutBucketThresholds(
@@ -146,6 +188,35 @@ class WorldModelRefreshLoopStage(PipelineStage):
             "near_miss": len(near_miss),
             "hard_negative": len(hard_negative),
         }
+        degenerate_mix_detected = False
+        max_hard_negative_fraction = float(cfg.max_hard_negative_fraction)
+        total_bucketed = len(selected_success) + len(near_miss) + len(hard_negative)
+        observed_hard_negative_fraction = (
+            float(len(hard_negative)) / float(total_bucketed) if total_bucketed > 0 else 0.0
+        )
+        if (
+            total_bucketed > 0
+            and observed_hard_negative_fraction > max_hard_negative_fraction
+        ):
+            degenerate_mix_detected = True
+            if max_hard_negative_fraction < 1.0:
+                positive_count = len(selected_success) + len(near_miss)
+                denom = max(1e-9, 1.0 - max_hard_negative_fraction)
+                allowed_hard = int(
+                    math.floor((max_hard_negative_fraction * float(positive_count)) / denom)
+                )
+                allowed_hard = max(0, allowed_hard)
+                if len(hard_negative) > allowed_hard:
+                    hard_negative = list(hard_negative[:allowed_hard])
+            total_bucketed = len(selected_success) + len(near_miss) + len(hard_negative)
+            observed_hard_negative_fraction = (
+                float(len(hard_negative)) / float(total_bucketed) if total_bucketed > 0 else 0.0
+            )
+            post_bucket_counts = {
+                "success": len(selected_success),
+                "near_miss": len(near_miss),
+                "hard_negative": len(hard_negative),
+            }
 
         if not (selected_success or near_miss or hard_negative):
             return StageResult(
@@ -153,6 +224,24 @@ class WorldModelRefreshLoopStage(PipelineStage):
                 status="failed",
                 elapsed_seconds=0,
                 detail="No rollouts available after bucketing into success/near_miss/hard_negative.",
+                metrics={
+                    "source_condition": source_condition,
+                    "num_source_rollouts": len(source_scores),
+                    "num_success_rollouts": len(selected_success),
+                    "num_near_miss_rollouts": len(near_miss),
+                    "num_hard_negative_rollouts": len(hard_negative),
+                    "bucketing_strategy": bucketing_strategy,
+                    "threshold_bucket_counts": threshold_bucket_counts,
+                    "post_bucket_counts": post_bucket_counts,
+                    "fallback_quantiles": fallback_quantiles,
+                    "min_non_hard_rollouts": int(cfg.min_non_hard_rollouts),
+                    "max_hard_negative_fraction": max_hard_negative_fraction,
+                    "observed_hard_negative_fraction": observed_hard_negative_fraction,
+                    "degenerate_mix_detected": degenerate_mix_detected,
+                    "num_invalid_decode_rollouts": len(invalid_decode_rows),
+                    "expected_decode_frames": int(expected_decode_frames),
+                    "require_valid_video_decode": bool(cfg.require_valid_video_decode),
+                },
             )
         num_positive_rollouts = len(selected_success) + len(near_miss)
         if bool(cfg.fail_on_degenerate_mix) and num_positive_rollouts < int(cfg.min_non_hard_rollouts):
@@ -178,6 +267,44 @@ class WorldModelRefreshLoopStage(PipelineStage):
                     "post_bucket_counts": post_bucket_counts,
                     "fallback_quantiles": fallback_quantiles,
                     "min_non_hard_rollouts": int(cfg.min_non_hard_rollouts),
+                    "max_hard_negative_fraction": max_hard_negative_fraction,
+                    "observed_hard_negative_fraction": observed_hard_negative_fraction,
+                    "degenerate_mix_detected": degenerate_mix_detected,
+                    "num_invalid_decode_rollouts": len(invalid_decode_rows),
+                    "expected_decode_frames": int(expected_decode_frames),
+                    "require_valid_video_decode": bool(cfg.require_valid_video_decode),
+                },
+            )
+        if (
+            bool(cfg.fail_on_degenerate_mix)
+            and observed_hard_negative_fraction > max_hard_negative_fraction
+        ):
+            return StageResult(
+                stage_name=self.name,
+                status="failed",
+                elapsed_seconds=0,
+                detail=(
+                    "WM refresh blocked: hard-negative fraction remains above cap "
+                    f"after backfill attempts ({observed_hard_negative_fraction:.3f} > "
+                    f"max_hard_negative_fraction={max_hard_negative_fraction:.3f})."
+                ),
+                metrics={
+                    "source_condition": source_condition,
+                    "num_source_rollouts": len(source_scores),
+                    "num_success_rollouts": len(selected_success),
+                    "num_near_miss_rollouts": len(near_miss),
+                    "num_hard_negative_rollouts": len(hard_negative),
+                    "bucketing_strategy": bucketing_strategy,
+                    "threshold_bucket_counts": threshold_bucket_counts,
+                    "post_bucket_counts": post_bucket_counts,
+                    "fallback_quantiles": fallback_quantiles,
+                    "min_non_hard_rollouts": int(cfg.min_non_hard_rollouts),
+                    "max_hard_negative_fraction": max_hard_negative_fraction,
+                    "observed_hard_negative_fraction": observed_hard_negative_fraction,
+                    "degenerate_mix_detected": True,
+                    "num_invalid_decode_rollouts": len(invalid_decode_rows),
+                    "expected_decode_frames": int(expected_decode_frames),
+                    "require_valid_video_decode": bool(cfg.require_valid_video_decode),
                 },
             )
 
@@ -201,6 +328,7 @@ class WorldModelRefreshLoopStage(PipelineStage):
         iterations = max(1, int(cfg.iterations))
         completed = 0
         latest_checkpoint = current_checkpoint
+        final_selected_hard_negative_fraction: float | None = None
         for iteration in range(iterations):
             iter_dir = stage_dir / f"iter_{iteration:02d}"
             iter_dir.mkdir(parents=True, exist_ok=True)
@@ -227,6 +355,63 @@ class WorldModelRefreshLoopStage(PipelineStage):
             refresh_result["input_checkpoint_path"] = str(latest_checkpoint)
             refresh_result["source_condition"] = source_condition
             iteration_summaries.append(refresh_result)
+            mix_metrics = refresh_result.get("mix_metrics", {}) or {}
+            selected_total = int(mix_metrics.get("selected_total", 0) or 0)
+            selected_hard_negative = int(mix_metrics.get("selected_hard_negative", 0) or 0)
+            selected_hard_negative_fraction = (
+                float(selected_hard_negative) / float(selected_total)
+                if selected_total > 0
+                else 0.0
+            )
+            refresh_result["selected_hard_negative_fraction"] = selected_hard_negative_fraction
+            final_selected_hard_negative_fraction = selected_hard_negative_fraction
+            if selected_total > 0 and selected_hard_negative_fraction > max_hard_negative_fraction:
+                degenerate_mix_detected = True
+                detail = (
+                    "WM refresh iteration "
+                    f"{iteration} produced degenerate mix: selected_hard_negative="
+                    f"{selected_hard_negative}/{selected_total} "
+                    f"({selected_hard_negative_fraction:.3f}) exceeds "
+                    f"max_hard_negative_fraction={max_hard_negative_fraction:.3f}."
+                )
+                if cfg.fail_if_refresh_fails:
+                    return StageResult(
+                        stage_name=self.name,
+                        status="failed",
+                        elapsed_seconds=0,
+                        outputs={
+                            "wm_refresh_loop_dir": str(stage_dir),
+                            "iteration_summaries_path": str(
+                                stage_dir / "wm_refresh_iteration_summaries.json"
+                            ),
+                            "refresh_manifest_paths": refresh_manifest_paths,
+                            "final_adapted_checkpoint_path": str(latest_checkpoint),
+                        },
+                        metrics={
+                            "iterations_requested": iterations,
+                            "iterations_completed": completed,
+                            "source_condition": source_condition,
+                            "num_source_rollouts": len(source_scores),
+                            "num_success_rollouts": len(selected_success),
+                            "num_near_miss_rollouts": len(near_miss),
+                            "num_hard_negative_rollouts": len(hard_negative),
+                            "bucketing_strategy": bucketing_strategy,
+                            "threshold_bucket_counts": threshold_bucket_counts,
+                            "post_bucket_counts": post_bucket_counts,
+                            "fallback_quantiles": fallback_quantiles,
+                            "min_non_hard_rollouts": int(cfg.min_non_hard_rollouts),
+                            "max_hard_negative_fraction": max_hard_negative_fraction,
+                            "observed_hard_negative_fraction": observed_hard_negative_fraction,
+                            "selected_hard_negative_fraction": selected_hard_negative_fraction,
+                            "degenerate_mix_detected": degenerate_mix_detected,
+                            "num_invalid_decode_rollouts": len(invalid_decode_rows),
+                            "expected_decode_frames": int(expected_decode_frames),
+                            "require_valid_video_decode": bool(cfg.require_valid_video_decode),
+                        },
+                        detail=detail,
+                    )
+                logger.warning(detail)
+                break
             refresh_manifest = str(refresh_result.get("refresh_manifest_path", ""))
             if refresh_manifest:
                 refresh_manifest_paths.append(refresh_manifest)
@@ -265,6 +450,13 @@ class WorldModelRefreshLoopStage(PipelineStage):
                         "post_bucket_counts": post_bucket_counts,
                         "fallback_quantiles": fallback_quantiles,
                         "min_non_hard_rollouts": int(cfg.min_non_hard_rollouts),
+                        "max_hard_negative_fraction": max_hard_negative_fraction,
+                        "observed_hard_negative_fraction": observed_hard_negative_fraction,
+                        "selected_hard_negative_fraction": final_selected_hard_negative_fraction,
+                        "degenerate_mix_detected": degenerate_mix_detected,
+                        "num_invalid_decode_rollouts": len(invalid_decode_rows),
+                        "expected_decode_frames": int(expected_decode_frames),
+                        "require_valid_video_decode": bool(cfg.require_valid_video_decode),
                     },
                     detail=detail,
                 )
@@ -307,6 +499,13 @@ class WorldModelRefreshLoopStage(PipelineStage):
                 "post_bucket_counts": post_bucket_counts,
                 "fallback_quantiles": fallback_quantiles,
                 "min_non_hard_rollouts": int(cfg.min_non_hard_rollouts),
+                "max_hard_negative_fraction": max_hard_negative_fraction,
+                "observed_hard_negative_fraction": observed_hard_negative_fraction,
+                "selected_hard_negative_fraction": final_selected_hard_negative_fraction,
+                "degenerate_mix_detected": degenerate_mix_detected,
+                "num_invalid_decode_rollouts": len(invalid_decode_rows),
+                "expected_decode_frames": int(expected_decode_frames),
+                "require_valid_video_decode": bool(cfg.require_valid_video_decode),
                 "absolute_point_differential_pre_refresh": prior_abs,
             },
             detail="",

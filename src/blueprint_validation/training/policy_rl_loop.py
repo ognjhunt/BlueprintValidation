@@ -582,6 +582,7 @@ def _refresh_world_model(
         enriched_manifest_path=manifest_path,
         output_dir=output_dir,
         facility_name=f"{facility.name}_rl_iter_{iteration:02d}",
+        min_decoded_frames=max(2, int(config.eval_policy.reliability.min_rollout_frames)),
     )
 
     ft_cfg = replace(

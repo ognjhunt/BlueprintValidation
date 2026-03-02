@@ -13,6 +13,7 @@ from typing import List, Optional
 
 from ..common import get_logger
 from ..config import EnrichConfig, VariantSpec
+from ..video_io import ensure_h264_video
 
 logger = get_logger("enrichment.cosmos_runner")
 
@@ -146,6 +147,7 @@ def run_cosmos_inference(
     cosmos_repo: Optional[Path] = None,
     disable_guardrails: bool = True,
     cosmos_output_quality: Optional[int] = None,
+    min_decoded_frames: int = 2,
 ) -> Path:
     """Run Cosmos Transfer 2.5 inference and return generated output video path."""
     del (
@@ -216,8 +218,19 @@ def run_cosmos_inference(
         )
 
     generated = _resolve_generated_video(expected_output_path)
-    logger.info("Cosmos inference complete: %s", generated)
-    return generated
+    checked = ensure_h264_video(
+        input_path=generated,
+        min_decoded_frames=max(1, int(min_decoded_frames)),
+        replace_source=True,
+    )
+    logger.info(
+        "Cosmos inference complete: %s (codec=%s decoded_frames=%d transcoded=%s)",
+        checked.path,
+        checked.codec_name,
+        checked.decoded_frames,
+        checked.transcoded,
+    )
+    return checked.path
 
 
 def enrich_clip(
@@ -229,6 +242,7 @@ def enrich_clip(
     config: EnrichConfig,
     context_frame_index: Optional[int] = None,
     image_context_path: Optional[Path] = None,
+    min_output_frames: int = 2,
 ) -> List[CosmosOutput]:
     """Enrich a single rendered clip with multiple visual variants."""
     outputs = []
@@ -254,6 +268,7 @@ def enrich_clip(
             cosmos_repo=config.cosmos_repo,
             disable_guardrails=config.disable_guardrails,
             cosmos_output_quality=config.cosmos_output_quality,
+            min_decoded_frames=max(1, int(min_output_frames)),
         )
         outputs.append(
             CosmosOutput(
