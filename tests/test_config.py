@@ -144,7 +144,7 @@ def test_config_defaults():
     assert config.policy_rl_loop.world_model_refresh_min_total_clips == 128
     assert config.policy_rl_loop.world_model_refresh_max_total_clips == 512
     assert config.policy_rl_loop.world_model_refresh_seed == 17
-    assert config.wm_refresh_loop.enabled is False
+    assert config.wm_refresh_loop.enabled is True
     assert config.wm_refresh_loop.iterations == 1
     assert config.wm_refresh_loop.source_condition == "adapted"
     assert config.wm_refresh_loop.fail_on_degenerate_mix is True

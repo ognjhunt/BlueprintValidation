@@ -481,7 +481,7 @@ class PolicyRLLoopConfig:
 
 @dataclass
 class WorldModelRefreshLoopConfig:
-    enabled: bool = False
+    enabled: bool = True
     iterations: int = 1
     source_condition: str = "adapted"  # baseline|adapted
     fail_if_refresh_fails: bool = True

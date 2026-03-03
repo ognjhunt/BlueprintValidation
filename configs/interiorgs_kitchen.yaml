@@ -204,6 +204,12 @@ policy_rl_loop:
   world_model_refresh_epochs: 3
   world_model_refresh_learning_rate: 5.0e-5
 
+# ---- Stage 3d: WM-only world-model refresh loop ----
+wm_refresh_loop:
+  enabled: true
+  iterations: 1
+  source_condition: adapted
+
 # ---- Policy adapter ----
 policy_adapter:
   name: openvla_oft

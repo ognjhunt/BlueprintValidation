@@ -14,6 +14,7 @@ PLY file (from BlueprintCapturePipeline)
   → Stage 2: Enrich with Cosmos Transfer 2.5 (5-10 variants per clip)
   → Stage 3: Fine-tune DreamDojo-2B on enriched video
   → Stage 4: Frozen policy rollouts (baseline vs adapted world model) + VLM scoring
+  → Stage 3d (default-on): WM-only near-miss/success world-model refresh loop
   → Stage 4a: Export adapted rollouts to RLDS TFRecords
   → Stage 3b: OFT-oriented policy fine-tuning on generated rollouts
   → Stage 3c: World-VLA-Loop-style iterative policy RL + world refresh
@@ -26,6 +27,8 @@ PLY file (from BlueprintCapturePipeline)
   → Stage 7: Cross-site discrimination (requires 2 facilities)
   → Final validation report (Markdown + JSON)
 ```
+
+Note: Stage 3d (`wm_refresh_loop.enabled`) is now enabled by default and runs in WM-only scope.
 
 ## Scene-Memory Mapping (Stage 1/2/3)
 
@@ -359,6 +362,7 @@ Backward compatibility:
   - keep geometry filters on (`robot_composite.min_visible_joint_ratio`, `min_consistency_score`)
 - For policy improvement claim:
   - `policy_finetune.enabled` and `rollout_dataset.enabled` are on by default in current templates
+  - `wm_refresh_loop.enabled` is on by default (executes only when `eval_policy.headline_scope=wm_only`)
   - `policy_rl_loop.enabled` and `policy_compare.enabled` stay off by default
   - enable `policy_compare.enabled` when you want paired policy A/B training/eval
   - run `export-rollouts`, `train-policy-pair`, `eval-policy-pair`

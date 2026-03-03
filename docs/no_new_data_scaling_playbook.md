@@ -26,6 +26,7 @@ Pipeline stages in scope:
 - Stage 1: coverage rendering from site splat
 - Stage 2: cosmos enrichment
 - Stage 3: world-model finetune
+- Stage 3d (default-on in WM-only scope): world-model refresh loop from success/near-miss rollouts
 - Stage 4+: policy finetune/eval loops
 
 Recently implemented fidelity + memory hooks (already in this repo) should primarily improve data quality and consistency (orientation, duration fidelity, quality, context hooks).

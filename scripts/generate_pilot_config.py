@@ -298,6 +298,11 @@ def _build_config(
             "world_model_refresh_epochs": 3,
             "world_model_refresh_learning_rate": 5e-5,
         },
+        "wm_refresh_loop": {
+            "enabled": True,
+            "iterations": 1,
+            "source_condition": "adapted",
+        },
         "policy_adapter": {
             "name": policy_adapter_name,
             "openvla": {
