@@ -23,6 +23,22 @@ def _pose():
     )
 
 
+def _pose_at(x: float, y: float, z: float):
+    from blueprint_validation.rendering.camera_paths import CameraPose
+
+    c2w = np.eye(4, dtype=np.float64)
+    c2w[:3, 3] = np.array([x, y, z], dtype=np.float64)
+    return CameraPose(
+        c2w=c2w,
+        fx=50.0,
+        fy=50.0,
+        cx=32.0,
+        cy=24.0,
+        width=64,
+        height=48,
+    )
+
+
 def test_active_probe_selects_candidate_that_passes_threshold(sample_config, tmp_path, monkeypatch):
     from blueprint_validation.config import CameraPathSpec
     from blueprint_validation.evaluation.vlm_judge import Stage1ProbeScore
@@ -247,6 +263,34 @@ def test_active_probe_rejects_target_presence_before_vlm(sample_config, tmp_path
     assert probe_meta["vlm_probe_passed"] is False
     rows = [json.loads(line) for line in scores_path.read_text().splitlines() if line.strip()]
     assert any(row.get("status") == "target_presence_reject" for row in rows)
+
+
+def test_target_los_uses_camera_facing_surface_endpoint():
+    from blueprint_validation.stages.s1_render import _compute_target_line_of_sight_ratio
+
+    class _FakeOccupancy:
+        def __init__(self):
+            self.endpoints = []
+
+        def is_free(self, point, min_clearance_m=0.0):
+            # Target center is "inside" occupied geometry; +X is free.
+            return float(np.asarray(point, dtype=np.float64)[0]) >= 0.30
+
+        def has_line_of_sight(self, start, end, **kwargs):
+            e = np.asarray(end, dtype=np.float64)
+            self.endpoints.append(e.copy())
+            return float(e[0]) >= 0.30
+
+    occ = _FakeOccupancy()
+    ratio = _compute_target_line_of_sight_ratio(
+        poses=[_pose_at(1.0, 0.0, 0.0)],
+        target_xyz=[0.0, 0.0, 0.0],
+        occupancy=occ,  # type: ignore[arg-type]
+        min_clearance_m=0.12,
+    )
+    assert ratio == 1.0
+    assert occ.endpoints, "Expected LOS to evaluate at least one endpoint"
+    assert float(occ.endpoints[0][0]) >= 0.30
 
 
 def test_active_probe_flags_monochrome_probe_media_invalid(sample_config, tmp_path, monkeypatch):

@@ -2029,10 +2029,16 @@ def _compute_target_line_of_sight_ratio(
             continue
         if start.size < 3 or not np.all(np.isfinite(start)):
             continue
+        endpoint = _resolve_target_los_endpoint(
+            start=start,
+            target=target,
+            occupancy=occupancy,
+            min_clearance_m=float(min_clearance_m),
+        )
         total += 1
         if occupancy.has_line_of_sight(
             start,
-            target,
+            endpoint,
             clearance_m=clearance,
             endpoint_margin_m=0.08,
         ):
@@ -2040,6 +2046,49 @@ def _compute_target_line_of_sight_ratio(
     if total <= 0:
         return 0.0
     return float(clear) / float(total)
+
+
+def _resolve_target_los_endpoint(
+    *,
+    start: np.ndarray,
+    target: np.ndarray,
+    occupancy: Optional[OccupancyGrid],
+    min_clearance_m: float,
+) -> np.ndarray:
+    """Choose a LOS endpoint near the visible target surface instead of center.
+
+    Target centers are frequently inside occupied voxels for OBB-derived metadata.
+    We back off from center toward the camera until we find a minimally free
+    endpoint; LOS is then evaluated against that endpoint.
+    """
+    target = np.asarray(target, dtype=np.float64).reshape(-1)[:3]
+    if occupancy is None:
+        return target
+    start = np.asarray(start, dtype=np.float64).reshape(-1)[:3]
+    if start.size < 3 or target.size < 3:
+        return target
+    if not (np.all(np.isfinite(start)) and np.all(np.isfinite(target))):
+        return target
+
+    ray = start - target
+    dist = float(np.linalg.norm(ray))
+    if dist <= 1e-6:
+        return target
+    direction = ray / dist
+
+    max_backoff = float(np.clip(max(0.25, dist * 0.45), 0.10, 0.95))
+    max_backoff = float(min(max_backoff, max(0.05, dist - 0.20)))
+    endpoint_clearance = float(max(0.005, min(0.03, float(min_clearance_m) * 0.20)))
+
+    for step in range(0, 13):
+        frac = float(step) / 12.0
+        backoff = max_backoff * frac
+        endpoint = target + direction * backoff
+        if occupancy.is_free(endpoint, min_clearance_m=endpoint_clearance):
+            return endpoint
+
+    # Best effort: return the furthest camera-facing endpoint tested.
+    return target + direction * max_backoff
 
 
 def _append_probe_score_row(path: Optional[Path], row: Dict[str, object]) -> None:
