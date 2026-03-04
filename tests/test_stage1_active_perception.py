@@ -100,3 +100,46 @@ def test_apply_issue_corrections_motion_reduction_changes_manipulation_arc():
     )
     assert float(updated.arc_radius_m) < float(spec.arc_radius_m)
     assert float(updated.arc_span_deg) < float(spec.arc_span_deg)
+
+
+def test_apply_issue_corrections_target_missing_uses_fallback_target_point():
+    spec = CameraPathSpec(
+        type="orbit",
+        radius_m=2.0,
+        approach_point=None,
+        target_label="bowl_101",
+    )
+    updated = apply_issue_tag_corrections(
+        spec=spec,
+        issue_tags=["target_missing"],
+        default_camera_height=1.0,
+        default_look_down_deg=20.0,
+        fallback_target_point=[0.2, -0.1, 0.6],
+    )
+    assert updated.type == "manipulation"
+    assert updated.approach_point == [0.2, -0.1, 0.6]
+
+
+def test_apply_issue_corrections_motion_reduction_escalates_by_loop_idx():
+    spec = CameraPathSpec(
+        type="manipulation",
+        approach_point=[0.0, 0.0, 0.4],
+        arc_radius_m=0.6,
+        arc_span_deg=180.0,
+    )
+    l0 = apply_issue_tag_corrections(
+        spec=spec,
+        issue_tags=["camera_motion_too_fast"],
+        default_camera_height=1.0,
+        default_look_down_deg=20.0,
+        loop_idx=0,
+    )
+    l2 = apply_issue_tag_corrections(
+        spec=spec,
+        issue_tags=["camera_motion_too_fast"],
+        default_camera_height=1.0,
+        default_look_down_deg=20.0,
+        loop_idx=2,
+    )
+    assert float(l2.arc_radius_m) < float(l0.arc_radius_m)
+    assert float(l2.arc_span_deg) < float(l0.arc_span_deg)

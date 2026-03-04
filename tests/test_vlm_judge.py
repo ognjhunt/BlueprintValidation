@@ -176,6 +176,66 @@ def test_build_uploaded_video_part_disables_when_fps_zero():
     assert out is uploaded
 
 
+def test_build_generate_config_disables_agentic_tools_for_video():
+    from blueprint_validation.evaluation.vlm_judge import _build_generate_config
+
+    class _FakeGenerateContentConfig(dict):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.kwargs = kwargs
+
+    class _FakeToolCodeExecution:
+        pass
+
+    class _FakeTool:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class _FakeTypes:
+        GenerateContentConfig = _FakeGenerateContentConfig
+        ToolCodeExecution = _FakeToolCodeExecution
+        Tool = _FakeTool
+
+    out = _build_generate_config(
+        _FakeTypes,
+        enable_agentic_vision=True,
+        temperature=0.1,
+        includes_video=True,
+    )
+    assert "tools" not in out.kwargs
+    assert out.kwargs["temperature"] == 0.1
+
+
+def test_build_generate_config_keeps_agentic_tools_without_video():
+    from blueprint_validation.evaluation.vlm_judge import _build_generate_config
+
+    class _FakeGenerateContentConfig(dict):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.kwargs = kwargs
+
+    class _FakeToolCodeExecution:
+        pass
+
+    class _FakeTool:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class _FakeTypes:
+        GenerateContentConfig = _FakeGenerateContentConfig
+        ToolCodeExecution = _FakeToolCodeExecution
+        Tool = _FakeTool
+
+    out = _build_generate_config(
+        _FakeTypes,
+        enable_agentic_vision=True,
+        temperature=0.1,
+        includes_video=False,
+    )
+    assert "tools" in out.kwargs
+    assert len(out.kwargs["tools"]) == 1
+
+
 def test_parse_stage1_probe_payload():
     from blueprint_validation.evaluation.vlm_judge import _parse_stage1_probe_payload
 

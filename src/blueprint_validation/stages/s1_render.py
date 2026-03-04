@@ -7,6 +7,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import shutil
 import subprocess
 from typing import Dict, List, Optional
 
@@ -110,6 +111,9 @@ class RenderStage(PipelineStage):
                         ),
                         overview_specs=max(0, int(config.render.task_scoped_overview_specs)),
                         fallback_specs=max(1, int(config.render.task_scoped_fallback_specs)),
+                        center_dedupe_dist_m=float(
+                            max(0.0, float(config.render.stage1_probe_dedupe_center_dist_m))
+                        ),
                     )
                     logger.info(
                         "Task-scoped scene-aware selection: %d/%d OBBs "
@@ -192,8 +196,30 @@ class RenderStage(PipelineStage):
                     },
                 )
 
+        if (
+            bool(config.render.stage1_active_perception_enabled)
+            and bool(config.render.stage1_active_perception_fail_closed)
+        ):
+            missing = [tool for tool in ("ffmpeg", "ffprobe") if shutil.which(tool) is None]
+            if missing:
+                return StageResult(
+                    stage_name=self.name,
+                    status="failed",
+                    elapsed_seconds=0,
+                    detail=(
+                        "Stage 1 strict active-perception requires ffmpeg/ffprobe at runtime. "
+                        f"Missing tools: {', '.join(missing)}."
+                    ),
+                    outputs={"missing_tools": missing},
+                )
+
         render_dir = work_dir / "renders"
         render_dir.mkdir(parents=True, exist_ok=True)
+        probe_scores_path = (
+            work_dir / "s1_probe_scores.jsonl"
+            if bool(config.render.stage1_active_perception_enabled)
+            else None
+        )
 
         # Load the Gaussian splat
         device = "cuda" if _has_cuda() else "cpu"
@@ -341,6 +367,7 @@ class RenderStage(PipelineStage):
                 scene_T if has_transform else None,
                 facility.description,
                 probe_orientation_fix=str(getattr(facility, "video_orientation_fix", "none")),
+                probe_scores_path=probe_scores_path,
             )
 
         quality_gate_passed = bool(
@@ -597,6 +624,7 @@ class RenderStage(PipelineStage):
         scene_T: Optional[np.ndarray] = None,
         facility_description: str = "",
         probe_orientation_fix: str = "none",
+        probe_scores_path: Optional[Path] = None,
     ) -> tuple[List[Dict], int, int, Dict[str, object]]:
         """Original path: generate camera paths from scratch, then render."""
         manifest_entries: List[Dict] = []
@@ -694,6 +722,7 @@ class RenderStage(PipelineStage):
                         scene_T=scene_T,
                         facility_description=facility_description,
                         probe_orientation_fix=probe_orientation_fix,
+                        probe_scores_path=probe_scores_path,
                     )
                     _update_vlm_probe_summary(
                         quality_summary=quality_summary,
@@ -980,6 +1009,7 @@ class RenderStage(PipelineStage):
         scene_T: Optional[np.ndarray],
         facility_description: str,
         probe_orientation_fix: str = "none",
+        probe_scores_path: Optional[Path] = None,
     ) -> tuple[CameraPathSpec, Dict[str, object]]:
         budget = resolve_probe_budget(
             candidate_budget=config.render.stage1_quality_candidate_budget,
@@ -996,10 +1026,15 @@ class RenderStage(PipelineStage):
             selected_fps=selected_fps,
             candidate_count=max(1, int(min(len(ranked_candidates), int(budget.top_k)))),
         )
+        seen_probe_fingerprints: List[Dict[str, object]] = []
+        fallback_target_point = [float(scene_center[0]), float(scene_center[1]), float(scene_center[2])]
 
         if ranked_candidates:
             ranked_specs = [row.spec for row in ranked_candidates[: max(1, int(budget.top_k))]]
-            geometric_scores = [float(getattr(row, "score", 0.0)) for row in ranked_candidates[: max(1, int(budget.top_k))]]
+            geometric_scores = [
+                float(getattr(row, "score", 0.0))
+                for row in ranked_candidates[: max(1, int(budget.top_k))]
+            ]
         else:
             ranked_specs = [initial_spec]
             geometric_scores = [0.0]
@@ -1024,148 +1059,432 @@ class RenderStage(PipelineStage):
             for cand_idx, candidate_spec in enumerate(candidate_specs):
                 probe_meta["vlm_probe_attempts"] = int(probe_meta["vlm_probe_attempts"]) + 1
                 probe_meta["vlm_probe_evaluated"] = True
-                (
-                    poses,
-                    _pre_count,
-                    _post_filter_count,
-                    _post_resample_count,
-                    corrected_count,
-                ) = self._build_render_poses(
-                    config=config,
-                    path_spec=candidate_spec,
-                    scene_center=scene_center,
-                    occupancy=occupancy,
-                    num_frames=int(budget.probe_frames),
-                    camera_height=camera_height,
-                    look_down_deg=look_down_deg,
-                    resolution=probe_resolution,
-                    start_offset=start_offset,
-                )
-                if not poses:
-                    row = {
-                        "spec": candidate_spec,
-                        "combined_score": -1e9,
-                        "passed": False,
-                        "issue_tags": ["target_missing"],
-                        "reasoning": "probe_pose_generation_failed",
-                    }
-                    if best_row is None or float(row["combined_score"]) > float(
-                        best_row["combined_score"]
-                    ):
-                        best_row = row
-                    continue
-
-                render_poses = poses
-                if scene_T is not None:
-                    from ..rendering.camera_paths import CameraPose
-
-                    render_poses = [
-                        CameraPose(
-                            c2w=transform_c2w(p.c2w, scene_T),
-                            fx=p.fx,
-                            fy=p.fy,
-                            cx=p.cx,
-                            cy=p.cy,
-                            width=p.width,
-                            height=p.height,
+                candidate_offset = np.asarray(start_offset, dtype=np.float64).copy()
+                candidate_current_spec = candidate_spec
+                dedupe_regen_attempts = 0
+                pose_regen_attempted = False
+                row: Dict[str, object] | None = None
+                while True:
+                    (
+                        poses,
+                        pre_count,
+                        post_filter_count,
+                        _post_resample_count,
+                        corrected_count,
+                    ) = self._build_render_poses(
+                        config=config,
+                        path_spec=candidate_current_spec,
+                        scene_center=scene_center,
+                        occupancy=occupancy,
+                        num_frames=int(budget.probe_frames),
+                        camera_height=camera_height,
+                        look_down_deg=look_down_deg,
+                        resolution=probe_resolution,
+                        start_offset=candidate_offset,
+                    )
+                    probe_clip_name = f"{clip_name}_probe_l{round_idx}_c{cand_idx:02d}"
+                    if not poses:
+                        row = {
+                            "spec": candidate_current_spec,
+                            "combined_score": -1e9,
+                            "passed": False,
+                            "issue_tags": ["target_missing"],
+                            "reasoning": "probe_pose_generation_failed",
+                        }
+                        _append_probe_score_row(
+                            probe_scores_path,
+                            {
+                                "clip_name": clip_name,
+                                "clip_id": int(clip_name.split("_")[1]) if "_" in clip_name else -1,
+                                "path_type": str(candidate_current_spec.type),
+                                "loop": int(round_idx),
+                                "candidate": int(cand_idx),
+                                "status": "pose_generation_failed",
+                            },
                         )
-                        for p in poses
-                    ]
-                probe_clip_name = f"{clip_name}_probe_l{round_idx}_c{cand_idx:02d}"
-                output = render_video(
-                    splat=splat,
-                    poses=render_poses,
-                    output_dir=render_dir,
-                    clip_name=probe_clip_name,
-                    fps=fps,
-                )
-                path_context = _path_context_from_spec(candidate_spec)
-                expected_focus_text = _build_expected_focus_text(
-                    path_type=str(candidate_spec.type),
-                    path_context=path_context,
-                )
-                probe_video_path = Path(str(output.video_path))
-                probe_oriented_path: Optional[Path] = None
-                probe_scoring_path: Optional[Path] = None
-                _orientation_mode = str(probe_orientation_fix or "none").strip().lower()
-                if _orientation_mode and _orientation_mode != "none":
-                    from ..evaluation.video_orientation import (
-                        normalize_video_orientation_fix,
-                        transform_video_orientation,
+                        break
+
+                    viable_ratio = float(post_filter_count) / max(1.0, float(int(budget.probe_frames)))
+                    min_viable_ratio = float(config.render.stage1_probe_min_viable_pose_ratio)
+                    if viable_ratio < min_viable_ratio:
+                        probe_meta["num_probe_viability_rejects"] = int(
+                            probe_meta.get("num_probe_viability_rejects", 0)
+                        ) + 1
+                        row = {
+                            "spec": candidate_current_spec,
+                            "combined_score": -1e9,
+                            "passed": False,
+                            "issue_tags": ["camera_motion_too_fast", "target_missing"],
+                            "reasoning": (
+                                f"probe_viability_reject ratio={viable_ratio:.3f} "
+                                f"threshold={min_viable_ratio:.3f}"
+                            ),
+                        }
+                        _append_probe_score_row(
+                            probe_scores_path,
+                            {
+                                "clip_name": clip_name,
+                                "clip_id": int(clip_name.split("_")[1]) if "_" in clip_name else -1,
+                                "path_type": str(candidate_current_spec.type),
+                                "loop": int(round_idx),
+                                "candidate": int(cand_idx),
+                                "status": "viability_reject",
+                                "viable_pose_ratio": round(viable_ratio, 6),
+                                "pre_filter_count": int(pre_count),
+                                "post_filter_count": int(post_filter_count),
+                            },
+                        )
+                        break
+
+                    min_unique_positions = int(config.render.stage1_probe_min_unique_positions)
+                    unique_positions = _count_unique_camera_positions(poses)
+                    if unique_positions < min_unique_positions:
+                        if not pose_regen_attempted:
+                            pose_regen_attempted = True
+                            candidate_current_spec = _apply_diversity_kick(
+                                candidate_current_spec, round_idx + 1
+                            )
+                            continue
+                        probe_meta["num_probe_viability_rejects"] = int(
+                            probe_meta.get("num_probe_viability_rejects", 0)
+                        ) + 1
+                        row = {
+                            "spec": candidate_current_spec,
+                            "combined_score": -1e9,
+                            "passed": False,
+                            "issue_tags": ["unstable_view", "target_missing"],
+                            "reasoning": (
+                                f"probe_degenerate_positions unique={unique_positions} "
+                                f"min_required={min_unique_positions}"
+                            ),
+                        }
+                        _append_probe_score_row(
+                            probe_scores_path,
+                            {
+                                "clip_name": clip_name,
+                                "clip_id": int(clip_name.split("_")[1]) if "_" in clip_name else -1,
+                                "path_type": str(candidate_current_spec.type),
+                                "loop": int(round_idx),
+                                "candidate": int(cand_idx),
+                                "status": "degenerate_positions",
+                                "unique_positions": int(unique_positions),
+                                "min_unique_positions": int(min_unique_positions),
+                            },
+                        )
+                        break
+
+                    render_poses = poses
+                    if scene_T is not None:
+                        from ..rendering.camera_paths import CameraPose
+
+                        render_poses = [
+                            CameraPose(
+                                c2w=transform_c2w(p.c2w, scene_T),
+                                fx=p.fx,
+                                fy=p.fy,
+                                cx=p.cx,
+                                cy=p.cy,
+                                width=p.width,
+                                height=p.height,
+                            )
+                            for p in poses
+                        ]
+                    output = render_video(
+                        splat=splat,
+                        poses=render_poses,
+                        output_dir=render_dir,
+                        clip_name=probe_clip_name,
+                        fps=fps,
                     )
-                    _norm_mode = normalize_video_orientation_fix(_orientation_mode)
-                    if _norm_mode != "none":
-                        probe_oriented_path = render_dir / f"{probe_clip_name}_oriented.mp4"
-                        try:
-                            transform_video_orientation(
-                                input_path=probe_video_path,
-                                output_path=probe_oriented_path,
-                                orientation_fix=_norm_mode,
-                                force_grayscale=False,
-                            )
-                            probe_video_path = probe_oriented_path
-                        except Exception as _orient_exc:
-                            logger.warning(
-                                "Probe orientation fix failed for %s (%s): %s — "
-                                "scoring unoriented video",
-                                probe_clip_name,
-                                _norm_mode,
-                                _orient_exc,
-                            )
-                            probe_oriented_path = None
-                try:
-                    probe_scoring_path = _ensure_probe_h264_for_scoring(
+                    path_context = _path_context_from_spec(candidate_current_spec)
+                    expected_focus_text = _build_expected_focus_text(
+                        path_type=str(candidate_current_spec.type),
+                        path_context=path_context,
+                    )
+                    probe_video_path = Path(str(output.video_path))
+                    probe_oriented_path: Optional[Path] = None
+                    probe_scoring_path: Optional[Path] = None
+
+                    _orientation_mode = str(probe_orientation_fix or "none").strip().lower()
+                    if _orientation_mode and _orientation_mode != "none":
+                        from ..evaluation.video_orientation import (
+                            normalize_video_orientation_fix,
+                            transform_video_orientation,
+                        )
+
+                        _norm_mode = normalize_video_orientation_fix(_orientation_mode)
+                        if _norm_mode != "none":
+                            probe_oriented_path = render_dir / f"{probe_clip_name}_oriented.mp4"
+                            try:
+                                transform_video_orientation(
+                                    input_path=probe_video_path,
+                                    output_path=probe_oriented_path,
+                                    orientation_fix=_norm_mode,
+                                    force_grayscale=False,
+                                )
+                                probe_video_path = probe_oriented_path
+                            except Exception as _orient_exc:
+                                logger.warning(
+                                    "Probe orientation fix failed for %s (%s): %s — "
+                                    "scoring unoriented video",
+                                    probe_clip_name,
+                                    _norm_mode,
+                                    _orient_exc,
+                                )
+                                probe_oriented_path = None
+
+                    dedupe_info = _detect_duplicate_clip(
                         video_path=probe_video_path,
-                        min_frames=max(1, int(budget.probe_frames)),
+                        seen_fingerprints=seen_probe_fingerprints,
+                        similarity_threshold=float(config.render.stage1_repeat_similarity_ssim_threshold),
                     )
-                    consensus = _score_stage1_probe_consensus(
-                        video_path=probe_scoring_path,
-                        expected_focus_text=expected_focus_text,
-                        config=config.eval_policy.vlm_judge,
-                        facility_description=facility_description,
-                        votes=max(1, int(config.render.stage1_probe_consensus_votes)),
-                        primary_model_only=bool(config.render.stage1_probe_primary_model_only),
+                    if bool(config.render.stage1_probe_dedupe_enabled) and bool(
+                        dedupe_info.get("is_duplicate", False)
+                    ):
+                        probe_meta["num_probe_duplicate_detected"] = int(
+                            probe_meta.get("num_probe_duplicate_detected", 0)
+                        ) + 1
+                        if dedupe_regen_attempts < int(
+                            config.render.stage1_probe_dedupe_max_regen_attempts
+                        ):
+                            dedupe_regen_attempts += 1
+                            probe_meta["num_probe_duplicate_regenerated"] = int(
+                                probe_meta.get("num_probe_duplicate_regenerated", 0)
+                            ) + 1
+                            jitter_base = float(
+                                max(
+                                    float(config.render.stage1_repeat_min_xy_jitter_m),
+                                    float(config.render.stage1_probe_dedupe_center_dist_m),
+                                )
+                            )
+                            candidate_offset = _offset_with_dedupe_jitter(
+                                offset=candidate_offset,
+                                attempt=dedupe_regen_attempts,
+                                min_jitter=jitter_base,
+                            )
+                            if str(candidate_current_spec.type).strip().lower() == "manipulation":
+                                span_scale = 0.85 if dedupe_regen_attempts >= 2 else 1.0
+                                candidate_current_spec = replace(
+                                    candidate_current_spec,
+                                    arc_phase_offset_deg=float(
+                                        candidate_current_spec.arc_phase_offset_deg
+                                    )
+                                    + float(27.0 * dedupe_regen_attempts),
+                                    arc_span_deg=float(
+                                        max(
+                                            30.0,
+                                            min(
+                                                220.0,
+                                                float(candidate_current_spec.arc_span_deg) * span_scale,
+                                            ),
+                                        )
+                                    ),
+                                )
+                            if not bool(config.render.stage1_keep_probe_videos):
+                                _cleanup_probe_outputs(output)
+                                if probe_oriented_path is not None:
+                                    try:
+                                        probe_oriented_path.unlink(missing_ok=True)
+                                    except Exception:
+                                        pass
+                            continue
+                        probe_meta["num_probe_duplicate_unresolved"] = int(
+                            probe_meta.get("num_probe_duplicate_unresolved", 0)
+                        ) + 1
+                        row = {
+                            "spec": candidate_current_spec,
+                            "combined_score": -1e9,
+                            "passed": False,
+                            "issue_tags": ["target_missing"],
+                            "reasoning": "probe_duplicate_unresolved",
+                        }
+                        _append_probe_score_row(
+                            probe_scores_path,
+                            {
+                                "clip_name": clip_name,
+                                "clip_id": int(clip_name.split("_")[1]) if "_" in clip_name else -1,
+                                "path_type": str(candidate_current_spec.type),
+                                "loop": int(round_idx),
+                                "candidate": int(cand_idx),
+                                "status": "duplicate_unresolved",
+                                "duplicate_reason": str(dedupe_info.get("reason", "")),
+                                "duplicate_similarity": dedupe_info.get("max_similarity"),
+                            },
+                        )
+                        if not bool(config.render.stage1_keep_probe_videos):
+                            _cleanup_probe_outputs(output)
+                            if probe_oriented_path is not None:
+                                try:
+                                    probe_oriented_path.unlink(missing_ok=True)
+                                except Exception:
+                                    pass
+                        break
+
+                    seen_probe_fingerprints.append(
+                        {
+                            "sha256": str(dedupe_info.get("sha256", "")),
+                            "samples": list(dedupe_info.get("samples", []) or []),
+                            "clip_name": probe_clip_name,
+                        }
                     )
-                except Exception as exc:
-                    consensus = {
-                        "score": None,
-                        "error": str(exc),
-                        "num_api_failures": 1,
-                        "num_parse_failures": 0,
-                        "votes_effective": 0,
-                        "score_spread": None,
-                        "active_model_used": str(config.eval_policy.vlm_judge.model),
-                    }
+                    try:
+                        validated_probe = _ensure_probe_h264_for_scoring(
+                            video_path=probe_video_path,
+                            min_frames=max(1, int(budget.probe_frames)),
+                        )
+                        probe_scoring_path = Path(validated_probe.path)
+                        probe_meta["probe_codec"] = str(validated_probe.codec_name)
+                        probe_meta["probe_decoded_frames"] = int(validated_probe.decoded_frames)
+                        probe_meta["probe_resolution"] = [
+                            int(validated_probe.width or 0),
+                            int(validated_probe.height or 0),
+                        ]
+                        probe_meta["num_probe_monochrome_warnings"] = int(
+                            probe_meta.get("num_probe_monochrome_warnings", 0)
+                        ) + int(
+                            1 if bool(getattr(validated_probe, "content_monochrome_warning", False)) else 0
+                        )
+                        consensus = _score_stage1_probe_consensus(
+                            video_path=probe_scoring_path,
+                            expected_focus_text=expected_focus_text,
+                            config=config.eval_policy.vlm_judge,
+                            facility_description=facility_description,
+                            votes=max(1, int(config.render.stage1_probe_consensus_votes)),
+                            primary_model_only=bool(config.render.stage1_probe_primary_model_only),
+                            tiebreak_extra_votes=max(
+                                0, int(config.render.stage1_probe_tiebreak_extra_votes)
+                            ),
+                            tiebreak_spread_threshold=float(
+                                config.render.stage1_probe_tiebreak_spread_threshold
+                            ),
+                        )
+                    except Exception as exc:
+                        consensus = {
+                            "score": None,
+                            "error": str(exc),
+                            "num_api_failures": 1,
+                            "num_parse_failures": 0,
+                            "votes_effective": 0,
+                            "score_spread": None,
+                            "active_model_used": str(config.eval_policy.vlm_judge.model),
+                            "vote_rows": [],
+                        }
 
-                probe_meta["num_vlm_probe_parse_failures"] = int(
-                    probe_meta["num_vlm_probe_parse_failures"]
-                ) + int(consensus.get("num_parse_failures", 0))
-                probe_meta["num_vlm_probe_api_failures"] = int(
-                    probe_meta["num_vlm_probe_api_failures"]
-                ) + int(consensus.get("num_api_failures", 0))
-                probe_meta["active_model_used"] = str(
-                    consensus.get("active_model_used") or config.eval_policy.vlm_judge.model
-                )
-                probe_meta["vlm_probe_consensus_votes_configured"] = int(
-                    max(1, int(config.render.stage1_probe_consensus_votes))
-                )
-                probe_meta["vlm_probe_consensus_votes_effective"] = int(
-                    max(0, int(consensus.get("votes_effective", 0)))
-                )
-                probe_meta["vlm_probe_score_spread"] = consensus.get("score_spread")
-                spread = consensus.get("score_spread")
-                if spread is not None and float(spread) >= float(
-                    config.render.stage1_probe_consensus_high_variance_delta
-                ):
-                    probe_meta["num_vlm_probe_high_variance"] = int(
-                        probe_meta.get("num_vlm_probe_high_variance", 0)
-                    ) + 1
+                    probe_meta["num_vlm_probe_parse_failures"] = int(
+                        probe_meta["num_vlm_probe_parse_failures"]
+                    ) + int(consensus.get("num_parse_failures", 0))
+                    probe_meta["num_vlm_probe_api_failures"] = int(
+                        probe_meta["num_vlm_probe_api_failures"]
+                    ) + int(consensus.get("num_api_failures", 0))
+                    probe_meta["active_model_used"] = str(
+                        consensus.get("active_model_used") or config.eval_policy.vlm_judge.model
+                    )
+                    probe_meta["vlm_probe_consensus_votes_configured"] = int(
+                        max(1, int(config.render.stage1_probe_consensus_votes))
+                    )
+                    probe_meta["vlm_probe_consensus_votes_effective"] = int(
+                        max(0, int(consensus.get("votes_effective", 0)))
+                    )
+                    probe_meta["vlm_probe_score_spread"] = consensus.get("score_spread")
+                    spread = consensus.get("score_spread")
+                    if spread is not None and float(spread) >= float(
+                        config.render.stage1_probe_consensus_high_variance_delta
+                    ):
+                        probe_meta["num_vlm_probe_high_variance"] = int(
+                            probe_meta.get("num_vlm_probe_high_variance", 0)
+                        ) + 1
 
-                if consensus.get("score") is None:
-                    message = str(consensus.get("error", "probe_consensus_failed"))
-                    last_fail_reason = f"probe_scoring_failed: {message}"
-                    probe_meta["vlm_probe_fail_reason"] = last_fail_reason
-                    probe_meta["vlm_probe_passed"] = False
+                    if consensus.get("score") is None:
+                        row = {
+                            "spec": candidate_current_spec,
+                            "combined_score": -1e9,
+                            "passed": False,
+                            "issue_tags": ["target_missing"],
+                            "reasoning": str(consensus.get("error", "probe_consensus_failed")),
+                        }
+                        _append_probe_score_row(
+                            probe_scores_path,
+                            {
+                                "clip_name": clip_name,
+                                "clip_id": int(clip_name.split("_")[1]) if "_" in clip_name else -1,
+                                "path_type": str(candidate_current_spec.type),
+                                "loop": int(round_idx),
+                                "candidate": int(cand_idx),
+                                "status": "scoring_failed",
+                                "error": str(consensus.get("error", "probe_consensus_failed")),
+                                "score_spread": consensus.get("score_spread"),
+                                "votes_effective": int(consensus.get("votes_effective", 0)),
+                                "votes": list(consensus.get("vote_rows", []) or []),
+                                "probe_codec": probe_meta.get("probe_codec"),
+                                "probe_resolution": probe_meta.get("probe_resolution"),
+                                "probe_decoded_frames": probe_meta.get("probe_decoded_frames"),
+                            },
+                        )
+                    else:
+                        probe_score = consensus["score"]
+                        passes = probe_passes_thresholds(
+                            task_score=float(probe_score.task_score),
+                            visual_score=float(probe_score.visual_score),
+                            spatial_score=float(probe_score.spatial_score),
+                            min_task=float(config.render.stage1_vlm_min_task_score),
+                            min_visual=float(config.render.stage1_vlm_min_visual_score),
+                            min_spatial=float(config.render.stage1_vlm_min_spatial_score),
+                        )
+                        geom = candidate_geometric[min(cand_idx, len(candidate_geometric) - 1)]
+                        combined = combined_probe_score(
+                            geometric_score=float(geom),
+                            task_score=float(probe_score.task_score),
+                            visual_score=float(probe_score.visual_score),
+                            spatial_score=float(probe_score.spatial_score),
+                        )
+                        row = {
+                            "spec": candidate_current_spec,
+                            "combined_score": float(combined),
+                            "passed": bool(passes),
+                            "issue_tags": list(probe_score.issue_tags),
+                            "reasoning": str(probe_score.reasoning or ""),
+                        }
+                        logger.info(
+                            "probe_score clip=%s loop=%d cand=%d task=%.1f visual=%.1f spatial=%.1f "
+                            "spread=%s tags=%s",
+                            clip_name,
+                            round_idx,
+                            cand_idx,
+                            float(probe_score.task_score),
+                            float(probe_score.visual_score),
+                            float(probe_score.spatial_score),
+                            (
+                                "n/a"
+                                if consensus.get("score_spread") is None
+                                else f"{float(consensus.get('score_spread')):.3f}"
+                            ),
+                            list(probe_score.issue_tags),
+                        )
+                        _append_probe_score_row(
+                            probe_scores_path,
+                            {
+                                "clip_name": clip_name,
+                                "clip_id": int(clip_name.split("_")[1]) if "_" in clip_name else -1,
+                                "path_type": str(candidate_current_spec.type),
+                                "loop": int(round_idx),
+                                "candidate": int(cand_idx),
+                                "task_score": float(probe_score.task_score),
+                                "visual_score": float(probe_score.visual_score),
+                                "spatial_score": float(probe_score.spatial_score),
+                                "issue_tags": list(probe_score.issue_tags),
+                                "passed": bool(passes),
+                                "score_spread": consensus.get("score_spread"),
+                                "votes_effective": int(consensus.get("votes_effective", 0)),
+                                "votes": list(consensus.get("vote_rows", []) or []),
+                                "active_model_used": str(
+                                    consensus.get("active_model_used") or config.eval_policy.vlm_judge.model
+                                ),
+                                "probe_codec": probe_meta.get("probe_codec"),
+                                "probe_resolution": probe_meta.get("probe_resolution"),
+                                "probe_decoded_frames": probe_meta.get("probe_decoded_frames"),
+                            },
+                        )
+
                     probe_meta["vlm_probe_evaluated"] = True
                     if not bool(config.render.stage1_keep_probe_videos):
                         _cleanup_probe_outputs(output)
@@ -1179,55 +1498,19 @@ class RenderStage(PipelineStage):
                             probe_scoring_path.unlink(missing_ok=True)
                         except Exception:
                             pass
-                    return current_spec, probe_meta
-                probe_score = consensus["score"]
 
-                passes = probe_passes_thresholds(
-                    task_score=float(probe_score.task_score),
-                    visual_score=float(probe_score.visual_score),
-                    spatial_score=float(probe_score.spatial_score),
-                    min_task=float(config.render.stage1_vlm_min_task_score),
-                    min_visual=float(config.render.stage1_vlm_min_visual_score),
-                    min_spatial=float(config.render.stage1_vlm_min_spatial_score),
-                )
-                geom = candidate_geometric[min(cand_idx, len(candidate_geometric) - 1)]
-                combined = combined_probe_score(
-                    geometric_score=float(geom),
-                    task_score=float(probe_score.task_score),
-                    visual_score=float(probe_score.visual_score),
-                    spatial_score=float(probe_score.spatial_score),
-                )
-                row = {
-                    "spec": candidate_spec,
-                    "combined_score": float(combined),
-                    "passed": bool(passes),
-                    "issue_tags": list(probe_score.issue_tags),
-                    "reasoning": str(probe_score.reasoning or ""),
-                }
+                    if corrected_count > 0:
+                        logger.debug(
+                            "Probe clip %s had roll-corrected poses: %d",
+                            probe_clip_name,
+                            corrected_count,
+                        )
+                    break
+
+                if row is None:
+                    continue
                 if best_row is None or float(row["combined_score"]) > float(best_row["combined_score"]):
                     best_row = row
-
-                probe_meta["vlm_probe_evaluated"] = True
-                if not bool(config.render.stage1_keep_probe_videos):
-                    _cleanup_probe_outputs(output)
-                    if probe_oriented_path is not None:
-                        try:
-                            probe_oriented_path.unlink(missing_ok=True)
-                        except Exception:
-                            pass
-                if probe_scoring_path is not None and probe_scoring_path != probe_video_path:
-                    try:
-                        probe_scoring_path.unlink(missing_ok=True)
-                    except Exception:
-                        pass
-
-                # Track roll-correction side-effect for visibility.
-                if corrected_count > 0:
-                    logger.debug(
-                        "Probe clip %s had roll-corrected poses: %d",
-                        probe_clip_name,
-                        corrected_count,
-                    )
 
             if best_row is None:
                 last_fail_reason = "probe_no_candidate_results"
@@ -1243,12 +1526,23 @@ class RenderStage(PipelineStage):
                 break
 
             retries_used += 1
+            prev_spec = current_spec
             current_spec = apply_issue_tag_corrections(
                 spec=current_spec,
                 issue_tags=last_issue_tags,
                 default_camera_height=float(camera_height),
                 default_look_down_deg=float(look_down_deg),
+                loop_idx=int(round_idx + 1),
+                fallback_target_point=fallback_target_point,
             )
+            if _spec_is_effectively_unchanged(prev_spec, current_spec):
+                logger.info(
+                    "Probe loop round %d for %s: spec delta below epsilon after "
+                    "corrections — applying diversity kick",
+                    round_idx + 1,
+                    clip_name,
+                )
+                current_spec = _apply_diversity_kick(current_spec, round_idx + 1)
 
         probe_meta["vlm_probe_passed"] = bool(passed)
         probe_meta["vlm_probe_retries_used"] = int(max(0, retries_used))
@@ -1258,6 +1552,86 @@ class RenderStage(PipelineStage):
         # Return the best-effort corrected spec regardless of pass/fail so that
         # full renders benefit from the corrections even when no round passed threshold.
         return current_spec, probe_meta
+
+
+# ---------------------------------------------------------------------------
+# Probe-loop diversity helpers
+# ---------------------------------------------------------------------------
+
+_SPEC_EPSILON: float = 0.02  # 2% relative change threshold for no-op detection
+
+
+def _spec_is_effectively_unchanged(
+    prev: CameraPathSpec, curr: CameraPathSpec
+) -> bool:
+    """Return True if all numeric spec fields changed by less than _SPEC_EPSILON.
+
+    Used to detect when apply_issue_tag_corrections hit every min-clamp and
+    produced a spec that will render an identical video.
+    """
+    import dataclasses
+
+    prev_d = dataclasses.asdict(prev)
+    curr_d = dataclasses.asdict(curr)
+    for key in ("radius_m", "num_orbits", "length_m", "arc_radius_m", "arc_span_deg"):
+        pv = prev_d.get(key)
+        cv = curr_d.get(key)
+        if pv is not None and cv is not None:
+            ref = max(abs(float(pv)), 1e-6)
+            if abs(float(cv) - float(pv)) / ref > _SPEC_EPSILON:
+                return False
+    return True
+
+
+def _apply_diversity_kick(spec: CameraPathSpec, round_idx: int) -> CameraPathSpec:
+    """Adjust standoff/height to explore a new viewpoint after a no-op correction.
+
+    Alternates between closer/farther (even/odd round_idx) so repeated kicks
+    don't oscillate to the same position.
+    """
+    from dataclasses import replace
+
+    stype = str(spec.type).strip().lower()
+    if stype == "orbit":
+        cur_h = spec.height_override_m
+        new_h = (cur_h if cur_h is not None else 1.2) * (
+            0.7 if round_idx % 2 == 0 else 1.3
+        )
+        return replace(spec, height_override_m=float(max(0.4, min(new_h, 2.4))))
+    if stype == "manipulation":
+        cur_r = float(spec.arc_radius_m)
+        new_r = cur_r * (1.4 if round_idx % 2 == 0 else 0.6)
+        return replace(spec, arc_radius_m=float(max(0.15, min(new_r, 3.0))))
+    if stype == "sweep":
+        cur_len = float(spec.length_m)
+        new_len = cur_len * (1.4 if round_idx % 2 == 0 else 0.6)
+        return replace(spec, length_m=float(max(0.25, min(new_len, 6.0))))
+    return spec
+
+
+def _count_unique_camera_positions(poses: List[object], precision: int = 3) -> int:
+    if not poses:
+        return 0
+    rounded = set()
+    for pose in poses:
+        try:
+            pos = np.asarray(pose.position, dtype=np.float64).reshape(3)
+        except Exception:
+            continue
+        rounded.add(tuple(np.round(pos, int(precision)).tolist()))
+    return int(len(rounded))
+
+
+def _append_probe_score_row(path: Optional[Path], row: Dict[str, object]) -> None:
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(row, sort_keys=True))
+            f.write("\n")
+    except Exception:
+        logger.debug("Failed appending probe score row to %s", path, exc_info=True)
 
 
 def _resample_poses_nearest(poses: List, requested_count: int) -> List:
@@ -1444,6 +1818,7 @@ def _select_task_scoped_obbs(
     context_per_target: int,
     overview_specs: int,
     fallback_specs: int,
+    center_dedupe_dist_m: float = 0.08,
 ) -> tuple[List[OrientedBoundingBox], Dict[str, int], Dict[str, str]]:
     stats = {"targets": 0, "context": 0, "overview": 0, "fallback": 0}
     if not obbs or max_specs <= 0:
@@ -1451,6 +1826,10 @@ def _select_task_scoped_obbs(
 
     max_specs = max(1, int(max_specs))
     fallback_specs = max(1, int(fallback_specs))
+    obbs = _dedupe_task_scoped_obbs(
+        obbs,
+        center_dedupe_dist_m=float(max(0.0, center_dedupe_dist_m)),
+    )
     by_instance, by_label = _build_obb_lookup(obbs)
 
     ordered_indices: List[int] = []
@@ -1543,6 +1922,35 @@ def _select_task_scoped_obbs(
         str(obbs[i].instance_id): str(role_by_index.get(i, "")).strip() for i in final_indices
     }
     return selected_obbs, stats, role_by_instance
+
+
+def _dedupe_task_scoped_obbs(
+    obbs: List[OrientedBoundingBox],
+    *,
+    center_dedupe_dist_m: float,
+) -> List[OrientedBoundingBox]:
+    if not obbs or float(center_dedupe_dist_m) <= 0.0:
+        return list(obbs)
+
+    kept: List[OrientedBoundingBox] = []
+    for obb in obbs:
+        label_key = _label_key(obb.label)
+        center = np.asarray(obb.center, dtype=np.float64)
+        duplicate_idx: Optional[int] = None
+        for idx, prev in enumerate(kept):
+            if _label_key(prev.label) != label_key:
+                continue
+            prev_center = np.asarray(prev.center, dtype=np.float64)
+            if float(np.linalg.norm(center - prev_center)) < float(center_dedupe_dist_m):
+                duplicate_idx = idx
+                break
+        if duplicate_idx is None:
+            kept.append(obb)
+            continue
+        prev = kept[duplicate_idx]
+        if float(getattr(obb, "confidence", 0.0)) > float(getattr(prev, "confidence", 0.0)):
+            kept[duplicate_idx] = obb
+    return kept
 
 
 def _build_obb_lookup(
@@ -1794,8 +2202,15 @@ def _quality_cache_key(
         str(bool(config.render.stage1_active_perception_fail_closed)),
         str(int(config.render.stage1_probe_frames_override)),
         f"{float(config.render.stage1_probe_resolution_scale):.6f}",
+        f"{float(config.render.stage1_probe_min_viable_pose_ratio):.6f}",
+        str(int(config.render.stage1_probe_min_unique_positions)),
+        str(bool(config.render.stage1_probe_dedupe_enabled)),
+        str(int(config.render.stage1_probe_dedupe_max_regen_attempts)),
+        f"{float(config.render.stage1_probe_dedupe_center_dist_m):.6f}",
         str(int(config.render.stage1_probe_consensus_votes)),
         f"{float(config.render.stage1_probe_consensus_high_variance_delta):.6f}",
+        str(int(config.render.stage1_probe_tiebreak_extra_votes)),
+        f"{float(config.render.stage1_probe_tiebreak_spread_threshold):.6f}",
         str(bool(config.render.stage1_probe_primary_model_only)),
         f"{float(config.render.stage1_vlm_min_task_score):.6f}",
         f"{float(config.render.stage1_vlm_min_visual_score):.6f}",
@@ -1837,6 +2252,11 @@ def _empty_quality_summary() -> Dict[str, object]:
         "num_vlm_probe_api_failures": 0,
         "num_vlm_probe_parse_failures": 0,
         "num_vlm_probe_high_variance": 0,
+        "num_probe_duplicate_detected": 0,
+        "num_probe_duplicate_regenerated": 0,
+        "num_probe_duplicate_unresolved": 0,
+        "num_probe_viability_rejects": 0,
+        "num_probe_monochrome_warnings": 0,
         "num_repeat_duplicate_detected": 0,
         "num_repeat_duplicate_regenerated": 0,
         "num_repeat_duplicate_unresolved": 0,
@@ -1864,6 +2284,14 @@ def _default_vlm_probe_fields(*, selected_fps: float, candidate_count: int) -> D
         "num_vlm_probe_api_failures": 0,
         "num_vlm_probe_parse_failures": 0,
         "num_vlm_probe_high_variance": 0,
+        "num_probe_duplicate_detected": 0,
+        "num_probe_duplicate_regenerated": 0,
+        "num_probe_duplicate_unresolved": 0,
+        "num_probe_viability_rejects": 0,
+        "num_probe_monochrome_warnings": 0,
+        "probe_codec": "",
+        "probe_resolution": None,
+        "probe_decoded_frames": 0,
     }
 
 
@@ -1888,6 +2316,24 @@ def _manifest_vlm_probe_fields(probe_meta: Dict[str, object]) -> Dict[str, objec
         ),
         "vlm_probe_score_spread": probe_meta.get("vlm_probe_score_spread"),
         "vlm_probe_fail_reason": probe_meta.get("vlm_probe_fail_reason"),
+        "num_probe_duplicate_detected": int(
+            max(0, int(probe_meta.get("num_probe_duplicate_detected", 0) or 0))
+        ),
+        "num_probe_duplicate_regenerated": int(
+            max(0, int(probe_meta.get("num_probe_duplicate_regenerated", 0) or 0))
+        ),
+        "num_probe_duplicate_unresolved": int(
+            max(0, int(probe_meta.get("num_probe_duplicate_unresolved", 0) or 0))
+        ),
+        "num_probe_viability_rejects": int(
+            max(0, int(probe_meta.get("num_probe_viability_rejects", 0) or 0))
+        ),
+        "num_probe_monochrome_warnings": int(
+            max(0, int(probe_meta.get("num_probe_monochrome_warnings", 0) or 0))
+        ),
+        "probe_codec": str(probe_meta.get("probe_codec", "") or ""),
+        "probe_resolution": probe_meta.get("probe_resolution"),
+        "probe_decoded_frames": int(max(0, int(probe_meta.get("probe_decoded_frames", 0) or 0))),
     }
 
 
@@ -1919,6 +2365,21 @@ def _update_vlm_probe_summary(
     quality_summary["num_vlm_probe_high_variance"] = int(
         quality_summary["num_vlm_probe_high_variance"]
     ) + int(max(0, int(probe_meta.get("num_vlm_probe_high_variance", 0) or 0)))
+    quality_summary["num_probe_duplicate_detected"] = int(
+        quality_summary["num_probe_duplicate_detected"]
+    ) + int(max(0, int(probe_meta.get("num_probe_duplicate_detected", 0) or 0)))
+    quality_summary["num_probe_duplicate_regenerated"] = int(
+        quality_summary["num_probe_duplicate_regenerated"]
+    ) + int(max(0, int(probe_meta.get("num_probe_duplicate_regenerated", 0) or 0)))
+    quality_summary["num_probe_duplicate_unresolved"] = int(
+        quality_summary["num_probe_duplicate_unresolved"]
+    ) + int(max(0, int(probe_meta.get("num_probe_duplicate_unresolved", 0) or 0)))
+    quality_summary["num_probe_viability_rejects"] = int(
+        quality_summary["num_probe_viability_rejects"]
+    ) + int(max(0, int(probe_meta.get("num_probe_viability_rejects", 0) or 0)))
+    quality_summary["num_probe_monochrome_warnings"] = int(
+        quality_summary["num_probe_monochrome_warnings"]
+    ) + int(max(0, int(probe_meta.get("num_probe_monochrome_warnings", 0) or 0)))
 
 
 def _update_quality_summary_from_entry(
@@ -1947,15 +2408,16 @@ def _update_quality_summary_from_entry(
         quality_summary["num_quality_failures"] = int(quality_summary["num_quality_failures"]) + 1
 
 
-def _ensure_probe_h264_for_scoring(video_path: Path, min_frames: int) -> Path:
+def _ensure_probe_h264_for_scoring(video_path: Path, min_frames: int):
     """Transcode probe clips to H.264 when needed for stable VLM ingestion."""
-    validated = ensure_h264_video(
+    return ensure_h264_video(
         input_path=video_path,
         min_decoded_frames=max(1, int(min_frames)),
         output_path=video_path.with_name(f"{video_path.stem}_h264.mp4"),
         replace_source=False,
+        crf=14,
+        preset="slow",
     )
-    return Path(validated.path)
 
 
 def _score_stage1_probe_consensus(
@@ -1966,24 +2428,45 @@ def _score_stage1_probe_consensus(
     facility_description: str,
     votes: int,
     primary_model_only: bool,
+    tiebreak_extra_votes: int = 0,
+    tiebreak_spread_threshold: float = 3.0,
 ) -> Dict[str, object]:
     configured_votes = max(1, int(votes))
+    extra_votes = max(0, int(tiebreak_extra_votes))
+    tiebreak_threshold = float(tiebreak_spread_threshold)
     primary_cfg = replace(config, fallback_models=[]) if primary_model_only else config
 
-    def _collect_votes(judge_cfg: VLMJudgeConfig, *, phase: str) -> Dict[str, object]:
+    def _collect_votes(
+        judge_cfg: VLMJudgeConfig,
+        *,
+        phase: str,
+        num_votes: int,
+        vote_rows: List[Dict[str, object]],
+    ) -> Dict[str, object]:
         phase_successes: List[Stage1ProbeScore] = []
         phase_api_failures = 0
         phase_parse_failures = 0
         phase_errors: List[str] = []
-        for vote_idx in range(configured_votes):
+        for vote_idx in range(max(1, int(num_votes))):
             try:
-                phase_successes.append(
-                    score_stage1_probe(
-                        video_path=video_path,
-                        expected_focus_text=expected_focus_text,
-                        config=judge_cfg,
-                        facility_description=facility_description,
-                    )
+                score = score_stage1_probe(
+                    video_path=video_path,
+                    expected_focus_text=expected_focus_text,
+                    config=judge_cfg,
+                    facility_description=facility_description,
+                )
+                phase_successes.append(score)
+                vote_rows.append(
+                    {
+                        "phase": phase,
+                        "vote_index": int(vote_idx),
+                        "model_used": str(getattr(score, "model_used", "") or str(judge_cfg.model)),
+                        "task_score": float(score.task_score),
+                        "visual_score": float(score.visual_score),
+                        "spatial_score": float(score.spatial_score),
+                        "issue_tags": list(score.issue_tags),
+                        "error": None,
+                    }
                 )
             except Exception as exc:
                 msg = str(exc)
@@ -1993,6 +2476,18 @@ def _score_stage1_probe_consensus(
                     phase_parse_failures += 1
                 else:
                     phase_api_failures += 1
+                vote_rows.append(
+                    {
+                        "phase": phase,
+                        "vote_index": int(vote_idx),
+                        "model_used": str(judge_cfg.model),
+                        "task_score": None,
+                        "visual_score": None,
+                        "spatial_score": None,
+                        "issue_tags": [],
+                        "error": msg,
+                    }
+                )
         return {
             "successes": phase_successes,
             "api_failures": int(phase_api_failures),
@@ -2000,7 +2495,15 @@ def _score_stage1_probe_consensus(
             "errors": phase_errors,
         }
 
-    primary_out = _collect_votes(primary_cfg, phase="primary")
+    vote_rows: List[Dict[str, object]] = []
+    active_cfg = primary_cfg
+
+    primary_out = _collect_votes(
+        primary_cfg,
+        phase="primary",
+        num_votes=configured_votes,
+        vote_rows=vote_rows,
+    )
     successes = list(primary_out["successes"])
     api_failures = int(primary_out["api_failures"])
     parse_failures = int(primary_out["parse_failures"])
@@ -2013,7 +2516,13 @@ def _score_stage1_probe_consensus(
         and not successes
         and bool(config.fallback_models)
     ):
-        fallback_out = _collect_votes(config, phase="fallback")
+        active_cfg = config
+        fallback_out = _collect_votes(
+            config,
+            phase="fallback",
+            num_votes=configured_votes,
+            vote_rows=vote_rows,
+        )
         successes = list(fallback_out["successes"])
         api_failures += int(fallback_out["api_failures"])
         parse_failures += int(fallback_out["parse_failures"])
@@ -2028,7 +2537,37 @@ def _score_stage1_probe_consensus(
             "votes_effective": 0,
             "score_spread": None,
             "active_model_used": str(config.model),
+            "vote_rows": vote_rows,
         }
+
+    if extra_votes > 0 and tiebreak_threshold > 0.0:
+        task_vals = np.array([float(s.task_score) for s in successes], dtype=np.float64)
+        visual_vals = np.array([float(s.visual_score) for s in successes], dtype=np.float64)
+        spatial_vals = np.array([float(s.spatial_score) for s in successes], dtype=np.float64)
+        sums = task_vals + visual_vals + spatial_vals
+        spread = float(np.max(sums) - np.min(sums)) if len(sums) > 1 else 0.0
+        if spread >= tiebreak_threshold:
+            tiebreak_out = _collect_votes(
+                active_cfg,
+                phase="tiebreak",
+                num_votes=extra_votes,
+                vote_rows=vote_rows,
+            )
+            successes.extend(list(tiebreak_out["successes"]))
+            api_failures += int(tiebreak_out["api_failures"])
+            parse_failures += int(tiebreak_out["parse_failures"])
+            errors.extend(list(tiebreak_out["errors"]))
+            if not successes:
+                return {
+                    "score": None,
+                    "error": "all_probe_votes_failed: " + "; ".join(errors),
+                    "num_api_failures": int(api_failures),
+                    "num_parse_failures": int(parse_failures),
+                    "votes_effective": 0,
+                    "score_spread": None,
+                    "active_model_used": str(config.model),
+                    "vote_rows": vote_rows,
+                }
 
     task_vals = np.array([float(s.task_score) for s in successes], dtype=np.float64)
     visual_vals = np.array([float(s.visual_score) for s in successes], dtype=np.float64)
@@ -2073,6 +2612,7 @@ def _score_stage1_probe_consensus(
         "votes_effective": int(len(successes)),
         "score_spread": round(spread, 6),
         "active_model_used": str(getattr(consensus_score, "model_used", "") or str(config.model)),
+        "vote_rows": vote_rows,
     }
 
 

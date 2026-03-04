@@ -638,18 +638,48 @@ def build_occupancy_grid(
 # ---------------------------------------------------------------------------
 
 
+_FLAT_OBB_Z_THRESHOLD_M: float = 0.05  # objects thinner than 5 cm in Z are "flat"
+
+
 def compute_standoff_distance(obb: OrientedBoundingBox, base_standoff: float = 0.6) -> float:
     """Camera standoff distance that scales with object size.
 
     Larger objects need the camera further back for proper framing.
+    For flat objects (carpet, floor mat, ceiling plate) with Z-extent < 5 cm,
+    use the XY diagonal rather than the max axis so the camera pulls back enough
+    to frame the whole surface.
     """
+    ext_z = float(obb.extents[2]) if len(obb.extents) > 2 else 0.5
+    if ext_z < _FLAT_OBB_Z_THRESHOLD_M:
+        # Flat surface: use XY diagonal for standoff
+        xy_diag = float(np.linalg.norm(obb.extents[:2]))
+        return min(max(base_standoff, xy_diag * 0.8), 3.0)
     max_xy = float(np.max(np.abs(obb.extents[:2])))
     return min(max(base_standoff, max_xy * 1.5), 3.0)
 
 
 def compute_camera_height(obb: OrientedBoundingBox, offset_m: float = 0.3) -> float:
-    """Camera height derived from object center z-coordinate."""
-    return max(0.4, float(obb.center[2]) + offset_m)
+    """Camera height derived from object center z-coordinate.
+
+    Special handling for degenerate (flat) objects:
+    - Floor objects (Z-extent < 5 cm, center_z < 1.8 m): camera placed above
+      looking down (+0.6 m above center).
+    - Ceiling objects (Z-extent < 5 cm, center_z >= 1.8 m): camera placed below
+      looking up (-0.5 m below center).
+    Normal objects: standard center_z + offset, clamped at 2.5 m to avoid
+    clipping through ceiling geometry.
+    """
+    center_z = float(obb.center[2])
+    ext_z = float(obb.extents[2]) if len(obb.extents) > 2 else 0.5
+    if ext_z < _FLAT_OBB_Z_THRESHOLD_M:
+        if center_z >= 1.8:
+            # Ceiling-mounted (bath heater, overhead lamp): look up from below
+            return max(0.4, center_z - 0.5)
+        else:
+            # Floor surface (carpet, floor mat): look down from above
+            return max(0.4, center_z + 0.6)
+    # Standard: clamp upper bound at 2.5 m to stay below typical ceiling
+    return min(max(0.4, center_z + offset_m), 2.5)
 
 
 # ---------------------------------------------------------------------------
@@ -669,6 +699,14 @@ def generate_scene_aware_specs(
     specs: List[CameraPathSpec] = []
 
     for obb in obbs:
+        ext_z = float(obb.extents[2]) if len(obb.extents) > 2 else 0.5
+        if ext_z < _FLAT_OBB_Z_THRESHOLD_M:
+            logger.warning(
+                "Degenerate OBB (flat object Z=%.4f m) for label=%r — "
+                "using surface-aware camera placement",
+                ext_z,
+                getattr(obb, "label", "?"),
+            )
         standoff = compute_standoff_distance(obb)
         cam_height = compute_camera_height(obb)
         approach = obb.center.tolist()

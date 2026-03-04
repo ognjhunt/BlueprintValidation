@@ -33,6 +33,9 @@ def test_active_probe_selects_candidate_that_passes_threshold(sample_config, tmp
     sample_config.render.stage1_active_perception_max_loops = 1
     sample_config.render.stage1_active_perception_fail_closed = True
     sample_config.render.stage1_quality_candidate_budget = "medium"
+    sample_config.render.stage1_probe_min_viable_pose_ratio = 0.1
+    sample_config.render.stage1_probe_min_unique_positions = 1
+    sample_config.render.stage1_probe_dedupe_enabled = False
 
     spec_a = CameraPathSpec(type="orbit", radius_m=2.0)
     spec_b = CameraPathSpec(type="orbit", radius_m=1.6)
@@ -44,7 +47,7 @@ def test_active_probe_selects_candidate_that_passes_threshold(sample_config, tmp
     monkeypatch.setattr(
         RenderStage,
         "_build_render_poses",
-        lambda self, **kwargs: ([_pose(), _pose()], 2, 2, 2, 0),
+        lambda self, **kwargs: ([_pose(), _pose()], 21, 21, 21, 0),
     )
 
     def _fake_render_video(**kwargs):
@@ -58,7 +61,14 @@ def test_active_probe_selects_candidate_that_passes_threshold(sample_config, tmp
     monkeypatch.setattr("blueprint_validation.stages.s1_render.render_video", _fake_render_video)
     monkeypatch.setattr(
         "blueprint_validation.stages.s1_render._ensure_probe_h264_for_scoring",
-        lambda video_path, min_frames: video_path,
+        lambda video_path, min_frames: SimpleNamespace(
+            path=video_path,
+            codec_name="h264",
+            decoded_frames=int(min_frames),
+            width=128,
+            height=96,
+            content_monochrome_warning=False,
+        ),
     )
 
     def _fake_probe_score(*, video_path, **kwargs):
@@ -114,6 +124,8 @@ def test_active_probe_fail_closed_on_scoring_error(sample_config, tmp_path, monk
     sample_config.render.stage1_active_perception_scope = "all"
     sample_config.render.stage1_active_perception_max_loops = 1
     sample_config.render.stage1_active_perception_fail_closed = True
+    sample_config.render.stage1_probe_min_viable_pose_ratio = 0.1
+    sample_config.render.stage1_probe_min_unique_positions = 1
 
     spec = CameraPathSpec(type="orbit", radius_m=2.0)
     ranked = [SimpleNamespace(spec=spec, score=0.9, metrics={})]
@@ -121,7 +133,7 @@ def test_active_probe_fail_closed_on_scoring_error(sample_config, tmp_path, monk
     monkeypatch.setattr(
         RenderStage,
         "_build_render_poses",
-        lambda self, **kwargs: ([_pose(), _pose()], 2, 2, 2, 0),
+        lambda self, **kwargs: ([_pose(), _pose()], 21, 21, 21, 0),
     )
 
     def _fake_render_video(**kwargs):
@@ -135,7 +147,14 @@ def test_active_probe_fail_closed_on_scoring_error(sample_config, tmp_path, monk
     monkeypatch.setattr("blueprint_validation.stages.s1_render.render_video", _fake_render_video)
     monkeypatch.setattr(
         "blueprint_validation.stages.s1_render._ensure_probe_h264_for_scoring",
-        lambda video_path, min_frames: video_path,
+        lambda video_path, min_frames: SimpleNamespace(
+            path=video_path,
+            codec_name="h264",
+            decoded_frames=int(min_frames),
+            width=128,
+            height=96,
+            content_monochrome_warning=False,
+        ),
     )
     monkeypatch.setattr(
         "blueprint_validation.stages.s1_render.score_stage1_probe",
@@ -161,9 +180,10 @@ def test_active_probe_fail_closed_on_scoring_error(sample_config, tmp_path, monk
         facility_description="",
     )
 
-    assert selected.radius_m == spec.radius_m
+    assert selected.type == "manipulation"
+    assert selected.radius_m != spec.radius_m
     assert probe_meta["vlm_probe_passed"] is False
-    assert "probe_scoring_failed" in str(probe_meta["vlm_probe_fail_reason"])
+    assert "probe_threshold_not_met" in str(probe_meta["vlm_probe_fail_reason"])
     assert int(probe_meta["num_vlm_probe_api_failures"]) >= 1
 
 
@@ -336,6 +356,78 @@ def test_probe_consensus_uses_fallback_only_after_primary_hard_failure(
     assert calls["fallback"] == 2
     assert out["votes_effective"] == 2
     assert out["active_model_used"] == "gemini-2.5-flash"
+
+
+def test_probe_consensus_adds_tiebreak_votes_when_spread_is_high(sample_config, monkeypatch, tmp_path):
+    from blueprint_validation.evaluation.vlm_judge import Stage1ProbeScore
+    from blueprint_validation.stages.s1_render import _score_stage1_probe_consensus
+
+    rows = [
+        Stage1ProbeScore(
+            task_score=1.0,
+            visual_score=1.0,
+            spatial_score=1.0,
+            issue_tags=["target_missing"],
+            reasoning="bad",
+            raw_response="{}",
+            model_used="gemini-3-flash-preview",
+        ),
+        Stage1ProbeScore(
+            task_score=9.0,
+            visual_score=9.0,
+            spatial_score=9.0,
+            issue_tags=[],
+            reasoning="great",
+            raw_response="{}",
+            model_used="gemini-3-flash-preview",
+        ),
+        Stage1ProbeScore(
+            task_score=5.0,
+            visual_score=5.0,
+            spatial_score=5.0,
+            issue_tags=["camera_motion_too_fast"],
+            reasoning="mid",
+            raw_response="{}",
+            model_used="gemini-3-flash-preview",
+        ),
+        Stage1ProbeScore(
+            task_score=6.0,
+            visual_score=6.0,
+            spatial_score=6.0,
+            issue_tags=["camera_motion_too_fast"],
+            reasoning="extra1",
+            raw_response="{}",
+            model_used="gemini-3-flash-preview",
+        ),
+        Stage1ProbeScore(
+            task_score=4.0,
+            visual_score=4.0,
+            spatial_score=4.0,
+            issue_tags=["camera_motion_too_fast"],
+            reasoning="extra2",
+            raw_response="{}",
+            model_used="gemini-3-flash-preview",
+        ),
+    ]
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render.score_stage1_probe",
+        lambda **kwargs: rows.pop(0),
+    )
+
+    out = _score_stage1_probe_consensus(
+        video_path=tmp_path / "probe.mp4",
+        expected_focus_text="target",
+        config=sample_config.eval_policy.vlm_judge,
+        facility_description="",
+        votes=3,
+        primary_model_only=True,
+        tiebreak_extra_votes=2,
+        tiebreak_spread_threshold=3.0,
+    )
+    assert out["votes_effective"] == 5
+    assert len(out["vote_rows"]) == 5
+    assert any(str(v.get("phase")) == "tiebreak" for v in out["vote_rows"])
 
 
 def test_detect_duplicate_clip_flags_sha_match(monkeypatch, tmp_path):

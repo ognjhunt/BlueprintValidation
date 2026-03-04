@@ -108,6 +108,29 @@ def test_task_scoped_selection_resolves_label_instance_token():
     assert role_by_instance["101"] == "targets"
 
 
+def test_task_scoped_selection_dedupes_near_identical_label_centers():
+    from blueprint_validation.stages.s1_render import _select_task_scoped_obbs
+
+    obbs = [
+        _obb("200", "bowl", (0.00, 0.00, 0.50), "manipulation", confidence=0.8),
+        _obb("201", "bowl", (0.03, 0.00, 0.50), "manipulation", confidence=0.9),
+        _obb("202", "cup", (1.00, 0.00, 0.50), "manipulation", confidence=0.8),
+    ]
+    selected, stats, _ = _select_task_scoped_obbs(
+        obbs=obbs,
+        tasks=["pick up bowl_201"],
+        max_specs=3,
+        context_per_target=1,
+        overview_specs=0,
+        fallback_specs=3,
+        center_dedupe_dist_m=0.08,
+    )
+    ids = [o.instance_id for o in selected]
+    assert "200" not in ids
+    assert "201" in ids
+    assert stats["targets"] == 1
+
+
 def test_sample_start_offset_defaults_zero_for_manipulation(sample_config):
     from blueprint_validation.config import CameraPathSpec
     from blueprint_validation.stages.s1_render import _sample_start_offset

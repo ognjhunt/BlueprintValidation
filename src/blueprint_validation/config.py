@@ -124,8 +124,15 @@ class RenderConfig:
     stage1_active_perception_fail_closed: bool = True
     stage1_probe_frames_override: int = 0
     stage1_probe_resolution_scale: float = 0.0
+    stage1_probe_min_viable_pose_ratio: float = 0.55
+    stage1_probe_min_unique_positions: int = 8
+    stage1_probe_dedupe_enabled: bool = True
+    stage1_probe_dedupe_max_regen_attempts: int = 2
+    stage1_probe_dedupe_center_dist_m: float = 0.08
     stage1_probe_consensus_votes: int = 3
     stage1_probe_consensus_high_variance_delta: float = 3.0
+    stage1_probe_tiebreak_extra_votes: int = 2
+    stage1_probe_tiebreak_spread_threshold: float = 3.0
     stage1_probe_primary_model_only: bool = True
     stage1_vlm_min_task_score: float = 7.0
     stage1_vlm_min_visual_score: float = 7.0
@@ -904,9 +911,26 @@ def load_config(path: Path) -> ValidationConfig:
             ),
             stage1_probe_frames_override=int(r.get("stage1_probe_frames_override", 0)),
             stage1_probe_resolution_scale=float(r.get("stage1_probe_resolution_scale", 0.0)),
+            stage1_probe_min_viable_pose_ratio=float(
+                r.get("stage1_probe_min_viable_pose_ratio", 0.55)
+            ),
+            stage1_probe_min_unique_positions=int(r.get("stage1_probe_min_unique_positions", 8)),
+            stage1_probe_dedupe_enabled=bool(r.get("stage1_probe_dedupe_enabled", True)),
+            stage1_probe_dedupe_max_regen_attempts=int(
+                r.get("stage1_probe_dedupe_max_regen_attempts", 2)
+            ),
+            stage1_probe_dedupe_center_dist_m=float(
+                r.get("stage1_probe_dedupe_center_dist_m", 0.08)
+            ),
             stage1_probe_consensus_votes=int(r.get("stage1_probe_consensus_votes", 3)),
             stage1_probe_consensus_high_variance_delta=float(
                 r.get("stage1_probe_consensus_high_variance_delta", 3.0)
+            ),
+            stage1_probe_tiebreak_extra_votes=int(
+                r.get("stage1_probe_tiebreak_extra_votes", 2)
+            ),
+            stage1_probe_tiebreak_spread_threshold=float(
+                r.get("stage1_probe_tiebreak_spread_threshold", 3.0)
             ),
             stage1_probe_primary_model_only=bool(r.get("stage1_probe_primary_model_only", True)),
             stage1_vlm_min_task_score=float(r.get("stage1_vlm_min_task_score", 7.0)),
@@ -1643,10 +1667,22 @@ def load_config(path: Path) -> ValidationConfig:
         raise ValueError("render.stage1_probe_frames_override must be >= 0")
     if not (0.0 <= float(config.render.stage1_probe_resolution_scale) <= 1.0):
         raise ValueError("render.stage1_probe_resolution_scale must be in [0, 1]")
+    if not (0.0 <= float(config.render.stage1_probe_min_viable_pose_ratio) <= 1.0):
+        raise ValueError("render.stage1_probe_min_viable_pose_ratio must be in [0, 1]")
+    if int(config.render.stage1_probe_min_unique_positions) < 1:
+        raise ValueError("render.stage1_probe_min_unique_positions must be >= 1")
+    if int(config.render.stage1_probe_dedupe_max_regen_attempts) < 0:
+        raise ValueError("render.stage1_probe_dedupe_max_regen_attempts must be >= 0")
+    if float(config.render.stage1_probe_dedupe_center_dist_m) < 0.0:
+        raise ValueError("render.stage1_probe_dedupe_center_dist_m must be >= 0")
     if int(config.render.stage1_probe_consensus_votes) < 1:
         raise ValueError("render.stage1_probe_consensus_votes must be >= 1")
     if not (0.0 <= float(config.render.stage1_probe_consensus_high_variance_delta) <= 30.0):
         raise ValueError("render.stage1_probe_consensus_high_variance_delta must be in [0, 30]")
+    if int(config.render.stage1_probe_tiebreak_extra_votes) < 0:
+        raise ValueError("render.stage1_probe_tiebreak_extra_votes must be >= 0")
+    if not (0.0 <= float(config.render.stage1_probe_tiebreak_spread_threshold) <= 30.0):
+        raise ValueError("render.stage1_probe_tiebreak_spread_threshold must be in [0, 30]")
     if not (0.0 <= float(config.render.stage1_vlm_min_task_score) <= 10.0):
         raise ValueError("render.stage1_vlm_min_task_score must be in [0, 10]")
     if not (0.0 <= float(config.render.stage1_vlm_min_visual_score) <= 10.0):

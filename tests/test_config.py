@@ -48,9 +48,16 @@ def test_config_defaults():
     assert config.render.stage1_active_perception_fail_closed is True
     assert config.render.stage1_probe_frames_override == 0
     assert config.render.stage1_probe_resolution_scale == pytest.approx(0.0)
+    assert config.render.stage1_probe_min_viable_pose_ratio == pytest.approx(0.55)
+    assert config.render.stage1_probe_min_unique_positions == 8
+    assert config.render.stage1_probe_dedupe_enabled is True
+    assert config.render.stage1_probe_dedupe_max_regen_attempts == 2
+    assert config.render.stage1_probe_dedupe_center_dist_m == pytest.approx(0.08)
     assert config.render.stage1_vlm_min_task_score == pytest.approx(7.0)
     assert config.render.stage1_vlm_min_visual_score == pytest.approx(7.0)
     assert config.render.stage1_vlm_min_spatial_score == pytest.approx(6.0)
+    assert config.render.stage1_probe_tiebreak_extra_votes == 2
+    assert config.render.stage1_probe_tiebreak_spread_threshold == pytest.approx(3.0)
     assert config.render.stage1_keep_probe_videos is False
     assert config.render.orientation_autocorrect_enabled is True
     assert config.render.orientation_autocorrect_mode == "auto"
@@ -262,6 +269,13 @@ def test_config_with_all_sections(tmp_path):
             "stage1_active_perception_fail_closed": False,
             "stage1_probe_frames_override": 11,
             "stage1_probe_resolution_scale": 0.6,
+            "stage1_probe_min_viable_pose_ratio": 0.45,
+            "stage1_probe_min_unique_positions": 6,
+            "stage1_probe_dedupe_enabled": False,
+            "stage1_probe_dedupe_max_regen_attempts": 4,
+            "stage1_probe_dedupe_center_dist_m": 0.12,
+            "stage1_probe_tiebreak_extra_votes": 1,
+            "stage1_probe_tiebreak_spread_threshold": 2.5,
             "stage1_vlm_min_task_score": 7.5,
             "stage1_vlm_min_visual_score": 7.2,
             "stage1_vlm_min_spatial_score": 6.5,
@@ -458,6 +472,13 @@ def test_config_with_all_sections(tmp_path):
     assert config.render.stage1_active_perception_fail_closed is False
     assert config.render.stage1_probe_frames_override == 11
     assert config.render.stage1_probe_resolution_scale == pytest.approx(0.6)
+    assert config.render.stage1_probe_min_viable_pose_ratio == pytest.approx(0.45)
+    assert config.render.stage1_probe_min_unique_positions == 6
+    assert config.render.stage1_probe_dedupe_enabled is False
+    assert config.render.stage1_probe_dedupe_max_regen_attempts == 4
+    assert config.render.stage1_probe_dedupe_center_dist_m == pytest.approx(0.12)
+    assert config.render.stage1_probe_tiebreak_extra_votes == 1
+    assert config.render.stage1_probe_tiebreak_spread_threshold == pytest.approx(2.5)
     assert config.render.stage1_vlm_min_task_score == pytest.approx(7.5)
     assert config.render.stage1_vlm_min_visual_score == pytest.approx(7.2)
     assert config.render.stage1_vlm_min_spatial_score == pytest.approx(6.5)

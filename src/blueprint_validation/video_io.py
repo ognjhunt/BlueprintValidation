@@ -14,7 +14,7 @@ from .common import get_logger
 
 logger = get_logger("video_io")
 
-_DEFAULT_MP4_CODECS: tuple[str, ...] = ("avc1", "H264", "mp4v")
+_DEFAULT_MP4_CODECS: tuple[str, ...] = ("avc1", "H264", "X264", "x264", "mp4v")
 
 
 @dataclass(frozen=True)
@@ -24,6 +24,10 @@ class VideoValidationResult:
     decoded_frames: int
     duration_seconds: float | None
     transcoded: bool
+    width: int | None = None
+    height: int | None = None
+    content_monochrome_warning: bool = False
+    content_max_std_dev: float | None = None
 
 
 def open_mp4_writer(
@@ -91,6 +95,69 @@ def decode_video_frame_count(video_path: Path) -> int:
     finally:
         cap.release()
     return int(count)
+
+
+_MIN_CONTENT_STD_DEV: float = 6.0  # frames with global std-dev below this are flagged
+
+
+def _warn_if_content_monochrome(video_path: Path, *, label: str = "") -> tuple[bool, float | None]:
+    """Sample ~3 frames from the video and warn if all appear monochromatic (e.g. all-green).
+
+    OpenCV mp4v on some Linux builds produces solid-colour frames when the
+    codec falls back without error.  A valid 3DGS render should always have
+    significant pixel variance.  This check does NOT raise — it only logs a
+    WARNING so the pipeline continues while making the defect visible.
+    """
+    import cv2
+    import numpy as np
+
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        logger.warning("content-sanity: could not open %s%s", video_path, f" ({label})" if label else "")
+        return False, None
+
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    sample_positions = [max(0, total // 4), max(0, total // 2), max(0, 3 * total // 4)]
+    std_devs: list[float] = []
+    try:
+        for pos in sample_positions:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, float(pos))
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue
+            # Global std-dev across all channels / pixels
+            std_devs.append(float(np.std(frame.astype(np.float32))))
+    finally:
+        cap.release()
+
+    if not std_devs:
+        logger.warning(
+            "content-sanity: no frames decoded from %s%s",
+            video_path,
+            f" ({label})" if label else "",
+        )
+        return False, None
+
+    max_std = max(std_devs)
+    if max_std < _MIN_CONTENT_STD_DEV:
+        logger.warning(
+            "content-sanity: %s%s appears MONOCHROMATIC — max pixel std-dev=%.2f "
+            "(threshold=%.1f). Gemini may be scoring a green/blank video. "
+            "Check codec fallback chain and gsplat renderer output.",
+            video_path,
+            f" ({label})" if label else "",
+            max_std,
+            _MIN_CONTENT_STD_DEV,
+        )
+        return True, float(max_std)
+    else:
+        logger.debug(
+            "content-sanity: %s OK max_std=%.2f%s",
+            video_path,
+            max_std,
+            f" ({label})" if label else "",
+        )
+        return False, float(max_std)
 
 
 def transcode_mp4_to_h264(
@@ -211,12 +278,28 @@ def ensure_h264_video(
             f"decoded_frames={decoded_frames}, required_min_frames={int(min_decoded_frames)}"
         )
 
+    # Pixel-content sanity: warn if frames are monochromatic (all-green/blank).
+    # This catches the OpenCV mp4v silent codec fallback that produces green frames.
+    content_warning = False
+    content_max_std = None
+    try:
+        content_warning, content_max_std = _warn_if_content_monochrome(
+            resolved_path,
+            label=f"transcoded={transcoded}",
+        )
+    except Exception as _ce:
+        logger.debug("content-sanity check error for %s: %s", resolved_path, _ce)
+
     return VideoValidationResult(
         path=resolved_path,
         codec_name=final_codec,
         decoded_frames=int(decoded_frames),
+        width=_parse_optional_int(final_probe.get("width")),
+        height=_parse_optional_int(final_probe.get("height")),
         duration_seconds=_parse_optional_float(final_probe.get("duration")),
         transcoded=bool(transcoded),
+        content_monochrome_warning=bool(content_warning),
+        content_max_std_dev=content_max_std,
     )
 
 
@@ -264,5 +347,14 @@ def _parse_optional_float(raw: Any) -> float | None:
         if raw in {None, "N/A", ""}:
             return None
         return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_optional_int(raw: Any) -> int | None:
+    try:
+        if raw in {None, "N/A", ""}:
+            return None
+        return int(raw)
     except (TypeError, ValueError):
         return None

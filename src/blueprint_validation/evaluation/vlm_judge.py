@@ -19,6 +19,7 @@ logger = get_logger("evaluation.vlm_judge")
 _USAGE_LOCK = threading.Lock()
 _USAGE_CALL_COUNT = 0
 _USAGE_TOTAL_TOKENS = 0
+_VIDEO_TOOL_DISABLE_WARNED = False
 
 
 @dataclass
@@ -173,10 +174,24 @@ def _build_code_execution_tool(types):
         return types.Tool(code_execution=types.ToolCodeExecution)
 
 
-def _build_generate_config(types, enable_agentic_vision: bool, temperature: float):
+def _build_generate_config(
+    types,
+    *,
+    enable_agentic_vision: bool,
+    temperature: float,
+    includes_video: bool,
+):
+    global _VIDEO_TOOL_DISABLE_WARNED
     kwargs = {"temperature": temperature}
-    if enable_agentic_vision:
+    if enable_agentic_vision and not includes_video:
         kwargs["tools"] = [_build_code_execution_tool(types)]
+    elif enable_agentic_vision and includes_video:
+        if not _VIDEO_TOOL_DISABLE_WARNED:
+            logger.warning(
+                "Agentic code-execution tools auto-disabled for video Gemini request to avoid "
+                "unsupported video/text/timestamp MIME path."
+            )
+            _VIDEO_TOOL_DISABLE_WARNED = True
     return types.GenerateContentConfig(**kwargs)
 
 
@@ -548,6 +563,7 @@ def score_rollout(
                     types,
                     enable_agentic_vision=config.enable_agentic_vision,
                     temperature=0.1,
+                    includes_video=True,
                 ),
             )
             try:
@@ -631,6 +647,7 @@ def score_stage1_probe(
                     types,
                     enable_agentic_vision=config.enable_agentic_vision,
                     temperature=0.0,
+                    includes_video=True,
                 ),
             )
             try:
@@ -723,6 +740,7 @@ def score_stage2_enriched_clip(
                     types,
                     enable_agentic_vision=config.enable_agentic_vision,
                     temperature=0.0,
+                    includes_video=True,
                 ),
             )
             try:
@@ -810,6 +828,7 @@ def score_rollout_manipulation(
                     types,
                     enable_agentic_vision=config.enable_agentic_vision,
                     temperature=0.1,
+                    includes_video=True,
                 ),
             )
             try:
@@ -903,6 +922,7 @@ def score_spatial_accuracy(
                     types,
                     enable_agentic_vision=config.enable_agentic_vision,
                     temperature=0.1,
+                    includes_video=True,
                 ),
             )
             try:
@@ -976,6 +996,7 @@ def classify_facility(
                     types,
                     enable_agentic_vision=config.enable_agentic_vision,
                     temperature=0.1,
+                    includes_video=True,
                 ),
             )
 

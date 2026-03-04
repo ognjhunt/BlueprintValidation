@@ -72,13 +72,21 @@ render:
   stage1_active_perception_fail_closed: true
   stage1_probe_frames_override: 21
   stage1_probe_resolution_scale: 1.0
+  stage1_probe_min_viable_pose_ratio: 0.55
+  stage1_probe_min_unique_positions: 8
+  stage1_probe_dedupe_enabled: true
+  stage1_probe_dedupe_max_regen_attempts: 2
+  stage1_probe_dedupe_center_dist_m: 0.08
   stage1_probe_consensus_votes: 3
   stage1_probe_consensus_high_variance_delta: 3.0
+  stage1_probe_tiebreak_extra_votes: 2
+  stage1_probe_tiebreak_spread_threshold: 3.0
   stage1_probe_primary_model_only: true
   stage1_vlm_min_task_score: 7.0
   stage1_vlm_min_visual_score: 7.0
   stage1_vlm_min_spatial_score: 6.0
   stage1_keep_probe_videos: false
+  manipulation_random_xy_offset_m: 0.08
   stage1_repeat_dedupe_enabled: true
   stage1_repeat_dedupe_max_regen_attempts: 2
   stage1_repeat_min_xy_jitter_m: 0.06
@@ -205,7 +213,7 @@ eval_policy:
   vlm_judge:
     model: gemini-3-flash-preview
     api_key_env: GOOGLE_GENAI_API_KEY
-    enable_agentic_vision: true
+    enable_agentic_vision: false
     video_metadata_fps: 10.0
 
 # Full action-success boost mode (scan-only, no new real data).

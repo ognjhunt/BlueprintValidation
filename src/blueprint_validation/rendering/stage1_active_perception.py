@@ -10,7 +10,7 @@ This module keeps Stage-1 VLM-critic behavior reproducible:
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Iterable, List
+from typing import Iterable, List, Sequence
 
 from ..config import CameraPathSpec
 
@@ -162,16 +162,26 @@ def apply_issue_tag_corrections(
     issue_tags: Iterable[str],
     default_camera_height: float,
     default_look_down_deg: float,
+    loop_idx: int = 0,
+    fallback_target_point: Sequence[float] | None = None,
 ) -> CameraPathSpec:
     """Deterministic tag->camera correction matrix for bounded retries."""
     tags = normalize_issue_tags(issue_tags)
     updated = spec
+    correction_loop = max(0, int(loop_idx))
 
-    if "target_missing" in tags and str(updated.type).strip().lower() != "manipulation":
+    if "target_missing" in tags and (
+        str(updated.type).strip().lower() != "manipulation"
+        or not (
+            isinstance(getattr(updated, "approach_point", None), list)
+            and len(getattr(updated, "approach_point", None) or []) >= 3
+        )
+    ):
         updated = _convert_to_manipulation(
             updated,
             default_camera_height=float(default_camera_height),
             default_look_down_deg=float(default_look_down_deg),
+            fallback_target_point=fallback_target_point,
         )
 
     if "camera_too_far" in tags:
@@ -201,7 +211,20 @@ def apply_issue_tag_corrections(
         or "blur_or_soft_focus" in tags
     )
     if apply_motion_reduction:
-        updated = _apply_motion_reduction(updated)
+        updated = _apply_motion_reduction(updated, loop_idx=correction_loop)
+        stype = str(updated.type).strip().lower()
+        if stype == "manipulation":
+            updated = _add_look_down(
+                updated,
+                delta_deg=10.0 if correction_loop >= 2 else 6.0 if correction_loop >= 1 else 2.0,
+                default_look_down_deg=float(default_look_down_deg),
+            )
+        else:
+            updated = _add_look_down(
+                updated,
+                delta_deg=8.0 if correction_loop >= 2 else 4.0 if correction_loop >= 1 else 2.0,
+                default_look_down_deg=float(default_look_down_deg),
+            )
 
     if "blur_or_soft_focus" in tags:
         updated = _add_look_down(
@@ -210,7 +233,7 @@ def apply_issue_tag_corrections(
             default_look_down_deg=float(default_look_down_deg),
         )
 
-    return updated
+    return _clamp_spec_bounds(updated)
 
 
 def _convert_to_manipulation(
@@ -218,11 +241,15 @@ def _convert_to_manipulation(
     *,
     default_camera_height: float,
     default_look_down_deg: float,
+    fallback_target_point: Sequence[float] | None = None,
 ) -> CameraPathSpec:
     point = getattr(spec, "approach_point", None)
     if not (isinstance(point, list) and len(point) >= 3):
-        # No approach point to aim at — zoom in aggressively and lower camera
-        # to give the corrected render its best chance of capturing a target.
+        fallback = list(fallback_target_point or [])
+        if len(fallback) >= 3:
+            point = [float(fallback[0]), float(fallback[1]), float(fallback[2])]
+    if not (isinstance(point, list) and len(point) >= 3):
+        # No target point available; best-effort zoom to recover target.
         return _scale_standoff(spec, orbit_scale=0.60, sweep_scale=0.60, manip_scale=0.60)
 
     if str(spec.type).strip().lower() == "orbit":
@@ -268,13 +295,13 @@ def _scale_standoff(
 ) -> CameraPathSpec:
     stype = str(spec.type).strip().lower()
     if stype == "orbit":
-        return replace(spec, radius_m=float(max(0.30, float(spec.radius_m) * float(orbit_scale))))
+        return replace(spec, radius_m=float(max(0.25, float(spec.radius_m) * float(orbit_scale))))
     if stype == "sweep":
-        return replace(spec, length_m=float(max(0.30, float(spec.length_m) * float(sweep_scale))))
+        return replace(spec, length_m=float(max(0.25, float(spec.length_m) * float(sweep_scale))))
     if stype == "manipulation":
         return replace(
             spec,
-            arc_radius_m=float(max(0.15, float(spec.arc_radius_m) * float(manip_scale))),
+            arc_radius_m=float(max(0.12, float(spec.arc_radius_m) * float(manip_scale))),
         )
     return spec
 
@@ -310,24 +337,70 @@ def _add_look_down(
     return replace(spec, look_down_override_deg=float(updated))
 
 
-def _apply_motion_reduction(spec: CameraPathSpec) -> CameraPathSpec:
+def _apply_motion_reduction(spec: CameraPathSpec, *, loop_idx: int) -> CameraPathSpec:
     stype = str(spec.type).strip().lower()
     if stype == "orbit":
-        cur_orbits = int(spec.num_orbits)
-        new_orbits = max(1, cur_orbits - 1)
-        # When already at minimum orbits, reduce radius more aggressively (slows angular velocity).
-        radius_scale = 0.78 if cur_orbits <= 1 else 0.88
+        if int(loop_idx) >= 2:
+            new_orbits = 1
+            radius_scale = 0.58
+        elif int(loop_idx) >= 1:
+            new_orbits = 1
+            radius_scale = 0.72
+        else:
+            cur_orbits = int(spec.num_orbits)
+            new_orbits = max(1, cur_orbits - 1)
+            radius_scale = 0.78 if cur_orbits <= 1 else 0.88
         return replace(
             spec,
             num_orbits=new_orbits,
-            radius_m=float(max(0.30, float(spec.radius_m) * radius_scale)),
+            radius_m=float(max(0.25, float(spec.radius_m) * radius_scale)),
         )
     if stype == "sweep":
-        return replace(spec, length_m=float(max(0.30, float(spec.length_m) * 0.78)))
+        if int(loop_idx) >= 2:
+            scale = 0.50
+        elif int(loop_idx) >= 1:
+            scale = 0.65
+        else:
+            scale = 0.78
+        return replace(spec, length_m=float(max(0.25, float(spec.length_m) * scale)))
     if stype == "manipulation":
+        if int(loop_idx) >= 2:
+            radius_scale = 0.62
+            span_scale = 0.45
+        elif int(loop_idx) >= 1:
+            radius_scale = 0.75
+            span_scale = 0.60
+        else:
+            radius_scale = 0.82
+            span_scale = 0.72
         return replace(
             spec,
-            arc_radius_m=float(max(0.15, float(spec.arc_radius_m) * 0.82)),
-            arc_span_deg=float(max(40.0, min(300.0, float(spec.arc_span_deg) * 0.72))),
+            arc_radius_m=float(max(0.12, float(spec.arc_radius_m) * radius_scale)),
+            arc_span_deg=float(max(30.0, min(220.0, float(spec.arc_span_deg) * span_scale))),
         )
     return spec
+
+
+def _clamp_spec_bounds(spec: CameraPathSpec) -> CameraPathSpec:
+    stype = str(spec.type).strip().lower()
+    out = spec
+    if stype == "orbit":
+        out = replace(out, radius_m=float(max(0.25, float(out.radius_m))))
+    elif stype == "sweep":
+        out = replace(out, length_m=float(max(0.25, float(out.length_m))))
+    elif stype == "manipulation":
+        out = replace(
+            out,
+            arc_radius_m=float(max(0.12, float(out.arc_radius_m))),
+            arc_span_deg=float(max(30.0, min(220.0, float(out.arc_span_deg)))),
+        )
+
+    if out.look_down_override_deg is not None:
+        lo_min = 5.0 if stype == "manipulation" else 2.0
+        out = replace(
+            out,
+            look_down_override_deg=float(
+                max(lo_min, min(80.0, float(out.look_down_override_deg)))
+            ),
+        )
+    return out
