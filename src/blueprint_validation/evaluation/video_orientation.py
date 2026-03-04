@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..common import get_logger
+from ..common import get_logger, sanitize_filename_component
 from ..video_io import open_mp4_writer
 
 logger = get_logger("evaluation.video_orientation")
@@ -34,7 +34,9 @@ def apply_video_orientation_fix(
         return input_path
 
     cache_dir.mkdir(parents=True, exist_ok=True)
-    fixed_path = cache_dir / f"{clip_name}_{stream_tag}_{mode}.mp4"
+    safe_clip_name = sanitize_filename_component(clip_name, fallback="clip")
+    safe_stream_tag = sanitize_filename_component(stream_tag, fallback="stream")
+    fixed_path = cache_dir / f"{safe_clip_name}_{safe_stream_tag}_{mode}.mp4"
     if fixed_path.exists() and fixed_path.stat().st_mtime >= input_path.stat().st_mtime:
         return fixed_path
 

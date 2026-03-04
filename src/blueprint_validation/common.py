@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -84,3 +85,25 @@ def write_json(data: Any, path: Path) -> None:
 
 def read_json(path: Path) -> Any:
     return json.loads(path.read_text())
+
+
+def sanitize_filename_component(
+    value: object,
+    *,
+    fallback: str = "item",
+    max_length: int = 120,
+) -> str:
+    """Return a path-safe filename component for derived artifact names."""
+    raw = str(value or "").strip()
+    text = raw.replace("/", "_").replace("\\", "_")
+    text = re.sub(r"[^A-Za-z0-9._-]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("._-")
+    if not text or text in {".", ".."}:
+        text = str(fallback or "item").strip() or "item"
+        text = re.sub(r"[^A-Za-z0-9._-]+", "_", text)
+        text = re.sub(r"_+", "_", text).strip("._-") or "item"
+    if int(max_length) > 0 and len(text) > int(max_length):
+        text = text[: int(max_length)].rstrip("._-")
+        if not text:
+            text = "item"
+    return text

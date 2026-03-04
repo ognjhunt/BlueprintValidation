@@ -7,7 +7,7 @@ import math
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-from ..common import StageResult, get_logger, write_json
+from ..common import StageResult, get_logger, sanitize_filename_component, write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..enrichment.cosmos_runner import enrich_clip
 from ..enrichment.scene_index import build_scene_index, query_nearest_context_candidates
@@ -29,7 +29,7 @@ from ..evaluation.video_orientation import (
 )
 from ..video_io import ensure_h264_video, open_mp4_writer
 from ..warmup import load_cached_variants
-from ..validation import load_and_validate_manifest
+from ..validation import ManifestValidationError, load_and_validate_manifest
 from .manifest_resolution import ManifestCandidate, ManifestSource, resolve_manifest_source
 from .base import PipelineStage
 
@@ -153,11 +153,21 @@ class EnrichStage(PipelineStage):
                 ),
             )
 
-        render_manifest = load_and_validate_manifest(
-            source.source_manifest_path,
-            manifest_type="stage1_source",
-            require_existing_paths=True,
-        )
+        try:
+            render_manifest = load_and_validate_manifest(
+                source.source_manifest_path,
+                manifest_type="stage1_source",
+                require_existing_paths=True,
+            )
+        except ManifestValidationError as exc:
+            return StageResult(
+                stage_name=self.name,
+                status="failed",
+                elapsed_seconds=0,
+                detail=f"Invalid source manifest for Stage 2 enrich: {exc}",
+                outputs=source.to_metadata(),
+                metrics=source.to_metadata(),
+            )
         sample_context_frame_index = None
         coverage_gate_result = _evaluate_stage1_coverage_gate(render_manifest, config)
         coverage_outputs: Dict[str, object] = {}
@@ -196,6 +206,12 @@ class EnrichStage(PipelineStage):
                     "Task-targeted source selection failed closed: "
                     f"{fallback_reason}. Provide enrich.source_clip_task + task_hints, "
                     "or set enrich.source_clip_selection_fail_closed=false to allow fallback."
+                )
+            elif selection_mode == "explicit" and fallback_reason and fail_closed:
+                detail = (
+                    "Explicit source selection failed closed: "
+                    f"{fallback_reason}. Set enrich.source_clip_name to a valid Stage-1 clip_name, "
+                    "or switch enrich.source_clip_selection_mode."
                 )
             return StageResult(
                 stage_name=self.name,
@@ -361,6 +377,7 @@ class EnrichStage(PipelineStage):
             if not clip_name:
                 logger.warning("Skipping clip with missing clip_name in render manifest")
                 continue
+            clip_artifact_name = sanitize_filename_component(clip_name, fallback="clip")
             if not source_video_path.exists():
                 logger.warning("Video not found: %s", source_video_path)
                 continue
@@ -395,7 +412,7 @@ class EnrichStage(PipelineStage):
             prepared = _prepare_cosmos_input(
                 video_path=oriented_video_path,
                 depth_path=oriented_depth_path,
-                clip_name=clip_name,
+                clip_name=clip_artifact_name,
                 enrich_dir=enrich_dir,
                 preferred_context_frame_index=preferred_context_index,
                 max_input_frames=int(config.enrich.max_input_frames),
@@ -476,7 +493,9 @@ class EnrichStage(PipelineStage):
                             context_frames.append(cand_frame)
                 image_context_path = _write_context_montage(
                     frames=context_frames,
-                    output_path=enrich_dir / "_context_montage" / f"{clip_name}_context.png",
+                    output_path=(
+                        enrich_dir / "_context_montage" / f"{clip_artifact_name}_context.png"
+                    ),
                 )
                 context_frame_index_for_cosmos = None
 
@@ -529,13 +548,16 @@ class EnrichStage(PipelineStage):
                                     attempt_multi_view_context_indices,
                                 )
                                 if attempt_frames:
+                                    safe_variant_name = sanitize_filename_component(
+                                        variant.name, fallback="variant"
+                                    )
                                     attempt_image_context_path = _write_context_montage(
                                         frames=attempt_frames,
                                         output_path=(
                                             enrich_dir
                                             / "_context_montage"
                                             / (
-                                                f"{clip_name}_{variant.name}_retry"
+                                                f"{clip_artifact_name}_{safe_variant_name}_retry"
                                                 f"{attempt_idx:02d}_context.png"
                                             )
                                         ),
@@ -1176,16 +1198,20 @@ def _select_source_clips(
             )
     elif requested_mode == "explicit":
         explicit_name = str(config.enrich.source_clip_name or "").strip()
-        if explicit_name:
+        if not explicit_name:
+            fallback_reason = "explicit_clip_not_set"
+            selected = []
+        else:
             selected = [c for c in clips if str(c.get("clip_name", "")).strip() == explicit_name]
-        if not selected:
-            fallback_reason = "explicit_clip_not_found"
-            selected = clips
+            if not selected:
+                fallback_reason = "explicit_clip_not_found"
+                selected = []
     else:
         selected = clips
 
     if (
         not selected
+        and requested_mode != "explicit"
         and not (
             requested_mode == "task_targeted"
             and fallback_reason is not None
@@ -1207,13 +1233,17 @@ def _select_source_clips(
 
     selected_limited = deduped[: max(1, selection_limit)]
     target_distribution = _summarize_target_distribution(selected_limited)
+    explicit_fail_closed = requested_mode == "explicit" and fallback_reason is not None
     return selected_limited, {
         "selection_mode": requested_mode,
         "fallback": fallback_reason,
         "fail_closed": (
-            requested_mode == "task_targeted"
-            and fallback_reason is not None
-            and fail_closed_task_targeted
+            (
+                requested_mode == "task_targeted"
+                and fallback_reason is not None
+                and fail_closed_task_targeted
+            )
+            or explicit_fail_closed
         ),
         "target_distribution": target_distribution,
         "num_unique_targets": len(target_distribution),
@@ -1505,21 +1535,18 @@ def _prepare_cosmos_input(
     """Prepare Cosmos inputs with optional pre-trim for long clips."""
     min_frames = max(1, int(min_required_frames))
 
+    safe_clip_name = sanitize_filename_component(clip_name, fallback="clip")
+
     def _enforce_h264(
         *,
         source_path: Path,
         label: str,
-        replace_source: bool = False,
     ):
         return ensure_h264_video(
             input_path=source_path,
             min_decoded_frames=min_frames,
-            output_path=(
-                enrich_dir / "_h264_inputs" / f"{clip_name}_{label}_h264.mp4"
-                if not replace_source
-                else None
-            ),
-            replace_source=replace_source,
+            output_path=enrich_dir / "_h264_inputs" / f"{safe_clip_name}_{label}_h264.mp4",
+            replace_source=False,
         )
 
     total_frames = _probe_video_frame_count(video_path)
@@ -1535,14 +1562,12 @@ def _prepare_cosmos_input(
         rgb_checked = _enforce_h264(
             source_path=video_path,
             label="rgb",
-            replace_source=True,
         )
         depth_checked: Path | None = None
         if depth_path is not None and depth_path.exists():
             depth_checked = _enforce_h264(
                 source_path=depth_path,
                 label="depth",
-                replace_source=True,
             ).path
         return PreparedCosmosInput(
             video_path=rgb_checked.path,
@@ -1559,7 +1584,7 @@ def _prepare_cosmos_input(
 
     trim_dir = enrich_dir / "_trimmed_inputs"
     trim_dir.mkdir(parents=True, exist_ok=True)
-    trimmed_video = trim_dir / f"{clip_name}_rgb_trim.mp4"
+    trimmed_video = trim_dir / f"{safe_clip_name}_rgb_trim.mp4"
     written_video = _trim_video_window(
         input_path=video_path,
         output_path=trimmed_video,
@@ -1572,7 +1597,7 @@ def _prepare_cosmos_input(
 
     trimmed_depth: Path | None = None
     if depth_path is not None and depth_path.exists():
-        trimmed_depth = trim_dir / f"{clip_name}_depth_trim.mp4"
+        trimmed_depth = trim_dir / f"{safe_clip_name}_depth_trim.mp4"
         written_depth = _trim_video_window(
             input_path=depth_path,
             output_path=trimmed_depth,
@@ -1586,14 +1611,12 @@ def _prepare_cosmos_input(
     rgb_checked = _enforce_h264(
         source_path=trimmed_video,
         label="rgb_trim",
-        replace_source=True,
     )
     depth_checked: Path | None = None
     if trimmed_depth is not None and trimmed_depth.exists():
         depth_checked = _enforce_h264(
             source_path=trimmed_depth,
             label="depth_trim",
-            replace_source=True,
         ).path
 
     context_in_trim = max(0, min(resolved_index - trim_start, rgb_checked.decoded_frames - 1))

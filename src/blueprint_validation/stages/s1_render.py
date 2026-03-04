@@ -14,7 +14,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from ..common import StageResult, get_logger, read_json, write_json
+from ..common import StageResult, get_logger, sanitize_filename_component, write_json
 from ..config import CameraPathSpec, FacilityConfig, VLMJudgeConfig, ValidationConfig
 from ..evaluation.camera_quality import (
     analyze_target_visibility,
@@ -25,7 +25,7 @@ from ..evaluation.task_hints import tasks_from_task_hints
 from ..evaluation.vlm_judge import Stage1ProbeScore, score_stage1_probe
 from ..rendering.camera_paths import CameraPose, _look_at, generate_path_from_spec, save_path_to_json
 from ..rendering.camera_quality_planner import (
-    plan_best_camera_spec,
+    plan_best_camera_spec,  # noqa: F401
     rank_camera_spec_candidates,
 )
 from ..rendering.stage1_active_perception import (
@@ -57,6 +57,7 @@ from ..rendering.scene_geometry import (
 )
 from ..video_io import ensure_h264_video
 from ..warmup import load_cached_clips, load_warmup_cache
+from ..validation import ManifestValidationError, load_and_validate_manifest
 from .base import PipelineStage
 
 logger = get_logger("stages.s1_render")
@@ -1091,7 +1092,22 @@ class RenderStage(PipelineStage):
             write_json(summary, summary_path)
             return summary
 
-        render_manifest = read_json(manifest_path)
+        try:
+            render_manifest = load_and_validate_manifest(
+                manifest_path,
+                manifest_type="stage1_source",
+                require_existing_paths=False,
+            )
+        except ManifestValidationError as exc:
+            summary = {
+                "status": "failed",
+                "detail": f"Invalid render manifest for post-S1 audit: {exc}",
+                "facility_name": facility.name,
+                "manifest_path": str(manifest_path),
+                "summary_path": str(summary_path),
+            }
+            write_json(summary, summary_path)
+            return summary
         clips_raw = render_manifest.get("clips", [])
         clips: List[Dict[str, object]] = list(clips_raw) if isinstance(clips_raw, list) else []
         clip_by_name: Dict[str, Dict[str, object]] = {}
@@ -1129,8 +1145,9 @@ class RenderStage(PipelineStage):
         clip_rows: List[Dict[str, object]] = []
         quality_reason_counter: Counter[str] = Counter()
         validated_video_by_clip: Dict[str, Path] = {}
-        for clip in clips:
+        for clip_idx, clip in enumerate(clips):
             clip_name = str(clip.get("clip_name", "")).strip() or "unknown"
+            safe_clip_name = sanitize_filename_component(clip_name, fallback=f"clip_{clip_idx:04d}")
             path_type = str(clip.get("path_type", "")).strip().lower()
             path_context = clip.get("path_context") or {}
             if not isinstance(path_context, dict):
@@ -1161,7 +1178,7 @@ class RenderStage(PipelineStage):
                     validated = ensure_h264_video(
                         input_path=video_path,
                         min_decoded_frames=min_frames,
-                        output_path=audit_dir / f"{clip_name}_audit_h264.mp4",
+                        output_path=audit_dir / f"{safe_clip_name}_{clip_idx:04d}_audit_h264.mp4",
                         replace_source=False,
                         crf=18,
                         preset="medium",

@@ -951,6 +951,101 @@ def test_config_rejects_invalid_enrich_blur_reject_rate(tmp_path):
         load_config(config_path)
 
 
+def test_config_rejects_invalid_enrich_context_frame_mode(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "bad_context_frame_mode.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Context Frame Mode",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "enrich": {"context_frame_mode": "auto_center"},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="enrich.context_frame_mode"):
+        load_config(config_path)
+
+
+def test_config_rejects_invalid_enrich_min_frame0_ssim(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "bad_min_frame0_ssim.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Min Frame0 SSIM",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "enrich": {"min_frame0_ssim": 1.2},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="enrich.min_frame0_ssim"):
+        load_config(config_path)
+
+
+def test_config_rejects_invalid_enrich_max_input_frames(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "bad_max_input_frames.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Max Input Frames",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "enrich": {"max_input_frames": -1},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="enrich.max_input_frames"):
+        load_config(config_path)
+
+
+def test_config_rejects_invalid_enrich_scene_index_k(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "bad_scene_index_k.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Scene Index K",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "enrich": {"scene_index_k": -1},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="enrich.scene_index_k"):
+        load_config(config_path)
+
+
+def test_config_rejects_invalid_enrich_scene_index_sample_every_n_frames(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "bad_scene_index_stride.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Scene Index Stride",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "enrich": {"scene_index_sample_every_n_frames": 0},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="enrich.scene_index_sample_every_n_frames"):
+        load_config(config_path)
+
+
 def test_config_rejects_invalid_min_rollout_steps(tmp_path):
     from blueprint_validation.config import load_config
     import yaml

@@ -726,6 +726,7 @@ def _parse_video_orientation_fix(raw_value: Any) -> str:
 
 
 _ALLOWED_SOURCE_CLIP_SELECTION_MODES = {"all", "task_targeted", "explicit"}
+_ALLOWED_ENRICH_CONTEXT_FRAME_MODES = {"target_centered", "fixed"}
 
 
 def _parse_source_clip_selection_mode(raw_value: Any) -> str:
@@ -733,6 +734,14 @@ def _parse_source_clip_selection_mode(raw_value: Any) -> str:
     if value not in _ALLOWED_SOURCE_CLIP_SELECTION_MODES:
         allowed = ", ".join(sorted(_ALLOWED_SOURCE_CLIP_SELECTION_MODES))
         raise ValueError(f"enrich.source_clip_selection_mode must be one of: {allowed}")
+    return value
+
+
+def _parse_enrich_context_frame_mode(raw_value: Any) -> str:
+    value = str(raw_value or "target_centered").strip().lower()
+    if value not in _ALLOWED_ENRICH_CONTEXT_FRAME_MODES:
+        allowed = ", ".join(sorted(_ALLOWED_ENRICH_CONTEXT_FRAME_MODES))
+        raise ValueError(f"enrich.context_frame_mode must be one of: {allowed}")
     return value
 
 
@@ -1035,7 +1044,9 @@ def load_config(path: Path) -> ValidationConfig:
             context_frame_index=(
                 int(e["context_frame_index"]) if e.get("context_frame_index") is not None else None
             ),
-            context_frame_mode=str(e.get("context_frame_mode", "target_centered")),
+            context_frame_mode=_parse_enrich_context_frame_mode(
+                e.get("context_frame_mode", "target_centered")
+            ),
             max_input_frames=int(e.get("max_input_frames", 0)),
             max_source_clips=int(e.get("max_source_clips", 0)),
             min_source_clips=int(e.get("min_source_clips", 8)),
@@ -1752,10 +1763,14 @@ def load_config(path: Path) -> ValidationConfig:
         raise ValueError("enrich.min_source_clips must be >= 0")
     if int(config.enrich.min_valid_outputs) < 0:
         raise ValueError("enrich.min_valid_outputs must be >= 0")
+    if int(config.enrich.max_input_frames) < 0:
+        raise ValueError("enrich.max_input_frames must be >= 0")
     if not (0.0 <= float(config.enrich.max_blur_reject_rate) <= 1.0):
         raise ValueError("enrich.max_blur_reject_rate must be in [0, 1]")
     if not (0.0 <= float(config.enrich.green_frame_ratio_max) <= 1.0):
         raise ValueError("enrich.green_frame_ratio_max must be in [0, 1]")
+    if not (0.0 <= float(config.enrich.min_frame0_ssim) <= 1.0):
+        raise ValueError("enrich.min_frame0_ssim must be in [0, 1]")
     if int(config.enrich.vlm_quality_max_regen_attempts) < 0:
         raise ValueError("enrich.vlm_quality_max_regen_attempts must be >= 0")
     if int(config.enrich.vlm_quality_retry_context_frame_stride) < 1:
@@ -1766,6 +1781,10 @@ def load_config(path: Path) -> ValidationConfig:
         raise ValueError("enrich.vlm_quality_min_visual_score must be in [0, 10]")
     if not (0.0 <= float(config.enrich.vlm_quality_min_spatial_score) <= 10.0):
         raise ValueError("enrich.vlm_quality_min_spatial_score must be in [0, 10]")
+    if int(config.enrich.scene_index_k) < 0:
+        raise ValueError("enrich.scene_index_k must be >= 0")
+    if int(config.enrich.scene_index_sample_every_n_frames) < 1:
+        raise ValueError("enrich.scene_index_sample_every_n_frames must be >= 1")
     if not (0.0 <= float(config.finetune.dataset_quality.max_reject_fraction) <= 1.0):
         raise ValueError("finetune.dataset_quality.max_reject_fraction must be in [0, 1]")
     if int(config.finetune.dataset_quality.prompt_lint.min_chars) < 0:

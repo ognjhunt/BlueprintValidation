@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Dict
@@ -133,6 +134,10 @@ def _count_video_frames(path: Path) -> int:
     frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     cap.release()
     return max(0, frames)
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def test_s2_enrich_reads_robosplat_manifest(sample_config, tmp_path, monkeypatch):
@@ -1084,19 +1089,46 @@ def test_s2_orientation_fix_rotate180_applies_to_rgb_and_depth(tmp_path):
     assert out_depth is not None
     assert out_depth != source_depth
 
+
+def test_s2_orientation_fix_sanitizes_malicious_clip_name(tmp_path):
+    cv2 = pytest.importorskip("cv2")
+    from blueprint_validation.config import FacilityConfig
+    from blueprint_validation.stages.s2_enrich import _resolve_oriented_inputs_for_clip
+
+    source_rgb = tmp_path / "clip_rgb.mp4"
+    h, w = 24, 32
+    writer_rgb = cv2.VideoWriter(
+        str(source_rgb),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        5,
+        (w, h),
+    )
+    writer_rgb.write(np.zeros((h, w, 3), dtype=np.uint8))
+    writer_rgb.release()
+
+    facility = FacilityConfig(
+        name="Kitchen",
+        ply_path=tmp_path / "dummy.ply",
+        video_orientation_fix="rotate180",
+    )
+    facility.ply_path.write_bytes(b"x")
+    out_rgb, _, mode = _resolve_oriented_inputs_for_clip(
+        facility=facility,
+        clip_name="../bad/name with spaces",
+        enrich_dir=tmp_path / "enriched",
+        video_path=source_rgb,
+        depth_path=None,
+    )
+
+    assert mode == "rotate180"
+    assert out_rgb.resolve().is_relative_to((tmp_path / "enriched" / "_orientation_fixed").resolve())
+    assert ".." not in out_rgb.name
+
     cap_rgb = cv2.VideoCapture(str(out_rgb))
     ok_rgb, rotated_rgb = cap_rgb.read()
     cap_rgb.release()
     assert ok_rgb
     assert rotated_rgb[h - 2, w - 2, 2] > 200
-
-    cap_depth = cv2.VideoCapture(str(out_depth))
-    ok_depth, rotated_depth = cap_depth.read()
-    cap_depth.release()
-    assert ok_depth
-    if rotated_depth.ndim == 3:
-        rotated_depth = cv2.cvtColor(rotated_depth, cv2.COLOR_BGR2GRAY)
-    assert rotated_depth[h - 2, w - 2] > 200
 
 
 def test_s2_multi_view_context_uses_image_context_path_and_omits_context_index(
@@ -1222,6 +1254,80 @@ def test_s2_max_input_frames_zero_does_not_pretrim(sample_config, tmp_path, monk
     assert result.metrics["num_trimmed_inputs"] == 0
 
 
+def test_prepare_cosmos_input_does_not_mutate_source_videos(tmp_path):
+    from blueprint_validation.stages.s2_enrich import _prepare_cosmos_input
+
+    work_dir = tmp_path
+    source_video = work_dir / "renders" / "clip_000_orbit.mp4"
+    source_depth = work_dir / "renders" / "clip_000_orbit_depth.mp4"
+    _write_dummy_video(source_video, frames=9)
+    _write_dummy_video(source_depth, frames=9)
+
+    video_hash_before = _sha256(source_video)
+    depth_hash_before = _sha256(source_depth)
+    video_mtime_before = source_video.stat().st_mtime_ns
+    depth_mtime_before = source_depth.stat().st_mtime_ns
+
+    prepared = _prepare_cosmos_input(
+        video_path=source_video,
+        depth_path=source_depth,
+        clip_name="../clip_000_orbit bad",
+        enrich_dir=work_dir / "enriched",
+        preferred_context_frame_index=None,
+        max_input_frames=0,
+        min_required_frames=2,
+    )
+    assert prepared is not None
+
+    assert _sha256(source_video) == video_hash_before
+    assert _sha256(source_depth) == depth_hash_before
+    assert source_video.stat().st_mtime_ns == video_mtime_before
+    assert source_depth.stat().st_mtime_ns == depth_mtime_before
+    assert prepared.video_path != source_video
+    assert prepared.video_path.resolve().is_relative_to((work_dir / "enriched").resolve())
+    assert ".." not in prepared.video_path.name
+    if prepared.depth_path is not None:
+        assert prepared.depth_path.resolve().is_relative_to((work_dir / "enriched").resolve())
+        assert ".." not in prepared.depth_path.name
+
+
+def test_cosmos_enrich_clip_sanitizes_derived_output_names(sample_config, tmp_path, monkeypatch):
+    from blueprint_validation.config import VariantSpec
+    from blueprint_validation.enrichment.cosmos_runner import enrich_clip
+
+    source_video = tmp_path / "source.mp4"
+    _write_dummy_video(source_video, frames=4)
+
+    output_dir = tmp_path / "enriched"
+
+    def _fake_run_cosmos_inference(**kwargs):
+        expected_output_path = kwargs["expected_output_path"]
+        expected_output_path.parent.mkdir(parents=True, exist_ok=True)
+        expected_output_path.write_bytes(b"synthetic")
+        return expected_output_path
+
+    monkeypatch.setattr(
+        "blueprint_validation.enrichment.cosmos_runner.run_cosmos_inference",
+        _fake_run_cosmos_inference,
+    )
+
+    outputs = enrich_clip(
+        video_path=source_video,
+        depth_path=None,
+        variants=[VariantSpec(name="../variant / one", prompt="test")],
+        output_dir=output_dir,
+        clip_name="../clip / name",
+        config=sample_config.enrich,
+        min_output_frames=1,
+    )
+
+    assert len(outputs) == 1
+    out_path = outputs[0].output_video_path.resolve()
+    assert out_path.is_relative_to(output_dir.resolve())
+    assert ".." not in out_path.name
+    assert "/" not in out_path.name
+
+
 def test_select_source_clips_task_targeted_fallback_orders_manipulation_first(sample_config):
     from blueprint_validation.stages.s2_enrich import _select_source_clips
 
@@ -1247,6 +1353,45 @@ def test_select_source_clips_task_targeted_fallback_orders_manipulation_first(sa
 
     assert [c["clip_name"] for c in selected] == ["clip_001_manipulation"]
     assert meta["fallback"] == "missing_task_hints"
+
+
+def test_select_source_clips_explicit_missing_name_fails_closed(sample_config):
+    from blueprint_validation.stages.s2_enrich import _select_source_clips
+
+    sample_config.enrich.source_clip_selection_mode = "explicit"
+    sample_config.enrich.source_clip_name = None
+    facility = list(sample_config.facilities.values())[0]
+
+    selected, meta = _select_source_clips(
+        render_manifest={"clips": [{"clip_name": "clip_000_orbit", "path_type": "orbit"}]},
+        config=sample_config,
+        facility=facility,
+    )
+    assert selected == []
+    assert meta["fallback"] == "explicit_clip_not_set"
+    assert meta["fail_closed"] is True
+
+
+def test_select_source_clips_explicit_unknown_name_fails_closed(sample_config):
+    from blueprint_validation.stages.s2_enrich import _select_source_clips
+
+    sample_config.enrich.source_clip_selection_mode = "explicit"
+    sample_config.enrich.source_clip_name = "missing_clip"
+    facility = list(sample_config.facilities.values())[0]
+
+    selected, meta = _select_source_clips(
+        render_manifest={
+            "clips": [
+                {"clip_name": "clip_000_orbit", "path_type": "orbit"},
+                {"clip_name": "clip_001_manipulation", "path_type": "manipulation"},
+            ]
+        },
+        config=sample_config,
+        facility=facility,
+    )
+    assert selected == []
+    assert meta["fallback"] == "explicit_clip_not_found"
+    assert meta["fail_closed"] is True
 
 
 def test_select_source_clips_task_targeted_fail_closed_returns_empty_selection(sample_config):
@@ -1317,6 +1462,82 @@ def test_s2_task_targeted_selection_fail_closed_blocks_stage(sample_config, tmp_
     assert result.status == "failed"
     assert "failed closed" in (result.detail or "").lower()
     assert result.metrics["source_clip_selection_fallback"] == "missing_task_hints"
+    assert result.metrics["source_clip_selection_fail_closed"] is True
+
+
+def test_s2_explicit_selection_missing_name_blocks_stage(sample_config, tmp_path):
+    from blueprint_validation.common import write_json
+    from blueprint_validation.stages.s2_enrich import EnrichStage
+
+    work_dir = tmp_path
+    render_dir = work_dir / "renders"
+    render_dir.mkdir(parents=True, exist_ok=True)
+    source_video = render_dir / "clip_000_orbit.mp4"
+    source_depth = render_dir / "clip_000_orbit_depth.mp4"
+    _write_dummy_video(source_video, frames=6)
+    _write_dummy_video(source_depth, frames=6)
+
+    write_json(
+        {
+            "facility": "Test Facility",
+            "clips": [
+                {
+                    "clip_name": "clip_000_orbit",
+                    "path_type": "orbit",
+                    "video_path": str(source_video),
+                    "depth_video_path": str(source_depth),
+                }
+            ],
+        },
+        render_dir / "render_manifest.json",
+    )
+
+    sample_config.enrich.source_clip_selection_mode = "explicit"
+    sample_config.enrich.source_clip_name = None
+    facility = list(sample_config.facilities.values())[0]
+
+    result = EnrichStage().run(sample_config, facility, work_dir, {})
+    assert result.status == "failed"
+    assert "explicit source selection failed closed" in (result.detail or "").lower()
+    assert result.metrics["source_clip_selection_fallback"] == "explicit_clip_not_set"
+    assert result.metrics["source_clip_selection_fail_closed"] is True
+
+
+def test_s2_explicit_selection_unknown_name_blocks_stage(sample_config, tmp_path):
+    from blueprint_validation.common import write_json
+    from blueprint_validation.stages.s2_enrich import EnrichStage
+
+    work_dir = tmp_path
+    render_dir = work_dir / "renders"
+    render_dir.mkdir(parents=True, exist_ok=True)
+    source_video = render_dir / "clip_000_orbit.mp4"
+    source_depth = render_dir / "clip_000_orbit_depth.mp4"
+    _write_dummy_video(source_video, frames=6)
+    _write_dummy_video(source_depth, frames=6)
+
+    write_json(
+        {
+            "facility": "Test Facility",
+            "clips": [
+                {
+                    "clip_name": "clip_000_orbit",
+                    "path_type": "orbit",
+                    "video_path": str(source_video),
+                    "depth_video_path": str(source_depth),
+                }
+            ],
+        },
+        render_dir / "render_manifest.json",
+    )
+
+    sample_config.enrich.source_clip_selection_mode = "explicit"
+    sample_config.enrich.source_clip_name = "missing_clip"
+    facility = list(sample_config.facilities.values())[0]
+
+    result = EnrichStage().run(sample_config, facility, work_dir, {})
+    assert result.status == "failed"
+    assert "explicit source selection failed closed" in (result.detail or "").lower()
+    assert result.metrics["source_clip_selection_fallback"] == "explicit_clip_not_found"
     assert result.metrics["source_clip_selection_fail_closed"] is True
 
 

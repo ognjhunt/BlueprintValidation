@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
-from ..common import get_logger
+from ..common import get_logger, sanitize_filename_component
 from ..config import EnrichConfig, VariantSpec
 from ..video_io import ensure_h264_video
 
@@ -246,9 +246,11 @@ def enrich_clip(
 ) -> List[CosmosOutput]:
     """Enrich a single rendered clip with multiple visual variants."""
     outputs = []
+    safe_clip_name = sanitize_filename_component(clip_name, fallback="clip")
 
     for variant in variants:
-        expected_video = output_dir / f"{clip_name}_{variant.name}.mp4"
+        safe_variant_name = sanitize_filename_component(variant.name, fallback="variant")
+        expected_video = output_dir / f"{safe_clip_name}_{safe_variant_name}.mp4"
         spec = build_controlnet_spec(
             video_path=video_path,
             depth_path=depth_path,
