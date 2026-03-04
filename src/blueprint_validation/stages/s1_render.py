@@ -22,7 +22,7 @@ from ..evaluation.camera_quality import (
 )
 from ..evaluation.task_hints import tasks_from_task_hints
 from ..evaluation.vlm_judge import Stage1ProbeScore, score_stage1_probe
-from ..rendering.camera_paths import generate_path_from_spec, save_path_to_json
+from ..rendering.camera_paths import CameraPose, _look_at, generate_path_from_spec, save_path_to_json
 from ..rendering.camera_quality_planner import (
     plan_best_camera_spec,
     rank_camera_spec_candidates,
@@ -42,8 +42,6 @@ from ..rendering.scene_geometry import (
     OccupancyGrid,
     auto_populate_manipulation_zones,
     build_occupancy_grid,
-    compute_camera_height,
-    compute_standoff_distance,
     correct_upside_down_camera_poses,
     compute_scene_transform,
     filter_and_fix_poses,
@@ -68,8 +66,74 @@ _TARGET_PRESENCE_STRICT_MIN_CENTER_RATIO = 0.70
 # Keep this lower than visible/center ratios to avoid over-rejecting partially
 # occluded but still task-usable views in dense kitchen scenes.
 _TARGET_PRESENCE_STRICT_MIN_LOS_RATIO = 0.30
+_TARGET_PRESENCE_STRICT_MIN_SIZE_RATIO = 0.07
 _KITCHEN_0787_LOCKED_SOURCE_TAG = "kitchen_0787_locked"
 _KITCHEN_0787_LOCKED_MAX_TARGETS = 12
+_KITCHEN_0787_LOCKED_DEFAULT_EYE_OFFSET_M = (0.78, -0.40, 0.34)
+_KITCHEN_0787_LOCKED_DEFAULT_LOOK_AT_OFFSET_M = (0.0, 0.0, 0.05)
+_KITCHEN_0787_LOCKED_DEFAULT_PROBE_MOTION_RADIUS_M = 0.010
+_KITCHEN_0787_LOCKED_TARGET_POSE_TABLE: Dict[str, Dict[str, object]] = {
+    "190": {  # bowl
+        "eye_offset_m": (0.56, -0.34, 0.30),
+        "look_at_offset_m": (0.00, 0.00, 0.05),
+        "probe_motion_radius_m": 0.010,
+    },
+    "100": {  # dining table
+        "eye_offset_m": (1.10, 0.78, 0.58),
+        "look_at_offset_m": (0.00, 0.00, 0.08),
+        "probe_motion_radius_m": 0.008,
+    },
+    "88": {  # pot
+        "eye_offset_m": (0.58, 0.34, 0.30),
+        "look_at_offset_m": (0.00, 0.00, 0.04),
+        "probe_motion_radius_m": 0.010,
+    },
+    "102": {  # rice cooker
+        "eye_offset_m": (0.62, -0.36, 0.31),
+        "look_at_offset_m": (0.00, 0.00, 0.05),
+        "probe_motion_radius_m": 0.010,
+    },
+    "157": {  # trash can (dining side)
+        "eye_offset_m": (0.64, 0.42, 0.34),
+        "look_at_offset_m": (0.00, 0.00, 0.05),
+        "probe_motion_radius_m": 0.010,
+    },
+    "161": {  # trash can (kitchen side)
+        "eye_offset_m": (0.62, -0.40, 0.32),
+        "look_at_offset_m": (0.00, 0.00, 0.05),
+        "probe_motion_radius_m": 0.010,
+    },
+    "105": {  # cupboard
+        "eye_offset_m": (1.14, -0.24, 0.44),
+        "look_at_offset_m": (0.00, 0.00, 0.10),
+        "probe_motion_radius_m": 0.008,
+    },
+    "61": {  # door
+        "eye_offset_m": (1.22, -0.72, 0.36),
+        "look_at_offset_m": (0.00, 0.00, 0.10),
+        "probe_motion_radius_m": 0.006,
+    },
+    "62": {  # door
+        "eye_offset_m": (1.22, 0.72, 0.36),
+        "look_at_offset_m": (0.00, 0.00, 0.10),
+        "probe_motion_radius_m": 0.006,
+    },
+    "67": {  # window
+        "eye_offset_m": (1.08, -0.68, 0.34),
+        "look_at_offset_m": (0.00, 0.00, 0.10),
+        "probe_motion_radius_m": 0.006,
+    },
+    "68": {  # window
+        "eye_offset_m": (1.08, 0.68, 0.34),
+        "look_at_offset_m": (0.00, 0.00, 0.10),
+        "probe_motion_radius_m": 0.006,
+    },
+    "186": {  # floor lamp
+        "eye_offset_m": (0.82, 0.52, 0.40),
+        "look_at_offset_m": (0.00, 0.00, 0.06),
+        "probe_motion_radius_m": 0.010,
+    },
+}
 
 
 class RenderStage(PipelineStage):
@@ -714,10 +778,7 @@ class RenderStage(PipelineStage):
         seen_render_fingerprints: List[Dict[str, object]] = []
 
         for path_spec in all_path_specs:
-            is_scene_locked = (
-                str(getattr(path_spec, "source_tag", "")).strip().lower()
-                == _KITCHEN_0787_LOCKED_SOURCE_TAG
-            )
+            is_scene_locked = _is_scene_locked_spec(path_spec)
             clip_repeats = int(config.render.num_clips_per_path)
             # Task-scoped paths are already object-specific; render once to control cost.
             if str(getattr(path_spec, "source_tag", "")).strip().lower() == "task_scoped":
@@ -1046,6 +1107,19 @@ class RenderStage(PipelineStage):
         resolution: tuple,
         start_offset: np.ndarray,
     ) -> tuple[List[object], int, int, int, int]:
+        if _is_scene_locked_spec(path_spec):
+            poses = _build_kitchen_0787_locked_poses(
+                path_spec=path_spec,
+                num_frames=int(num_frames),
+                resolution=resolution,
+            )
+            pre_filter_count = len(poses)
+            if not poses:
+                return [], pre_filter_count, 0, 0, 0
+            poses, corrected_count = correct_upside_down_camera_poses(poses)
+            post_count = len(poses)
+            return poses, pre_filter_count, post_count, post_count, corrected_count
+
         poses = generate_path_from_spec(
             spec=path_spec,
             scene_center=scene_center,
@@ -1185,7 +1259,7 @@ class RenderStage(PipelineStage):
         last_issue_tags: List[str] = []
         last_fail_reason: Optional[str] = None
         retries_used = 0
-        type_conversion_locked = False
+        type_conversion_locked = bool(locked_mode)
 
         # max_loops is "correction loops"; total rounds include the initial probe round.
         total_rounds = 1 if bool(locked_mode) else max(1, int(budget.max_loops) + 1)
@@ -1212,6 +1286,7 @@ class RenderStage(PipelineStage):
                         _is_target_grounded_path_context(path_context)
                     )
                     candidate_target_xyz = _path_context_target_xyz(path_context)
+                    candidate_target_extents = _path_context_target_extents(path_context)
                     (
                         poses,
                         pre_count,
@@ -1414,6 +1489,43 @@ class RenderStage(PipelineStage):
                                 },
                             )
                             break
+                        if candidate_target_extents is not None:
+                            projected_size_ratio = _estimate_target_projected_size_ratio(
+                                poses=poses,
+                                target_xyz=candidate_target_xyz,
+                                target_extents_m=candidate_target_extents,
+                            )
+                            if projected_size_ratio < float(_TARGET_PRESENCE_STRICT_MIN_SIZE_RATIO):
+                                row = {
+                                    "spec": candidate_current_spec,
+                                    "combined_score": -1e9,
+                                    "passed": False,
+                                    "issue_tags": ["target_missing", "target_off_center"],
+                                    "reasoning": (
+                                        "target_presence_reject "
+                                        f"size={projected_size_ratio:.3f}/"
+                                        f"{float(_TARGET_PRESENCE_STRICT_MIN_SIZE_RATIO):.3f}"
+                                    ),
+                                    "target_grounded": True,
+                                }
+                                _append_probe_score_row(
+                                    probe_scores_path,
+                                    {
+                                        "clip_name": clip_name,
+                                        "clip_id": int(clip_name.split("_")[1]) if "_" in clip_name else -1,
+                                        "path_type": str(candidate_current_spec.type),
+                                        "loop": int(round_idx),
+                                        "candidate": int(cand_idx),
+                                        "status": "target_presence_reject",
+                                        "reason": "target_too_small",
+                                        "target_size_ratio": round(projected_size_ratio, 6),
+                                        "min_target_size_ratio": round(
+                                            float(_TARGET_PRESENCE_STRICT_MIN_SIZE_RATIO), 6
+                                        ),
+                                        "target_grounded": True,
+                                    },
+                                )
+                                break
                         los_ratio = _compute_target_line_of_sight_ratio(
                             poses=poses,
                             target_xyz=candidate_target_xyz,
@@ -2173,6 +2285,8 @@ def _path_context_from_spec(path_spec: CameraPathSpec) -> dict:
         context["target_category"] = str(path_spec.target_category)
     if path_spec.target_role is not None:
         context["target_role"] = str(path_spec.target_role)
+    if path_spec.target_extents_m is not None:
+        context["target_extents_m"] = [float(v) for v in path_spec.target_extents_m[:3]]
     return context
 
 
@@ -2189,6 +2303,22 @@ def _path_context_target_xyz(path_context: dict | None) -> list[float] | None:
     if not np.all(np.isfinite(np.asarray(out, dtype=np.float64))):
         return None
     return out
+
+
+def _path_context_target_extents(path_context: dict | None) -> list[float] | None:
+    if not isinstance(path_context, dict):
+        return None
+    extents = path_context.get("target_extents_m")
+    if not isinstance(extents, (list, tuple)) or len(extents) < 3:
+        return None
+    try:
+        arr = np.asarray([float(extents[0]), float(extents[1]), float(extents[2])], dtype=np.float64)
+    except Exception:
+        return None
+    if not np.all(np.isfinite(arr)):
+        return None
+    arr = np.maximum(arr, 0.01)
+    return [float(arr[0]), float(arr[1]), float(arr[2])]
 
 
 def _is_target_grounded_path_context(path_context: dict | None) -> bool:
@@ -2330,17 +2460,192 @@ def _is_kitchen_0787_scene(facility: FacilityConfig) -> bool:
     return "0787" in text and "kitchen" in text
 
 
+def _is_scene_locked_spec(path_spec: CameraPathSpec) -> bool:
+    return str(getattr(path_spec, "source_tag", "")).strip().lower() == _KITCHEN_0787_LOCKED_SOURCE_TAG
+
+
+def _stable_phase_from_key(text: str) -> float:
+    key = str(text or "locked").encode("utf-8", errors="ignore")
+    digest = hashlib.sha1(key).hexdigest()
+    unit = int(digest[:8], 16) / float(0xFFFFFFFF)
+    return float(2.0 * np.pi * unit)
+
+
+def _resolve_locked_pose_table_entry(target_instance_id: object) -> Dict[str, object]:
+    raw = str(target_instance_id or "").strip()
+    if raw and raw in _KITCHEN_0787_LOCKED_TARGET_POSE_TABLE:
+        return dict(_KITCHEN_0787_LOCKED_TARGET_POSE_TABLE[raw])
+    m = re.search(r"([0-9]+)$", raw)
+    if m:
+        key = m.group(1)
+        if key in _KITCHEN_0787_LOCKED_TARGET_POSE_TABLE:
+            return dict(_KITCHEN_0787_LOCKED_TARGET_POSE_TABLE[key])
+    return {}
+
+
+def _resolve_kitchen_0787_locked_pose_params(
+    path_spec: CameraPathSpec,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    entry = _resolve_locked_pose_table_entry(getattr(path_spec, "target_instance_id", None))
+    eye_offset_raw = entry.get("eye_offset_m", _KITCHEN_0787_LOCKED_DEFAULT_EYE_OFFSET_M)
+    look_at_offset_raw = entry.get("look_at_offset_m", _KITCHEN_0787_LOCKED_DEFAULT_LOOK_AT_OFFSET_M)
+    motion_radius_raw = entry.get(
+        "probe_motion_radius_m",
+        _KITCHEN_0787_LOCKED_DEFAULT_PROBE_MOTION_RADIUS_M,
+    )
+    try:
+        eye_offset = np.asarray(eye_offset_raw, dtype=np.float64).reshape(-1)[:3]
+    except Exception:
+        eye_offset = np.asarray(_KITCHEN_0787_LOCKED_DEFAULT_EYE_OFFSET_M, dtype=np.float64)
+    try:
+        look_at_offset = np.asarray(look_at_offset_raw, dtype=np.float64).reshape(-1)[:3]
+    except Exception:
+        look_at_offset = np.asarray(_KITCHEN_0787_LOCKED_DEFAULT_LOOK_AT_OFFSET_M, dtype=np.float64)
+    if eye_offset.size < 3 or not np.all(np.isfinite(eye_offset)):
+        eye_offset = np.asarray(_KITCHEN_0787_LOCKED_DEFAULT_EYE_OFFSET_M, dtype=np.float64)
+    if look_at_offset.size < 3 or not np.all(np.isfinite(look_at_offset)):
+        look_at_offset = np.asarray(_KITCHEN_0787_LOCKED_DEFAULT_LOOK_AT_OFFSET_M, dtype=np.float64)
+    try:
+        motion_radius_m = float(motion_radius_raw)
+    except Exception:
+        motion_radius_m = float(_KITCHEN_0787_LOCKED_DEFAULT_PROBE_MOTION_RADIUS_M)
+    motion_radius_m = float(np.clip(motion_radius_m, 0.0, 0.05))
+    return eye_offset[:3], look_at_offset[:3], motion_radius_m
+
+
+def _build_kitchen_0787_locked_poses(
+    *,
+    path_spec: CameraPathSpec,
+    num_frames: int,
+    resolution: tuple[int, int],
+) -> List[CameraPose]:
+    target = np.asarray(path_spec.approach_point or [], dtype=np.float64).reshape(-1)
+    if target.size < 3 or not np.all(np.isfinite(target[:3])):
+        return []
+    target = target[:3]
+    eye_offset, look_at_offset, motion_radius_m = _resolve_kitchen_0787_locked_pose_params(path_spec)
+    look_at = target + look_at_offset
+    base_eye = target + eye_offset
+    if float(np.linalg.norm(look_at - base_eye)) <= 1e-4:
+        base_eye = base_eye + np.asarray([0.25, -0.10, 0.18], dtype=np.float64)
+
+    num = max(1, int(num_frames))
+    height = max(2, int(resolution[0]))
+    width = max(2, int(resolution[1]))
+    fx = fy = float(width) / float(2.0 * np.tan(np.deg2rad(60.0 / 2.0)))
+    cx, cy = float(width) / 2.0, float(height) / 2.0
+
+    key = (
+        str(getattr(path_spec, "target_instance_id", "")).strip()
+        or str(getattr(path_spec, "target_label", "")).strip()
+        or "locked"
+    )
+    phase = _stable_phase_from_key(key)
+    turn_span = float(np.deg2rad(22.0))
+    poses: List[CameraPose] = []
+    for i in range(num):
+        if num <= 1 or motion_radius_m <= 1e-6:
+            theta = phase
+        else:
+            frac = float(i) / float(max(1, num - 1))
+            theta = phase + turn_span * frac
+        eye = base_eye.copy()
+        eye[0] += motion_radius_m * np.cos(theta)
+        eye[1] += 0.5 * motion_radius_m * np.sin(theta)
+        eye[2] += 0.2 * motion_radius_m * np.sin(0.5 * theta)
+        c2w = _look_at(eye, look_at)
+        poses.append(
+            CameraPose(
+                c2w=c2w,
+                fx=fx,
+                fy=fy,
+                cx=cx,
+                cy=cy,
+                width=width,
+                height=height,
+            )
+        )
+    return poses
+
+
+def _project_world_point_to_image(pose: object, xyz: np.ndarray) -> tuple[float, float] | None:
+    try:
+        c2w = np.asarray(getattr(pose, "c2w"), dtype=np.float64)
+        fx = float(getattr(pose, "fx"))
+        fy = float(getattr(pose, "fy"))
+        cx = float(getattr(pose, "cx"))
+        cy = float(getattr(pose, "cy"))
+    except Exception:
+        return None
+    if c2w.shape != (4, 4):
+        return None
+    world = np.array([float(xyz[0]), float(xyz[1]), float(xyz[2]), 1.0], dtype=np.float64)
+    cam = np.linalg.inv(c2w) @ world
+    z = float(cam[2])
+    if z <= 1e-6:
+        return None
+    u = fx * float(cam[0]) / z + cx
+    v = fy * float(cam[1]) / z + cy
+    return float(u), float(v)
+
+
+def _estimate_target_projected_size_ratio(
+    *,
+    poses: List[object],
+    target_xyz: list[float],
+    target_extents_m: list[float],
+) -> float:
+    if not poses:
+        return 0.0
+    center = np.asarray(target_xyz, dtype=np.float64).reshape(-1)
+    ext = np.asarray(target_extents_m, dtype=np.float64).reshape(-1)
+    if center.size < 3 or ext.size < 3:
+        return 0.0
+    center = center[:3]
+    ext = np.maximum(np.abs(ext[:3]), 0.01)
+    if not np.all(np.isfinite(center)) or not np.all(np.isfinite(ext)):
+        return 0.0
+    half = 0.5 * ext
+    corners = []
+    for sx in (-1.0, 1.0):
+        for sy in (-1.0, 1.0):
+            for sz in (-1.0, 1.0):
+                corners.append(center + np.array([sx * half[0], sy * half[1], sz * half[2]]))
+
+    ratios: List[float] = []
+    for pose in poses:
+        try:
+            width = max(1.0, float(getattr(pose, "width")))
+            height = max(1.0, float(getattr(pose, "height")))
+        except Exception:
+            continue
+        points = [_project_world_point_to_image(pose, c) for c in corners]
+        points = [p for p in points if p is not None]
+        if len(points) < 4:
+            continue
+        u_vals = [float(p[0]) for p in points]
+        v_vals = [float(p[1]) for p in points]
+        u0 = max(0.0, min(width, min(u_vals)))
+        u1 = max(0.0, min(width, max(u_vals)))
+        v0 = max(0.0, min(height, min(v_vals)))
+        v1 = max(0.0, min(height, max(v_vals)))
+        box_w = max(0.0, u1 - u0)
+        box_h = max(0.0, v1 - v0)
+        if box_w <= 0.0 or box_h <= 0.0:
+            continue
+        ratios.append(float(max(box_w / width, box_h / height)))
+    if not ratios:
+        return 0.0
+    return float(np.median(np.asarray(ratios, dtype=np.float64)))
+
+
 def _build_kitchen_0787_locked_specs(
     *,
     config: ValidationConfig,
     facility: FacilityConfig,
     scene_transform: Optional[np.ndarray],
 ) -> List[CameraPathSpec]:
-    """Build deterministic, target-grounded camera specs for kitchen_0787.
-
-    This path intentionally avoids generic seed paths and randomization to keep
-    Stage-1 capture deterministic for the known scene.
-    """
+    """Build deterministic target-grounded specs for fixed eye/look-at capture."""
     task_hints_path = Path(facility.task_hints_path) if facility.task_hints_path else None
     if task_hints_path is None or not task_hints_path.exists():
         logger.warning(
@@ -2399,18 +2704,9 @@ def _build_kitchen_0787_locked_specs(
         role = str(role_by_instance.get(str(obb.instance_id), "targets") or "targets").strip().lower()
         if role not in {"targets", "context", "fallback", "overview"}:
             role = "targets"
-
-        max_xy = float(np.max(np.abs(obb.extents[:2]))) if len(obb.extents) >= 2 else 0.5
-        ext_z = float(obb.extents[2]) if len(obb.extents) > 2 else 0.5
-        size_scale = float(np.clip((max_xy - 0.20) / 1.40, 0.0, 1.0))
-        standoff = float(compute_standoff_distance(obb))
-        cam_height = float(max(compute_camera_height(obb), float(obb.center[2]) + 0.30))
-        orbit_radius = float(np.clip(standoff * (0.58 - 0.08 * size_scale), 0.65, 1.35))
-        if role == "context":
-            orbit_radius = float(np.clip(orbit_radius * 1.12, 0.75, 1.55))
-        look_down = float(np.clip(40.0 + 14.0 * size_scale + (6.0 if ext_z < 0.10 else 0.0), 28.0, 62.0))
-        if role == "targets":
-            look_down = float(min(65.0, look_down + 4.0))
+        ext_arr = np.asarray(obb.extents, dtype=np.float64).reshape(-1)
+        if ext_arr.size < 3:
+            ext_arr = np.pad(ext_arr, (0, 3 - ext_arr.size), constant_values=0.1)
 
         meta = {
             "source_tag": _KITCHEN_0787_LOCKED_SOURCE_TAG,
@@ -2418,39 +2714,28 @@ def _build_kitchen_0787_locked_specs(
             "target_label": str(obb.label) if str(obb.label).strip() else None,
             "target_category": str(obb.category) if str(obb.category).strip() else None,
             "target_role": role,
+            "target_extents_m": [
+                float(max(0.01, abs(float(ext_arr[0])))),
+                float(max(0.01, abs(float(ext_arr[1])))),
+                float(max(0.01, abs(float(ext_arr[2])))),
+            ],
         }
 
         approach = [float(obb.center[0]), float(obb.center[1]), float(obb.center[2])]
         specs.append(
             CameraPathSpec(
-                type="orbit",
-                radius_m=orbit_radius,
+                type="file",
+                radius_m=1.0,
                 num_orbits=1,
                 approach_point=approach,
-                height_override_m=cam_height,
-                look_down_override_deg=look_down,
+                height_override_m=None,
+                look_down_override_deg=None,
                 **meta,
             )
         )
 
-        if str(obb.category).strip().lower() == "manipulation" and role == "targets":
-            arc_radius = float(np.clip(orbit_radius * 0.65, 0.45, 0.90))
-            arc_span = 72.0 if max_xy < 0.80 else 90.0
-            specs.append(
-                CameraPathSpec(
-                    type="manipulation",
-                    approach_point=approach,
-                    arc_radius_m=arc_radius,
-                    arc_span_deg=float(arc_span),
-                    arc_phase_offset_deg=0.0,
-                    height_override_m=cam_height,
-                    look_down_override_deg=float(np.clip(look_down + 10.0, 45.0, 72.0)),
-                    **meta,
-                )
-            )
-
     logger.info(
-        "kitchen_0787 scene-locked spec builder selected %d OBBs (targets=%d context=%d fallback=%d) -> %d specs",
+        "kitchen_0787 scene-locked spec builder selected %d OBBs (targets=%d context=%d fallback=%d) -> %d locked specs",
         len(selected_obbs),
         int(scoped_stats.get("targets", 0)),
         int(scoped_stats.get("context", 0)),

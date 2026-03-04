@@ -67,6 +67,8 @@ class CameraPathSpec:
     target_label: Optional[str] = None
     target_category: Optional[str] = None
     target_role: Optional[str] = None
+    # Optional target OBB extents in meters (XYZ full widths).
+    target_extents_m: Optional[List[float]] = None
 
 
 @dataclass
@@ -784,6 +786,7 @@ def _parse_camera_paths(raw_list: List[Dict[str, Any]], base_dir: Path) -> List[
                 target_label=raw.get("target_label"),
                 target_category=raw.get("target_category"),
                 target_role=raw.get("target_role"),
+                target_extents_m=raw.get("target_extents_m"),
             )
         )
     return paths
