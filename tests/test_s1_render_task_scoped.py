@@ -298,3 +298,192 @@ def test_expected_focus_text_falls_back_to_path_type():
 
     text = _build_expected_focus_text(path_type="sweep", path_context={})
     assert "Sweep focus" in text
+
+
+def test_is_kitchen_0787_scene_detects_known_facility_tokens(tmp_path):
+    from blueprint_validation.config import FacilityConfig
+    from blueprint_validation.stages.s1_render import _is_kitchen_0787_scene
+
+    fac = FacilityConfig(
+        name="Kitchen Scene 0787 (InteriorGS)",
+        ply_path=tmp_path / "0787_841244" / "3dgs_compressed.ply",
+        task_hints_path=tmp_path / "0787_841244" / "task_targets.synthetic.json",
+    )
+    assert _is_kitchen_0787_scene(fac) is True
+
+
+def test_build_kitchen_0787_locked_specs_is_target_grounded_and_deterministic(
+    sample_config, tmp_path, monkeypatch
+):
+    from blueprint_validation.config import FacilityConfig
+    from blueprint_validation.rendering.scene_geometry import OrientedBoundingBox
+    from blueprint_validation.stages.s1_render import _build_kitchen_0787_locked_specs
+
+    hints = tmp_path / "task_targets.synthetic.json"
+    hints.write_text("{}")
+    fac = FacilityConfig(
+        name="Kitchen Scene 0787 (InteriorGS)",
+        ply_path=tmp_path / "3dgs_compressed.ply",
+        task_hints_path=hints,
+    )
+
+    obbs = [
+        OrientedBoundingBox(
+            instance_id="101",
+            label="bowl",
+            center=np.asarray([0.0, 0.0, 0.8], dtype=np.float64),
+            extents=np.asarray([0.5, 0.4, 0.3], dtype=np.float64),
+            axes=np.eye(3, dtype=np.float64),
+            confidence=0.9,
+            category="manipulation",
+        ),
+        OrientedBoundingBox(
+            instance_id="202",
+            label="cabinet",
+            center=np.asarray([1.2, -0.4, 1.1], dtype=np.float64),
+            extents=np.asarray([0.8, 0.2, 1.8], dtype=np.float64),
+            axes=np.eye(3, dtype=np.float64),
+            confidence=0.8,
+            category="articulation",
+        ),
+    ]
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render.load_obbs_from_task_targets",
+        lambda _path: list(obbs),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render._build_task_prompt_pool",
+        lambda **_kwargs: ["pick up bowl_101"],
+    )
+
+    specs = _build_kitchen_0787_locked_specs(
+        config=sample_config,
+        facility=fac,
+        scene_transform=None,
+    )
+    assert specs
+    assert all(spec.source_tag == "kitchen_0787_locked" for spec in specs)
+    assert all(spec.approach_point is not None for spec in specs)
+    assert specs[0].target_instance_id == "101"
+    assert specs[0].target_label == "bowl"
+    assert specs[0].target_role == "targets"
+    assert any(spec.type == "orbit" for spec in specs)
+
+
+def test_generate_and_render_scene_locked_forces_single_clip_and_locked_probe(
+    sample_config, tmp_path, monkeypatch
+):
+    from blueprint_validation.config import CameraPathSpec
+    from blueprint_validation.rendering.camera_paths import CameraPose
+    from blueprint_validation.stages.s1_render import (
+        RenderStage,
+        _KITCHEN_0787_LOCKED_SOURCE_TAG,
+    )
+
+    sample_config.render.num_clips_per_path = 3
+    sample_config.render.stage1_quality_planner_enabled = True
+    sample_config.render.stage1_active_perception_enabled = True
+    sample_config.render.stage1_active_perception_fail_closed = True
+
+    spec = CameraPathSpec(
+        type="orbit",
+        radius_m=1.0,
+        approach_point=[0.0, 0.0, 0.8],
+        source_tag=_KITCHEN_0787_LOCKED_SOURCE_TAG,
+        target_label="bowl_101",
+        target_role="targets",
+    )
+
+    pose = CameraPose(
+        c2w=np.eye(4, dtype=np.float64),
+        fx=50.0,
+        fy=50.0,
+        cx=32.0,
+        cy=24.0,
+        width=64,
+        height=48,
+    )
+
+    captured = {}
+
+    monkeypatch.setattr(
+        RenderStage,
+        "_build_render_poses",
+        lambda self, **kwargs: ([pose, pose], 2, 2, 2, 0),
+    )
+    monkeypatch.setattr(
+        RenderStage,
+        "_annotate_entry_quality",
+        lambda self, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render.save_path_to_json",
+        lambda poses, out_path: out_path.write_text("{}"),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render.render_video",
+        lambda **kwargs: (
+            (tmp_path / f"{kwargs['clip_name']}.mp4").write_bytes(b"x"),
+            (tmp_path / f"{kwargs['clip_name']}_depth.mp4").write_bytes(b"x"),
+            SimpleNamespace(
+                video_path=tmp_path / f"{kwargs['clip_name']}.mp4",
+                depth_video_path=tmp_path / f"{kwargs['clip_name']}_depth.mp4",
+            ),
+        )[-1],
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render._detect_duplicate_clip",
+        lambda **kwargs: {"is_duplicate": False, "sha256": "abc", "samples": [], "max_similarity": None},
+    )
+
+    def _fake_probe(self, **kwargs):
+        captured["locked_mode"] = bool(kwargs.get("locked_mode"))
+        captured["start_offset"] = np.asarray(kwargs.get("start_offset"), dtype=np.float64).copy()
+        return kwargs["initial_spec"], {
+            "vlm_probe_attempts": 1,
+            "vlm_probe_evaluated": True,
+            "vlm_probe_passed": True,
+            "vlm_probe_retries_used": 0,
+            "vlm_probe_issue_tags_final": [],
+            "vlm_probe_candidate_count": 1,
+            "vlm_probe_selected_fps": float(sample_config.eval_policy.vlm_judge.video_metadata_fps),
+            "vlm_probe_fail_reason": "",
+            "num_vlm_probe_api_failures": 0,
+            "num_vlm_probe_parse_failures": 0,
+            "num_vlm_probe_high_variance": 0,
+            "num_probe_duplicate_detected": 0,
+            "num_probe_duplicate_regenerated": 0,
+            "num_probe_duplicate_unresolved": 0,
+            "num_probe_viability_rejects": 0,
+            "num_probe_monochrome_warnings": 0,
+            "active_model_used": "gemini-3-flash-preview",
+            "vlm_probe_consensus_votes_configured": 1,
+            "vlm_probe_consensus_votes_effective": 1,
+            "vlm_probe_score_spread": None,
+            "probe_codec": "h264",
+            "probe_resolution": [64, 48],
+            "probe_decoded_frames": 2,
+        }
+
+    monkeypatch.setattr(RenderStage, "_run_active_perception_probe", _fake_probe)
+
+    stage = RenderStage()
+    entries, _, _, _ = stage._generate_and_render(
+        config=sample_config,
+        splat=object(),
+        all_path_specs=[spec],
+        scene_center=np.array([0.0, 0.0, 0.0], dtype=np.float64),
+        occupancy=None,
+        render_dir=tmp_path,
+        num_frames=4,
+        camera_height=1.0,
+        look_down_deg=20.0,
+        resolution=(48, 64),
+        fps=5,
+        scene_T=None,
+    )
+
+    assert len(entries) == 1
+    assert captured["locked_mode"] is True
+    np.testing.assert_allclose(captured["start_offset"], np.zeros(3, dtype=np.float64), atol=1e-10)

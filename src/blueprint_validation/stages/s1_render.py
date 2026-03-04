@@ -42,6 +42,8 @@ from ..rendering.scene_geometry import (
     OccupancyGrid,
     auto_populate_manipulation_zones,
     build_occupancy_grid,
+    compute_camera_height,
+    compute_standoff_distance,
     correct_upside_down_camera_poses,
     compute_scene_transform,
     filter_and_fix_poses,
@@ -59,6 +61,12 @@ from ..warmup import load_cached_clips, load_warmup_cache
 from .base import PipelineStage
 
 logger = get_logger("stages.s1_render")
+
+_TARGET_PRESENCE_STRICT_MIN_VISIBLE_RATIO = 0.80
+_TARGET_PRESENCE_STRICT_MIN_CENTER_RATIO = 0.70
+_TARGET_PRESENCE_STRICT_MIN_LOS_RATIO = 0.85
+_KITCHEN_0787_LOCKED_SOURCE_TAG = "kitchen_0787_locked"
+_KITCHEN_0787_LOCKED_MAX_TARGETS = 12
 
 
 class RenderStage(PipelineStage):
@@ -333,6 +341,25 @@ class RenderStage(PipelineStage):
             if has_transform:
                 splat_means_np = transform_means(splat_means_np, scene_T)
             scene_center = splat_means_np.mean(axis=0)
+            kitchen_0787_locked_mode = _is_kitchen_0787_scene(facility)
+            if kitchen_0787_locked_mode and (
+                not bool(config.render.stage1_active_perception_enabled)
+                or not bool(config.render.stage1_active_perception_fail_closed)
+            ):
+                return StageResult(
+                    stage_name=self.name,
+                    status="failed",
+                    elapsed_seconds=0,
+                    detail=(
+                        "kitchen_0787 scene-locked mode requires "
+                        "render.stage1_active_perception_enabled=true and "
+                        "render.stage1_active_perception_fail_closed=true."
+                    ),
+                    outputs={
+                        "render_dir": str(render_dir),
+                        "facility_name": facility.name,
+                    },
+                )
 
             # Scene-aware camera placement
             extra_specs, occupancy = self._build_scene_aware_specs(
@@ -343,28 +370,58 @@ class RenderStage(PipelineStage):
             base_specs = list(config.render.camera_paths)
             if has_transform:
                 base_specs = transform_camera_path_specs(base_specs, scene_T)
-            all_path_specs = base_specs + extra_specs
-            if (
-                extra_specs
-                and bool(config.render.task_scoped_scene_aware)
-                and str(config.render.stage1_active_perception_scope).strip().lower()
-                == "targeted"
-            ):
-                # Fast-validation mode: evaluate targeted, object-grounded specs before
-                # generic seed paths so early canary probes reflect task-focused capture quality.
-                all_path_specs = extra_specs + base_specs
-                logger.info(
-                    "Using targeted-first path ordering for Stage-1 active-perception scope=targeted "
-                    "(targeted_specs=%d seed_specs=%d)",
-                    len(extra_specs),
-                    len(base_specs),
+            if kitchen_0787_locked_mode:
+                all_path_specs = _build_kitchen_0787_locked_specs(
+                    config=config,
+                    facility=facility,
+                    scene_transform=(scene_T if has_transform else None),
                 )
-            if extra_specs:
+                if not all_path_specs:
+                    return StageResult(
+                        stage_name=self.name,
+                        status="failed",
+                        elapsed_seconds=0,
+                        detail=(
+                            "kitchen_0787 scene-locked mode could not build any target-grounded "
+                            "camera specs from task hints."
+                        ),
+                        outputs={
+                            "render_dir": str(render_dir),
+                            "task_hints_path": (
+                                str(facility.task_hints_path)
+                                if facility.task_hints_path is not None
+                                else None
+                            ),
+                        },
+                    )
+                extra_specs_count = len(all_path_specs)
                 logger.info(
-                    "Added %d scene-aware camera paths (total: %d)",
-                    len(extra_specs),
+                    "kitchen_0787 scene-locked mode active: using %d deterministic target-grounded specs",
                     len(all_path_specs),
                 )
+            else:
+                all_path_specs = base_specs + extra_specs
+                if (
+                    extra_specs
+                    and bool(config.render.task_scoped_scene_aware)
+                    and str(config.render.stage1_active_perception_scope).strip().lower()
+                    == "targeted"
+                ):
+                    # Fast-validation mode: evaluate targeted, object-grounded specs before
+                    # generic seed paths so early canary probes reflect task-focused capture quality.
+                    all_path_specs = extra_specs + base_specs
+                    logger.info(
+                        "Using targeted-first path ordering for Stage-1 active-perception scope=targeted "
+                        "(targeted_specs=%d seed_specs=%d)",
+                        len(extra_specs),
+                        len(base_specs),
+                    )
+                if extra_specs:
+                    logger.info(
+                        "Added %d scene-aware camera paths (total: %d)",
+                        len(extra_specs),
+                        len(all_path_specs),
+                    )
 
             (
                 manifest_entries,
@@ -654,10 +711,17 @@ class RenderStage(PipelineStage):
         seen_render_fingerprints: List[Dict[str, object]] = []
 
         for path_spec in all_path_specs:
+            is_scene_locked = (
+                str(getattr(path_spec, "source_tag", "")).strip().lower()
+                == _KITCHEN_0787_LOCKED_SOURCE_TAG
+            )
             clip_repeats = int(config.render.num_clips_per_path)
             # Task-scoped paths are already object-specific; render once to control cost.
             if str(getattr(path_spec, "source_tag", "")).strip().lower() == "task_scoped":
                 clip_repeats = int(config.render.task_scoped_num_clips_per_path)
+            if is_scene_locked:
+                # Deterministic scene-locked mode: one clip per target-grounded spec.
+                clip_repeats = 1
             clip_repeats = max(1, clip_repeats)
             for clip_num in range(clip_repeats):
                 path_context_for_scope = _path_context_from_spec(path_spec)
@@ -669,6 +733,8 @@ class RenderStage(PipelineStage):
                     )
                     and _is_target_grounded_path_context(path_context_for_scope)
                 )
+                if is_scene_locked:
+                    target_grounded = True
                 # Add random offset for variety between clips
                 rng = np.random.default_rng(seed=clip_index * 42)
                 offset = _sample_start_offset(
@@ -681,6 +747,8 @@ class RenderStage(PipelineStage):
                     ),
                     target_grounded=False,
                 )
+                if is_scene_locked:
+                    offset = np.zeros(3, dtype=np.float64)
                 probe_offset = (
                     _sample_start_offset(
                         config,
@@ -696,6 +764,8 @@ class RenderStage(PipelineStage):
                     if target_grounded
                     else np.asarray(offset, dtype=np.float64).copy()
                 )
+                if is_scene_locked:
+                    probe_offset = np.zeros(3, dtype=np.float64)
                 requested_count = int(num_frames)
                 if (
                     str(getattr(path_spec, "source_tag", "")).strip().lower() == "task_scoped"
@@ -706,7 +776,7 @@ class RenderStage(PipelineStage):
                 planned_spec = path_spec
                 candidate_count_evaluated = 1
                 ranked_candidates = []
-                if bool(config.render.stage1_quality_planner_enabled):
+                if bool(config.render.stage1_quality_planner_enabled) and not is_scene_locked:
                     ranked_candidates = rank_camera_spec_candidates(
                         base_spec=path_spec,
                         scene_center=scene_center,
@@ -740,13 +810,16 @@ class RenderStage(PipelineStage):
                     selected_fps=float(config.eval_policy.vlm_judge.video_metadata_fps),
                     candidate_count=max(1, int(candidate_count_evaluated)),
                 )
-                if (
-                    bool(config.render.stage1_active_perception_enabled)
-                    and should_probe_clip(
+                should_run_probe = bool(config.render.stage1_active_perception_enabled) and bool(
+                    is_scene_locked
+                    or should_probe_clip(
                         scope=config.render.stage1_active_perception_scope,
                         path_type=str(path_spec.type),
                         path_context=path_context_for_scope,
                     )
+                )
+                if (
+                    should_run_probe
                 ):
                     planned_spec, probe_meta = self._run_active_perception_probe(
                         config=config,
@@ -767,6 +840,7 @@ class RenderStage(PipelineStage):
                         target_presence_enforced=target_grounded,
                         probe_orientation_fix=probe_orientation_fix,
                         probe_scores_path=probe_scores_path,
+                        locked_mode=is_scene_locked,
                     )
                     _update_vlm_probe_summary(
                         quality_summary=quality_summary,
@@ -1070,6 +1144,7 @@ class RenderStage(PipelineStage):
         target_presence_enforced: bool = False,
         probe_orientation_fix: str = "none",
         probe_scores_path: Optional[Path] = None,
+        locked_mode: bool = False,
     ) -> tuple[CameraPathSpec, Dict[str, object]]:
         budget = resolve_probe_budget(
             candidate_budget=config.render.stage1_quality_candidate_budget,
@@ -1089,7 +1164,10 @@ class RenderStage(PipelineStage):
         seen_probe_fingerprints: List[Dict[str, object]] = []
         fallback_target_point = [float(scene_center[0]), float(scene_center[1]), float(scene_center[2])]
 
-        if ranked_candidates:
+        if bool(locked_mode):
+            ranked_specs = [initial_spec]
+            geometric_scores = [0.0]
+        elif ranked_candidates:
             ranked_specs = [row.spec for row in ranked_candidates[: max(1, int(budget.top_k))]]
             geometric_scores = [
                 float(getattr(row, "score", 0.0))
@@ -1107,7 +1185,7 @@ class RenderStage(PipelineStage):
         type_conversion_locked = False
 
         # max_loops is "correction loops"; total rounds include the initial probe round.
-        total_rounds = max(1, int(budget.max_loops) + 1)
+        total_rounds = 1 if bool(locked_mode) else max(1, int(budget.max_loops) + 1)
         for round_idx in range(total_rounds):
             if round_idx == 0:
                 candidate_specs = ranked_specs
@@ -1292,8 +1370,14 @@ class RenderStage(PipelineStage):
                         center_ratio = (
                             float(center_frames) / float(total_frames) if total_frames > 0 else 0.0
                         )
-                        min_visible_ratio = float(config.render.stage1_coverage_min_visible_frame_ratio)
-                        min_center_ratio = float(config.render.stage1_coverage_min_center_band_ratio)
+                        min_visible_ratio = max(
+                            float(config.render.stage1_coverage_min_visible_frame_ratio),
+                            float(_TARGET_PRESENCE_STRICT_MIN_VISIBLE_RATIO),
+                        )
+                        min_center_ratio = max(
+                            float(config.render.stage1_coverage_min_center_band_ratio),
+                            float(_TARGET_PRESENCE_STRICT_MIN_CENTER_RATIO),
+                        )
                         if visible_ratio < min_visible_ratio or center_ratio < min_center_ratio:
                             issue_tags = ["target_missing"]
                             if center_ratio < min_center_ratio:
@@ -1323,6 +1407,43 @@ class RenderStage(PipelineStage):
                                     "target_center_ratio": round(center_ratio, 6),
                                     "min_visible_ratio": round(min_visible_ratio, 6),
                                     "min_center_ratio": round(min_center_ratio, 6),
+                                    "target_grounded": True,
+                                },
+                            )
+                            break
+                        los_ratio = _compute_target_line_of_sight_ratio(
+                            poses=poses,
+                            target_xyz=candidate_target_xyz,
+                            occupancy=occupancy,
+                            min_clearance_m=float(config.render.min_clearance_m),
+                        )
+                        if los_ratio < float(_TARGET_PRESENCE_STRICT_MIN_LOS_RATIO):
+                            row = {
+                                "spec": candidate_current_spec,
+                                "combined_score": -1e9,
+                                "passed": False,
+                                "issue_tags": ["target_missing", "target_occluded"],
+                                "reasoning": (
+                                    "target_presence_reject "
+                                    f"line_of_sight={los_ratio:.3f}/"
+                                    f"{float(_TARGET_PRESENCE_STRICT_MIN_LOS_RATIO):.3f}"
+                                ),
+                                "target_grounded": True,
+                            }
+                            _append_probe_score_row(
+                                probe_scores_path,
+                                {
+                                    "clip_name": clip_name,
+                                    "clip_id": int(clip_name.split("_")[1]) if "_" in clip_name else -1,
+                                    "path_type": str(candidate_current_spec.type),
+                                    "loop": int(round_idx),
+                                    "candidate": int(cand_idx),
+                                    "status": "target_presence_reject",
+                                    "reason": "line_of_sight_occluded",
+                                    "target_los_ratio": round(los_ratio, 6),
+                                    "min_target_los_ratio": round(
+                                        float(_TARGET_PRESENCE_STRICT_MIN_LOS_RATIO), 6
+                                    ),
                                     "target_grounded": True,
                                 },
                             )
@@ -1412,11 +1533,12 @@ class RenderStage(PipelineStage):
                                     float(config.render.stage1_probe_dedupe_center_dist_m),
                                 )
                             )
-                            candidate_offset = _offset_with_dedupe_jitter(
-                                offset=candidate_offset,
-                                attempt=dedupe_regen_attempts,
-                                min_jitter=jitter_base,
-                            )
+                            if not bool(candidate_target_grounded):
+                                candidate_offset = _offset_with_dedupe_jitter(
+                                    offset=candidate_offset,
+                                    attempt=dedupe_regen_attempts,
+                                    min_jitter=jitter_base,
+                                )
                             if str(candidate_current_spec.type).strip().lower() == "manipulation":
                                 span_scale = 0.85 if dedupe_regen_attempts >= 2 else 1.0
                                 candidate_current_spec = replace(
@@ -1598,72 +1720,134 @@ class RenderStage(PipelineStage):
                         )
                     else:
                         probe_score = consensus["score"]
-                        passes = probe_passes_thresholds(
-                            task_score=float(probe_score.task_score),
-                            visual_score=float(probe_score.visual_score),
-                            spatial_score=float(probe_score.spatial_score),
-                            min_task=float(config.render.stage1_vlm_min_task_score),
-                            min_visual=float(config.render.stage1_vlm_min_visual_score),
-                            min_spatial=float(config.render.stage1_vlm_min_spatial_score),
+                        issue_tags = list(probe_score.issue_tags)
+                        target_missing_detected = bool(
+                            candidate_target_grounded and "target_missing" in issue_tags
                         )
-                        geom = candidate_geometric[min(cand_idx, len(candidate_geometric) - 1)]
-                        combined = combined_probe_score(
-                            geometric_score=float(geom),
-                            task_score=float(probe_score.task_score),
-                            visual_score=float(probe_score.visual_score),
-                            spatial_score=float(probe_score.spatial_score),
-                        )
-                        row = {
-                            "spec": candidate_current_spec,
-                            "combined_score": float(combined),
-                            "passed": bool(passes),
-                            "issue_tags": list(probe_score.issue_tags),
-                            "reasoning": str(probe_score.reasoning or ""),
-                            "task_score": float(probe_score.task_score),
-                            "target_grounded": bool(candidate_target_grounded),
-                        }
-                        logger.info(
-                            "probe_score clip=%s loop=%d cand=%d task=%.1f visual=%.1f spatial=%.1f "
-                            "spread=%s tags=%s",
-                            clip_name,
-                            round_idx,
-                            cand_idx,
-                            float(probe_score.task_score),
-                            float(probe_score.visual_score),
-                            float(probe_score.spatial_score),
-                            (
-                                "n/a"
-                                if consensus.get("score_spread") is None
-                                else f"{float(consensus.get('score_spread')):.3f}"
-                            ),
-                            list(probe_score.issue_tags),
-                        )
-                        _append_probe_score_row(
-                            probe_scores_path,
-                            {
-                                "clip_name": clip_name,
-                                "clip_id": int(clip_name.split("_")[1]) if "_" in clip_name else -1,
-                                "path_type": str(candidate_current_spec.type),
-                                "loop": int(round_idx),
-                                "candidate": int(cand_idx),
-                                "task_score": float(probe_score.task_score),
-                                "visual_score": float(probe_score.visual_score),
-                                "spatial_score": float(probe_score.spatial_score),
-                                "issue_tags": list(probe_score.issue_tags),
-                                "reasoning": str(probe_score.reasoning or ""),
-                                "passed": bool(passes),
-                                "score_spread": consensus.get("score_spread"),
-                                "votes_effective": int(consensus.get("votes_effective", 0)),
-                                "votes": list(consensus.get("vote_rows", []) or []),
-                                "active_model_used": str(
-                                    consensus.get("active_model_used") or config.eval_policy.vlm_judge.model
+                        if target_missing_detected:
+                            row = {
+                                "spec": candidate_current_spec,
+                                "combined_score": -1e9,
+                                "passed": False,
+                                "issue_tags": issue_tags,
+                                "reasoning": (
+                                    "target_presence_reject vlm_target_missing "
+                                    f"task={float(probe_score.task_score):.1f} "
+                                    f"visual={float(probe_score.visual_score):.1f} "
+                                    f"spatial={float(probe_score.spatial_score):.1f}"
                                 ),
-                                "probe_codec": probe_meta.get("probe_codec"),
-                                "probe_resolution": probe_meta.get("probe_resolution"),
-                                "probe_decoded_frames": probe_meta.get("probe_decoded_frames"),
+                                # Keep task_score internal so correction policy can lock
+                                # path-type conversion when partial target evidence exists.
+                                "task_score": float(probe_score.task_score),
+                                "target_grounded": True,
+                            }
+                            _append_probe_score_row(
+                                probe_scores_path,
+                                {
+                                    "clip_name": clip_name,
+                                    "clip_id": int(clip_name.split("_")[1]) if "_" in clip_name else -1,
+                                    "path_type": str(candidate_current_spec.type),
+                                    "loop": int(round_idx),
+                                    "candidate": int(cand_idx),
+                                    "status": "target_presence_reject",
+                                    "reason": "vlm_target_missing",
+                                    "observed_task_score": float(probe_score.task_score),
+                                    "observed_visual_score": float(probe_score.visual_score),
+                                    "observed_spatial_score": float(probe_score.spatial_score),
+                                    "observed_issue_tags": issue_tags,
+                                    "reasoning": str(probe_score.reasoning or ""),
+                                    "score_spread": consensus.get("score_spread"),
+                                    "votes_effective": int(consensus.get("votes_effective", 0)),
+                                    "votes": list(consensus.get("vote_rows", []) or []),
+                                    "active_model_used": str(
+                                        consensus.get("active_model_used")
+                                        or config.eval_policy.vlm_judge.model
+                                    ),
+                                    "probe_codec": probe_meta.get("probe_codec"),
+                                    "probe_resolution": probe_meta.get("probe_resolution"),
+                                    "probe_decoded_frames": probe_meta.get("probe_decoded_frames"),
+                                    "target_grounded": True,
+                                },
+                            )
+                            logger.info(
+                                "probe_target_presence_reject clip=%s loop=%d cand=%d "
+                                "reason=vlm_target_missing scores=%.1f/%.1f/%.1f tags=%s",
+                                clip_name,
+                                round_idx,
+                                cand_idx,
+                                float(probe_score.task_score),
+                                float(probe_score.visual_score),
+                                float(probe_score.spatial_score),
+                                issue_tags,
+                            )
+                        else:
+                            passes = probe_passes_thresholds(
+                                task_score=float(probe_score.task_score),
+                                visual_score=float(probe_score.visual_score),
+                                spatial_score=float(probe_score.spatial_score),
+                                min_task=float(config.render.stage1_vlm_min_task_score),
+                                min_visual=float(config.render.stage1_vlm_min_visual_score),
+                                min_spatial=float(config.render.stage1_vlm_min_spatial_score),
+                            )
+                            geom = candidate_geometric[min(cand_idx, len(candidate_geometric) - 1)]
+                            combined = combined_probe_score(
+                                geometric_score=float(geom),
+                                task_score=float(probe_score.task_score),
+                                visual_score=float(probe_score.visual_score),
+                                spatial_score=float(probe_score.spatial_score),
+                            )
+                            row = {
+                                "spec": candidate_current_spec,
+                                "combined_score": float(combined),
+                                "passed": bool(passes),
+                                "issue_tags": issue_tags,
+                                "reasoning": str(probe_score.reasoning or ""),
+                                "task_score": float(probe_score.task_score),
                                 "target_grounded": bool(candidate_target_grounded),
-                            },
-                        )
+                            }
+                            logger.info(
+                                "probe_score clip=%s loop=%d cand=%d task=%.1f visual=%.1f spatial=%.1f "
+                                "spread=%s tags=%s",
+                                clip_name,
+                                round_idx,
+                                cand_idx,
+                                float(probe_score.task_score),
+                                float(probe_score.visual_score),
+                                float(probe_score.spatial_score),
+                                (
+                                    "n/a"
+                                    if consensus.get("score_spread") is None
+                                    else f"{float(consensus.get('score_spread')):.3f}"
+                                ),
+                                issue_tags,
+                            )
+                            _append_probe_score_row(
+                                probe_scores_path,
+                                {
+                                    "clip_name": clip_name,
+                                    "clip_id": int(clip_name.split("_")[1]) if "_" in clip_name else -1,
+                                    "path_type": str(candidate_current_spec.type),
+                                    "loop": int(round_idx),
+                                    "candidate": int(cand_idx),
+                                    "task_score": float(probe_score.task_score),
+                                    "visual_score": float(probe_score.visual_score),
+                                    "spatial_score": float(probe_score.spatial_score),
+                                    "issue_tags": issue_tags,
+                                    "reasoning": str(probe_score.reasoning or ""),
+                                    "passed": bool(passes),
+                                    "score_spread": consensus.get("score_spread"),
+                                    "votes_effective": int(consensus.get("votes_effective", 0)),
+                                    "votes": list(consensus.get("vote_rows", []) or []),
+                                    "active_model_used": str(
+                                        consensus.get("active_model_used")
+                                        or config.eval_policy.vlm_judge.model
+                                    ),
+                                    "probe_codec": probe_meta.get("probe_codec"),
+                                    "probe_resolution": probe_meta.get("probe_resolution"),
+                                    "probe_decoded_frames": probe_meta.get("probe_decoded_frames"),
+                                    "target_grounded": bool(candidate_target_grounded),
+                                },
+                            )
 
                     probe_meta["vlm_probe_evaluated"] = True
                     if not bool(config.render.stage1_keep_probe_videos):
@@ -1697,9 +1881,17 @@ class RenderStage(PipelineStage):
                 break
 
             best_task_score = float(best_row.get("task_score", 0.0) or 0.0)
-            if bool(best_row.get("target_grounded", False)) and best_task_score >= 1.0:
-                type_conversion_locked = True
             last_issue_tags = list(best_row.get("issue_tags", []))
+            # Lock orbit→manipulation conversion only when the target is genuinely
+            # visible (task≥1) AND not flagged as missing.  If target_missing is
+            # still present the zoom-in path makes framing worse (camera_too_close,
+            # camera_motion_too_fast) without resolving the underlying problem.
+            if (
+                bool(best_row.get("target_grounded", False))
+                and best_task_score >= 1.0
+                and "target_missing" not in last_issue_tags
+            ):
+                type_conversion_locked = True
             current_spec = best_row["spec"]
             if bool(best_row.get("passed", False)):
                 passed = True
@@ -1754,6 +1946,13 @@ def _spec_is_effectively_unchanged(
     Used to detect when apply_issue_tag_corrections hit every min-clamp and
     produced a spec that will render an identical video.
     """
+    # A path-type change (e.g. orbit→manipulation) is always a meaningful
+    # transition — never treat it as a no-op regardless of numeric field overlap.
+    if str(getattr(prev, "type", "")).strip().lower() != str(
+        getattr(curr, "type", "")
+    ).strip().lower():
+        return False
+
     import dataclasses
 
     prev_d = dataclasses.asdict(prev)
@@ -1805,6 +2004,42 @@ def _count_unique_camera_positions(poses: List[object], precision: int = 3) -> i
             continue
         rounded.add(tuple(np.round(pos, int(precision)).tolist()))
     return int(len(rounded))
+
+
+def _compute_target_line_of_sight_ratio(
+    *,
+    poses: List[object],
+    target_xyz: List[float],
+    occupancy: Optional[OccupancyGrid],
+    min_clearance_m: float,
+) -> float:
+    if not poses or occupancy is None:
+        return 1.0
+    target = np.asarray(target_xyz, dtype=np.float64).reshape(-1)
+    if target.size < 3 or not np.all(np.isfinite(target[:3])):
+        return 0.0
+    target = target[:3]
+    clear = 0
+    total = 0
+    clearance = float(max(0.02, min(0.10, float(min_clearance_m) * 0.5)))
+    for pose in poses:
+        try:
+            start = np.asarray(getattr(pose, "position"), dtype=np.float64).reshape(-1)[:3]
+        except Exception:
+            continue
+        if start.size < 3 or not np.all(np.isfinite(start)):
+            continue
+        total += 1
+        if occupancy.has_line_of_sight(
+            start,
+            target,
+            clearance_m=clearance,
+            endpoint_margin_m=0.08,
+        ):
+            clear += 1
+    if total <= 0:
+        return 0.0
+    return float(clear) / float(total)
 
 
 def _append_probe_score_row(path: Optional[Path], row: Dict[str, object]) -> None:
@@ -1964,6 +2199,12 @@ def _build_expected_focus_text(*, path_type: str, path_context: dict | None) -> 
             "mapping is unavailable."
         )
 
+    if target_label and path_key in {"orbit", "sweep"}:
+        return (
+            f"Target focus: keep {target_label} centered and clearly visible for most of the clip "
+            "while preserving stable scene context."
+        )
+
     if path_key == "manipulation":
         if target_label:
             return (
@@ -2021,6 +2262,150 @@ def _dedupe_tasks(tasks: List[str]) -> List[str]:
         seen.add(key)
         out.append(task.strip())
     return out
+
+
+def _is_kitchen_0787_scene(facility: FacilityConfig) -> bool:
+    text = " ".join(
+        [
+            str(getattr(facility, "name", "") or ""),
+            str(getattr(facility, "description", "") or ""),
+            str(getattr(facility, "ply_path", "") or ""),
+            str(getattr(facility, "task_hints_path", "") or ""),
+        ]
+    ).lower()
+    if "0787_841244" in text:
+        return True
+    return "0787" in text and "kitchen" in text
+
+
+def _build_kitchen_0787_locked_specs(
+    *,
+    config: ValidationConfig,
+    facility: FacilityConfig,
+    scene_transform: Optional[np.ndarray],
+) -> List[CameraPathSpec]:
+    """Build deterministic, target-grounded camera specs for kitchen_0787.
+
+    This path intentionally avoids generic seed paths and randomization to keep
+    Stage-1 capture deterministic for the known scene.
+    """
+    task_hints_path = Path(facility.task_hints_path) if facility.task_hints_path else None
+    if task_hints_path is None or not task_hints_path.exists():
+        logger.warning(
+            "kitchen_0787 scene-locked mode skipped: missing task_hints_path (%s)",
+            facility.task_hints_path,
+        )
+        return []
+
+    try:
+        obbs = load_obbs_from_task_targets(task_hints_path)
+    except Exception:
+        logger.warning(
+            "kitchen_0787 scene-locked mode failed to load OBBs from %s",
+            task_hints_path,
+            exc_info=True,
+        )
+        return []
+    if not obbs:
+        return []
+    if scene_transform is not None:
+        obbs = transform_obbs(obbs, scene_transform)
+
+    selected_obbs: List[OrientedBoundingBox]
+    role_by_instance: Dict[str, str]
+    tasks = _build_task_prompt_pool(
+        config=config,
+        facility=facility,
+        profile=config.render.task_scoped_profile,
+    )
+    selected_obbs, scoped_stats, role_by_instance = _select_task_scoped_obbs(
+        obbs=obbs,
+        tasks=tasks,
+        max_specs=int(_KITCHEN_0787_LOCKED_MAX_TARGETS),
+        context_per_target=1,
+        overview_specs=0,
+        fallback_specs=int(_KITCHEN_0787_LOCKED_MAX_TARGETS),
+        center_dedupe_dist_m=float(max(0.0, config.render.stage1_probe_dedupe_center_dist_m)),
+    )
+    if not selected_obbs:
+        return []
+
+    role_priority = {"targets": 0, "context": 1, "fallback": 2, "overview": 3}
+    cat_priority = {"manipulation": 0, "articulation": 1, "navigation": 2}
+    ordered = sorted(
+        selected_obbs,
+        key=lambda obb: (
+            role_priority.get(role_by_instance.get(str(obb.instance_id), "fallback"), 4),
+            cat_priority.get(str(obb.category).strip().lower(), 9),
+            _label_key(obb.label),
+            str(obb.instance_id),
+        ),
+    )
+
+    specs: List[CameraPathSpec] = []
+    for obb in ordered:
+        role = str(role_by_instance.get(str(obb.instance_id), "targets") or "targets").strip().lower()
+        if role not in {"targets", "context", "fallback", "overview"}:
+            role = "targets"
+
+        max_xy = float(np.max(np.abs(obb.extents[:2]))) if len(obb.extents) >= 2 else 0.5
+        ext_z = float(obb.extents[2]) if len(obb.extents) > 2 else 0.5
+        size_scale = float(np.clip((max_xy - 0.20) / 1.40, 0.0, 1.0))
+        standoff = float(compute_standoff_distance(obb))
+        cam_height = float(max(compute_camera_height(obb), float(obb.center[2]) + 0.30))
+        orbit_radius = float(np.clip(standoff * (0.58 - 0.08 * size_scale), 0.65, 1.35))
+        if role == "context":
+            orbit_radius = float(np.clip(orbit_radius * 1.12, 0.75, 1.55))
+        look_down = float(np.clip(40.0 + 14.0 * size_scale + (6.0 if ext_z < 0.10 else 0.0), 28.0, 62.0))
+        if role == "targets":
+            look_down = float(min(65.0, look_down + 4.0))
+
+        meta = {
+            "source_tag": _KITCHEN_0787_LOCKED_SOURCE_TAG,
+            "target_instance_id": str(obb.instance_id) if str(obb.instance_id).strip() else None,
+            "target_label": str(obb.label) if str(obb.label).strip() else None,
+            "target_category": str(obb.category) if str(obb.category).strip() else None,
+            "target_role": role,
+        }
+
+        approach = [float(obb.center[0]), float(obb.center[1]), float(obb.center[2])]
+        specs.append(
+            CameraPathSpec(
+                type="orbit",
+                radius_m=orbit_radius,
+                num_orbits=1,
+                approach_point=approach,
+                height_override_m=cam_height,
+                look_down_override_deg=look_down,
+                **meta,
+            )
+        )
+
+        if str(obb.category).strip().lower() == "manipulation" and role == "targets":
+            arc_radius = float(np.clip(orbit_radius * 0.65, 0.45, 0.90))
+            arc_span = 72.0 if max_xy < 0.80 else 90.0
+            specs.append(
+                CameraPathSpec(
+                    type="manipulation",
+                    approach_point=approach,
+                    arc_radius_m=arc_radius,
+                    arc_span_deg=float(arc_span),
+                    arc_phase_offset_deg=0.0,
+                    height_override_m=cam_height,
+                    look_down_override_deg=float(np.clip(look_down + 10.0, 45.0, 72.0)),
+                    **meta,
+                )
+            )
+
+    logger.info(
+        "kitchen_0787 scene-locked spec builder selected %d OBBs (targets=%d context=%d fallback=%d) -> %d specs",
+        len(selected_obbs),
+        int(scoped_stats.get("targets", 0)),
+        int(scoped_stats.get("context", 0)),
+        int(scoped_stats.get("fallback", 0)),
+        len(specs),
+    )
+    return specs
 
 
 def _select_task_scoped_obbs(

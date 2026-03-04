@@ -181,7 +181,9 @@ def apply_issue_tag_corrections(
             and len(getattr(updated, "approach_point", None) or []) >= 3
         )
     ):
-        if not bool(allow_type_conversion) and str(updated.type).strip().lower() in ("orbit", "sweep"):
+        stype = str(updated.type).strip().lower()
+        if not bool(allow_type_conversion) and stype in ("orbit", "sweep"):
+            # Conversion locked by caller — tighten the orbit/sweep zoom instead.
             updated = _scale_standoff(
                 updated, orbit_scale=0.72, sweep_scale=0.72, manip_scale=1.0
             )
@@ -190,14 +192,8 @@ def apply_issue_tag_corrections(
                 delta_deg=5.0,
                 default_look_down_deg=float(default_look_down_deg),
             )
-        elif (
-            float(best_task_score) >= 1.0
-            and str(updated.type).strip().lower() in ("orbit", "sweep")
-        ):
-            # Target is partially visible (task≥1) — tighten zoom on the existing
-            # orbit/sweep rather than converting type. Converting to manipulation
-            # when the orbit is already focused on the target reliably makes scores
-            # worse (task drops to 0 due to camera_too_close at the smaller radius).
+        elif float(best_task_score) >= 1.0 and stype in ("orbit", "sweep"):
+            # If task is already partially successful, keep path type and tighten framing.
             updated = _scale_standoff(
                 updated, orbit_scale=0.72, sweep_scale=0.72, manip_scale=1.0
             )
@@ -207,7 +203,8 @@ def apply_issue_tag_corrections(
                 default_look_down_deg=float(default_look_down_deg),
             )
         else:
-            # task=0: camera genuinely can't see the target — convert type.
+            # Conversion is allowed: switch to a manipulation arc for a tight,
+            # target-centred close-up when framing is still failing.
             updated = _convert_to_manipulation(
                 updated,
                 default_camera_height=float(default_camera_height),

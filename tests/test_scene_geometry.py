@@ -177,6 +177,27 @@ def test_is_free_with_clearance():
     assert grid.is_free(np.array([5.0, 0.0, 1.0]), min_clearance_m=0.15)
 
 
+def test_occupancy_line_of_sight_detects_blocking_geometry():
+    from blueprint_validation.rendering.scene_geometry import build_occupancy_grid
+
+    rng = np.random.default_rng(7)
+    wall = np.column_stack(
+        [
+            rng.uniform(-0.02, 0.02, 7000),
+            rng.uniform(-0.8, 0.8, 7000),
+            rng.uniform(0.2, 1.6, 7000),
+        ]
+    )
+    grid = build_occupancy_grid(wall, voxel_size=0.08, density_threshold=2)
+
+    start = np.array([0.8, 0.0, 1.0], dtype=np.float64)
+    blocked_end = np.array([-0.8, 0.0, 1.0], dtype=np.float64)
+    clear_end = np.array([1.4, 0.0, 1.0], dtype=np.float64)
+
+    assert not grid.has_line_of_sight(start, blocked_end)
+    assert grid.has_line_of_sight(start, clear_end)
+
+
 # ---------------------------------------------------------------------------
 # Standoff / height computation
 # ---------------------------------------------------------------------------

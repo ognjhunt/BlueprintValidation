@@ -511,6 +511,55 @@ class OccupancyGrid:
         region = self.voxels[lo[0] : hi[0], lo[1] : hi[1], lo[2] : hi[2]]
         return not bool(np.any(region))
 
+    def has_line_of_sight(
+        self,
+        start: np.ndarray,
+        end: np.ndarray,
+        *,
+        clearance_m: float = 0.05,
+        endpoint_margin_m: float = 0.08,
+        sample_step_m: Optional[float] = None,
+    ) -> bool:
+        """Approximate collision-free visibility along a segment from start -> end.
+
+        Endpoints are ignored within a small margin to avoid treating the camera
+        origin or target interior as occlusions.
+        """
+        p0 = np.asarray(start, dtype=np.float64).reshape(-1)
+        p1 = np.asarray(end, dtype=np.float64).reshape(-1)
+        if p0.size < 3 or p1.size < 3:
+            return False
+        p0 = p0[:3]
+        p1 = p1[:3]
+        if not (np.all(np.isfinite(p0)) and np.all(np.isfinite(p1))):
+            return False
+
+        delta = p1 - p0
+        dist = float(np.linalg.norm(delta))
+        if dist <= 1e-6:
+            return True
+
+        step = (
+            float(sample_step_m)
+            if sample_step_m is not None and float(sample_step_m) > 1e-6
+            else float(max(self.voxel_size * 0.5, 0.02))
+        )
+        num_samples = max(2, int(np.ceil(dist / step)))
+        unit = delta / dist
+        skip = float(max(0.0, endpoint_margin_m))
+        clearance = float(max(0.0, clearance_m))
+
+        for i in range(1, num_samples):
+            t = float(i) / float(num_samples)
+            cur_dist = t * dist
+            rem_dist = dist - cur_dist
+            if cur_dist <= skip or rem_dist <= skip:
+                continue
+            sample = p0 + unit * cur_dist
+            if not self.is_free(sample, min_clearance_m=clearance):
+                return False
+        return True
+
 
 # ---------------------------------------------------------------------------
 # OBB loading from task_targets.json
