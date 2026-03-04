@@ -1363,6 +1363,9 @@ class RenderStage(PipelineStage):
                         break
 
                     min_unique_positions = int(config.render.stage1_probe_min_unique_positions)
+                    if bool(locked_mode):
+                        # Locked target clips intentionally use near-static motion.
+                        min_unique_positions = min(min_unique_positions, 1)
                     unique_positions = _count_unique_camera_positions(poses)
                     if unique_positions < min_unique_positions:
                         if not pose_regen_attempted:
