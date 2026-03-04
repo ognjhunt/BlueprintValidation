@@ -197,3 +197,60 @@ def test_generate_path_sweep_applies_height_and_lookdown_overrides():
     )
     assert abs(float(overridden[0].position[2]) - 1.4) < 1e-6
     assert abs(float(overridden[0].forward[2])) > abs(float(base[0].forward[2]))
+
+
+def test_generate_path_orbit_uses_approach_point_as_focus_center():
+    from blueprint_validation.config import CameraPathSpec
+    from blueprint_validation.rendering.camera_paths import generate_path_from_spec
+
+    target = np.array([5.0, -3.0, 0.8], dtype=np.float64)
+    poses = generate_path_from_spec(
+        spec=CameraPathSpec(
+            type="orbit",
+            radius_m=2.0,
+            num_orbits=1,
+            approach_point=target.tolist(),
+            look_down_override_deg=25.0,
+        ),
+        scene_center=np.array([0.0, 0.0, 0.0], dtype=np.float64),
+        num_frames=12,
+        camera_height=1.2,
+        look_down_deg=10.0,
+        resolution=(120, 160),
+    )
+
+    first = poses[0]
+    assert abs(float(first.position[0]) - 7.0) < 1e-6
+    assert abs(float(first.position[1]) - (-3.0)) < 1e-6
+    to_target = target - first.position
+    to_target = to_target / (np.linalg.norm(to_target) + 1e-8)
+    assert float(np.dot(first.forward, to_target)) > 0.999
+
+
+def test_generate_path_sweep_uses_approach_point_as_focus():
+    from blueprint_validation.config import CameraPathSpec
+    from blueprint_validation.rendering.camera_paths import generate_path_from_spec
+
+    target = np.array([4.0, 1.5, 0.7], dtype=np.float64)
+    length = 4.0
+    poses = generate_path_from_spec(
+        spec=CameraPathSpec(
+            type="sweep",
+            length_m=length,
+            approach_point=target.tolist(),
+            height_override_m=1.4,
+        ),
+        scene_center=np.array([0.0, 0.0, 0.0], dtype=np.float64),
+        num_frames=9,
+        camera_height=1.0,
+        look_down_deg=12.0,
+        resolution=(120, 160),
+    )
+
+    # Sweep starts behind target and ends ahead of target along X axis.
+    assert abs(float(poses[0].position[0]) - (target[0] - length / 2.0)) < 1e-6
+    assert abs(float(poses[-1].position[0]) - (target[0] + length / 2.0)) < 1e-6
+    for pose in poses:
+        to_target = target - pose.position
+        to_target = to_target / (np.linalg.norm(to_target) + 1e-8)
+        assert float(np.dot(pose.forward, to_target)) > 0.99

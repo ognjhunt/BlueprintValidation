@@ -85,6 +85,7 @@ def generate_orbit(
     num_frames: int,
     num_orbits: int = 1,
     look_down_deg: float = 15.0,
+    target_point: np.ndarray | None = None,
     resolution: tuple[int, int] = (480, 640),
     fov_deg: float = 60.0,
 ) -> List[CameraPose]:
@@ -103,15 +104,19 @@ def generate_orbit(
                 height,
             ]
         )
-        # Look toward center, slightly downward
-        look_down_rad = math.radians(look_down_deg)
-        target = np.array(
-            [
-                center[0],
-                center[1],
-                height - radius * math.tan(look_down_rad),
-            ]
-        )
+        # Look toward explicit target when provided; otherwise keep legacy
+        # look-down behavior around orbit center.
+        if target_point is not None:
+            target = np.asarray(target_point, dtype=np.float64)
+        else:
+            look_down_rad = math.radians(look_down_deg)
+            target = np.array(
+                [
+                    center[0],
+                    center[1],
+                    height - radius * math.tan(look_down_rad),
+                ]
+            )
         c2w = _look_at(eye, target)
         poses.append(CameraPose(c2w=c2w, fx=fx, fy=fy, cx=cx, cy=cy, width=w, height=h))
 
@@ -125,6 +130,7 @@ def generate_sweep(
     height: float,
     num_frames: int,
     look_down_deg: float = 15.0,
+    focus_point: np.ndarray | None = None,
     resolution: tuple[int, int] = (480, 640),
     fov_deg: float = 60.0,
 ) -> List[CameraPose]:
@@ -140,9 +146,12 @@ def generate_sweep(
         t = i / max(num_frames - 1, 1)
         eye = start + direction * length * t
         eye[2] = height
-        target = eye + direction * 2.0
-        look_down_rad = math.radians(look_down_deg)
-        target[2] = height - 2.0 * math.tan(look_down_rad)
+        if focus_point is not None:
+            target = np.asarray(focus_point, dtype=np.float64)
+        else:
+            target = eye + direction * 2.0
+            look_down_rad = math.radians(look_down_deg)
+            target[2] = height - 2.0 * math.tan(look_down_rad)
         c2w = _look_at(eye, target)
         poses.append(CameraPose(c2w=c2w, fx=fx, fy=fy, cx=cx, cy=cy, width=w, height=h))
 
@@ -252,8 +261,17 @@ def generate_path_from_spec(
 ) -> List[CameraPose]:
     """Generate a camera path from a CameraPathSpec."""
     if spec.type == "orbit":
-        center = scene_center[:2] if start_offset is None else scene_center[:2] + start_offset[:2]
-        center_3d = np.array([center[0], center[1], 0.0])
+        target_point = (
+            np.asarray(spec.approach_point, dtype=np.float64)
+            if isinstance(spec.approach_point, list) and len(spec.approach_point) >= 3
+            else np.asarray(scene_center[:3], dtype=np.float64)
+        )
+        center_xy = target_point[:2].copy()
+        if start_offset is not None:
+            center_xy = center_xy + start_offset[:2]
+            target_point = target_point.copy()
+            target_point[:2] = target_point[:2] + start_offset[:2]
+        center_3d = np.array([center_xy[0], center_xy[1], target_point[2]], dtype=np.float64)
         effective_height = (
             float(spec.height_override_m) if spec.height_override_m is not None else float(camera_height)
         )
@@ -262,6 +280,9 @@ def generate_path_from_spec(
             if spec.look_down_override_deg is not None
             else float(look_down_deg)
         )
+        # Keep camera slightly above the explicit target plane for stable views.
+        if isinstance(spec.approach_point, list) and len(spec.approach_point) >= 3:
+            effective_height = max(effective_height, float(target_point[2]) + 0.25)
         return generate_orbit(
             center=center_3d,
             radius=spec.radius_m,
@@ -269,12 +290,18 @@ def generate_path_from_spec(
             num_frames=num_frames,
             num_orbits=spec.num_orbits,
             look_down_deg=effective_look_down,
+            target_point=target_point,
             resolution=resolution,
         )
     elif spec.type == "sweep":
-        start = scene_center.copy()
+        focus_point = (
+            np.asarray(spec.approach_point, dtype=np.float64)
+            if isinstance(spec.approach_point, list) and len(spec.approach_point) >= 3
+            else np.asarray(scene_center[:3], dtype=np.float64)
+        )
         if start_offset is not None:
-            start[:2] += start_offset[:2]
+            focus_point = focus_point.copy()
+            focus_point[:2] += start_offset[:2]
         effective_height = (
             float(spec.height_override_m) if spec.height_override_m is not None else float(camera_height)
         )
@@ -283,8 +310,10 @@ def generate_path_from_spec(
             if spec.look_down_override_deg is not None
             else float(look_down_deg)
         )
+        direction = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+        start = focus_point.copy()
+        start[:2] = start[:2] - direction[:2] * (float(spec.length_m) * 0.5)
         start[2] = effective_height
-        direction = np.array([1.0, 0.0, 0.0])
         return generate_sweep(
             start=start,
             direction=direction,
@@ -292,6 +321,7 @@ def generate_path_from_spec(
             height=effective_height,
             num_frames=num_frames,
             look_down_deg=effective_look_down,
+            focus_point=focus_point,
             resolution=resolution,
         )
     elif spec.type == "manipulation":
