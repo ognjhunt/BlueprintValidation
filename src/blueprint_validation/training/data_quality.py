@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Any, Dict, List, Sequence
 
 import numpy as np
 
@@ -88,12 +89,17 @@ def _average_hash(frame_rgb: np.ndarray, *, hash_size: int = 8) -> str:
     return "".join("1" if int(v) else "0" for v in bits.tolist())
 
 
-def fingerprint_video_content(video_path: Path, *, max_frames: int = 12) -> str:
+def _sample_video_hash_payload(video_path: Path, *, max_frames: int = 12) -> Dict[str, Any]:
     import cv2
 
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
-        return f"missing::{video_path}"
+        return {
+            "status": "missing",
+            "total_frames": 0,
+            "sample_positions": [],
+            "hashes": [],
+        }
     try:
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         if total <= 0:
@@ -108,16 +114,42 @@ def fingerprint_video_content(video_path: Path, *, max_frames: int = 12) -> str:
                 continue
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             hashes.append(_average_hash(rgb))
-        payload = {
-            "video_path": str(video_path),
-            "total_frames": total,
-            "sample_count": len(hashes),
+        return {
+            "status": "ok",
+            "total_frames": int(total),
+            "sample_positions": [int(v) for v in sample_positions],
             "hashes": hashes,
         }
-        blob = str(payload).encode("utf-8")
-        return hashlib.sha1(blob).hexdigest()
     finally:
         cap.release()
+
+
+def _canonical_blob(payload: Dict[str, Any]) -> bytes:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def fingerprint_video_content_v1(video_path: Path, *, max_frames: int = 12) -> str:
+    """Legacy V1 fingerprint retained for leakage-index migration compatibility."""
+    payload = _sample_video_hash_payload(video_path, max_frames=max_frames)
+    legacy_payload = {
+        "video_path": str(video_path),
+        "total_frames": int(payload.get("total_frames", 0) or 0),
+        "sample_count": len(payload.get("hashes", [])),
+        "hashes": list(payload.get("hashes", [])),
+    }
+    return hashlib.sha1(str(legacy_payload).encode("utf-8")).hexdigest()
+
+
+def fingerprint_video_content(video_path: Path, *, max_frames: int = 12) -> str:
+    """Path-independent V2 content fingerprint for duplicate/leakage detection."""
+    payload = _sample_video_hash_payload(video_path, max_frames=max_frames)
+    payload_v2 = {
+        "fingerprint_version": 2,
+        "total_frames": int(payload.get("total_frames", 0) or 0),
+        "sample_positions": [int(v) for v in payload.get("sample_positions", [])],
+        "hashes": list(payload.get("hashes", [])),
+    }
+    return hashlib.sha1(_canonical_blob(payload_v2)).hexdigest()
 
 
 def _estimate_blockiness(gray: np.ndarray, *, block: int = 8) -> float:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+from types import SimpleNamespace
 
 
 def test_trained_eval_skips_without_s3b(sample_config, tmp_path):
@@ -198,3 +199,137 @@ def test_resolve_split_manifest_path_prefers_s4a_output(tmp_path):
     }
     resolved = _resolve_split_manifest_path(previous, tmp_path)
     assert resolved == split
+
+
+def test_trained_eval_fails_on_invalid_prior_policy_scores_manifest(
+    sample_config, tmp_path, monkeypatch
+):
+    from blueprint_validation.common import StageResult, write_json
+    from blueprint_validation.stages.s4e_trained_eval import TrainedPolicyEvalStage
+
+    sample_config.eval_policy.headline_scope = "dual"
+    sample_config.eval_policy.num_rollouts = 1
+    sample_config.action_boost.enabled = False
+
+    trained_ckpt = tmp_path / "trained_ckpt"
+    adapted_ckpt = tmp_path / "adapted_ckpt"
+    trained_ckpt.mkdir(parents=True, exist_ok=True)
+    adapted_ckpt.mkdir(parents=True, exist_ok=True)
+
+    render_manifest_path = tmp_path / "renders" / "render_manifest.json"
+    render_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json({"clips": [{"clip_index": 0, "clip_name": "clip_000"}]}, render_manifest_path)
+
+    rollout_video = tmp_path / "trained_eval" / "trained_rollouts" / "trained_clip.mp4"
+    rollout_video.parent.mkdir(parents=True, exist_ok=True)
+    rollout_video.write_bytes(b"x")
+
+    invalid_scores_path = tmp_path / "policy_eval" / "vlm_scores.json"
+    invalid_scores_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json({"scores": [{"condition": "baseline", "video_path": ""}]}, invalid_scores_path)
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4e_trained_eval._resolve_trained_checkpoint",
+        lambda **_kwargs: trained_ckpt,
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4e_trained_eval._resolve_eval_world_checkpoint",
+        lambda *_args, **_kwargs: (adapted_ckpt, "s3"),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4e_trained_eval._build_task_list",
+        lambda *_args, **_kwargs: (["Navigate forward"], 0),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4e_trained_eval.load_shared_task_start_manifest",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4e_trained_eval.build_task_start_assignments",
+        lambda **_kwargs: [
+            {
+                "rollout_index": 0,
+                "task": "Navigate forward",
+                "clip_index": 0,
+                "clip_name": "clip_000",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4e_trained_eval.save_shared_task_start_manifest",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4e_trained_eval.load_initial_frames_for_assignments",
+        lambda *_args, **_kwargs: {0: object()},
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4e_trained_eval.load_dreamdojo_world_model",
+        lambda **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4e_trained_eval.run_rollout_with_adapter",
+        lambda **_kwargs: SimpleNamespace(
+            video_path=rollout_video,
+            num_steps=2,
+            action_sequence=[[0.0] * 7 for _ in range(2)],
+        ),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4e_trained_eval.score_rollout",
+        lambda **_kwargs: SimpleNamespace(
+            task_score=8.0,
+            visual_score=8.0,
+            spatial_score=8.0,
+            reasoning="ok",
+        ),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4e_trained_eval.score_rollout_manipulation",
+        lambda **_kwargs: SimpleNamespace(
+            task_score=8.0,
+            visual_score=8.0,
+            spatial_score=8.0,
+            reasoning="ok",
+            grasp_acquired=True,
+            lifted_clear=True,
+            placed_in_target=True,
+            stable_after_place=True,
+        ),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4e_trained_eval.write_judge_audit_csv",
+        lambda scores, path: path.write_text(str(len(scores)), encoding="utf-8"),
+    )
+
+    class _FakeAdapter:
+        def base_model_ref(self, _eval_policy):
+            return "base_model", None
+
+        def load_policy(self, **_kwargs):
+            return object()
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4e_trained_eval.get_policy_adapter",
+        lambda *_args, **_kwargs: _FakeAdapter(),
+    )
+
+    stage = TrainedPolicyEvalStage()
+    fac = list(sample_config.facilities.values())[0]
+    previous_results = {
+        "s3b_policy_finetune": StageResult(
+            stage_name="s3b_policy_finetune",
+            status="success",
+            elapsed_seconds=0,
+            outputs={"adapted_policy_checkpoint": str(trained_ckpt)},
+        ),
+        "s4_policy_eval": StageResult(
+            stage_name="s4_policy_eval",
+            status="success",
+            elapsed_seconds=0,
+            outputs={"scores_path": str(invalid_scores_path)},
+        ),
+    }
+    result = stage.run(sample_config, fac, tmp_path, previous_results)
+    assert result.status == "failed"
+    assert "Invalid policy scores manifest" in result.detail

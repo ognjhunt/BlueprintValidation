@@ -7,7 +7,7 @@ import hashlib
 import re
 import shutil
 from collections import Counter, defaultdict
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -29,6 +29,16 @@ from .data_quality import (
 
 logger = get_logger("training.dataset_builder")
 
+LEAKAGE_INDEX_SCHEMA_VERSION = 2
+FINGERPRINT_VERSION_V2 = 2
+
+
+@dataclass
+class LeakageIndexState:
+    fingerprints: Dict[str, Dict[str, Any]]
+    unmigrated_legacy: List[Dict[str, Any]]
+    needs_write: bool = False
+
 
 def _sanitize_name_component(value: object, *, fallback: str) -> str:
     text = str(value or "").strip()
@@ -47,31 +57,127 @@ def _derive_dataset_stem(entry: dict, src: Path, index: int) -> str:
     return f"{clip_component}__{variant_component}__{index:05d}__{source_hash}"
 
 
-def _load_leakage_index(path: Path | None) -> Dict[str, Dict[str, Any]]:
+def _migrate_legacy_leakage_index(payload: Dict[str, Any]) -> LeakageIndexState:
+    fingerprints = payload.get("fingerprints", {})
+    migrated: Dict[str, Dict[str, Any]] = {}
+    unmigrated: List[Dict[str, Any]] = []
+    if not isinstance(fingerprints, dict):
+        return LeakageIndexState(fingerprints={}, unmigrated_legacy=unmigrated, needs_write=True)
+    for legacy_fingerprint, row in fingerprints.items():
+        if not isinstance(legacy_fingerprint, str) or not isinstance(row, dict):
+            continue
+        video_path = str(row.get("video_path", "") or "").strip()
+        if not video_path:
+            unmigrated.append(
+                {
+                    "legacy_fingerprint": legacy_fingerprint,
+                    "reason": "missing_video_path",
+                    "record": dict(row),
+                }
+            )
+            continue
+        path = Path(video_path)
+        if not path.exists() or not path.is_file():
+            unmigrated.append(
+                {
+                    "legacy_fingerprint": legacy_fingerprint,
+                    "video_path": video_path,
+                    "reason": "video_path_missing",
+                    "record": dict(row),
+                }
+            )
+            continue
+        try:
+            migrated_fp = fingerprint_video_content(path)
+        except Exception as exc:
+            unmigrated.append(
+                {
+                    "legacy_fingerprint": legacy_fingerprint,
+                    "video_path": video_path,
+                    "reason": f"fingerprint_failed:{exc}",
+                    "record": dict(row),
+                }
+            )
+            continue
+        migrated_row = dict(row)
+        migrated_row["fingerprint_version"] = FINGERPRINT_VERSION_V2
+        migrated_row["legacy_fingerprint"] = legacy_fingerprint
+        if migrated_fp in migrated:
+            existing = migrated[migrated_fp]
+            if str(existing.get("dataset_tag", "")) != str(migrated_row.get("dataset_tag", "")):
+                unmigrated.append(
+                    {
+                        "legacy_fingerprint": legacy_fingerprint,
+                        "video_path": video_path,
+                        "reason": "migration_collision",
+                        "record": migrated_row,
+                    }
+                )
+            continue
+        migrated[migrated_fp] = migrated_row
+    if unmigrated:
+        logger.warning(
+            "Leakage index migration left %d unmigrated legacy fingerprints",
+            len(unmigrated),
+        )
+    return LeakageIndexState(
+        fingerprints=migrated,
+        unmigrated_legacy=unmigrated,
+        needs_write=True,
+    )
+
+
+def _load_leakage_index(path: Path | None) -> LeakageIndexState:
     if path is None or not path.exists():
-        return {}
+        return LeakageIndexState(fingerprints={}, unmigrated_legacy=[], needs_write=False)
     try:
         payload = read_json(path)
     except Exception:
         logger.warning("Could not read leakage index at %s; starting fresh", path, exc_info=True)
-        return {}
+        return LeakageIndexState(fingerprints={}, unmigrated_legacy=[], needs_write=False)
+    if not isinstance(payload, dict):
+        return LeakageIndexState(fingerprints={}, unmigrated_legacy=[], needs_write=False)
+    schema_version = int(payload.get("schema_version", 1) or 1)
+    if schema_version < LEAKAGE_INDEX_SCHEMA_VERSION:
+        return _migrate_legacy_leakage_index(payload)
+
     fingerprints = payload.get("fingerprints", {})
+    out: Dict[str, Dict[str, Any]] = {}
     if isinstance(fingerprints, dict):
-        out: Dict[str, Dict[str, Any]] = {}
         for k, v in fingerprints.items():
             if isinstance(k, str) and isinstance(v, dict):
-                out[k] = dict(v)
-        return out
-    return {}
+                row = dict(v)
+                row["fingerprint_version"] = int(
+                    row.get("fingerprint_version", FINGERPRINT_VERSION_V2) or FINGERPRINT_VERSION_V2
+                )
+                out[k] = row
+    unmigrated_legacy = payload.get("unmigrated_legacy", [])
+    if not isinstance(unmigrated_legacy, list):
+        unmigrated_legacy = []
+    normalized_unmigrated = [dict(v) for v in unmigrated_legacy if isinstance(v, dict)]
+    return LeakageIndexState(
+        fingerprints=out,
+        unmigrated_legacy=normalized_unmigrated,
+        needs_write=False,
+    )
 
 
-def _write_leakage_index(path: Path | None, fingerprints: Dict[str, Dict[str, Any]]) -> None:
+def _write_leakage_index(
+    path: Path | None,
+    *,
+    fingerprints: Dict[str, Dict[str, Any]],
+    unmigrated_legacy: List[Dict[str, Any]],
+) -> None:
     if path is None:
         return
     write_json(
         {
+            "schema_version": LEAKAGE_INDEX_SCHEMA_VERSION,
+            "fingerprint_version": FINGERPRINT_VERSION_V2,
             "num_fingerprints": len(fingerprints),
+            "num_unmigrated_legacy": len(unmigrated_legacy),
             "fingerprints": fingerprints,
+            "unmigrated_legacy": unmigrated_legacy,
         },
         path,
     )
@@ -225,7 +331,8 @@ def build_dreamdojo_dataset(
     per_source_prompt_norms: Dict[str, set[str]] = defaultdict(set)
     prompt_counter: Counter[str] = Counter()
     exact_seen: set[str] = set()
-    leakage_index = _load_leakage_index(leakage_index_path)
+    leakage_state = _load_leakage_index(leakage_index_path)
+    leakage_index = dict(leakage_state.fingerprints)
     new_fingerprints: Dict[str, Dict[str, Any]] = {}
     quality_rows: List[Dict[str, Any]] = []
 
@@ -322,6 +429,7 @@ def build_dreamdojo_dataset(
             per_source_prompt_norms[clip_name].add(prompt_norm)
             prompt_counter[prompt_norm] += 1
             new_fingerprints[fingerprint] = {
+                "fingerprint_version": FINGERPRINT_VERSION_V2,
                 "dataset_tag": str(dataset_tag or ""),
                 "facility": facility_name,
                 "clip_name": clip_name,
@@ -387,11 +495,6 @@ def build_dreamdojo_dataset(
     }
     write_json(quarantine_manifest, quarantine_dir / "quarantine_manifest.json")
 
-    if leakage_index_path is not None and new_fingerprints:
-        merged = dict(leakage_index)
-        merged.update(new_fingerprints)
-        _write_leakage_index(leakage_index_path, merged)
-
     dataset_info = {
         "name": f"blueprint_{facility_name}",
         "description": f"Site-adapted training data for {facility_name}",
@@ -432,6 +535,15 @@ def build_dreamdojo_dataset(
             f"(reasons={','.join(hard_fail_reasons)}). "
             f"Accepted={len(csv_rows)} Rejected={len(rejected_rows)}. "
             f"Example rejection: {example}"
+        )
+
+    if leakage_index_path is not None and (new_fingerprints or leakage_state.needs_write):
+        merged = dict(leakage_index)
+        merged.update(new_fingerprints)
+        _write_leakage_index(
+            leakage_index_path,
+            fingerprints=merged,
+            unmigrated_legacy=list(leakage_state.unmigrated_legacy),
         )
 
     logger.info(

@@ -6,7 +6,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List
 
-from ..common import read_json, write_json
+from ..common import write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..video_io import open_mp4_writer
 
@@ -15,10 +15,10 @@ def run_splatsim_pybullet_backend(
     config: ValidationConfig,
     facility: FacilityConfig,
     stage_dir: Path,
+    source_manifest: Dict,
     source_manifest_path: Path,
 ) -> Dict:
     """Generate physics-validated interaction clips for manipulation zones."""
-    source_manifest = read_json(source_manifest_path)
     source_clips = list(source_manifest.get("clips", []))
     manifest_path = stage_dir / "interaction_manifest.json"
 

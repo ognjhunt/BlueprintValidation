@@ -80,3 +80,30 @@ def test_load_config_parses_dataset_quality_block(tmp_path) -> None:
     assert dq.distribution.max_single_variant_fraction == 0.7
     assert dq.distribution.max_single_source_clip_fraction == 0.4
     assert dq.distribution.max_prompt_dominance_fraction == 0.45
+
+
+def test_load_config_rejects_invalid_dataset_quality_ranges(tmp_path) -> None:
+    import pytest
+
+    config_path = tmp_path / "config_invalid_dataset_quality.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            f"""
+            schema_version: v1
+            project_name: test
+            facilities:
+              a:
+                name: A
+                ply_path: {tmp_path / "a.ply"}
+            finetune:
+              dataset_quality:
+                max_reject_fraction: 1.2
+                prompt_lint:
+                  min_unique_token_ratio: 1.1
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="finetune.dataset_quality.max_reject_fraction"):
+        load_config(config_path)

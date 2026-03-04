@@ -1766,6 +1766,64 @@ def load_config(path: Path) -> ValidationConfig:
         raise ValueError("enrich.vlm_quality_min_visual_score must be in [0, 10]")
     if not (0.0 <= float(config.enrich.vlm_quality_min_spatial_score) <= 10.0):
         raise ValueError("enrich.vlm_quality_min_spatial_score must be in [0, 10]")
+    if not (0.0 <= float(config.finetune.dataset_quality.max_reject_fraction) <= 1.0):
+        raise ValueError("finetune.dataset_quality.max_reject_fraction must be in [0, 1]")
+    if int(config.finetune.dataset_quality.prompt_lint.min_chars) < 0:
+        raise ValueError("finetune.dataset_quality.prompt_lint.min_chars must be >= 0")
+    if int(config.finetune.dataset_quality.prompt_lint.min_tokens) < 0:
+        raise ValueError("finetune.dataset_quality.prompt_lint.min_tokens must be >= 0")
+    if not (
+        0.0 <= float(config.finetune.dataset_quality.prompt_lint.min_unique_token_ratio) <= 1.0
+    ):
+        raise ValueError(
+            "finetune.dataset_quality.prompt_lint.min_unique_token_ratio must be in [0, 1]"
+        )
+    if int(config.finetune.dataset_quality.temporal_gates.min_frames_for_check) < 1:
+        raise ValueError("finetune.dataset_quality.temporal_gates.min_frames_for_check must be >= 1")
+    if int(config.finetune.dataset_quality.temporal_gates.max_frames_to_sample) < 1:
+        raise ValueError("finetune.dataset_quality.temporal_gates.max_frames_to_sample must be >= 1")
+    if float(config.finetune.dataset_quality.temporal_gates.min_mean_interframe_delta) < 0.0:
+        raise ValueError(
+            "finetune.dataset_quality.temporal_gates.min_mean_interframe_delta must be >= 0"
+        )
+    if not (0.0 <= float(config.finetune.dataset_quality.temporal_gates.max_freeze_ratio) <= 1.0):
+        raise ValueError("finetune.dataset_quality.temporal_gates.max_freeze_ratio must be in [0, 1]")
+    if not (
+        0.0 <= float(config.finetune.dataset_quality.temporal_gates.max_abrupt_cut_ratio) <= 1.0
+    ):
+        raise ValueError(
+            "finetune.dataset_quality.temporal_gates.max_abrupt_cut_ratio must be in [0, 1]"
+        )
+    if float(config.finetune.dataset_quality.temporal_gates.max_blockiness_score) < 0.0:
+        raise ValueError("finetune.dataset_quality.temporal_gates.max_blockiness_score must be >= 0")
+    if int(config.finetune.dataset_quality.distribution.min_total_clips_for_caps) < 1:
+        raise ValueError("finetune.dataset_quality.distribution.min_total_clips_for_caps must be >= 1")
+    if int(config.finetune.dataset_quality.distribution.min_unique_variants) < 1:
+        raise ValueError("finetune.dataset_quality.distribution.min_unique_variants must be >= 1")
+    if int(config.finetune.dataset_quality.distribution.min_unique_source_clips) < 1:
+        raise ValueError(
+            "finetune.dataset_quality.distribution.min_unique_source_clips must be >= 1"
+        )
+    if not (
+        0.0 <= float(config.finetune.dataset_quality.distribution.max_single_variant_fraction) <= 1.0
+    ):
+        raise ValueError(
+            "finetune.dataset_quality.distribution.max_single_variant_fraction must be in [0, 1]"
+        )
+    if not (
+        0.0
+        <= float(config.finetune.dataset_quality.distribution.max_single_source_clip_fraction)
+        <= 1.0
+    ):
+        raise ValueError(
+            "finetune.dataset_quality.distribution.max_single_source_clip_fraction must be in [0, 1]"
+        )
+    if not (
+        0.0 <= float(config.finetune.dataset_quality.distribution.max_prompt_dominance_fraction) <= 1.0
+    ):
+        raise ValueError(
+            "finetune.dataset_quality.distribution.max_prompt_dominance_fraction must be in [0, 1]"
+        )
     if int(config.render.stage1_quality_max_regen_attempts) < 0:
         raise ValueError("render.stage1_quality_max_regen_attempts must be >= 0")
     if not (0.0 <= float(config.render.stage1_quality_min_clip_score) <= 1.0):

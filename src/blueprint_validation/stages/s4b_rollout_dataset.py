@@ -12,6 +12,7 @@ import numpy as np
 from ..common import StageResult, get_logger, read_json, write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..training.rlds_export import export_rollouts_to_rlds_jsonl
+from ..validation import ManifestValidationError, load_and_validate_manifest
 from .base import PipelineStage
 
 logger = get_logger("stages.s4b_rollout_dataset")
@@ -65,7 +66,20 @@ class RolloutDatasetStage(PipelineStage):
                 elapsed_seconds=0,
                 detail="Policy eval scores missing. Run Stage 4 first.",
             )
-        scores = read_json(scores_path).get("scores", [])
+        try:
+            scores_data = load_and_validate_manifest(
+                scores_path,
+                manifest_type="policy_scores",
+                require_existing_paths=True,
+            )
+        except ManifestValidationError as exc:
+            return StageResult(
+                stage_name=self.name,
+                status="failed",
+                elapsed_seconds=0,
+                detail=f"Invalid policy scores manifest: {exc}",
+            )
+        scores = scores_data.get("scores", [])
         if not scores:
             return StageResult(
                 stage_name=self.name,

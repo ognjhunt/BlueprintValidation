@@ -8,7 +8,7 @@ from typing import Dict
 from ..common import StageResult, write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..synthetic.splatsim_pybullet_backend import run_splatsim_pybullet_backend
-from ..validation import load_and_validate_manifest
+from ..validation import ManifestValidationError, load_and_validate_manifest
 from .manifest_resolution import ManifestCandidate, ManifestSource, resolve_manifest_source
 from .base import PipelineStage
 
@@ -49,10 +49,25 @@ class SplatSimInteractionStage(PipelineStage):
         stage_dir = work_dir / "splatsim"
         stage_dir.mkdir(parents=True, exist_ok=True)
 
+        try:
+            source_data = load_and_validate_manifest(
+                source.source_manifest_path,
+                manifest_type="stage1_source",
+                require_existing_paths=True,
+            )
+        except ManifestValidationError as exc:
+            return StageResult(
+                stage_name=self.name,
+                status="failed",
+                elapsed_seconds=0,
+                detail=f"Invalid source manifest for SplatSim: {exc}",
+            )
+
         backend_result = run_splatsim_pybullet_backend(
             config=config,
             facility=facility,
             stage_dir=stage_dir,
+            source_manifest=source_data,
             source_manifest_path=source.source_manifest_path,
         )
 
@@ -88,11 +103,6 @@ class SplatSimInteractionStage(PipelineStage):
 
         if config.splatsim.mode == "hybrid" and config.splatsim.fallback_to_prior_manifest:
             fallback_manifest = stage_dir / "interaction_manifest.json"
-            source_data = load_and_validate_manifest(
-                source.source_manifest_path,
-                manifest_type="stage1_source",
-                require_existing_paths=True,
-            )
             clips = list(source_data.get("clips", []))
             write_json(
                 {

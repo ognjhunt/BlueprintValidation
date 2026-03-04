@@ -51,6 +51,31 @@ def test_rlds_export_stage_fails_without_s4(sample_config, tmp_path):
     assert "Stage 4" in result.detail
 
 
+def test_rlds_export_stage_fails_on_invalid_policy_scores_manifest(sample_config, tmp_path):
+    from blueprint_validation.common import StageResult, write_json
+    from blueprint_validation.stages.s4a_rlds_export import RLDSExportStage
+
+    sample_config.eval_policy.headline_scope = "dual"
+    sample_config.rollout_dataset.enabled = True
+    sample_config.policy_finetune.enabled = True
+
+    scores_path = tmp_path / "vlm_scores.json"
+    write_json({"not_scores": []}, scores_path)
+    s4_result = StageResult(
+        stage_name="s4_policy_eval",
+        status="success",
+        elapsed_seconds=0,
+        outputs={"scores_path": str(scores_path)},
+    )
+
+    stage = RLDSExportStage()
+    fac = list(sample_config.facilities.values())[0]
+    result = stage.run(sample_config, fac, tmp_path, {"s4_policy_eval": s4_result})
+    assert result.status == "failed"
+    assert "Invalid policy scores manifest" in result.detail
+    assert "missing list field 'scores'" in result.detail
+
+
 def test_rlds_export_stage_succeeds_with_rollouts(sample_config, tmp_path):
     from blueprint_validation.common import StageResult, write_json
     from blueprint_validation.stages.s4a_rlds_export import RLDSExportStage

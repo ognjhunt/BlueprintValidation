@@ -5,13 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List
 
-from ..common import StageResult, get_logger, read_json, write_json
+from ..common import StageResult, get_logger, write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..training.rlds_export import (
     convert_jsonl_to_tfrecord,
     export_rollouts_to_rlds_jsonl,
 )
 from ..training.rollout_curriculum import sample_policy_curriculum
+from ..validation import ManifestValidationError, load_and_validate_manifest
 from .base import PipelineStage
 
 logger = get_logger("stages.s4a_rlds_export")
@@ -85,7 +86,19 @@ class RLDSExportStage(PipelineStage):
                 detail=f"Scores file not found: {scores_path}",
             )
 
-        scores_data = read_json(Path(scores_path))
+        try:
+            scores_data = load_and_validate_manifest(
+                Path(scores_path),
+                manifest_type="policy_scores",
+                require_existing_paths=True,
+            )
+        except ManifestValidationError as exc:
+            return StageResult(
+                stage_name=self.name,
+                status="failed",
+                elapsed_seconds=0,
+                detail=f"Invalid policy scores manifest: {exc}",
+            )
         all_rollouts: List[Dict] = scores_data.get("scores", [])
         adapted_rollouts_all = [r for r in all_rollouts if r.get("condition") == "adapted"]
         if not adapted_rollouts_all:

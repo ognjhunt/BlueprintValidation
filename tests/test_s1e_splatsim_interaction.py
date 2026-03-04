@@ -177,3 +177,46 @@ def test_stage_s1e_prefers_previous_results_manifest(sample_config, tmp_path, mo
     assert captured["source_manifest_path"] == render_manifest
     assert result.metrics["source_stage"] == "s1_render"
     assert result.metrics["source_mode"] == "previous_results"
+
+
+def test_stage_s1e_fails_on_invalid_source_manifest_before_backend_call(
+    sample_config, tmp_path, monkeypatch
+):
+    from blueprint_validation.common import write_json
+    from blueprint_validation.stages.s1e_splatsim_interaction import SplatSimInteractionStage
+
+    sample_config.splatsim.enabled = True
+    sample_config.splatsim.mode = "hybrid"
+    source_manifest = tmp_path / "renders" / "render_manifest.json"
+    source_manifest.parent.mkdir(parents=True, exist_ok=True)
+    write_json(
+        {
+            "facility": "Test Facility",
+            "clips": [
+                {
+                    # invalid: missing clip_name required by strict stage1_source schema
+                    "video_path": str(tmp_path / "renders" / "missing.mp4"),
+                }
+            ],
+        },
+        source_manifest,
+    )
+
+    called = {"value": False}
+
+    def _fake_backend(**kwargs):
+        del kwargs
+        called["value"] = True
+        return {"status": "success", "manifest_path": ""}
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1e_splatsim_interaction.run_splatsim_pybullet_backend",
+        _fake_backend,
+    )
+
+    stage = SplatSimInteractionStage()
+    fac = list(sample_config.facilities.values())[0]
+    result = stage.run(sample_config, fac, tmp_path, {})
+    assert result.status == "failed"
+    assert "Invalid source manifest for SplatSim" in result.detail
+    assert called["value"] is False

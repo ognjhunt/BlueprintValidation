@@ -37,6 +37,7 @@ from ..evaluation.vlm_judge import (
 )
 from ..evaluation.rollout_utils import run_rollout_with_adapter
 from ..policy_adapters import get_policy_adapter
+from ..validation import ManifestValidationError, load_and_validate_manifest
 from .base import PipelineStage
 
 logger = get_logger("stages.s4e_trained_eval")
@@ -423,7 +424,19 @@ class TrainedPolicyEvalStage(PipelineStage):
         if prev_s4 and prev_s4.status == "success":
             scores_path = prev_s4.outputs.get("scores_path")
             if scores_path and Path(scores_path).exists():
-                prior_scores = read_json(Path(scores_path)).get("scores", [])
+                try:
+                    prior_scores = load_and_validate_manifest(
+                        Path(scores_path),
+                        manifest_type="policy_scores",
+                        require_existing_paths=False,
+                    ).get("scores", [])
+                except ManifestValidationError as exc:
+                    return StageResult(
+                        stage_name=self.name,
+                        status="failed",
+                        elapsed_seconds=0,
+                        detail=f"Invalid policy scores manifest: {exc}",
+                    )
 
         all_scores = prior_scores + trained_scores
 
