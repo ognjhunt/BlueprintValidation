@@ -443,6 +443,94 @@ def test_locked_mode_allows_near_static_probe_with_high_unique_threshold(
     assert probe_meta["vlm_probe_passed"] is True
 
 
+def test_locked_mode_bypasses_los_hard_reject(sample_config, tmp_path, monkeypatch):
+    from blueprint_validation.config import CameraPathSpec
+    from blueprint_validation.evaluation.vlm_judge import Stage1ProbeScore
+    from blueprint_validation.stages.s1_render import RenderStage
+
+    class _Occ:
+        def is_free(self, point, min_clearance_m=0.0):
+            return True
+
+        def has_line_of_sight(self, start, end, **kwargs):
+            return False
+
+    sample_config.render.stage1_active_perception_max_loops = 0
+    sample_config.render.stage1_probe_min_viable_pose_ratio = 0.1
+    sample_config.render.stage1_probe_min_unique_positions = 1
+    sample_config.render.stage1_probe_dedupe_enabled = False
+
+    spec = CameraPathSpec(
+        type="file",
+        source_tag="kitchen_0787_locked",
+        approach_point=[0.0, 0.0, -1.0],
+        target_label="bowl_101",
+        target_role="targets",
+        target_extents_m=[0.3, 0.2, 0.2],
+    )
+
+    monkeypatch.setattr(
+        RenderStage,
+        "_build_render_poses",
+        lambda self, **kwargs: ([_pose(), _pose(), _pose()], 3, 3, 3, 0),
+    )
+
+    def _fake_render_video(**kwargs):
+        clip_name = kwargs["clip_name"]
+        video = tmp_path / f"{clip_name}.mp4"
+        depth = tmp_path / f"{clip_name}_depth.mp4"
+        video.write_bytes(b"x")
+        depth.write_bytes(b"x")
+        return SimpleNamespace(video_path=video, depth_video_path=depth)
+
+    monkeypatch.setattr("blueprint_validation.stages.s1_render.render_video", _fake_render_video)
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render._ensure_probe_h264_for_scoring",
+        lambda video_path, min_frames: SimpleNamespace(
+            path=video_path,
+            codec_name="h264",
+            decoded_frames=int(min_frames),
+            width=128,
+            height=96,
+            content_monochrome_warning=False,
+        ),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render.score_stage1_probe",
+        lambda **kwargs: Stage1ProbeScore(
+            task_score=7.0,
+            visual_score=7.0,
+            spatial_score=7.0,
+            issue_tags=[],
+            reasoning="good",
+            raw_response="{}",
+        ),
+    )
+
+    selected, probe_meta = RenderStage()._run_active_perception_probe(
+        config=sample_config,
+        splat=object(),
+        clip_name="clip_000_file",
+        initial_spec=spec,
+        ranked_candidates=[],
+        scene_center=np.array([0.0, 0.0, 0.0], dtype=np.float64),
+        occupancy=_Occ(),
+        render_dir=tmp_path,
+        camera_height=1.0,
+        look_down_deg=20.0,
+        resolution=(96, 128),
+        start_offset=np.zeros(3, dtype=np.float64),
+        fps=8,
+        scene_T=None,
+        facility_description="",
+        target_presence_enforced=True,
+        locked_mode=True,
+    )
+
+    assert selected.type == "file"
+    assert probe_meta["vlm_probe_passed"] is True
+
+
 def test_target_los_uses_camera_facing_surface_endpoint():
     from blueprint_validation.stages.s1_render import _compute_target_line_of_sight_ratio
 

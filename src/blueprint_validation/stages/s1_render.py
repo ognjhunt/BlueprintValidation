@@ -1535,7 +1535,12 @@ class RenderStage(PipelineStage):
                             occupancy=occupancy,
                             min_clearance_m=float(config.render.min_clearance_m),
                         )
-                        if los_ratio < float(_TARGET_PRESENCE_STRICT_MIN_LOS_RATIO):
+                        min_target_los_ratio = (
+                            0.0
+                            if bool(locked_mode)
+                            else float(_TARGET_PRESENCE_STRICT_MIN_LOS_RATIO)
+                        )
+                        if los_ratio < float(min_target_los_ratio):
                             row = {
                                 "spec": candidate_current_spec,
                                 "combined_score": -1e9,
@@ -1544,7 +1549,7 @@ class RenderStage(PipelineStage):
                                 "reasoning": (
                                     "target_presence_reject "
                                     f"line_of_sight={los_ratio:.3f}/"
-                                    f"{float(_TARGET_PRESENCE_STRICT_MIN_LOS_RATIO):.3f}"
+                                    f"{float(min_target_los_ratio):.3f}"
                                 ),
                                 "target_grounded": True,
                             }
@@ -1560,7 +1565,7 @@ class RenderStage(PipelineStage):
                                     "reason": "line_of_sight_occluded",
                                     "target_los_ratio": round(los_ratio, 6),
                                     "min_target_los_ratio": round(
-                                        float(_TARGET_PRESENCE_STRICT_MIN_LOS_RATIO), 6
+                                        float(min_target_los_ratio), 6
                                     ),
                                     "target_grounded": True,
                                 },
