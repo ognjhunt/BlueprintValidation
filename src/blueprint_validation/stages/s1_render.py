@@ -1472,6 +1472,7 @@ class RenderStage(PipelineStage):
                                 "visual_score": float(probe_score.visual_score),
                                 "spatial_score": float(probe_score.spatial_score),
                                 "issue_tags": list(probe_score.issue_tags),
+                                "reasoning": str(probe_score.reasoning or ""),
                                 "passed": bool(passes),
                                 "score_spread": consensus.get("score_spread"),
                                 "votes_effective": int(consensus.get("votes_effective", 0)),
@@ -2465,6 +2466,7 @@ def _score_stage1_probe_consensus(
                         "visual_score": float(score.visual_score),
                         "spatial_score": float(score.spatial_score),
                         "issue_tags": list(score.issue_tags),
+                        "reasoning": str(score.reasoning or ""),
                         "error": None,
                     }
                 )
@@ -2485,6 +2487,7 @@ def _score_stage1_probe_consensus(
                         "visual_score": None,
                         "spatial_score": None,
                         "issue_tags": [],
+                        "reasoning": "",
                         "error": msg,
                     }
                 )
