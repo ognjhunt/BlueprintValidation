@@ -181,19 +181,11 @@ def apply_issue_tag_corrections(
             and len(getattr(updated, "approach_point", None) or []) >= 3
         )
     ):
-        stype = str(updated.type).strip().lower()
-        if not bool(allow_type_conversion) and stype in ("orbit", "sweep"):
+        if not bool(allow_type_conversion) and str(updated.type).strip().lower() in (
+            "orbit",
+            "sweep",
+        ):
             # Conversion locked by caller — tighten the orbit/sweep zoom instead.
-            updated = _scale_standoff(
-                updated, orbit_scale=0.72, sweep_scale=0.72, manip_scale=1.0
-            )
-            updated = _add_look_down(
-                updated,
-                delta_deg=5.0,
-                default_look_down_deg=float(default_look_down_deg),
-            )
-        elif float(best_task_score) >= 1.0 and stype in ("orbit", "sweep"):
-            # If task is already partially successful, keep path type and tighten framing.
             updated = _scale_standoff(
                 updated, orbit_scale=0.72, sweep_scale=0.72, manip_scale=1.0
             )
@@ -204,7 +196,10 @@ def apply_issue_tag_corrections(
             )
         else:
             # Conversion is allowed: switch to a manipulation arc for a tight,
-            # target-centred close-up when framing is still failing.
+            # target-centred close-up regardless of partial task score.
+            # (The old zoom-in-when-task≥1 branch was protecting against a
+            # diversity-kick bug that shrank arc_radius to ~0.15 m and caused
+            # viability failures.  That bug is fixed in _spec_is_effectively_unchanged.)
             updated = _convert_to_manipulation(
                 updated,
                 default_camera_height=float(default_camera_height),

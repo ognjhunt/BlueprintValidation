@@ -150,11 +150,19 @@ def test_apply_issue_corrections_motion_reduction_escalates_by_loop_idx():
 # ---------------------------------------------------------------------------
 
 
-def test_target_missing_orbit_stays_orbit_when_task_partial():
-    """Orbit with task≥1 and target_missing must tighten zoom, NOT convert to manipulation.
+def test_target_missing_orbit_converts_to_manipulation_regardless_of_task_score():
+    """Orbit with target_missing must convert to manipulation even when task≥1.
 
-    This is the primary regression guard for the canary finding where orbit→manipulation
-    conversion caused task to drop from 1 → 0 when the orbit was already focused on target.
+    Fix 3 regression guard: the old zoom-in-when-task≥1 branch in
+    apply_issue_tag_corrections was removed.  When allow_type_conversion=True
+    (the default), target_missing always triggers orbit→manipulation conversion
+    so that a tight, target-centred close-up can be attempted.
+
+    The old zoom-in path was protecting against a diversity-kick bug where
+    _spec_is_effectively_unchanged returned True on type changes (orbit fields
+    are None in a manipulation spec), triggering arc_radius *= 0.6 and
+    collapsing the manipulation probe to ~0.15 m inside the object.  That bug
+    is now fixed in _spec_is_effectively_unchanged (Fix 1).
     """
     spec = CameraPathSpec(
         type="orbit",
@@ -168,21 +176,21 @@ def test_target_missing_orbit_stays_orbit_when_task_partial():
         issue_tags=["target_missing"],
         default_camera_height=1.0,
         default_look_down_deg=15.0,
-        best_task_score=1.0,  # task≥1 → must stay orbit
+        best_task_score=1.0,  # task≥1 must NOT prevent conversion any more
     )
-    assert updated.type == "orbit", (
-        f"Expected orbit to stay orbit when task≥1, got {updated.type!r}"
+    assert updated.type == "manipulation", (
+        f"Expected orbit→manipulation on target_missing even when task≥1, got {updated.type!r}"
     )
-    # Radius should be tightened by 0.72× scale
-    assert float(updated.radius_m) < float(spec.radius_m), (
-        "Orbit radius should decrease (zoom tighten) on target_missing+task≥1"
+    assert updated.approach_point == [0.5, 0.5, 0.85], (
+        f"Manipulation approach_point should match orbit approach_point, got {updated.approach_point!r}"
     )
-    assert abs(float(updated.radius_m) - 0.72) < 1e-6, (
-        f"Expected radius 0.72 (1.0 × 0.72), got {updated.radius_m}"
+    assert updated.target_label == "bowl_101"
+    # arc_radius_m: max(0.45, min(1.8, radius_m * 0.8)) = max(0.45, 0.8) = 0.8
+    assert abs(float(updated.arc_radius_m) - 0.8) < 1e-6, (
+        f"Expected arc_radius_m 0.8 (max(0.45, min(1.8, 1.0*0.8))), got {updated.arc_radius_m}"
     )
-    # look_down should increase by 5°
-    assert abs(float(updated.look_down_override_deg) - 20.0) < 1e-6, (
-        f"Expected look_down 20.0 (15.0 + 5.0), got {updated.look_down_override_deg}"
+    assert float(updated.arc_radius_m) >= 0.45, (
+        f"arc_radius_m must be ≥ 0.45 m (Fix C floor), got {updated.arc_radius_m}"
     )
 
 
