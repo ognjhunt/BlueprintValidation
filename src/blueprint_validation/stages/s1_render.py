@@ -64,7 +64,10 @@ logger = get_logger("stages.s1_render")
 
 _TARGET_PRESENCE_STRICT_MIN_VISIBLE_RATIO = 0.80
 _TARGET_PRESENCE_STRICT_MIN_CENTER_RATIO = 0.70
-_TARGET_PRESENCE_STRICT_MIN_LOS_RATIO = 0.85
+# LOS is evaluated against a camera-facing target surface endpoint (not center).
+# Keep this lower than visible/center ratios to avoid over-rejecting partially
+# occluded but still task-usable views in dense kitchen scenes.
+_TARGET_PRESENCE_STRICT_MIN_LOS_RATIO = 0.30
 _KITCHEN_0787_LOCKED_SOURCE_TAG = "kitchen_0787_locked"
 _KITCHEN_0787_LOCKED_MAX_TARGETS = 12
 
