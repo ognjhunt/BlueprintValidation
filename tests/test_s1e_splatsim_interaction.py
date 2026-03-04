@@ -9,6 +9,8 @@ def _write_source_manifest(path: Path) -> None:
     from blueprint_validation.common import write_json
 
     path.parent.mkdir(parents=True, exist_ok=True)
+    video_path = path.parent / "clip_000.mp4"
+    video_path.write_bytes(b"not_a_real_video")
     write_json(
         {
             "facility": "Test Facility",
@@ -20,7 +22,7 @@ def _write_source_manifest(path: Path) -> None:
                     "num_frames": 4,
                     "resolution": [48, 64],
                     "fps": 5,
-                    "video_path": "/tmp/placeholder.mp4",
+                    "video_path": str(video_path),
                     "depth_video_path": "",
                 }
             ],

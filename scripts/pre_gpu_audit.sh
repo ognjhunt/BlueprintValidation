@@ -6,6 +6,11 @@ LOCAL_CONFIG="${LOCAL_CONFIG:-$ROOT_DIR/configs/interiorgs_kitchen_0787.yaml}"
 CLOUD_CONFIG="${CLOUD_CONFIG:-$ROOT_DIR/configs/interiorgs_kitchen_0787.cloud.yaml}"
 WORK_DIR="${WORK_DIR:-$ROOT_DIR/data/outputs/pre_gpu_audit}"
 RUN_CLOUD_PREFLIGHT="${RUN_CLOUD_PREFLIGHT:-auto}"  # auto|true|false
+RUN_LOCAL_PREFLIGHT="${RUN_LOCAL_PREFLIGHT:-true}"  # true|false|auto
+RUN_SECRET_SCAN="${RUN_SECRET_SCAN:-true}"          # true|false|auto
+RUN_TARGETED_PYTEST="${RUN_TARGETED_PYTEST:-true}"  # true|false|auto
+RUN_LINT="${RUN_LINT:-true}"                        # true|false|auto
+RUN_FORMAT_CHECK="${RUN_FORMAT_CHECK:-true}"        # true|false|auto
 
 PYTEST_TARGETS=(
   tests/test_preflight.py
@@ -16,6 +21,10 @@ PYTEST_TARGETS=(
   tests/test_cosmos_runner.py
   tests/test_openvla_finetune.py
   tests/test_policy_rl_loop.py
+  tests/test_dataset_builder_strict_video.py
+  tests/test_dataset_builder_quality.py
+  tests/test_manifest_validation.py
+  tests/test_provenance.py
   tests/test_cli_preflight.py
   tests/test_docker_contract.py
 )
@@ -44,6 +53,26 @@ run_step() {
     SUMMARY_LINES+=("FAIL|$name")
     HAS_FAILURE=1
   fi
+}
+
+run_optional_step() {
+  local flag="$1"
+  local name="$2"
+  shift 2
+
+  case "$flag" in
+    true|auto|1|yes|on)
+      run_step "$name" "$@"
+      ;;
+    false|0|no|off)
+      SUMMARY_LINES+=("SKIP|$name")
+      ;;
+    *)
+      echo "Invalid toggle '$flag' for step '$name' (expected true|false|auto)" >&2
+      SUMMARY_LINES+=("FAIL|$name")
+      HAS_FAILURE=1
+      ;;
+  esac
 }
 
 secret_scan() {
@@ -80,8 +109,16 @@ for path in root.rglob("*"):
         continue
 
     try:
-        text = path.read_text(encoding="utf-8", errors="ignore")
+        raw = path.read_bytes()
     except Exception:
+        continue
+    if b"\x00" in raw:
+        continue
+    text = raw.decode("utf-8", errors="ignore")
+    if not text:
+        continue
+    printable = sum(1 for ch in text if ch.isprintable() or ch in "\n\r\t")
+    if (printable / max(1, len(text))) < 0.85:
         continue
 
     rel = f"./{path.relative_to(root)}"
@@ -132,12 +169,37 @@ maybe_run_cloud_preflight() {
     blueprint-validate --config "$CLOUD_CONFIG" --work-dir "$WORK_DIR" preflight --audit-mode
 }
 
+maybe_run_local_preflight() {
+  local should_run=1
+  case "$RUN_LOCAL_PREFLIGHT" in
+    true|auto) should_run=1 ;;
+    false) should_run=0 ;;
+    *)
+      echo "Invalid RUN_LOCAL_PREFLIGHT='$RUN_LOCAL_PREFLIGHT' (expected true|false|auto)" >&2
+      return 1
+      ;;
+  esac
+
+  if [[ "$should_run" -eq 0 ]]; then
+    SUMMARY_LINES+=("SKIP|Local preflight (--audit-mode)")
+    return 0
+  fi
+
+  run_step "Local preflight (--audit-mode)" \
+    blueprint-validate --config "$LOCAL_CONFIG" --work-dir "$WORK_DIR" preflight --audit-mode
+}
+
 echo "== Pre-GPU Audit =="
 echo "Root: $ROOT_DIR"
 echo "Local config: $LOCAL_CONFIG"
 echo "Cloud config: $CLOUD_CONFIG"
 echo "Work dir: $WORK_DIR"
+echo "Run local preflight: $RUN_LOCAL_PREFLIGHT"
 echo "Run cloud preflight: $RUN_CLOUD_PREFLIGHT"
+echo "Run secret scan: $RUN_SECRET_SCAN"
+echo "Run targeted pytest: $RUN_TARGETED_PYTEST"
+echo "Run lint: $RUN_LINT"
+echo "Run format check: $RUN_FORMAT_CHECK"
 
 cd "$ROOT_DIR"
 
@@ -149,9 +211,9 @@ fi
 ensure_python_module_cli pytest pytest
 ensure_python_module_cli ruff ruff
 
-run_step "Secret scan" secret_scan
+run_optional_step "$RUN_SECRET_SCAN" "Secret scan" secret_scan
 
-run_step "Targeted pytest" \
+run_optional_step "$RUN_TARGETED_PYTEST" "Targeted pytest" \
   env \
     -u BLUEPRINT_GPU_HOURLY_RATE_USD \
     -u BLUEPRINT_AUTO_SHUTDOWN_CMD \
@@ -159,14 +221,13 @@ run_step "Targeted pytest" \
     -u BLUEPRINT_POST_STAGE_SYNC_STRICT \
     python -m pytest "${PYTEST_TARGETS[@]}" -q
 
-run_step "Lint (ruff check)" \
+run_optional_step "$RUN_LINT" "Lint (ruff check)" \
   python -m ruff check src tests scripts
 
-run_step "Format check (ruff format --check)" \
+run_optional_step "$RUN_FORMAT_CHECK" "Format check (ruff format --check)" \
   python -m ruff format --check src tests scripts
 
-run_step "Local preflight (--audit-mode)" \
-  blueprint-validate --config "$LOCAL_CONFIG" --work-dir "$WORK_DIR" preflight --audit-mode
+maybe_run_local_preflight || HAS_FAILURE=1
 
 maybe_run_cloud_preflight || HAS_FAILURE=1
 

@@ -7,7 +7,7 @@ import math
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-from ..common import StageResult, get_logger, read_json, write_json
+from ..common import StageResult, get_logger, write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..enrichment.cosmos_runner import enrich_clip
 from ..enrichment.scene_index import build_scene_index, query_nearest_context_candidates
@@ -29,6 +29,7 @@ from ..evaluation.video_orientation import (
 )
 from ..video_io import ensure_h264_video, open_mp4_writer
 from ..warmup import load_cached_variants
+from ..validation import load_and_validate_manifest
 from .manifest_resolution import ManifestCandidate, ManifestSource, resolve_manifest_source
 from .base import PipelineStage
 
@@ -152,7 +153,11 @@ class EnrichStage(PipelineStage):
                 ),
             )
 
-        render_manifest = read_json(source.source_manifest_path)
+        render_manifest = load_and_validate_manifest(
+            source.source_manifest_path,
+            manifest_type="stage1_source",
+            require_existing_paths=True,
+        )
         sample_context_frame_index = None
         coverage_gate_result = _evaluate_stage1_coverage_gate(render_manifest, config)
         coverage_outputs: Dict[str, object] = {}

@@ -7,9 +7,10 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 
-from ..common import StageResult, get_logger, read_json, write_json
+from ..common import StageResult, get_logger, write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..evaluation.metrics import compute_video_metrics
+from ..validation import load_and_validate_manifest
 from .manifest_resolution import ManifestCandidate, ManifestSource, resolve_manifest_source
 from .base import PipelineStage
 
@@ -49,8 +50,16 @@ class VisualFidelityStage(PipelineStage):
                 ),
             )
 
-        source_manifest = read_json(source.source_manifest_path)
-        enriched_manifest = read_json(enriched_manifest_path)
+        source_manifest = load_and_validate_manifest(
+            source.source_manifest_path,
+            manifest_type="stage1_source",
+            require_existing_paths=True,
+        )
+        enriched_manifest = load_and_validate_manifest(
+            enriched_manifest_path,
+            manifest_type="enriched",
+            require_existing_paths=True,
+        )
         source_map = _build_source_video_map(source_manifest)
 
         all_metrics: List[Dict] = []

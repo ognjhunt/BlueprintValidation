@@ -5,9 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List
 
-from ..common import StageResult, get_logger, read_json, write_json
+from ..common import StageResult, get_logger, write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..synthetic.gemini_image_polish import polish_clip_with_gemini
+from ..validation import load_and_validate_manifest
 from .manifest_resolution import ManifestCandidate, ManifestSource, resolve_manifest_source
 from .base import PipelineStage
 
@@ -47,7 +48,11 @@ class GeminiPolishStage(PipelineStage):
                 elapsed_seconds=0,
                 detail="No source manifest found for Gemini polish. Run Stage 1 or Stage 1b first.",
             )
-        source_manifest = read_json(source.source_manifest_path)
+        source_manifest = load_and_validate_manifest(
+            source.source_manifest_path,
+            manifest_type="stage1_source",
+            require_existing_paths=True,
+        )
 
         out_dir = work_dir / "gemini_polish"
         out_dir.mkdir(parents=True, exist_ok=True)

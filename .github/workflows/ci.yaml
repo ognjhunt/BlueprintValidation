@@ -26,11 +26,57 @@ jobs:
         run: |
           uv run python -m blueprint_validation.cli --help > /dev/null
 
-      - name: Lint
+      - name: Prepare CPU Audit Fixture
         run: |
-          uv run ruff check src/ tests/
-          uv run ruff format --check src/ tests/
+          uv run python scripts/prepare_cpu_audit_fixture.py \
+            --output-dir .ci/audit_fixture \
+            --facility-id ci_facility
 
-      - name: Run tests
+      - name: Pre-GPU Audit Script
+        env:
+          LOCAL_CONFIG: ${{ github.workspace }}/.ci/audit_fixture/config.yaml
+          CLOUD_CONFIG: ${{ github.workspace }}/.ci/audit_fixture/config.yaml
+          WORK_DIR: ${{ github.workspace }}/.ci/audit_fixture/work
+          RUN_LOCAL_PREFLIGHT: "false"
+          RUN_CLOUD_PREFLIGHT: "false"
+          RUN_LINT: "false"
+          RUN_FORMAT_CHECK: "false"
         run: |
-          uv run pytest tests/ -v --ignore=tests/integration -k "not gpu and not slow"
+          uv run bash scripts/pre_gpu_audit.sh
+
+      - name: Geometry Canary Gate
+        run: |
+          uv run blueprint-validate \
+            --config .ci/audit_fixture/config.yaml \
+            --work-dir .ci/audit_fixture/work \
+            geometry-canary \
+            --facility ci_facility \
+            --max-clips 6 \
+            --probe-frames 8
+
+      - name: Post-S1 Audit Gate
+        run: |
+          uv run blueprint-validate \
+            --config .ci/audit_fixture/config.yaml \
+            --work-dir .ci/audit_fixture/work \
+            post-s1-audit \
+            --facility ci_facility \
+            --vlm-rescore-first 0
+
+      - name: Data-Quality Regression Tests
+        run: |
+          uv run pytest \
+            tests/test_dataset_builder_strict_video.py \
+            tests/test_dataset_builder_quality.py \
+            tests/test_manifest_validation.py \
+            tests/test_provenance.py \
+            tests/test_s2_enrich.py \
+            tests/test_s5_visual_fidelity.py \
+            -v -k "not gpu and not slow"
+
+      - name: Run Unit Tests
+        run: |
+          uv run pytest tests/ -v \
+            --ignore=tests/integration \
+            --ignore=tests/test_s0_task_hints_bootstrap.py \
+            -k "not gpu and not slow"

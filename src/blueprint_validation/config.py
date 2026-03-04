@@ -264,6 +264,50 @@ class EnrichConfig:
 
 
 @dataclass
+class DatasetPromptLintConfig:
+    enabled: bool = True
+    min_chars: int = 8
+    min_tokens: int = 2
+    min_unique_token_ratio: float = 0.35
+    allow_generic_substrings: bool = False
+
+
+@dataclass
+class DatasetTemporalGateConfig:
+    enabled: bool = True
+    min_frames_for_check: int = 8
+    max_frames_to_sample: int = 96
+    min_mean_interframe_delta: float = 1.5
+    max_freeze_ratio: float = 0.70
+    max_abrupt_cut_ratio: float = 0.35
+    max_blockiness_score: float = 0.45
+
+
+@dataclass
+class DatasetDistributionConfig:
+    enabled: bool = True
+    min_total_clips_for_caps: int = 16
+    min_unique_variants: int = 2
+    min_unique_source_clips: int = 4
+    max_single_variant_fraction: float = 0.85
+    max_single_source_clip_fraction: float = 0.60
+    max_prompt_dominance_fraction: float = 0.70
+
+
+@dataclass
+class DatasetQualityConfig:
+    strict_manifest_validation: bool = True
+    quarantine_rejections: bool = True
+    fail_on_rejections: bool = True
+    max_reject_fraction: float = 0.50
+    enable_duplicate_detection: bool = True
+    enable_leakage_detection: bool = True
+    prompt_lint: DatasetPromptLintConfig = field(default_factory=DatasetPromptLintConfig)
+    temporal_gates: DatasetTemporalGateConfig = field(default_factory=DatasetTemporalGateConfig)
+    distribution: DatasetDistributionConfig = field(default_factory=DatasetDistributionConfig)
+
+
+@dataclass
 class FinetuneConfig:
     dreamdojo_repo: Path = Path("/opt/DreamDojo")
     dreamdojo_checkpoint: Path = Path("./data/checkpoints/DreamDojo/2B_pretrain/")
@@ -290,6 +334,7 @@ class FinetuneConfig:
     warmup_steps: int = 100
     save_every_n_epochs: int = 10
     max_training_hours: float = 72.0
+    dataset_quality: DatasetQualityConfig = field(default_factory=DatasetQualityConfig)
 
 
 @dataclass
@@ -1068,6 +1113,10 @@ def load_config(path: Path) -> ValidationConfig:
     # Finetune
     if "finetune" in raw:
         ft = raw["finetune"]
+        dataset_quality_raw = ft.get("dataset_quality", {}) or {}
+        prompt_lint_raw = dataset_quality_raw.get("prompt_lint", {}) or {}
+        temporal_raw = dataset_quality_raw.get("temporal_gates", {}) or {}
+        distribution_raw = dataset_quality_raw.get("distribution", {}) or {}
         experiment_config = ft.get("experiment_config")
         if experiment_config and (
             "/" in experiment_config
@@ -1108,6 +1157,61 @@ def load_config(path: Path) -> ValidationConfig:
             warmup_steps=ft.get("warmup_steps", 100),
             save_every_n_epochs=ft.get("save_every_n_epochs", 10),
             max_training_hours=ft.get("max_training_hours", 72.0),
+            dataset_quality=DatasetQualityConfig(
+                strict_manifest_validation=bool(
+                    dataset_quality_raw.get("strict_manifest_validation", True)
+                ),
+                quarantine_rejections=bool(dataset_quality_raw.get("quarantine_rejections", True)),
+                fail_on_rejections=bool(dataset_quality_raw.get("fail_on_rejections", True)),
+                max_reject_fraction=float(dataset_quality_raw.get("max_reject_fraction", 0.50)),
+                enable_duplicate_detection=bool(
+                    dataset_quality_raw.get("enable_duplicate_detection", True)
+                ),
+                enable_leakage_detection=bool(
+                    dataset_quality_raw.get("enable_leakage_detection", True)
+                ),
+                prompt_lint=DatasetPromptLintConfig(
+                    enabled=bool(prompt_lint_raw.get("enabled", True)),
+                    min_chars=int(prompt_lint_raw.get("min_chars", 8)),
+                    min_tokens=int(prompt_lint_raw.get("min_tokens", 2)),
+                    min_unique_token_ratio=float(
+                        prompt_lint_raw.get("min_unique_token_ratio", 0.35)
+                    ),
+                    allow_generic_substrings=bool(
+                        prompt_lint_raw.get("allow_generic_substrings", False)
+                    ),
+                ),
+                temporal_gates=DatasetTemporalGateConfig(
+                    enabled=bool(temporal_raw.get("enabled", True)),
+                    min_frames_for_check=int(temporal_raw.get("min_frames_for_check", 8)),
+                    max_frames_to_sample=int(temporal_raw.get("max_frames_to_sample", 96)),
+                    min_mean_interframe_delta=float(
+                        temporal_raw.get("min_mean_interframe_delta", 1.5)
+                    ),
+                    max_freeze_ratio=float(temporal_raw.get("max_freeze_ratio", 0.70)),
+                    max_abrupt_cut_ratio=float(temporal_raw.get("max_abrupt_cut_ratio", 0.35)),
+                    max_blockiness_score=float(temporal_raw.get("max_blockiness_score", 0.45)),
+                ),
+                distribution=DatasetDistributionConfig(
+                    enabled=bool(distribution_raw.get("enabled", True)),
+                    min_total_clips_for_caps=int(
+                        distribution_raw.get("min_total_clips_for_caps", 16)
+                    ),
+                    min_unique_variants=int(distribution_raw.get("min_unique_variants", 2)),
+                    min_unique_source_clips=int(
+                        distribution_raw.get("min_unique_source_clips", 4)
+                    ),
+                    max_single_variant_fraction=float(
+                        distribution_raw.get("max_single_variant_fraction", 0.85)
+                    ),
+                    max_single_source_clip_fraction=float(
+                        distribution_raw.get("max_single_source_clip_fraction", 0.60)
+                    ),
+                    max_prompt_dominance_fraction=float(
+                        distribution_raw.get("max_prompt_dominance_fraction", 0.70)
+                    ),
+                ),
+            ),
         )
 
     # Policy eval

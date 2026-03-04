@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 
 def test_build_controlnet_spec_depth(tmp_path):
@@ -134,6 +135,15 @@ def test_run_cosmos_inference_sets_repo_pythonpath(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "blueprint_validation.enrichment.cosmos_runner._resolve_generated_video",
         lambda path: expected_out,
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.enrichment.cosmos_runner.ensure_h264_video",
+        lambda **_kwargs: SimpleNamespace(
+            path=expected_out,
+            codec_name="h264",
+            decoded_frames=24,
+            transcoded=False,
+        ),
     )
 
     generated = run_cosmos_inference(

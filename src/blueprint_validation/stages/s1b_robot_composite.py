@@ -5,9 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List
 
-from ..common import StageResult, get_logger, read_json, write_json
+from ..common import StageResult, get_logger, write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..synthetic.robot_compositor import composite_robot_arm_into_clip
+from ..validation import load_and_validate_manifest
 from .base import PipelineStage
 
 logger = get_logger("stages.s1b_robot_composite")
@@ -53,7 +54,11 @@ class RobotCompositeStage(PipelineStage):
                 elapsed_seconds=0,
                 detail="Render manifest missing. Run Stage 1 first.",
             )
-        render_manifest = read_json(render_manifest_path)
+        render_manifest = load_and_validate_manifest(
+            render_manifest_path,
+            manifest_type="stage1_source",
+            require_existing_paths=True,
+        )
         out_dir = work_dir / "robot_composite"
         out_dir.mkdir(parents=True, exist_ok=True)
 

@@ -5,9 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict
 
-from ..common import StageResult, read_json, write_json
+from ..common import StageResult, write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..synthetic.splatsim_pybullet_backend import run_splatsim_pybullet_backend
+from ..validation import load_and_validate_manifest
 from .manifest_resolution import ManifestCandidate, ManifestSource, resolve_manifest_source
 from .base import PipelineStage
 
@@ -87,7 +88,11 @@ class SplatSimInteractionStage(PipelineStage):
 
         if config.splatsim.mode == "hybrid" and config.splatsim.fallback_to_prior_manifest:
             fallback_manifest = stage_dir / "interaction_manifest.json"
-            source_data = read_json(source.source_manifest_path)
+            source_data = load_and_validate_manifest(
+                source.source_manifest_path,
+                manifest_type="stage1_source",
+                require_existing_paths=True,
+            )
             clips = list(source_data.get("clips", []))
             write_json(
                 {

@@ -50,6 +50,11 @@ class FinetuneStage(PipelineStage):
             output_dir=finetune_dir,
             facility_name=facility.name,
             min_decoded_frames=max(2, int(config.eval_policy.reliability.min_rollout_frames)),
+            quality_config=config.finetune.dataset_quality,
+            config_obj=config,
+            leakage_index_path=work_dir / "quality" / "dataset_fingerprint_index.json",
+            dataset_tag=f"{facility.name}:s3_finetune",
+            stage_name=self.name,
         )
 
         # Run fine-tuning

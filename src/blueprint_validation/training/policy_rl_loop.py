@@ -587,6 +587,11 @@ def _refresh_world_model(
         output_dir=output_dir,
         facility_name=f"{facility.name}_rl_iter_{iteration:02d}",
         min_decoded_frames=max(2, int(config.eval_policy.reliability.min_rollout_frames)),
+        quality_config=config.finetune.dataset_quality,
+        config_obj=config,
+        leakage_index_path=work_dir / "quality" / "dataset_fingerprint_index.json",
+        dataset_tag=f"{facility.name}:wm_refresh_iter_{iteration:02d}",
+        stage_name="policy_rl_loop.world_model_refresh",
     )
 
     ft_cfg = replace(
