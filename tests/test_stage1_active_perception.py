@@ -207,6 +207,27 @@ def test_target_missing_orbit_converts_to_manipulation_when_task_zero():
     )
 
 
+def test_target_missing_orbit_stays_orbit_when_type_conversion_disabled():
+    spec = CameraPathSpec(
+        type="orbit",
+        radius_m=1.0,
+        approach_point=[0.5, 0.5, 0.85],
+        target_label="bowl_101",
+        look_down_override_deg=15.0,
+    )
+    updated = apply_issue_tag_corrections(
+        spec=spec,
+        issue_tags=["target_missing"],
+        default_camera_height=1.0,
+        default_look_down_deg=15.0,
+        best_task_score=0.0,
+        allow_type_conversion=False,
+    )
+    assert updated.type == "orbit"
+    assert float(updated.radius_m) < float(spec.radius_m)
+    assert float(updated.look_down_override_deg) > float(spec.look_down_override_deg)
+
+
 # ---------------------------------------------------------------------------
 # Fix C regression: arc radius floor raised to 0.45 m in _convert_to_manipulation
 # ---------------------------------------------------------------------------
@@ -236,3 +257,22 @@ def test_convert_to_manipulation_arc_radius_floor_small_orbit():
     assert float(updated.arc_radius_m) >= 0.45, (
         f"arc_radius_m must be ≥ 0.45 m (Fix C floor), got {updated.arc_radius_m:.3f}"
     )
+
+
+def test_convert_to_manipulation_ignores_degenerate_fallback_target_point():
+    spec = CameraPathSpec(
+        type="orbit",
+        radius_m=1.0,
+        approach_point=None,
+        target_label="bowl_101",
+    )
+    updated = apply_issue_tag_corrections(
+        spec=spec,
+        issue_tags=["target_missing"],
+        default_camera_height=1.0,
+        default_look_down_deg=20.0,
+        best_task_score=0.0,
+        fallback_target_point=[0.0, 0.0, 0.0],
+    )
+    assert updated.type == "orbit"
+    assert float(updated.radius_m) < float(spec.radius_m)

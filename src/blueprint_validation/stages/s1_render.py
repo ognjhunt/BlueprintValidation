@@ -15,7 +15,11 @@ import numpy as np
 
 from ..common import StageResult, get_logger, write_json
 from ..config import CameraPathSpec, FacilityConfig, VLMJudgeConfig, ValidationConfig
-from ..evaluation.camera_quality import evaluate_clip_quality
+from ..evaluation.camera_quality import (
+    analyze_target_visibility,
+    evaluate_clip_quality,
+    project_target_to_poses,
+)
 from ..evaluation.task_hints import tasks_from_task_hints
 from ..evaluation.vlm_judge import Stage1ProbeScore, score_stage1_probe
 from ..rendering.camera_paths import generate_path_from_spec, save_path_to_json
@@ -656,6 +660,15 @@ class RenderStage(PipelineStage):
                 clip_repeats = int(config.render.task_scoped_num_clips_per_path)
             clip_repeats = max(1, clip_repeats)
             for clip_num in range(clip_repeats):
+                path_context_for_scope = _path_context_from_spec(path_spec)
+                target_grounded = bool(
+                    should_probe_clip(
+                        scope="targeted",
+                        path_type=str(path_spec.type),
+                        path_context=path_context_for_scope,
+                    )
+                    and _is_target_grounded_path_context(path_context_for_scope)
+                )
                 # Add random offset for variety between clips
                 rng = np.random.default_rng(seed=clip_index * 42)
                 offset = _sample_start_offset(
@@ -666,6 +679,22 @@ class RenderStage(PipelineStage):
                     is_task_scoped=(
                         str(getattr(path_spec, "source_tag", "")).strip().lower() == "task_scoped"
                     ),
+                    target_grounded=False,
+                )
+                probe_offset = (
+                    _sample_start_offset(
+                        config,
+                        path_spec,
+                        rng,
+                        clip_repeat_index=clip_num,
+                        is_task_scoped=(
+                            str(getattr(path_spec, "source_tag", "")).strip().lower()
+                            == "task_scoped"
+                        ),
+                        target_grounded=True,
+                    )
+                    if target_grounded
+                    else np.asarray(offset, dtype=np.float64).copy()
                 )
                 requested_count = int(num_frames)
                 if (
@@ -711,7 +740,6 @@ class RenderStage(PipelineStage):
                     selected_fps=float(config.eval_policy.vlm_judge.video_metadata_fps),
                     candidate_count=max(1, int(candidate_count_evaluated)),
                 )
-                path_context_for_scope = _path_context_from_spec(path_spec)
                 if (
                     bool(config.render.stage1_active_perception_enabled)
                     and should_probe_clip(
@@ -732,10 +760,11 @@ class RenderStage(PipelineStage):
                         camera_height=camera_height,
                         look_down_deg=look_down_deg,
                         resolution=resolution,
-                        start_offset=offset,
+                        start_offset=probe_offset,
                         fps=fps,
                         scene_T=scene_T,
                         facility_description=facility_description,
+                        target_presence_enforced=target_grounded,
                         probe_orientation_fix=probe_orientation_fix,
                         probe_scores_path=probe_scores_path,
                     )
@@ -953,7 +982,22 @@ class RenderStage(PipelineStage):
         pre_filter_count = len(poses)
         if occupancy is not None:
             target = np.array(path_spec.approach_point or scene_center[:3])
-            poses = filter_and_fix_poses(poses, occupancy, target, config.render.min_clearance_m)
+            retarget = None
+            if isinstance(path_spec.approach_point, list) and len(path_spec.approach_point) >= 3:
+                try:
+                    candidate = np.asarray(path_spec.approach_point[:3], dtype=np.float64)
+                    if np.all(np.isfinite(candidate)):
+                        retarget = candidate
+                except Exception:
+                    retarget = None
+            poses = filter_and_fix_poses(
+                poses,
+                occupancy,
+                target,
+                config.render.min_clearance_m,
+                retarget_point=retarget,
+                reorient_nudged_poses=True,
+            )
             if not poses:
                 return [], pre_filter_count, 0, 0, 0
         post_filter_count = len(poses)
@@ -1023,6 +1067,7 @@ class RenderStage(PipelineStage):
         fps: int,
         scene_T: Optional[np.ndarray],
         facility_description: str,
+        target_presence_enforced: bool = False,
         probe_orientation_fix: str = "none",
         probe_scores_path: Optional[Path] = None,
     ) -> tuple[CameraPathSpec, Dict[str, object]]:
@@ -1059,6 +1104,7 @@ class RenderStage(PipelineStage):
         last_issue_tags: List[str] = []
         last_fail_reason: Optional[str] = None
         retries_used = 0
+        type_conversion_locked = False
 
         # max_loops is "correction loops"; total rounds include the initial probe round.
         total_rounds = max(1, int(budget.max_loops) + 1)
@@ -1080,6 +1126,11 @@ class RenderStage(PipelineStage):
                 pose_regen_attempted = False
                 row: Dict[str, object] | None = None
                 while True:
+                    path_context = _path_context_from_spec(candidate_current_spec)
+                    candidate_target_grounded = bool(target_presence_enforced) and bool(
+                        _is_target_grounded_path_context(path_context)
+                    )
+                    candidate_target_xyz = _path_context_target_xyz(path_context)
                     (
                         poses,
                         pre_count,
@@ -1105,6 +1156,7 @@ class RenderStage(PipelineStage):
                             "passed": False,
                             "issue_tags": ["target_missing"],
                             "reasoning": "probe_pose_generation_failed",
+                            "target_grounded": bool(candidate_target_grounded),
                         }
                         _append_probe_score_row(
                             probe_scores_path,
@@ -1115,6 +1167,7 @@ class RenderStage(PipelineStage):
                                 "loop": int(round_idx),
                                 "candidate": int(cand_idx),
                                 "status": "pose_generation_failed",
+                                "target_grounded": bool(candidate_target_grounded),
                             },
                         )
                         break
@@ -1134,6 +1187,7 @@ class RenderStage(PipelineStage):
                                 f"probe_viability_reject ratio={viable_ratio:.3f} "
                                 f"threshold={min_viable_ratio:.3f}"
                             ),
+                            "target_grounded": bool(candidate_target_grounded),
                         }
                         _append_probe_score_row(
                             probe_scores_path,
@@ -1147,6 +1201,7 @@ class RenderStage(PipelineStage):
                                 "viable_pose_ratio": round(viable_ratio, 6),
                                 "pre_filter_count": int(pre_count),
                                 "post_filter_count": int(post_filter_count),
+                                "target_grounded": bool(candidate_target_grounded),
                             },
                         )
                         break
@@ -1172,6 +1227,7 @@ class RenderStage(PipelineStage):
                                 f"probe_degenerate_positions unique={unique_positions} "
                                 f"min_required={min_unique_positions}"
                             ),
+                            "target_grounded": bool(candidate_target_grounded),
                         }
                         _append_probe_score_row(
                             probe_scores_path,
@@ -1184,9 +1240,93 @@ class RenderStage(PipelineStage):
                                 "status": "degenerate_positions",
                                 "unique_positions": int(unique_positions),
                                 "min_unique_positions": int(min_unique_positions),
+                                "target_grounded": bool(candidate_target_grounded),
                             },
                         )
                         break
+
+                    if candidate_target_grounded:
+                        if candidate_target_xyz is None:
+                            row = {
+                                "spec": candidate_current_spec,
+                                "combined_score": -1e9,
+                                "passed": False,
+                                "issue_tags": ["target_missing"],
+                                "reasoning": "target_presence_reject missing_target_annotation",
+                                "target_grounded": True,
+                            }
+                            _append_probe_score_row(
+                                probe_scores_path,
+                                {
+                                    "clip_name": clip_name,
+                                    "clip_id": int(clip_name.split("_")[1]) if "_" in clip_name else -1,
+                                    "path_type": str(candidate_current_spec.type),
+                                    "loop": int(round_idx),
+                                    "candidate": int(cand_idx),
+                                    "status": "target_presence_reject",
+                                    "reason": "missing_target_annotation",
+                                    "target_grounded": True,
+                                },
+                            )
+                            break
+
+                        total_frames, visible_samples = project_target_to_poses(
+                            poses,
+                            candidate_target_xyz,
+                        )
+                        (
+                            visible_frames,
+                            total_frames,
+                            center_frames,
+                            _angle_bins,
+                        ) = analyze_target_visibility(
+                            total_frames=total_frames,
+                            visible_samples=visible_samples,
+                            angle_bin_deg=float(config.render.stage1_coverage_angle_bin_deg),
+                            center_band_x=config.render.stage1_coverage_center_band_x,
+                            center_band_y=config.render.stage1_coverage_center_band_y,
+                        )
+                        visible_ratio = (
+                            float(visible_frames) / float(total_frames) if total_frames > 0 else 0.0
+                        )
+                        center_ratio = (
+                            float(center_frames) / float(total_frames) if total_frames > 0 else 0.0
+                        )
+                        min_visible_ratio = float(config.render.stage1_coverage_min_visible_frame_ratio)
+                        min_center_ratio = float(config.render.stage1_coverage_min_center_band_ratio)
+                        if visible_ratio < min_visible_ratio or center_ratio < min_center_ratio:
+                            issue_tags = ["target_missing"]
+                            if center_ratio < min_center_ratio:
+                                issue_tags.append("target_off_center")
+                            row = {
+                                "spec": candidate_current_spec,
+                                "combined_score": -1e9,
+                                "passed": False,
+                                "issue_tags": issue_tags,
+                                "reasoning": (
+                                    "target_presence_reject "
+                                    f"visible={visible_ratio:.3f}/{min_visible_ratio:.3f} "
+                                    f"center={center_ratio:.3f}/{min_center_ratio:.3f}"
+                                ),
+                                "target_grounded": True,
+                            }
+                            _append_probe_score_row(
+                                probe_scores_path,
+                                {
+                                    "clip_name": clip_name,
+                                    "clip_id": int(clip_name.split("_")[1]) if "_" in clip_name else -1,
+                                    "path_type": str(candidate_current_spec.type),
+                                    "loop": int(round_idx),
+                                    "candidate": int(cand_idx),
+                                    "status": "target_presence_reject",
+                                    "target_visible_ratio": round(visible_ratio, 6),
+                                    "target_center_ratio": round(center_ratio, 6),
+                                    "min_visible_ratio": round(min_visible_ratio, 6),
+                                    "min_center_ratio": round(min_center_ratio, 6),
+                                    "target_grounded": True,
+                                },
+                            )
+                            break
 
                     render_poses = poses
                     if scene_T is not None:
@@ -1312,6 +1452,7 @@ class RenderStage(PipelineStage):
                             "passed": False,
                             "issue_tags": ["target_missing"],
                             "reasoning": "probe_duplicate_unresolved",
+                            "target_grounded": bool(candidate_target_grounded),
                         }
                         _append_probe_score_row(
                             probe_scores_path,
@@ -1324,6 +1465,7 @@ class RenderStage(PipelineStage):
                                 "status": "duplicate_unresolved",
                                 "duplicate_reason": str(dedupe_info.get("reason", "")),
                                 "duplicate_similarity": dedupe_info.get("max_similarity"),
+                                "target_grounded": bool(candidate_target_grounded),
                             },
                         )
                         if not bool(config.render.stage1_keep_probe_videos):
@@ -1342,6 +1484,7 @@ class RenderStage(PipelineStage):
                             "clip_name": probe_clip_name,
                         }
                     )
+                    consensus_status = "scoring_failed"
                     try:
                         validated_probe = _ensure_probe_h264_for_scoring(
                             video_path=probe_video_path,
@@ -1359,20 +1502,35 @@ class RenderStage(PipelineStage):
                         ) + int(
                             1 if bool(getattr(validated_probe, "content_monochrome_warning", False)) else 0
                         )
-                        consensus = _score_stage1_probe_consensus(
-                            video_path=probe_scoring_path,
-                            expected_focus_text=expected_focus_text,
-                            config=config.eval_policy.vlm_judge,
-                            facility_description=facility_description,
-                            votes=max(1, int(config.render.stage1_probe_consensus_votes)),
-                            primary_model_only=bool(config.render.stage1_probe_primary_model_only),
-                            tiebreak_extra_votes=max(
-                                0, int(config.render.stage1_probe_tiebreak_extra_votes)
-                            ),
-                            tiebreak_spread_threshold=float(
-                                config.render.stage1_probe_tiebreak_spread_threshold
-                            ),
-                        )
+                        if candidate_target_grounded and bool(
+                            getattr(validated_probe, "content_monochrome_warning", False)
+                        ):
+                            consensus = {
+                                "score": None,
+                                "error": "probe_media_invalid_monochrome",
+                                "num_api_failures": 0,
+                                "num_parse_failures": 0,
+                                "votes_effective": 0,
+                                "score_spread": None,
+                                "active_model_used": str(config.eval_policy.vlm_judge.model),
+                                "vote_rows": [],
+                            }
+                            consensus_status = "probe_media_invalid"
+                        else:
+                            consensus = _score_stage1_probe_consensus(
+                                video_path=probe_scoring_path,
+                                expected_focus_text=expected_focus_text,
+                                config=config.eval_policy.vlm_judge,
+                                facility_description=facility_description,
+                                votes=max(1, int(config.render.stage1_probe_consensus_votes)),
+                                primary_model_only=bool(config.render.stage1_probe_primary_model_only),
+                                tiebreak_extra_votes=max(
+                                    0, int(config.render.stage1_probe_tiebreak_extra_votes)
+                                ),
+                                tiebreak_spread_threshold=float(
+                                    config.render.stage1_probe_tiebreak_spread_threshold
+                                ),
+                            )
                     except Exception as exc:
                         consensus = {
                             "score": None,
@@ -1384,6 +1542,7 @@ class RenderStage(PipelineStage):
                             "active_model_used": str(config.eval_policy.vlm_judge.model),
                             "vote_rows": [],
                         }
+                        consensus_status = "scoring_failed"
 
                     probe_meta["num_vlm_probe_parse_failures"] = int(
                         probe_meta["num_vlm_probe_parse_failures"]
@@ -1416,6 +1575,7 @@ class RenderStage(PipelineStage):
                             "passed": False,
                             "issue_tags": ["target_missing"],
                             "reasoning": str(consensus.get("error", "probe_consensus_failed")),
+                            "target_grounded": bool(candidate_target_grounded),
                         }
                         _append_probe_score_row(
                             probe_scores_path,
@@ -1425,7 +1585,7 @@ class RenderStage(PipelineStage):
                                 "path_type": str(candidate_current_spec.type),
                                 "loop": int(round_idx),
                                 "candidate": int(cand_idx),
-                                "status": "scoring_failed",
+                                "status": str(consensus_status),
                                 "error": str(consensus.get("error", "probe_consensus_failed")),
                                 "score_spread": consensus.get("score_spread"),
                                 "votes_effective": int(consensus.get("votes_effective", 0)),
@@ -1433,6 +1593,7 @@ class RenderStage(PipelineStage):
                                 "probe_codec": probe_meta.get("probe_codec"),
                                 "probe_resolution": probe_meta.get("probe_resolution"),
                                 "probe_decoded_frames": probe_meta.get("probe_decoded_frames"),
+                                "target_grounded": bool(candidate_target_grounded),
                             },
                         )
                     else:
@@ -1459,6 +1620,7 @@ class RenderStage(PipelineStage):
                             "issue_tags": list(probe_score.issue_tags),
                             "reasoning": str(probe_score.reasoning or ""),
                             "task_score": float(probe_score.task_score),
+                            "target_grounded": bool(candidate_target_grounded),
                         }
                         logger.info(
                             "probe_score clip=%s loop=%d cand=%d task=%.1f visual=%.1f spatial=%.1f "
@@ -1499,6 +1661,7 @@ class RenderStage(PipelineStage):
                                 "probe_codec": probe_meta.get("probe_codec"),
                                 "probe_resolution": probe_meta.get("probe_resolution"),
                                 "probe_decoded_frames": probe_meta.get("probe_decoded_frames"),
+                                "target_grounded": bool(candidate_target_grounded),
                             },
                         )
 
@@ -1533,6 +1696,9 @@ class RenderStage(PipelineStage):
                 last_fail_reason = "probe_no_candidate_results"
                 break
 
+            best_task_score = float(best_row.get("task_score", 0.0) or 0.0)
+            if bool(best_row.get("target_grounded", False)) and best_task_score >= 1.0:
+                type_conversion_locked = True
             last_issue_tags = list(best_row.get("issue_tags", []))
             current_spec = best_row["spec"]
             if bool(best_row.get("passed", False)):
@@ -1551,7 +1717,8 @@ class RenderStage(PipelineStage):
                 default_look_down_deg=float(look_down_deg),
                 loop_idx=int(round_idx + 1),
                 fallback_target_point=fallback_target_point,
-                best_task_score=float(best_row.get("task_score", 0.0)),
+                best_task_score=best_task_score,
+                allow_type_conversion=not bool(type_conversion_locked),
             )
             if _spec_is_effectively_unchanged(prev_spec, current_spec):
                 logger.info(
@@ -1720,6 +1887,34 @@ def _path_context_from_spec(path_spec: CameraPathSpec) -> dict:
     if path_spec.target_role is not None:
         context["target_role"] = str(path_spec.target_role)
     return context
+
+
+def _path_context_target_xyz(path_context: dict | None) -> list[float] | None:
+    if not isinstance(path_context, dict):
+        return None
+    point = path_context.get("approach_point")
+    if not isinstance(point, list) or len(point) < 3:
+        return None
+    try:
+        out = [float(point[0]), float(point[1]), float(point[2])]
+    except Exception:
+        return None
+    if not np.all(np.isfinite(np.asarray(out, dtype=np.float64))):
+        return None
+    return out
+
+
+def _is_target_grounded_path_context(path_context: dict | None) -> bool:
+    if not isinstance(path_context, dict):
+        return False
+    role = str(path_context.get("target_role", "")).strip().lower()
+    if role in {"targets", "context"}:
+        return True
+    for key in ("target_label", "target_instance_id", "target_category"):
+        value = path_context.get(key)
+        if value is not None and str(value).strip():
+            return True
+    return _path_context_target_xyz(path_context) is not None
 
 
 def _target_focus_label(path_context: dict | None) -> str | None:
@@ -2075,8 +2270,11 @@ def _sample_start_offset(
     *,
     clip_repeat_index: int = 0,
     is_task_scoped: bool = False,
+    target_grounded: bool = False,
 ) -> np.ndarray:
     """Sample deterministic XY offset with stricter defaults for manipulation clips."""
+    if bool(target_grounded):
+        return np.zeros(3, dtype=np.float64)
     span = (
         float(config.render.manipulation_random_xy_offset_m)
         if str(path_spec.type).strip().lower() == "manipulation"

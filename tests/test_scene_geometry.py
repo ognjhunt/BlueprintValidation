@@ -449,6 +449,45 @@ def test_filter_and_fix_poses():
     np.testing.assert_allclose(result[0].position, [5.0, 0.0, 1.0])
 
 
+def test_filter_and_fix_poses_reorients_nudged_pose_toward_target():
+    from blueprint_validation.rendering.camera_paths import CameraPose
+    from blueprint_validation.rendering.scene_geometry import (
+        build_occupancy_grid,
+        filter_and_fix_poses,
+    )
+
+    rng = np.random.default_rng(101)
+    wall = np.column_stack(
+        [
+            rng.uniform(-0.05, 0.05, 5000),
+            rng.uniform(-3, 3, 5000),
+            rng.uniform(0, 3, 5000),
+        ]
+    )
+    grid = build_occupancy_grid(wall, voxel_size=0.1, density_threshold=2)
+
+    # Pose starts in collision and looks away from the target.
+    c2w = np.eye(4, dtype=np.float64)
+    c2w[:3, 3] = [0.0, 0.0, 1.0]
+    pose = CameraPose(c2w=c2w, fx=500, fy=500, cx=320, cy=240, width=640, height=480)
+    target = np.array([2.0, 0.0, 1.0], dtype=np.float64)
+    assert not grid.is_free(pose.position, min_clearance_m=0.15)
+
+    result = filter_and_fix_poses(
+        [pose],
+        grid,
+        target_center=np.array([-2.0, 0.0, 1.0], dtype=np.float64),
+        min_clearance_m=0.15,
+        retarget_point=target,
+        reorient_nudged_poses=True,
+    )
+    assert len(result) == 1
+    out = result[0]
+    to_target = target - out.position
+    to_target = to_target / (np.linalg.norm(to_target) + 1e-8)
+    assert float(np.dot(out.forward, to_target)) > 0.95
+
+
 # ---------------------------------------------------------------------------
 # Auto-populate manipulation zones
 # ---------------------------------------------------------------------------

@@ -180,11 +180,153 @@ def test_active_probe_fail_closed_on_scoring_error(sample_config, tmp_path, monk
         facility_description="",
     )
 
-    assert selected.type == "manipulation"
+    # Degenerate fallback target points no longer force type conversion.
+    assert selected.type == "orbit"
     assert selected.radius_m != spec.radius_m
     assert probe_meta["vlm_probe_passed"] is False
     assert "probe_threshold_not_met" in str(probe_meta["vlm_probe_fail_reason"])
     assert int(probe_meta["num_vlm_probe_api_failures"]) >= 1
+
+
+def test_active_probe_rejects_target_presence_before_vlm(sample_config, tmp_path, monkeypatch):
+    import json
+
+    from blueprint_validation.config import CameraPathSpec
+    from blueprint_validation.stages.s1_render import RenderStage
+
+    sample_config.render.stage1_active_perception_max_loops = 0
+    sample_config.render.stage1_probe_min_viable_pose_ratio = 0.1
+    sample_config.render.stage1_probe_min_unique_positions = 1
+    sample_config.render.stage1_probe_dedupe_enabled = False
+
+    spec = CameraPathSpec(
+        type="orbit",
+        radius_m=2.0,
+        approach_point=[1.0, 0.0, 0.0],
+        target_label="bowl_101",
+        target_role="targets",
+    )
+    ranked = [SimpleNamespace(spec=spec, score=0.9, metrics={})]
+
+    monkeypatch.setattr(
+        RenderStage,
+        "_build_render_poses",
+        lambda self, **kwargs: ([_pose(), _pose()], 21, 21, 21, 0),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render.render_video",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("render_video should not be called")),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render.score_stage1_probe",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("VLM scoring should be skipped")),
+    )
+
+    scores_path = tmp_path / "probe_scores.jsonl"
+    stage = RenderStage()
+    _selected, probe_meta = stage._run_active_perception_probe(
+        config=sample_config,
+        splat=object(),
+        clip_name="clip_000_orbit",
+        initial_spec=spec,
+        ranked_candidates=ranked,
+        scene_center=np.array([0.0, 0.0, 0.0], dtype=np.float64),
+        occupancy=None,
+        render_dir=tmp_path,
+        camera_height=1.0,
+        look_down_deg=20.0,
+        resolution=(96, 128),
+        start_offset=np.zeros(3, dtype=np.float64),
+        fps=8,
+        scene_T=None,
+        facility_description="",
+        target_presence_enforced=True,
+        probe_scores_path=scores_path,
+    )
+
+    assert probe_meta["vlm_probe_passed"] is False
+    rows = [json.loads(line) for line in scores_path.read_text().splitlines() if line.strip()]
+    assert any(row.get("status") == "target_presence_reject" for row in rows)
+
+
+def test_active_probe_flags_monochrome_probe_media_invalid(sample_config, tmp_path, monkeypatch):
+    import json
+
+    from blueprint_validation.config import CameraPathSpec
+    from blueprint_validation.stages.s1_render import RenderStage
+
+    sample_config.render.stage1_active_perception_max_loops = 0
+    sample_config.render.stage1_probe_min_viable_pose_ratio = 0.1
+    sample_config.render.stage1_probe_min_unique_positions = 1
+    sample_config.render.stage1_probe_dedupe_enabled = False
+
+    spec = CameraPathSpec(
+        type="orbit",
+        radius_m=2.0,
+        approach_point=[0.0, 0.0, -1.0],
+        target_label="bowl_101",
+        target_role="targets",
+    )
+    ranked = [SimpleNamespace(spec=spec, score=0.9, metrics={})]
+
+    monkeypatch.setattr(
+        RenderStage,
+        "_build_render_poses",
+        lambda self, **kwargs: ([_pose(), _pose()], 21, 21, 21, 0),
+    )
+
+    def _fake_render_video(**kwargs):
+        clip_name = kwargs["clip_name"]
+        video = tmp_path / f"{clip_name}.mp4"
+        depth = tmp_path / f"{clip_name}_depth.mp4"
+        video.write_bytes(b"x")
+        depth.write_bytes(b"x")
+        return SimpleNamespace(video_path=video, depth_video_path=depth)
+
+    monkeypatch.setattr("blueprint_validation.stages.s1_render.render_video", _fake_render_video)
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render._ensure_probe_h264_for_scoring",
+        lambda video_path, min_frames: SimpleNamespace(
+            path=video_path,
+            codec_name="h264",
+            decoded_frames=int(min_frames),
+            width=128,
+            height=96,
+            content_monochrome_warning=True,
+        ),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render.score_stage1_probe",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("VLM scoring should be skipped on monochrome probe")
+        ),
+    )
+
+    scores_path = tmp_path / "probe_scores.jsonl"
+    stage = RenderStage()
+    _selected, probe_meta = stage._run_active_perception_probe(
+        config=sample_config,
+        splat=object(),
+        clip_name="clip_000_orbit",
+        initial_spec=spec,
+        ranked_candidates=ranked,
+        scene_center=np.array([0.0, 0.0, 0.0], dtype=np.float64),
+        occupancy=None,
+        render_dir=tmp_path,
+        camera_height=1.0,
+        look_down_deg=20.0,
+        resolution=(96, 128),
+        start_offset=np.zeros(3, dtype=np.float64),
+        fps=8,
+        scene_T=None,
+        facility_description="",
+        target_presence_enforced=True,
+        probe_scores_path=scores_path,
+    )
+
+    assert probe_meta["vlm_probe_passed"] is False
+    rows = [json.loads(line) for line in scores_path.read_text().splitlines() if line.strip()]
+    assert any(row.get("status") == "probe_media_invalid" for row in rows)
 
 
 def test_stage1_bypasses_warmup_cache_when_active_perception_enabled(

@@ -153,6 +153,21 @@ def test_sample_start_offset_non_manipulation_retains_jitter(sample_config):
     assert float(offset[2]) == 0.0
 
 
+def test_sample_start_offset_target_grounded_forces_zero_for_probe(sample_config):
+    from blueprint_validation.config import CameraPathSpec
+    from blueprint_validation.stages.s1_render import _sample_start_offset
+
+    rng = np.random.default_rng(7)
+    sample_config.render.non_manipulation_random_xy_offset_m = 1.0
+    offset = _sample_start_offset(
+        sample_config,
+        CameraPathSpec(type="orbit"),
+        rng,
+        target_grounded=True,
+    )
+    np.testing.assert_allclose(offset, np.zeros(3, dtype=np.float64), atol=1e-10)
+
+
 def test_sample_start_offset_task_scoped_repeat_gets_deterministic_jitter(sample_config):
     from blueprint_validation.config import CameraPathSpec
     from blueprint_validation.stages.s1_render import _sample_start_offset

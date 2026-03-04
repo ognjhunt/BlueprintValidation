@@ -854,13 +854,21 @@ def filter_and_fix_poses(
     occupancy: OccupancyGrid,
     target_center: np.ndarray,
     min_clearance_m: float = 0.15,
+    retarget_point: Optional[np.ndarray] = None,
+    reorient_nudged_poses: bool = True,
 ) -> list:
     """Post-process camera poses: nudge colliding ones or drop them."""
-    from .camera_paths import CameraPose
+    from .camera_paths import CameraPose, _look_at
 
     valid: List[CameraPose] = []
     nudged = 0
+    reoriented = 0
     dropped = 0
+    focus_point = None
+    if retarget_point is not None:
+        arr = np.asarray(retarget_point, dtype=np.float64).reshape(-1)
+        if arr.size >= 3 and np.all(np.isfinite(arr[:3])):
+            focus_point = arr[:3].astype(np.float64)
 
     for pose in poses:
         pos = pose.position
@@ -872,9 +880,18 @@ def filter_and_fix_poses(
             pos, target_center, occupancy, min_clearance_m=min_clearance_m
         )
         if new_pos is not None:
-            # Rebuild pose with nudged position, keeping orientation
-            new_c2w = pose.c2w.copy()
-            new_c2w[:3, 3] = new_pos
+            if (
+                bool(reorient_nudged_poses)
+                and focus_point is not None
+                and float(np.linalg.norm(focus_point - new_pos)) > 1e-6
+            ):
+                # Re-orient nudged pose so obstacle avoidance does not drift target framing.
+                new_c2w = _look_at(new_pos, focus_point)
+                reoriented += 1
+            else:
+                # Rebuild pose with nudged position, keeping orientation.
+                new_c2w = pose.c2w.copy()
+                new_c2w[:3, 3] = new_pos
             valid.append(
                 CameraPose(
                     c2w=new_c2w,
@@ -892,9 +909,10 @@ def filter_and_fix_poses(
 
     if nudged or dropped:
         logger.info(
-            "Collision filter: %d ok, %d nudged, %d dropped (of %d)",
+            "Collision filter: %d ok, %d nudged (%d reoriented), %d dropped (of %d)",
             len(valid) - nudged,
             nudged,
+            reoriented,
             dropped,
             len(poses),
         )

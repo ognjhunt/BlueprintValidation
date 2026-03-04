@@ -12,6 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Iterable, List, Sequence
 
+import numpy as np
+
 from ..config import CameraPathSpec
 
 
@@ -165,6 +167,7 @@ def apply_issue_tag_corrections(
     loop_idx: int = 0,
     fallback_target_point: Sequence[float] | None = None,
     best_task_score: float = 0.0,
+    allow_type_conversion: bool = True,
 ) -> CameraPathSpec:
     """Deterministic tag->camera correction matrix for bounded retries."""
     tags = normalize_issue_tags(issue_tags)
@@ -178,7 +181,16 @@ def apply_issue_tag_corrections(
             and len(getattr(updated, "approach_point", None) or []) >= 3
         )
     ):
-        if (
+        if not bool(allow_type_conversion) and str(updated.type).strip().lower() in ("orbit", "sweep"):
+            updated = _scale_standoff(
+                updated, orbit_scale=0.72, sweep_scale=0.72, manip_scale=1.0
+            )
+            updated = _add_look_down(
+                updated,
+                delta_deg=5.0,
+                default_look_down_deg=float(default_look_down_deg),
+            )
+        elif (
             float(best_task_score) >= 1.0
             and str(updated.type).strip().lower() in ("orbit", "sweep")
         ):
@@ -262,12 +274,12 @@ def _convert_to_manipulation(
     default_look_down_deg: float,
     fallback_target_point: Sequence[float] | None = None,
 ) -> CameraPathSpec:
-    point = getattr(spec, "approach_point", None)
-    if not (isinstance(point, list) and len(point) >= 3):
-        fallback = list(fallback_target_point or [])
-        if len(fallback) >= 3:
-            point = [float(fallback[0]), float(fallback[1]), float(fallback[2])]
-    if not (isinstance(point, list) and len(point) >= 3):
+    point = _normalize_point3(getattr(spec, "approach_point", None))
+    if point is None:
+        fallback = _normalize_point3(fallback_target_point)
+        if fallback is not None and not _is_degenerate_point3(fallback):
+            point = fallback
+    if point is None or _is_degenerate_point3(point):
         # No target point available; best-effort zoom to recover target.
         return _scale_standoff(spec, orbit_scale=0.60, sweep_scale=0.60, manip_scale=0.60)
 
@@ -303,6 +315,26 @@ def _convert_to_manipulation(
         target_category=spec.target_category,
         target_role=spec.target_role,
     )
+
+
+def _normalize_point3(point: Sequence[float] | None) -> list[float] | None:
+    if point is None:
+        return None
+    raw = list(point)
+    if len(raw) < 3:
+        return None
+    try:
+        out = [float(raw[0]), float(raw[1]), float(raw[2])]
+    except Exception:
+        return None
+    if not np.all(np.isfinite(np.asarray(out, dtype=np.float64))):
+        return None
+    return out
+
+
+def _is_degenerate_point3(point: Sequence[float]) -> bool:
+    arr = np.asarray([float(point[0]), float(point[1]), float(point[2])], dtype=np.float64)
+    return float(np.linalg.norm(arr)) <= 1e-5
 
 
 def _scale_standoff(
