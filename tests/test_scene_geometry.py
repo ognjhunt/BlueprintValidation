@@ -300,6 +300,51 @@ def test_generate_scene_aware_specs():
     assert orbit_specs[0].radius_m > 0
 
 
+def test_generate_scene_aware_specs_large_manipulation_prefers_orbit():
+    from blueprint_validation.rendering.scene_geometry import (
+        OrientedBoundingBox,
+        generate_scene_aware_specs,
+    )
+
+    obbs = [
+        OrientedBoundingBox(
+            instance_id="table_1",
+            label="dining table",
+            center=np.array([0.0, 0.0, 0.4]),
+            extents=np.array([2.2, 0.9, 0.7]),
+            axes=np.eye(3),
+            category="manipulation",
+        )
+    ]
+    specs = generate_scene_aware_specs(obbs)
+    assert len(specs) == 1
+    assert specs[0].type == "orbit"
+    assert float(specs[0].radius_m) <= 2.0
+
+
+def test_generate_scene_aware_specs_small_manipulation_clamps_arc_radius():
+    from blueprint_validation.rendering.scene_geometry import (
+        OrientedBoundingBox,
+        generate_scene_aware_specs,
+    )
+
+    obbs = [
+        OrientedBoundingBox(
+            instance_id="cup_1",
+            label="cup",
+            center=np.array([0.0, 0.0, 0.8]),
+            extents=np.array([0.1, 0.1, 0.2]),
+            axes=np.eye(3),
+            category="manipulation",
+        )
+    ]
+    specs = generate_scene_aware_specs(obbs)
+    assert len(specs) == 1
+    assert specs[0].type == "manipulation"
+    assert 0.25 <= float(specs[0].arc_radius_m) <= 1.0
+    assert float(specs[0].arc_span_deg) == pytest.approx(90.0)
+
+
 # ---------------------------------------------------------------------------
 # Collision avoidance
 # ---------------------------------------------------------------------------

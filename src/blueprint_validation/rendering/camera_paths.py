@@ -176,12 +176,15 @@ def generate_manipulation_arc(
     start_angle = phase_offset_rad - arc_span_rad / 2.0
 
     poses = []
-    # Keep manipulation look-down meaningful by deriving camera height from desired pitch.
-    # This keeps the target centered but changes viewpoint geometry.
+    # Keep manipulation look-down meaningful but bounded: using the full
+    # arc radius for pitch-derived height can push cameras to ceiling level
+    # on large-radius paths and produce unusable captures.
     target_z = float(approach[2]) + float(target_z_bias_m)
     desired_pitch = math.radians(float(max(5.0, min(80.0, look_down_deg))))
-    min_height_for_pitch = target_z + float(arc_radius) * math.tan(desired_pitch)
+    pitch_radius = min(float(arc_radius), 0.9)
+    min_height_for_pitch = target_z + pitch_radius * math.tan(desired_pitch)
     effective_height = max(float(height), float(min_height_for_pitch))
+    effective_height = min(effective_height, target_z + 1.8)
     for i in range(num_frames):
         t = i / max(num_frames - 1, 1)
         angle = start_angle + arc_span_rad * t

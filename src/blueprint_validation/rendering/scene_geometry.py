@@ -722,11 +722,29 @@ def generate_scene_aware_specs(
         }
 
         if obb.category == "manipulation":
+            max_xy = float(np.max(np.abs(obb.extents[:2]))) if len(obb.extents) >= 2 else 0.0
+            # Large surfaces (dining table/countertops) should not use tight
+            # manipulation arcs; orbit coverage is more stable and avoids
+            # out-of-focus near-field paths.
+            if max_xy >= 1.2:
+                specs.append(
+                    CameraPathSpec(
+                        type="orbit",
+                        radius_m=float(min(2.0, max(0.8, standoff * 0.6))),
+                        num_orbits=1,
+                        approach_point=approach,
+                        height_override_m=cam_height,
+                        look_down_override_deg=30.0,
+                        **base_meta,
+                    )
+                )
+                continue
             specs.append(
                 CameraPathSpec(
                     type="manipulation",
                     approach_point=approach,
-                    arc_radius_m=standoff,
+                    arc_radius_m=float(min(1.0, max(0.25, standoff))),
+                    arc_span_deg=90.0,
                     height_override_m=cam_height,
                     look_down_override_deg=45.0,
                     **base_meta,

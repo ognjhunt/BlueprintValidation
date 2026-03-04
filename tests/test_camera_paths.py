@@ -3,6 +3,7 @@
 import json
 
 import numpy as np
+import pytest
 
 
 def test_generate_orbit():
@@ -120,6 +121,23 @@ def test_generate_manipulation_arc_target_locked_projection_centered():
         v = pose.fy * (cam[1] / -cam[2]) + pose.cy
         assert abs(float(u) - pose.cx) < 1e-4
         assert abs(float(v) - pose.cy) < 1e-4
+
+
+def test_generate_manipulation_arc_caps_pitch_derived_height_for_large_radius():
+    from blueprint_validation.rendering.camera_paths import generate_manipulation_arc
+
+    approach = np.array([0.0, 0.0, 0.4], dtype=np.float64)
+    poses = generate_manipulation_arc(
+        approach_point=approach,
+        arc_radius=3.0,
+        height=0.7,
+        num_frames=5,
+        look_down_deg=45.0,
+        target_z_bias_m=0.0,
+        resolution=(120, 160),
+    )
+    zs = [float(p.position[2]) for p in poses]
+    assert max(zs) <= float(approach[2]) + 1.8 + 1e-6
 
 
 def test_generate_path_orbit_applies_height_and_lookdown_overrides():
