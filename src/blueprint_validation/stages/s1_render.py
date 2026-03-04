@@ -2582,10 +2582,11 @@ def _project_world_point_to_image(pose: object, xyz: np.ndarray) -> tuple[float,
     world = np.array([float(xyz[0]), float(xyz[1]), float(xyz[2]), 1.0], dtype=np.float64)
     cam = np.linalg.inv(c2w) @ world
     z = float(cam[2])
-    if z <= 1e-6:
+    # Camera convention in this pipeline is forward=-Z in camera space.
+    if z >= -1e-6:
         return None
-    u = fx * float(cam[0]) / z + cx
-    v = fy * float(cam[1]) / z + cy
+    u = fx * float(cam[0]) / (-z) + cx
+    v = fy * float(cam[1]) / (-z) + cy
     return float(u), float(v)
 
 

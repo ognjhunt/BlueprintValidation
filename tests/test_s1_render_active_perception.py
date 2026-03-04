@@ -333,6 +333,33 @@ def test_active_probe_rejects_target_too_small_before_vlm(sample_config, tmp_pat
     )
 
 
+def test_estimate_target_projected_size_ratio_positive_for_visible_target():
+    from blueprint_validation.rendering.camera_paths import CameraPose, _look_at
+    from blueprint_validation.stages.s1_render import _estimate_target_projected_size_ratio
+
+    width = 128
+    height = 96
+    fx = width / (2.0 * np.tan(np.deg2rad(60.0 / 2.0)))
+    pose = CameraPose(
+        c2w=_look_at(
+            np.asarray([1.0, 0.0, 0.2], dtype=np.float64),
+            np.asarray([0.0, 0.0, 0.0], dtype=np.float64),
+        ),
+        fx=float(fx),
+        fy=float(fx),
+        cx=float(width) / 2.0,
+        cy=float(height) / 2.0,
+        width=width,
+        height=height,
+    )
+    ratio = _estimate_target_projected_size_ratio(
+        poses=[pose],
+        target_xyz=[0.0, 0.0, 0.0],
+        target_extents_m=[0.35, 0.25, 0.20],
+    )
+    assert ratio > 0.05
+
+
 def test_target_los_uses_camera_facing_surface_endpoint():
     from blueprint_validation.stages.s1_render import _compute_target_line_of_sight_ratio
 
