@@ -69,6 +69,10 @@ class CameraPathSpec:
     target_role: Optional[str] = None
     # Optional target OBB extents in meters (XYZ full widths).
     target_extents_m: Optional[List[float]] = None
+    # Optional absolute world-space locked camera pose (used by scene-locked mode).
+    locked_eye_point: Optional[List[float]] = None
+    locked_look_at_point: Optional[List[float]] = None
+    locked_probe_motion_radius_m: Optional[float] = None
 
 
 @dataclass
@@ -787,6 +791,9 @@ def _parse_camera_paths(raw_list: List[Dict[str, Any]], base_dir: Path) -> List[
                 target_category=raw.get("target_category"),
                 target_role=raw.get("target_role"),
                 target_extents_m=raw.get("target_extents_m"),
+                locked_eye_point=raw.get("locked_eye_point"),
+                locked_look_at_point=raw.get("locked_look_at_point"),
+                locked_probe_motion_radius_m=raw.get("locked_probe_motion_radius_m"),
             )
         )
     return paths

@@ -370,6 +370,15 @@ def test_build_kitchen_0787_locked_specs_is_target_grounded_and_deterministic(
     assert specs[0].target_role == "targets"
     assert all(spec.type == "file" for spec in specs)
     assert all(isinstance(spec.target_extents_m, list) and len(spec.target_extents_m) == 3 for spec in specs)
+    assert all(isinstance(spec.locked_eye_point, list) and len(spec.locked_eye_point) == 3 for spec in specs)
+    assert all(
+        isinstance(spec.locked_look_at_point, list) and len(spec.locked_look_at_point) == 3
+        for spec in specs
+    )
+    assert all(
+        spec.locked_probe_motion_radius_m is not None and spec.locked_probe_motion_radius_m >= 0.0
+        for spec in specs
+    )
 
 
 def test_build_render_poses_scene_locked_uses_fixed_eye_lookat_without_collision_nudge(
@@ -381,11 +390,13 @@ def test_build_render_poses_scene_locked_uses_fixed_eye_lookat_without_collision
     locked_spec = CameraPathSpec(
         type="file",
         source_tag="kitchen_0787_locked",
-        target_instance_id="190",
+        target_instance_id="999",
         target_label="bowl_190",
         target_role="targets",
         approach_point=[0.0, 0.0, 0.8],
         target_extents_m=[0.25, 0.20, 0.18],
+        locked_eye_point=[0.5, -0.2, 1.1],
+        locked_look_at_point=[0.0, 0.0, 0.85],
     )
 
     monkeypatch.setattr(
@@ -418,7 +429,7 @@ def test_build_render_poses_scene_locked_uses_fixed_eye_lookat_without_collision
     assert post_filter == 11
     assert post_resample == 11
     assert corrected >= 0
-    target = np.asarray([0.0, 0.0, 0.8], dtype=np.float64)
+    target = np.asarray([0.0, 0.0, 0.85], dtype=np.float64)
     for pose in poses:
         to_target = target - pose.position
         to_target = to_target / max(float(np.linalg.norm(to_target)), 1e-8)

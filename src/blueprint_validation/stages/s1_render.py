@@ -71,67 +71,70 @@ _KITCHEN_0787_LOCKED_SOURCE_TAG = "kitchen_0787_locked"
 _KITCHEN_0787_LOCKED_MAX_TARGETS = 12
 _KITCHEN_0787_LOCKED_DEFAULT_EYE_OFFSET_M = (0.78, -0.40, 0.34)
 _KITCHEN_0787_LOCKED_DEFAULT_LOOK_AT_OFFSET_M = (0.0, 0.0, 0.05)
-_KITCHEN_0787_LOCKED_DEFAULT_PROBE_MOTION_RADIUS_M = 0.010
+# Keep probes near-static to reduce blur and preserve deterministic framing.
+_KITCHEN_0787_LOCKED_DEFAULT_PROBE_MOTION_RADIUS_M = 0.006
+# Absolute world-space camera table calibrated once for kitchen_0787 targets.
+# Values are in the facility raw world frame (before any scene_transform).
 _KITCHEN_0787_LOCKED_TARGET_POSE_TABLE: Dict[str, Dict[str, object]] = {
     "190": {  # bowl
-        "eye_offset_m": (0.56, -0.34, 0.30),
-        "look_at_offset_m": (0.00, 0.00, 0.05),
-        "probe_motion_radius_m": 0.010,
+        "eye_world_m": (-2.650050, 0.381133, 0.993174),
+        "look_at_world_m": (-2.321157, 0.500840, 0.923174),
+        "probe_motion_radius_m": 0.006,
     },
     "100": {  # dining table
-        "eye_offset_m": (1.10, 0.78, 0.58),
-        "look_at_offset_m": (0.00, 0.00, 0.08),
+        "eye_world_m": (-5.323978, -2.360751, 0.953628),
+        "look_at_world_m": (-5.017560, -2.103635, 0.386780),
         "probe_motion_radius_m": 0.008,
     },
     "88": {  # pot
-        "eye_offset_m": (0.58, 0.34, 0.30),
-        "look_at_offset_m": (0.00, 0.00, 0.04),
-        "probe_motion_radius_m": 0.010,
+        "eye_world_m": (-2.293672, -1.109695, 1.064196),
+        "look_at_world_m": (-2.643672, -1.109695, 0.884196),
+        "probe_motion_radius_m": 0.006,
     },
     "102": {  # rice cooker
-        "eye_offset_m": (0.62, -0.36, 0.31),
-        "look_at_offset_m": (0.00, 0.00, 0.05),
-        "probe_motion_radius_m": 0.010,
+        "eye_world_m": (-4.768049, -0.312433, 1.124793),
+        "look_at_world_m": (-5.168049, -0.312433, 1.024793),
+        "probe_motion_radius_m": 0.008,
     },
     "157": {  # trash can (dining side)
-        "eye_offset_m": (0.64, 0.42, 0.34),
-        "look_at_offset_m": (0.00, 0.00, 0.05),
-        "probe_motion_radius_m": 0.010,
+        "eye_world_m": (2.108512, -2.685071, 0.310867),
+        "look_at_world_m": (1.762102, -2.885071, 0.210867),
+        "probe_motion_radius_m": 0.008,
     },
     "161": {  # trash can (kitchen side)
-        "eye_offset_m": (0.62, -0.40, 0.32),
-        "look_at_offset_m": (0.00, 0.00, 0.05),
-        "probe_motion_radius_m": 0.010,
+        "eye_world_m": (0.965335, 0.649215, 0.280509),
+        "look_at_world_m": (1.341212, 0.786023, 0.180509),
+        "probe_motion_radius_m": 0.008,
     },
     "105": {  # cupboard
-        "eye_offset_m": (1.14, -0.24, 0.44),
-        "look_at_offset_m": (0.00, 0.00, 0.10),
+        "eye_world_m": (-3.596826, 0.357602, 0.992629),
+        "look_at_world_m": (-3.996826, 0.357602, 0.640393),
         "probe_motion_radius_m": 0.008,
     },
     "61": {  # door
-        "eye_offset_m": (1.22, -0.72, 0.36),
-        "look_at_offset_m": (0.00, 0.00, 0.10),
-        "probe_motion_radius_m": 0.006,
+        "eye_world_m": (-0.246415, 1.024736, 1.724800),
+        "look_at_world_m": (-0.646415, 1.024736, 1.098000),
+        "probe_motion_radius_m": 0.008,
     },
     "62": {  # door
-        "eye_offset_m": (1.22, 0.72, 0.36),
-        "look_at_offset_m": (0.00, 0.00, 0.10),
-        "probe_motion_radius_m": 0.006,
+        "eye_world_m": (-2.587842, -3.128122, 1.724800),
+        "look_at_world_m": (-2.724650, -3.503999, 1.098000),
+        "probe_motion_radius_m": 0.008,
     },
     "67": {  # window
-        "eye_offset_m": (1.08, -0.68, 0.34),
-        "look_at_offset_m": (0.00, 0.00, 0.10),
-        "probe_motion_radius_m": 0.006,
+        "eye_world_m": (-0.782650, 4.851871, 1.860662),
+        "look_at_world_m": (-0.782650, 4.451871, 1.520414),
+        "probe_motion_radius_m": 0.008,
     },
     "68": {  # window
-        "eye_offset_m": (1.08, 0.68, 0.34),
-        "look_at_offset_m": (0.00, 0.00, 0.10),
-        "probe_motion_radius_m": 0.006,
+        "eye_world_m": (-5.219785, 2.887736, 2.020662),
+        "look_at_world_m": (-5.619785, 2.887736, 1.620414),
+        "probe_motion_radius_m": 0.008,
     },
     "186": {  # floor lamp
-        "eye_offset_m": (0.82, 0.52, 0.40),
-        "look_at_offset_m": (0.00, 0.00, 0.06),
-        "probe_motion_radius_m": 0.010,
+        "eye_world_m": (-0.468377, -1.593787, 1.094312),
+        "look_at_world_m": (-0.068377, -1.593787, 0.703945),
+        "probe_motion_radius_m": 0.008,
     },
 }
 
@@ -2295,6 +2298,12 @@ def _path_context_from_spec(path_spec: CameraPathSpec) -> dict:
         context["target_role"] = str(path_spec.target_role)
     if path_spec.target_extents_m is not None:
         context["target_extents_m"] = [float(v) for v in path_spec.target_extents_m[:3]]
+    if path_spec.locked_eye_point is not None:
+        context["locked_eye_point"] = [float(v) for v in path_spec.locked_eye_point[:3]]
+    if path_spec.locked_look_at_point is not None:
+        context["locked_look_at_point"] = [float(v) for v in path_spec.locked_look_at_point[:3]]
+    if path_spec.locked_probe_motion_radius_m is not None:
+        context["locked_probe_motion_radius_m"] = float(path_spec.locked_probe_motion_radius_m)
     return context
 
 
@@ -2491,34 +2500,73 @@ def _resolve_locked_pose_table_entry(target_instance_id: object) -> Dict[str, ob
     return {}
 
 
+def _as_valid_point3(value: object) -> np.ndarray | None:
+    try:
+        arr = np.asarray(value, dtype=np.float64).reshape(-1)
+    except Exception:
+        return None
+    if arr.size < 3:
+        return None
+    arr = arr[:3]
+    if not np.all(np.isfinite(arr)):
+        return None
+    return arr.astype(np.float64)
+
+
+def _transform_scene_point(point: np.ndarray, scene_transform: Optional[np.ndarray]) -> np.ndarray:
+    if scene_transform is None:
+        return np.asarray(point, dtype=np.float64).reshape(-1)[:3]
+    p = np.asarray(point, dtype=np.float64).reshape(-1)
+    if p.size < 3:
+        return np.asarray([0.0, 0.0, 0.0], dtype=np.float64)
+    T = np.asarray(scene_transform, dtype=np.float64)
+    if T.shape != (4, 4):
+        return p[:3].astype(np.float64)
+    ph = np.array([float(p[0]), float(p[1]), float(p[2]), 1.0], dtype=np.float64)
+    out = T @ ph
+    return out[:3].astype(np.float64)
+
+
 def _resolve_kitchen_0787_locked_pose_params(
     path_spec: CameraPathSpec,
 ) -> tuple[np.ndarray, np.ndarray, float]:
     entry = _resolve_locked_pose_table_entry(getattr(path_spec, "target_instance_id", None))
-    eye_offset_raw = entry.get("eye_offset_m", _KITCHEN_0787_LOCKED_DEFAULT_EYE_OFFSET_M)
-    look_at_offset_raw = entry.get("look_at_offset_m", _KITCHEN_0787_LOCKED_DEFAULT_LOOK_AT_OFFSET_M)
-    motion_radius_raw = entry.get(
-        "probe_motion_radius_m",
-        _KITCHEN_0787_LOCKED_DEFAULT_PROBE_MOTION_RADIUS_M,
+    motion_radius_raw = (
+        getattr(path_spec, "locked_probe_motion_radius_m", None)
+        if getattr(path_spec, "locked_probe_motion_radius_m", None) is not None
+        else entry.get(
+            "probe_motion_radius_m",
+            _KITCHEN_0787_LOCKED_DEFAULT_PROBE_MOTION_RADIUS_M,
+        )
     )
-    try:
-        eye_offset = np.asarray(eye_offset_raw, dtype=np.float64).reshape(-1)[:3]
-    except Exception:
-        eye_offset = np.asarray(_KITCHEN_0787_LOCKED_DEFAULT_EYE_OFFSET_M, dtype=np.float64)
-    try:
-        look_at_offset = np.asarray(look_at_offset_raw, dtype=np.float64).reshape(-1)[:3]
-    except Exception:
-        look_at_offset = np.asarray(_KITCHEN_0787_LOCKED_DEFAULT_LOOK_AT_OFFSET_M, dtype=np.float64)
-    if eye_offset.size < 3 or not np.all(np.isfinite(eye_offset)):
-        eye_offset = np.asarray(_KITCHEN_0787_LOCKED_DEFAULT_EYE_OFFSET_M, dtype=np.float64)
-    if look_at_offset.size < 3 or not np.all(np.isfinite(look_at_offset)):
-        look_at_offset = np.asarray(_KITCHEN_0787_LOCKED_DEFAULT_LOOK_AT_OFFSET_M, dtype=np.float64)
     try:
         motion_radius_m = float(motion_radius_raw)
     except Exception:
         motion_radius_m = float(_KITCHEN_0787_LOCKED_DEFAULT_PROBE_MOTION_RADIUS_M)
     motion_radius_m = float(np.clip(motion_radius_m, 0.0, 0.05))
-    return eye_offset[:3], look_at_offset[:3], motion_radius_m
+
+    target = _as_valid_point3(getattr(path_spec, "approach_point", None))
+    eye = _as_valid_point3(getattr(path_spec, "locked_eye_point", None))
+    look_at = _as_valid_point3(getattr(path_spec, "locked_look_at_point", None))
+    if eye is None:
+        eye = _as_valid_point3(entry.get("eye_world_m"))
+    if look_at is None:
+        look_at = _as_valid_point3(entry.get("look_at_world_m"))
+
+    if eye is None or look_at is None:
+        if target is None:
+            eye = np.asarray([0.0, 0.0, 1.2], dtype=np.float64)
+            look_at = np.asarray([0.0, 0.0, 0.0], dtype=np.float64)
+        else:
+            eye = target + np.asarray(_KITCHEN_0787_LOCKED_DEFAULT_EYE_OFFSET_M, dtype=np.float64)
+            look_at = target + np.asarray(_KITCHEN_0787_LOCKED_DEFAULT_LOOK_AT_OFFSET_M, dtype=np.float64)
+
+    if float(np.linalg.norm(look_at - eye)) <= 1e-4:
+        if target is not None and float(np.linalg.norm(target - eye)) > 1e-4:
+            look_at = target
+        else:
+            eye = eye + np.asarray([0.25, -0.10, 0.18], dtype=np.float64)
+    return eye, look_at, motion_radius_m
 
 
 def _build_kitchen_0787_locked_poses(
@@ -2527,15 +2575,9 @@ def _build_kitchen_0787_locked_poses(
     num_frames: int,
     resolution: tuple[int, int],
 ) -> List[CameraPose]:
-    target = np.asarray(path_spec.approach_point or [], dtype=np.float64).reshape(-1)
-    if target.size < 3 or not np.all(np.isfinite(target[:3])):
+    base_eye, look_at, motion_radius_m = _resolve_kitchen_0787_locked_pose_params(path_spec)
+    if not (np.all(np.isfinite(base_eye)) and np.all(np.isfinite(look_at))):
         return []
-    target = target[:3]
-    eye_offset, look_at_offset, motion_radius_m = _resolve_kitchen_0787_locked_pose_params(path_spec)
-    look_at = target + look_at_offset
-    base_eye = target + eye_offset
-    if float(np.linalg.norm(look_at - base_eye)) <= 1e-4:
-        base_eye = base_eye + np.asarray([0.25, -0.10, 0.18], dtype=np.float64)
 
     num = max(1, int(num_frames))
     height = max(2, int(resolution[0]))
@@ -2716,6 +2758,28 @@ def _build_kitchen_0787_locked_specs(
         ext_arr = np.asarray(obb.extents, dtype=np.float64).reshape(-1)
         if ext_arr.size < 3:
             ext_arr = np.pad(ext_arr, (0, 3 - ext_arr.size), constant_values=0.1)
+        table_entry = _resolve_locked_pose_table_entry(obb.instance_id)
+        eye_abs = _as_valid_point3(table_entry.get("eye_world_m"))
+        look_abs = _as_valid_point3(table_entry.get("look_at_world_m"))
+        if eye_abs is not None and look_abs is not None:
+            eye_abs = _transform_scene_point(eye_abs, scene_transform)
+            look_abs = _transform_scene_point(look_abs, scene_transform)
+        else:
+            eye_abs = np.asarray(obb.center, dtype=np.float64).reshape(-1)[:3] + np.asarray(
+                _KITCHEN_0787_LOCKED_DEFAULT_EYE_OFFSET_M, dtype=np.float64
+            )
+            look_abs = np.asarray(obb.center, dtype=np.float64).reshape(-1)[:3] + np.asarray(
+                _KITCHEN_0787_LOCKED_DEFAULT_LOOK_AT_OFFSET_M, dtype=np.float64
+            )
+        try:
+            probe_motion_radius_m = float(
+                table_entry.get(
+                    "probe_motion_radius_m", _KITCHEN_0787_LOCKED_DEFAULT_PROBE_MOTION_RADIUS_M
+                )
+            )
+        except Exception:
+            probe_motion_radius_m = float(_KITCHEN_0787_LOCKED_DEFAULT_PROBE_MOTION_RADIUS_M)
+        probe_motion_radius_m = float(np.clip(probe_motion_radius_m, 0.0, 0.05))
 
         meta = {
             "source_tag": _KITCHEN_0787_LOCKED_SOURCE_TAG,
@@ -2723,6 +2787,9 @@ def _build_kitchen_0787_locked_specs(
             "target_label": str(obb.label) if str(obb.label).strip() else None,
             "target_category": str(obb.category) if str(obb.category).strip() else None,
             "target_role": role,
+            "locked_eye_point": [float(eye_abs[0]), float(eye_abs[1]), float(eye_abs[2])],
+            "locked_look_at_point": [float(look_abs[0]), float(look_abs[1]), float(look_abs[2])],
+            "locked_probe_motion_radius_m": float(probe_motion_radius_m),
             "target_extents_m": [
                 float(max(0.01, abs(float(ext_arr[0])))),
                 float(max(0.01, abs(float(ext_arr[1])))),
