@@ -164,6 +164,7 @@ def apply_issue_tag_corrections(
     default_look_down_deg: float,
     loop_idx: int = 0,
     fallback_target_point: Sequence[float] | None = None,
+    best_task_score: float = 0.0,
 ) -> CameraPathSpec:
     """Deterministic tag->camera correction matrix for bounded retries."""
     tags = normalize_issue_tags(issue_tags)
@@ -177,12 +178,30 @@ def apply_issue_tag_corrections(
             and len(getattr(updated, "approach_point", None) or []) >= 3
         )
     ):
-        updated = _convert_to_manipulation(
-            updated,
-            default_camera_height=float(default_camera_height),
-            default_look_down_deg=float(default_look_down_deg),
-            fallback_target_point=fallback_target_point,
-        )
+        if (
+            float(best_task_score) >= 1.0
+            and str(updated.type).strip().lower() in ("orbit", "sweep")
+        ):
+            # Target is partially visible (task≥1) — tighten zoom on the existing
+            # orbit/sweep rather than converting type. Converting to manipulation
+            # when the orbit is already focused on the target reliably makes scores
+            # worse (task drops to 0 due to camera_too_close at the smaller radius).
+            updated = _scale_standoff(
+                updated, orbit_scale=0.72, sweep_scale=0.72, manip_scale=1.0
+            )
+            updated = _add_look_down(
+                updated,
+                delta_deg=5.0,
+                default_look_down_deg=float(default_look_down_deg),
+            )
+        else:
+            # task=0: camera genuinely can't see the target — convert type.
+            updated = _convert_to_manipulation(
+                updated,
+                default_camera_height=float(default_camera_height),
+                default_look_down_deg=float(default_look_down_deg),
+                fallback_target_point=fallback_target_point,
+            )
 
     if "camera_too_far" in tags:
         updated = _scale_standoff(updated, orbit_scale=0.88, sweep_scale=0.90, manip_scale=0.88)
@@ -253,9 +272,9 @@ def _convert_to_manipulation(
         return _scale_standoff(spec, orbit_scale=0.60, sweep_scale=0.60, manip_scale=0.60)
 
     if str(spec.type).strip().lower() == "orbit":
-        base_radius = max(0.2, min(1.8, float(spec.radius_m) * 0.8))
+        base_radius = max(0.45, min(1.8, float(spec.radius_m) * 0.8))
     elif str(spec.type).strip().lower() == "sweep":
-        base_radius = max(0.2, min(1.8, float(spec.length_m) * 0.20))
+        base_radius = max(0.45, min(1.8, float(spec.length_m) * 0.20))
     else:
         base_radius = 0.45
 
@@ -273,7 +292,7 @@ def _convert_to_manipulation(
     return CameraPathSpec(
         type="manipulation",
         approach_point=[float(point[0]), float(point[1]), float(point[2])],
-        arc_radius_m=float(max(0.15, base_radius)),
+        arc_radius_m=float(base_radius),
         arc_span_deg=120.0,
         arc_phase_offset_deg=float(getattr(spec, "arc_phase_offset_deg", 0.0)),
         height_override_m=float(max(0.25, h0)),

@@ -1458,6 +1458,7 @@ class RenderStage(PipelineStage):
                             "passed": bool(passes),
                             "issue_tags": list(probe_score.issue_tags),
                             "reasoning": str(probe_score.reasoning or ""),
+                            "task_score": float(probe_score.task_score),
                         }
                         logger.info(
                             "probe_score clip=%s loop=%d cand=%d task=%.1f visual=%.1f spatial=%.1f "
@@ -1550,6 +1551,7 @@ class RenderStage(PipelineStage):
                 default_look_down_deg=float(look_down_deg),
                 loop_idx=int(round_idx + 1),
                 fallback_target_point=fallback_target_point,
+                best_task_score=float(best_row.get("task_score", 0.0)),
             )
             if _spec_is_effectively_unchanged(prev_spec, current_spec):
                 logger.info(
