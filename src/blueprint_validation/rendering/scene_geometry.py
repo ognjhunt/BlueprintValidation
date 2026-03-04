@@ -682,6 +682,37 @@ def compute_camera_height(obb: OrientedBoundingBox, offset_m: float = 0.3) -> fl
     return min(max(0.4, center_z + offset_m), 2.5)
 
 
+def _tuned_orbit_radius_and_lookdown(
+    obb: OrientedBoundingBox,
+    *,
+    standoff: float,
+    category: str,
+) -> tuple[float, float]:
+    """Derive orbit radius/look-down from object scale for target-centric capture.
+
+    The strict Stage-1 probes were repeatedly missing targets because wide orbits
+    and shallow pitch made objects appear as small background elements. This
+    policy tightens orbit distance and increases look-down as target scale grows.
+    """
+    max_xy = float(np.max(np.abs(obb.extents[:2]))) if len(obb.extents) >= 2 else 0.5
+    ext_z = float(obb.extents[2]) if len(obb.extents) > 2 else 0.5
+    # Normalize object size into a stable [0,1] bucket used for deterministic tuning.
+    size_norm = float(np.clip((max_xy - 0.35) / 1.85, 0.0, 1.0))
+    flat_boost = 6.0 if ext_z < 0.10 else 0.0
+
+    category_key = str(category).strip().lower()
+    if category_key == "manipulation":
+        radius = float(np.clip(standoff * (0.52 - 0.10 * size_norm), 0.65, 1.30))
+        look_down = float(np.clip(36.0 + 18.0 * size_norm + flat_boost, 30.0, 65.0))
+    elif category_key == "articulation":
+        radius = float(np.clip(standoff * (0.70 - 0.12 * size_norm), 0.80, 1.80))
+        look_down = float(np.clip(30.0 + 14.0 * size_norm + flat_boost, 25.0, 60.0))
+    else:
+        radius = float(np.clip(standoff * (0.75 - 0.14 * size_norm), 0.90, 2.00))
+        look_down = float(np.clip(34.0 + 12.0 * size_norm + flat_boost, 28.0, 58.0))
+    return radius, look_down
+
+
 # ---------------------------------------------------------------------------
 # Scene-aware camera spec generation
 # ---------------------------------------------------------------------------
@@ -727,14 +758,17 @@ def generate_scene_aware_specs(
             # manipulation arcs; orbit coverage is more stable and avoids
             # out-of-focus near-field paths.
             if max_xy >= 1.2:
+                orbit_radius, orbit_look_down = _tuned_orbit_radius_and_lookdown(
+                    obb, standoff=standoff, category="manipulation"
+                )
                 specs.append(
                     CameraPathSpec(
                         type="orbit",
-                        radius_m=float(min(2.0, max(0.8, standoff * 0.6))),
+                        radius_m=orbit_radius,
                         num_orbits=1,
                         approach_point=approach,
                         height_override_m=cam_height,
-                        look_down_override_deg=30.0,
+                        look_down_override_deg=orbit_look_down,
                         **base_meta,
                     )
                 )
@@ -752,27 +786,33 @@ def generate_scene_aware_specs(
             )
         elif obb.category == "articulation":
             # Articulation objects (doors, drawers) — orbit around them.
+            orbit_radius, orbit_look_down = _tuned_orbit_radius_and_lookdown(
+                obb, standoff=standoff, category="articulation"
+            )
             specs.append(
                 CameraPathSpec(
                     type="orbit",
-                    radius_m=standoff,
+                    radius_m=orbit_radius,
                     num_orbits=1,
                     approach_point=approach,
                     height_override_m=cam_height,
-                    look_down_override_deg=25.0,
+                    look_down_override_deg=orbit_look_down,
                     **base_meta,
                 )
             )
         else:
             # Navigation regions are coarse waypoints; use a gentle overview orbit.
+            orbit_radius, orbit_look_down = _tuned_orbit_radius_and_lookdown(
+                obb, standoff=standoff, category="navigation"
+            )
             specs.append(
                 CameraPathSpec(
                     type="orbit",
-                    radius_m=standoff,
+                    radius_m=orbit_radius,
                     num_orbits=1,
                     approach_point=approach,
                     height_override_m=cam_height,
-                    look_down_override_deg=35.0,
+                    look_down_override_deg=orbit_look_down,
                     **base_meta,
                 )
             )

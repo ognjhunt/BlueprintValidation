@@ -319,7 +319,8 @@ def test_generate_scene_aware_specs_large_manipulation_prefers_orbit():
     specs = generate_scene_aware_specs(obbs)
     assert len(specs) == 1
     assert specs[0].type == "orbit"
-    assert float(specs[0].radius_m) <= 2.0
+    assert 0.65 <= float(specs[0].radius_m) <= 1.30
+    assert float(specs[0].look_down_override_deg) >= 45.0
 
 
 def test_generate_scene_aware_specs_small_manipulation_clamps_arc_radius():
@@ -343,6 +344,39 @@ def test_generate_scene_aware_specs_small_manipulation_clamps_arc_radius():
     assert specs[0].type == "manipulation"
     assert 0.25 <= float(specs[0].arc_radius_m) <= 1.0
     assert float(specs[0].arc_span_deg) == pytest.approx(90.0)
+
+
+def test_generate_scene_aware_specs_orbit_lookdown_increases_with_scale():
+    from blueprint_validation.rendering.scene_geometry import (
+        OrientedBoundingBox,
+        generate_scene_aware_specs,
+    )
+
+    obbs = [
+        OrientedBoundingBox(
+            instance_id="nav_small",
+            label="small region",
+            center=np.array([0.0, 0.0, 0.8]),
+            extents=np.array([0.4, 0.3, 0.5]),
+            axes=np.eye(3),
+            category="navigation",
+        ),
+        OrientedBoundingBox(
+            instance_id="nav_large",
+            label="large region",
+            center=np.array([3.0, 0.0, 0.8]),
+            extents=np.array([2.1, 1.8, 0.5]),
+            axes=np.eye(3),
+            category="navigation",
+        ),
+    ]
+    specs = generate_scene_aware_specs(obbs)
+    assert len(specs) == 2
+    s_small, s_large = specs
+    assert s_small.type == "orbit"
+    assert s_large.type == "orbit"
+    assert float(s_large.look_down_override_deg) > float(s_small.look_down_override_deg)
+    assert float(s_large.radius_m) >= float(s_small.radius_m)
 
 
 # ---------------------------------------------------------------------------
