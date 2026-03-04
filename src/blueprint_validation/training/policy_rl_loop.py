@@ -566,6 +566,7 @@ def _refresh_world_model(
         require_stage2_vlm_pass=bool(
             config.policy_rl_loop.world_model_refresh_require_stage2_vlm_pass
         ),
+        min_decoded_frames=max(2, int(config.eval_policy.reliability.min_rollout_frames)),
     )
     clips = list(mix.get("clips", []))
     if not clips:

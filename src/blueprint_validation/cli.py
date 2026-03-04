@@ -226,6 +226,127 @@ def render(ctx: click.Context, facility: str, ply_path: Optional[str]) -> None:
     click.echo(f"Render complete: {result.status} ({result.elapsed_seconds:.1f}s)")
 
 
+@cli.command("geometry-canary")
+@click.option("--facility", required=True, help="Facility ID to evaluate.")
+@click.option(
+    "--max-clips",
+    type=int,
+    default=12,
+    show_default=True,
+    help="Maximum camera specs to evaluate in this canary run.",
+)
+@click.option(
+    "--probe-frames",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Override probe frame count (0 uses config/budget).",
+)
+@click.option(
+    "--targeted-only/--all-clips",
+    default=True,
+    show_default=True,
+    help="Restrict checks to target-grounded clips only.",
+)
+@click.pass_context
+def geometry_canary(
+    ctx: click.Context,
+    facility: str,
+    max_clips: int,
+    probe_frames: int,
+    targeted_only: bool,
+) -> None:
+    """Stage 1: Run a no-render geometry canary for target-presence checks."""
+    from .stages.s1_render import RenderStage
+
+    config = ctx.obj["config"]
+    fac = _get_facility(ctx, facility)
+    work_dir = _get_stage_work_dir(ctx, facility)
+
+    stage = RenderStage()
+    summary = stage.run_geometry_canary(
+        config=config,
+        facility=fac,
+        work_dir=work_dir,
+        max_specs=max(1, int(max_clips)),
+        probe_frames_override=max(0, int(probe_frames)),
+        targeted_only=bool(targeted_only),
+    )
+
+    click.echo(
+        "Geometry canary complete: "
+        f"rows={int(summary.get('num_rows', 0))} "
+        f"target_rows={int(summary.get('num_target_grounded_rows', 0))} "
+        f"first6={int(summary.get('first6_target_grounded_rows', 0))} "
+        f"first6_target_missing={int(summary.get('first6_target_missing_count', 0))}"
+    )
+    click.echo(f"Rows JSONL: {summary.get('rows_path')}")
+    click.echo(f"Summary JSON: {summary.get('summary_path')}")
+
+
+@cli.command("post-s1-audit")
+@click.option("--facility", required=True, help="Facility ID to audit.")
+@click.option(
+    "--geometry-max-clips",
+    type=int,
+    default=12,
+    show_default=True,
+    help="Max target-grounded clips to evaluate in geometry canary.",
+)
+@click.option(
+    "--geometry-probe-frames",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Override geometry canary probe frame count (0 uses config/budget).",
+)
+@click.option(
+    "--vlm-rescore-first",
+    type=int,
+    default=6,
+    show_default=True,
+    help="Rescore first N validated clips with VLM (0 disables VLM rescoring).",
+)
+@click.pass_context
+def post_s1_audit(
+    ctx: click.Context,
+    facility: str,
+    geometry_max_clips: int,
+    geometry_probe_frames: int,
+    vlm_rescore_first: int,
+) -> None:
+    """Run consolidated CPU-only Stage-1 post-run reliability audit."""
+    from .stages.s1_render import RenderStage
+
+    config = ctx.obj["config"]
+    fac = _get_facility(ctx, facility)
+    work_dir = _get_stage_work_dir(ctx, facility)
+
+    stage = RenderStage()
+    summary = stage.run_post_s1_audit(
+        config=config,
+        facility=fac,
+        work_dir=work_dir,
+        geometry_max_specs=max(1, int(geometry_max_clips)),
+        geometry_probe_frames_override=max(0, int(geometry_probe_frames)),
+        vlm_rescore_first=max(0, int(vlm_rescore_first)),
+    )
+
+    click.echo(
+        "Post-S1 audit complete: "
+        f"clips={int(summary.get('num_clips_in_manifest', 0))} "
+        f"missing={int(summary.get('num_videos_missing', 0))} "
+        f"invalid={int(summary.get('num_videos_invalid', 0))} "
+        f"monochrome={int(summary.get('num_monochrome_warnings', 0))} "
+        f"quality_failed={int(summary.get('num_quality_gate_failed', 0))} "
+        f"vlm_scored={int(summary.get('vlm_rows_scored', 0))}/"
+        f"{int(summary.get('vlm_rows_total', 0))}"
+    )
+    click.echo(f"Summary JSON: {summary.get('summary_path')}")
+    click.echo(f"Clip rows JSONL: {summary.get('clip_rows_path')}")
+    click.echo(f"VLM rows JSONL: {summary.get('vlm_rows_path')}")
+
+
 @cli.command("compose-robot")
 @click.option("--facility", required=True, help="Facility ID.")
 @click.pass_context

@@ -106,7 +106,7 @@ class RenderConfig:
     task_scoped_num_clips_per_path: int = 1
     task_scoped_num_frames_override: int = 0
     # Stage-1 coverage gate applied before Stage 2 enrichment.
-    stage1_coverage_gate_enabled: bool = False
+    stage1_coverage_gate_enabled: bool = True
     stage1_coverage_min_visible_frame_ratio: float = 0.35
     stage1_coverage_min_approach_angle_bins: int = 2
     stage1_coverage_angle_bin_deg: float = 45.0
@@ -244,6 +244,8 @@ class EnrichConfig:
     vlm_quality_disable_depth_on_final_retry: bool = True
     # all|task_targeted|explicit
     source_clip_selection_mode: str = "all"
+    # If true, task-targeted source selection fails the stage instead of silently falling back.
+    source_clip_selection_fail_closed: bool = True
     source_clip_task: Optional[str] = None
     source_clip_name: Optional[str] = None
     # Optional multi-view image context construction for Cosmos.
@@ -881,7 +883,7 @@ def load_config(path: Path) -> ValidationConfig:
             ),
             task_scoped_num_clips_per_path=int(r.get("task_scoped_num_clips_per_path", 1)),
             task_scoped_num_frames_override=int(r.get("task_scoped_num_frames_override", 0)),
-            stage1_coverage_gate_enabled=bool(r.get("stage1_coverage_gate_enabled", False)),
+            stage1_coverage_gate_enabled=bool(r.get("stage1_coverage_gate_enabled", True)),
             stage1_coverage_min_visible_frame_ratio=float(
                 r.get("stage1_coverage_min_visible_frame_ratio", 0.35)
             ),
@@ -1014,6 +1016,9 @@ def load_config(path: Path) -> ValidationConfig:
             ),
             source_clip_selection_mode=_parse_source_clip_selection_mode(
                 e.get("source_clip_selection_mode", "all")
+            ),
+            source_clip_selection_fail_closed=bool(
+                e.get("source_clip_selection_fail_closed", True)
             ),
             source_clip_task=(
                 str(e.get("source_clip_task")).strip() if e.get("source_clip_task") else None

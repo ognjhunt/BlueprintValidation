@@ -29,7 +29,7 @@ def test_config_defaults():
     assert config.render.preserve_num_frames_after_collision_filter is True
     assert config.render.task_scoped_num_clips_per_path == 1
     assert config.render.task_scoped_num_frames_override == 0
-    assert config.render.stage1_coverage_gate_enabled is False
+    assert config.render.stage1_coverage_gate_enabled is True
     assert config.render.stage1_coverage_min_visible_frame_ratio == pytest.approx(0.35)
     assert config.render.stage1_coverage_min_approach_angle_bins == 2
     assert config.render.stage1_coverage_min_center_band_ratio == pytest.approx(0.4)
@@ -107,6 +107,7 @@ def test_config_defaults():
     assert config.enrich.vlm_quality_retry_context_frame_stride == 6
     assert config.enrich.vlm_quality_disable_depth_on_final_retry is True
     assert config.enrich.source_clip_selection_mode == "all"
+    assert config.enrich.source_clip_selection_fail_closed is True
     assert config.enrich.source_clip_task is None
     assert config.enrich.source_clip_name is None
     assert config.enrich.multi_view_context_enabled is False
@@ -313,6 +314,7 @@ def test_config_with_all_sections(tmp_path):
             "context_frame_mode": "fixed",
             "max_source_clips": 1,
             "source_clip_selection_mode": "task_targeted",
+            "source_clip_selection_fail_closed": False,
             "source_clip_task": "Pick up trash_can_157 and place it in the target zone",
             "source_clip_name": "clip_001_manipulation",
             "multi_view_context_enabled": True,
@@ -509,6 +511,7 @@ def test_config_with_all_sections(tmp_path):
     assert config.enrich.vlm_quality_retry_context_frame_stride == 4
     assert config.enrich.vlm_quality_disable_depth_on_final_retry is False
     assert config.enrich.source_clip_selection_mode == "task_targeted"
+    assert config.enrich.source_clip_selection_fail_closed is False
     assert config.enrich.source_clip_task == "Pick up trash_can_157 and place it in the target zone"
     assert config.enrich.source_clip_name == "clip_001_manipulation"
     assert config.enrich.multi_view_context_enabled is True

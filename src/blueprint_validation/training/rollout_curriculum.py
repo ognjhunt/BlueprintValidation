@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
+from ..video_io import decode_video_frame_count
+
 
 @dataclass
 class RolloutBucketThresholds:
@@ -386,17 +388,32 @@ def build_world_refresh_mix(
     *,
     seed: int,
     require_stage2_vlm_pass: bool = False,
+    min_decoded_frames: int = 1,
 ) -> Dict[str, Any]:
     """Build a mixed refresh manifest from Stage-2 data + rollout buckets."""
     rng = Random(int(seed))
 
-    stage2_rows = _normalize_stage2_clips(
+    min_decode = max(1, int(min_decoded_frames))
+    stage2_rows, num_stage2_decode_filtered = _normalize_stage2_clips(
         stage2_manifest or {},
         require_vlm_pass=bool(require_stage2_vlm_pass),
+        min_decoded_frames=min_decode,
     )
-    success_rows = _normalize_rollout_rows(selected_success, source_bucket="selected")
-    near_rows = _normalize_rollout_rows(near_miss, source_bucket="near_miss")
-    hard_rows = _normalize_rollout_rows(hard_negative, source_bucket="hard_negative")
+    success_rows, num_success_decode_filtered = _normalize_rollout_rows(
+        selected_success,
+        source_bucket="selected",
+        min_decoded_frames=min_decode,
+    )
+    near_rows, num_near_decode_filtered = _normalize_rollout_rows(
+        near_miss,
+        source_bucket="near_miss",
+        min_decoded_frames=min_decode,
+    )
+    hard_rows, num_hard_decode_filtered = _normalize_rollout_rows(
+        hard_negative,
+        source_bucket="hard_negative",
+        min_decoded_frames=min_decode,
+    )
 
     all_unique = {}
     for row in stage2_rows + success_rows + near_rows + hard_rows:
@@ -418,6 +435,11 @@ def build_world_refresh_mix(
                 "selected_success": 0,
                 "selected_near_miss": 0,
                 "selected_hard_negative": 0,
+                "min_decoded_frames_required": min_decode,
+                "num_decode_filtered_stage2": num_stage2_decode_filtered,
+                "num_decode_filtered_success": num_success_decode_filtered,
+                "num_decode_filtered_near_miss": num_near_decode_filtered,
+                "num_decode_filtered_hard_negative": num_hard_decode_filtered,
             },
         }
 
@@ -471,6 +493,11 @@ def build_world_refresh_mix(
         "target_near_miss": near_target,
         "target_hard_negative": hard_target,
         "require_stage2_vlm_pass": bool(require_stage2_vlm_pass),
+        "min_decoded_frames_required": min_decode,
+        "num_decode_filtered_stage2": num_stage2_decode_filtered,
+        "num_decode_filtered_success": num_success_decode_filtered,
+        "num_decode_filtered_near_miss": num_near_decode_filtered,
+        "num_decode_filtered_hard_negative": num_hard_decode_filtered,
     }
     return {"clips": selected, "mix_metrics": metrics}
 
@@ -540,15 +567,21 @@ def _normalize_stage2_clips(
     manifest: Dict[str, Any],
     *,
     require_vlm_pass: bool = False,
-) -> List[Dict[str, Any]]:
+    min_decoded_frames: int = 1,
+) -> tuple[List[Dict[str, Any]], int]:
     rows: List[Dict[str, Any]] = []
+    decode_filtered = 0
     for clip in manifest.get("clips", []):
         if bool(require_vlm_pass) and clip.get("vlm_quality_passed") is not True:
             continue
         output_video = str(clip.get("output_video_path") or "").strip()
         if not output_video:
             continue
-        if not Path(output_video).exists():
+        output_path = Path(output_video)
+        if not output_path.exists():
+            continue
+        if decode_video_frame_count(output_path) < int(min_decoded_frames):
+            decode_filtered += 1
             continue
         clip_name = str(clip.get("clip_name") or Path(output_video).stem)
         rows.append(
@@ -561,16 +594,26 @@ def _normalize_stage2_clips(
                 "source_bucket": "stage2",
             }
         )
-    return rows
+    return rows, decode_filtered
 
 
-def _normalize_rollout_rows(rows: List[Dict[str, Any]], *, source_bucket: str) -> List[Dict[str, Any]]:
+def _normalize_rollout_rows(
+    rows: List[Dict[str, Any]],
+    *,
+    source_bucket: str,
+    min_decoded_frames: int = 1,
+) -> tuple[List[Dict[str, Any]], int]:
     out: List[Dict[str, Any]] = []
+    decode_filtered = 0
     for row in rows:
         output_video = str(row.get("video_path") or "").strip()
         if not output_video:
             continue
-        if not Path(output_video).exists():
+        output_path = Path(output_video)
+        if not output_path.exists():
+            continue
+        if decode_video_frame_count(output_path) < int(min_decoded_frames):
+            decode_filtered += 1
             continue
         rollout_index = int(row.get("rollout_index", 0) or 0)
         task = str(row.get("task") or "")
@@ -584,4 +627,4 @@ def _normalize_rollout_rows(rows: List[Dict[str, Any]], *, source_bucket: str) -
                 "source_bucket": source_bucket,
             }
         )
-    return out
+    return out, decode_filtered

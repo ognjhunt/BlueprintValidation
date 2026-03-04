@@ -178,6 +178,8 @@ def sample_config(tmp_path):
     cfg.enrich.enable_visual_collapse_gate = False
     cfg.enrich.vlm_quality_gate_enabled = False
     cfg.enrich.vlm_quality_fail_closed = False
+    cfg.enrich.source_clip_selection_fail_closed = False
+    cfg.render.stage1_coverage_gate_enabled = False
     cfg.render.stage1_quality_planner_enabled = False
     cfg.render.stage1_quality_autoretry_enabled = False
     cfg.render.stage1_active_perception_enabled = False

@@ -1227,6 +1227,7 @@ def test_select_source_clips_task_targeted_fallback_orders_manipulation_first(sa
 
     sample_config.enrich.max_source_clips = 1
     sample_config.enrich.source_clip_selection_mode = "task_targeted"
+    sample_config.enrich.source_clip_selection_fail_closed = False
     sample_config.enrich.source_clip_task = "Pick up trash_can_157 and place it in the target zone"
     facility = list(sample_config.facilities.values())[0]
     facility.task_hints_path = None
@@ -1246,6 +1247,77 @@ def test_select_source_clips_task_targeted_fallback_orders_manipulation_first(sa
 
     assert [c["clip_name"] for c in selected] == ["clip_001_manipulation"]
     assert meta["fallback"] == "missing_task_hints"
+
+
+def test_select_source_clips_task_targeted_fail_closed_returns_empty_selection(sample_config):
+    from blueprint_validation.stages.s2_enrich import _select_source_clips
+
+    sample_config.enrich.max_source_clips = 1
+    sample_config.enrich.source_clip_selection_mode = "task_targeted"
+    sample_config.enrich.source_clip_selection_fail_closed = True
+    sample_config.enrich.source_clip_task = "Pick up trash_can_157 and place it in the target zone"
+    facility = list(sample_config.facilities.values())[0]
+    facility.task_hints_path = None
+
+    render_manifest = {
+        "clips": [
+            {"clip_name": "clip_000_orbit", "path_type": "orbit"},
+            {"clip_name": "clip_001_manipulation", "path_type": "manipulation"},
+        ]
+    }
+    selected, meta = _select_source_clips(
+        render_manifest=render_manifest,
+        config=sample_config,
+        facility=facility,
+    )
+
+    assert selected == []
+    assert meta["fallback"] == "missing_task_hints"
+    assert meta["fail_closed"] is True
+
+
+def test_s2_task_targeted_selection_fail_closed_blocks_stage(sample_config, tmp_path):
+    from blueprint_validation.common import write_json
+    from blueprint_validation.config import VariantSpec
+    from blueprint_validation.stages.s2_enrich import EnrichStage
+
+    work_dir = tmp_path
+    render_dir = work_dir / "renders"
+    render_dir.mkdir(parents=True, exist_ok=True)
+    source_video = render_dir / "clip_001_manipulation.mp4"
+    source_depth = render_dir / "clip_001_manipulation_depth.mp4"
+    _write_dummy_video(source_video, frames=6)
+    _write_dummy_video(source_depth, frames=6)
+
+    write_json(
+        {
+            "facility": "Test Facility",
+            "clips": [
+                {
+                    "clip_name": "clip_001_manipulation",
+                    "path_type": "manipulation",
+                    "video_path": str(source_video),
+                    "depth_video_path": str(source_depth),
+                }
+            ],
+        },
+        render_dir / "render_manifest.json",
+    )
+
+    sample_config.enrich.dynamic_variants = False
+    sample_config.enrich.variants = [VariantSpec(name="v1", prompt="test variant")]
+    sample_config.enrich.max_source_clips = 1
+    sample_config.enrich.source_clip_selection_mode = "task_targeted"
+    sample_config.enrich.source_clip_selection_fail_closed = True
+    sample_config.enrich.source_clip_task = "Pick up trash_can_157 and place it in the target zone"
+    facility = list(sample_config.facilities.values())[0]
+    facility.task_hints_path = None
+
+    result = EnrichStage().run(sample_config, facility, work_dir, {})
+    assert result.status == "failed"
+    assert "failed closed" in (result.detail or "").lower()
+    assert result.metrics["source_clip_selection_fallback"] == "missing_task_hints"
+    assert result.metrics["source_clip_selection_fail_closed"] is True
 
 
 def test_resolve_multi_view_context_indices_clamps_and_dedupes():

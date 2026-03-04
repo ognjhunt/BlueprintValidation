@@ -182,13 +182,34 @@ class EnrichStage(PipelineStage):
             facility=facility,
         )
         if not source_clips:
+            selection_mode = str(clip_selection_meta.get("selection_mode") or "").strip().lower()
+            fallback_reason = str(clip_selection_meta.get("fallback") or "").strip()
+            fail_closed = bool(clip_selection_meta.get("fail_closed"))
+            detail = "No source clips available for Stage 2 enrichment"
+            if selection_mode == "task_targeted" and fallback_reason and fail_closed:
+                detail = (
+                    "Task-targeted source selection failed closed: "
+                    f"{fallback_reason}. Provide enrich.source_clip_task + task_hints, "
+                    "or set enrich.source_clip_selection_fail_closed=false to allow fallback."
+                )
             return StageResult(
                 stage_name=self.name,
                 status="failed",
                 elapsed_seconds=0,
-                detail="No source clips available for Stage 2 enrichment",
-                outputs={**source.to_metadata()},
-                metrics={**source.to_metadata()},
+                detail=detail,
+                outputs={
+                    **source.to_metadata(),
+                    "source_clip_selection_mode": clip_selection_meta.get("selection_mode"),
+                    "source_clip_selection_fallback": clip_selection_meta.get("fallback"),
+                    "source_clip_selection_fail_closed": bool(clip_selection_meta.get("fail_closed")),
+                },
+                metrics={
+                    **source.to_metadata(),
+                    "num_selected_source_clips": 0,
+                    "source_clip_selection_mode": clip_selection_meta.get("selection_mode"),
+                    "source_clip_selection_fallback": clip_selection_meta.get("fallback"),
+                    "source_clip_selection_fail_closed": bool(clip_selection_meta.get("fail_closed")),
+                },
             )
         selected_clip_target_distribution = _summarize_target_distribution(source_clips)
         min_source_clips = max(0, int(config.enrich.min_source_clips))
@@ -214,6 +235,7 @@ class EnrichStage(PipelineStage):
                     "selected_source_target_distribution": selected_clip_target_distribution,
                     "source_clip_selection_mode": clip_selection_meta.get("selection_mode"),
                     "source_clip_selection_fallback": clip_selection_meta.get("fallback"),
+                    "source_clip_selection_fail_closed": bool(clip_selection_meta.get("fail_closed")),
                     "min_source_clips": min_source_clips,
                     **coverage_metrics,
                 },
@@ -753,6 +775,9 @@ class EnrichStage(PipelineStage):
                             "input_trim_start_frame": prepared.input_trim_start_frame,
                             "input_trim_num_frames": prepared.input_trim_num_frames,
                             "source_clip_selection_mode": clip_selection_meta.get("selection_mode"),
+                            "source_clip_selection_fail_closed": bool(
+                                clip_selection_meta.get("fail_closed")
+                            ),
                             "frame0_ssim": frame0_ssim,
                             "blur_laplacian_mean": blur_laplacian_mean,
                             "green_dominance_ratio": green_dominance_ratio,
@@ -840,6 +865,7 @@ class EnrichStage(PipelineStage):
             "max_source_clips": int(config.enrich.max_source_clips),
             "source_clip_selection_mode": clip_selection_meta.get("selection_mode"),
             "source_clip_selection_fallback": clip_selection_meta.get("fallback"),
+            "source_clip_selection_fail_closed": bool(clip_selection_meta.get("fail_closed")),
             "source_clip_task": config.enrich.source_clip_task,
             "source_clip_name": config.enrich.source_clip_name,
             "min_source_clips": min_source_clips,
@@ -944,6 +970,7 @@ class EnrichStage(PipelineStage):
                 "selected_source_target_distribution": selected_clip_target_distribution,
                 "source_clip_selection_mode": clip_selection_meta.get("selection_mode"),
                 "source_clip_selection_fallback": clip_selection_meta.get("fallback"),
+                "source_clip_selection_fail_closed": bool(clip_selection_meta.get("fail_closed")),
                 "max_input_frames": int(config.enrich.max_input_frames),
                 "min_required_input_frames": int(min_required_input_frames),
                 "min_frame0_ssim_threshold": ssim_gate_threshold,
@@ -1086,6 +1113,7 @@ def _select_source_clips(
         return [], {"selection_mode": "all", "fallback": None}
 
     requested_mode = str(config.enrich.source_clip_selection_mode or "all").strip().lower()
+    fail_closed_task_targeted = bool(config.enrich.source_clip_selection_fail_closed)
     max_source_clips = int(config.enrich.max_source_clips)
     selection_limit = max_source_clips if max_source_clips > 0 else len(clips)
     requested_rollouts = max(
@@ -1131,12 +1159,16 @@ def _select_source_clips(
         elif not selected:
             fallback_reason = "selection_failed"
         if fallback_reason is not None:
-            selected = _fallback_task_targeted_clip_order(clips)
-        selected = _rebalance_task_targeted_selection(
-            selected=selected,
-            all_clips=clips,
-            limit=selection_limit,
-        )
+            if fail_closed_task_targeted:
+                selected = []
+            else:
+                selected = _fallback_task_targeted_clip_order(clips)
+        if not (fail_closed_task_targeted and fallback_reason is not None):
+            selected = _rebalance_task_targeted_selection(
+                selected=selected,
+                all_clips=clips,
+                limit=selection_limit,
+            )
     elif requested_mode == "explicit":
         explicit_name = str(config.enrich.source_clip_name or "").strip()
         if explicit_name:
@@ -1147,7 +1179,14 @@ def _select_source_clips(
     else:
         selected = clips
 
-    if not selected:
+    if (
+        not selected
+        and not (
+            requested_mode == "task_targeted"
+            and fallback_reason is not None
+            and fail_closed_task_targeted
+        )
+    ):
         selected = clips
         fallback_reason = fallback_reason or "empty_selection"
 
@@ -1166,6 +1205,11 @@ def _select_source_clips(
     return selected_limited, {
         "selection_mode": requested_mode,
         "fallback": fallback_reason,
+        "fail_closed": (
+            requested_mode == "task_targeted"
+            and fallback_reason is not None
+            and fail_closed_task_targeted
+        ),
         "target_distribution": target_distribution,
         "num_unique_targets": len(target_distribution),
     }

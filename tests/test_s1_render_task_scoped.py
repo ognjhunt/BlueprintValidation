@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import numpy as np
@@ -553,3 +554,228 @@ def test_generate_and_render_scene_locked_forces_single_clip_and_locked_probe(
     assert len(entries) == 1
     assert captured["locked_mode"] is True
     np.testing.assert_allclose(captured["start_offset"], np.zeros(3, dtype=np.float64), atol=1e-10)
+
+
+def test_run_geometry_canary_reports_target_presence(sample_config, tmp_path, monkeypatch):
+    from blueprint_validation.config import CameraPathSpec
+    from blueprint_validation.rendering.camera_paths import CameraPose, _look_at
+    from blueprint_validation.stages.s1_render import RenderStage
+
+    class _FakeTensor:
+        def __init__(self, arr: np.ndarray):
+            self._arr = arr
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return self._arr
+
+    class _FakeSplat:
+        def __init__(self, arr: np.ndarray):
+            self.means = _FakeTensor(arr)
+
+    sample_config.render.scene_aware = False
+    sample_config.render.collision_check = False
+    sample_config.render.stage1_probe_frames_override = 4
+    sample_config.render.stage1_probe_min_unique_positions = 1
+    sample_config.render.camera_paths = [
+        CameraPathSpec(
+            type="orbit",
+            radius_m=1.0,
+            approach_point=[0.0, 0.0, 0.0],
+            target_role="targets",
+            target_label="bowl",
+            target_extents_m=[0.40, 0.35, 0.30],
+        )
+    ]
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render.load_splat",
+        lambda *_args, **_kwargs: _FakeSplat(np.array([[0.0, 0.0, 0.0]], dtype=np.float32)),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render.resolve_facility_orientation",
+        lambda **kwargs: (kwargs["facility"], {}),
+    )
+
+    def _fake_build_render_poses(
+        self,
+        *,
+        config,
+        path_spec,
+        scene_center,
+        occupancy,
+        num_frames,
+        camera_height,
+        look_down_deg,
+        resolution,
+        start_offset,
+    ):
+        height, width = int(resolution[0]), int(resolution[1])
+        fx = fy = float(width) / float(2.0 * np.tan(np.deg2rad(60.0 / 2.0)))
+        cx = float(width) / 2.0
+        cy = float(height) / 2.0
+        poses = []
+        for i in range(int(num_frames)):
+            eye = np.array([0.0, -0.95 + 0.01 * float(i), 0.45], dtype=np.float64)
+            c2w = _look_at(eye, np.array([0.0, 0.0, 0.0], dtype=np.float64))
+            poses.append(
+                CameraPose(
+                    c2w=c2w,
+                    fx=fx,
+                    fy=fy,
+                    cx=cx,
+                    cy=cy,
+                    width=width,
+                    height=height,
+                )
+            )
+        n = len(poses)
+        return poses, n, n, n, 0
+
+    monkeypatch.setattr(
+        RenderStage,
+        "_build_render_poses",
+        _fake_build_render_poses,
+    )
+
+    stage = RenderStage()
+    summary = stage.run_geometry_canary(
+        config=sample_config,
+        facility=sample_config.facilities["test_facility"],
+        work_dir=tmp_path,
+        max_specs=1,
+    )
+
+    assert int(summary["num_rows"]) == 1
+    assert int(summary["num_target_grounded_rows"]) == 1
+    assert int(summary["target_missing_count"]) == 0
+    rows_path = tmp_path / "renders" / "s1_geometry_canary_rows.jsonl"
+    rows = [json.loads(line) for line in rows_path.read_text().splitlines() if line.strip()]
+    assert len(rows) == 1
+    assert rows[0]["status"] == "ok"
+
+
+def test_run_post_s1_audit_combines_geometry_integrity_quality_and_vlm(
+    sample_config,
+    tmp_path,
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from blueprint_validation.stages.s1_render import RenderStage
+    from blueprint_validation.stages.s2_enrich import CoverageGateResult
+    from blueprint_validation.video_io import VideoValidationResult
+
+    fac = sample_config.facilities["test_facility"]
+    fac_dir = tmp_path / "test_facility"
+    render_dir = fac_dir / "renders"
+    render_dir.mkdir(parents=True, exist_ok=True)
+    video_path = render_dir / "clip_000.mp4"
+    depth_path = render_dir / "clip_000_depth.mp4"
+    camera_path = render_dir / "clip_000_camera_path.json"
+    video_path.write_bytes(b"video")
+    depth_path.write_bytes(b"depth")
+    camera_path.write_text("{}")
+    (render_dir / "render_manifest.json").write_text(
+        json.dumps(
+            {
+                "clips": [
+                    {
+                        "clip_name": "clip_000",
+                        "clip_index": 0,
+                        "path_type": "manipulation",
+                        "video_path": str(video_path),
+                        "depth_video_path": str(depth_path),
+                        "camera_path": str(camera_path),
+                        "num_frames": 4,
+                        "expected_focus_text": "keep bowl centered",
+                        "path_context": {
+                            "approach_point": [0.0, 0.0, 0.0],
+                            "target_label": "bowl",
+                            "target_role": "targets",
+                            "target_extents_m": [0.4, 0.3, 0.2],
+                        },
+                    }
+                ]
+            }
+        )
+    )
+
+    monkeypatch.setattr(
+        RenderStage,
+        "run_geometry_canary",
+        lambda self, **kwargs: {
+            "num_rows": 1,
+            "num_target_grounded_rows": 1,
+            "first6_target_missing_count": 0,
+        },
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render.ensure_h264_video",
+        lambda **kwargs: VideoValidationResult(
+            path=video_path,
+            codec_name="h264",
+            decoded_frames=4,
+            duration_seconds=0.4,
+            transcoded=False,
+            width=64,
+            height=48,
+            content_monochrome_warning=False,
+            content_max_std_dev=12.0,
+        ),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render.evaluate_clip_quality",
+        lambda **kwargs: {
+            "target_visibility_ratio": 1.0,
+            "target_center_band_ratio": 1.0,
+            "target_approach_angle_bins": 3,
+            "target_visible_frames": 4,
+            "target_total_frames": 4,
+            "target_center_band_frames": 4,
+            "blur_laplacian_score": 80.0,
+            "clip_quality_score": 0.95,
+            "quality_gate_passed": True,
+            "quality_reject_reasons": [],
+        },
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s2_enrich._evaluate_stage1_coverage_gate",
+        lambda render_manifest, config: CoverageGateResult(
+            passed=True,
+            detail="ok",
+            metrics={"coverage_gate_passed": True},
+        ),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render._score_stage1_probe_consensus",
+        lambda **kwargs: {
+            "score": SimpleNamespace(
+                task_score=2.0,
+                visual_score=4.0,
+                spatial_score=3.0,
+                issue_tags=[],
+                reasoning="ok",
+            ),
+            "votes_effective": 1,
+            "score_spread": 0.0,
+            "active_model_used": "gemini-3-flash-preview",
+        },
+    )
+
+    stage = RenderStage()
+    summary = stage.run_post_s1_audit(
+        config=sample_config,
+        facility=fac,
+        work_dir=fac_dir,
+        geometry_max_specs=1,
+        vlm_rescore_first=1,
+    )
+    assert summary["status"] == "success"
+    assert int(summary["num_clips_in_manifest"]) == 1
+    assert int(summary["num_videos_missing"]) == 0
+    assert int(summary["num_videos_invalid"]) == 0
+    assert int(summary["num_quality_gate_failed"]) == 0
+    assert int(summary["vlm_rows_scored"]) == 1

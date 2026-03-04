@@ -178,3 +178,63 @@ def test_build_world_refresh_mix_requires_stage2_vlm_pass(sample_config, tmp_pat
     }
     assert str(stage2_ok) in stage2_paths
     assert str(stage2_bad) not in stage2_paths
+
+
+def test_build_world_refresh_mix_filters_decode_failures(sample_config, tmp_path, monkeypatch):
+    from blueprint_validation.training import rollout_curriculum as rc
+
+    stage2_ok = tmp_path / "stage2_ok.mp4"
+    stage2_bad = tmp_path / "stage2_bad.mp4"
+    success_ok = tmp_path / "success_ok.mp4"
+    success_bad = tmp_path / "success_bad.mp4"
+    for path in [stage2_ok, stage2_bad, success_ok, success_bad]:
+        path.write_bytes(b"00")
+
+    decode_counts = {
+        str(stage2_ok): 8,
+        str(stage2_bad): 2,
+        str(success_ok): 8,
+        str(success_bad): 1,
+    }
+    monkeypatch.setattr(
+        rc,
+        "decode_video_frame_count",
+        lambda video_path: int(decode_counts.get(str(video_path), 0)),
+    )
+
+    stage2_manifest = {
+        "clips": [
+            {
+                "clip_name": "clip_ok",
+                "variant_name": "daylight",
+                "output_video_path": str(stage2_ok),
+                "input_video_path": str(stage2_ok),
+            },
+            {
+                "clip_name": "clip_bad",
+                "variant_name": "night",
+                "output_video_path": str(stage2_bad),
+                "input_video_path": str(stage2_bad),
+            },
+        ]
+    }
+    selected = [
+        {"rollout_index": 1, "task": "Pick tote", "video_path": str(success_ok)},
+        {"rollout_index": 2, "task": "Pick tote", "video_path": str(success_bad)},
+    ]
+
+    mix = rc.build_world_refresh_mix(
+        stage2_manifest=stage2_manifest,
+        selected_success=selected,
+        near_miss=[],
+        hard_negative=[],
+        cfg=sample_config.policy_rl_loop,
+        seed=17,
+        min_decoded_frames=5,
+    )
+    selected_paths = {str(row.get("output_video_path", "")) for row in mix["clips"]}
+    assert str(stage2_bad) not in selected_paths
+    assert str(success_bad) not in selected_paths
+    assert mix["mix_metrics"]["num_decode_filtered_stage2"] == 1
+    assert mix["mix_metrics"]["num_decode_filtered_success"] == 1
+    assert mix["mix_metrics"]["min_decoded_frames_required"] == 5

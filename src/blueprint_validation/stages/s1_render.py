@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, replace
 import hashlib
 import json
+from collections import Counter
 from pathlib import Path
 import re
 import shutil
@@ -13,7 +14,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from ..common import StageResult, get_logger, write_json
+from ..common import StageResult, get_logger, read_json, write_json
 from ..config import CameraPathSpec, FacilityConfig, VLMJudgeConfig, ValidationConfig
 from ..evaluation.camera_quality import (
     analyze_target_visibility,
@@ -648,6 +649,837 @@ class RenderStage(PipelineStage):
                 **quality_summary,
             },
         )
+
+    def run_geometry_canary(
+        self,
+        *,
+        config: ValidationConfig,
+        facility: FacilityConfig,
+        work_dir: Path,
+        max_specs: int = 12,
+        probe_frames_override: int = 0,
+        targeted_only: bool = True,
+    ) -> Dict[str, object]:
+        """Run Stage-1 geometry-only target-presence checks without rendering.
+
+        This evaluates the same pose-generation and geometric target gates used by
+        active-perception probes (visibility, centering, projected size, LOS), but
+        skips GPU rendering and VLM scoring entirely.
+        """
+        render_dir = work_dir / "renders"
+        render_dir.mkdir(parents=True, exist_ok=True)
+        rows_path = render_dir / "s1_geometry_canary_rows.jsonl"
+        summary_path = render_dir / "s1_geometry_canary_summary.json"
+        rows_path.unlink(missing_ok=True)
+
+        logger.info(
+            "Running geometry-only canary for facility=%s (max_specs=%d targeted_only=%s)",
+            facility.name,
+            int(max_specs),
+            bool(targeted_only),
+        )
+
+        splat = load_splat(facility.ply_path, device="cpu")
+        splat_means_raw = splat.means.cpu().numpy()
+
+        obbs_for_orientation: Optional[List[OrientedBoundingBox]] = None
+        if facility.task_hints_path and facility.task_hints_path.exists():
+            try:
+                obbs_for_orientation = load_obbs_from_task_targets(facility.task_hints_path)
+            except Exception:
+                logger.warning(
+                    "Failed loading OBBs for geometry canary orientation scoring from %s",
+                    facility.task_hints_path,
+                    exc_info=True,
+                )
+
+        facility, orientation_meta = resolve_facility_orientation(
+            facility=facility,
+            means_raw=splat_means_raw,
+            obbs_raw=obbs_for_orientation,
+            camera_look_down_deg=config.render.camera_look_down_deg,
+            orientation_autocorrect_enabled=config.render.orientation_autocorrect_enabled,
+            orientation_autocorrect_mode=config.render.orientation_autocorrect_mode,
+        )
+
+        scene_T = compute_scene_transform(facility)
+        has_transform = not is_identity_transform(scene_T)
+        splat_means_np = splat_means_raw
+        if has_transform:
+            splat_means_np = transform_means(splat_means_np, scene_T)
+        scene_center = splat_means_np.mean(axis=0)
+
+        extra_specs, occupancy = self._build_scene_aware_specs(
+            config,
+            facility,
+            splat_means_np,
+            scene_center,
+            scene_T if has_transform else None,
+        )
+        if occupancy is None and bool(config.render.collision_check):
+            occupancy = build_occupancy_grid(
+                splat_means_np,
+                voxel_size=config.render.voxel_size_m,
+                density_threshold=config.render.density_threshold,
+            )
+
+        base_specs = list(config.render.camera_paths)
+        if has_transform:
+            base_specs = transform_camera_path_specs(base_specs, scene_T)
+
+        kitchen_0787_locked_mode = _is_kitchen_0787_scene(facility)
+        if kitchen_0787_locked_mode:
+            all_path_specs = _build_kitchen_0787_locked_specs(
+                config=config,
+                facility=facility,
+                scene_transform=(scene_T if has_transform else None),
+            )
+        else:
+            all_path_specs = base_specs + extra_specs
+            if (
+                extra_specs
+                and bool(config.render.task_scoped_scene_aware)
+                and str(config.render.stage1_active_perception_scope).strip().lower() == "targeted"
+            ):
+                all_path_specs = extra_specs + base_specs
+
+        budget = resolve_probe_budget(
+            candidate_budget=config.render.stage1_quality_candidate_budget,
+            max_loops_cap=int(config.render.stage1_active_perception_max_loops),
+            probe_frames_override=int(config.render.stage1_probe_frames_override),
+            probe_resolution_scale_override=float(config.render.stage1_probe_resolution_scale),
+        )
+        base_resolution = (int(config.render.resolution[0]), int(config.render.resolution[1]))
+        probe_resolution = compute_probe_resolution(
+            base_resolution=base_resolution,
+            scale=float(budget.probe_resolution_scale),
+        )
+        probe_frames = (
+            int(probe_frames_override)
+            if int(probe_frames_override) > 0
+            else int(max(1, int(budget.probe_frames)))
+        )
+
+        rows: List[Dict[str, object]] = []
+        clip_index = 0
+        max_specs = max(1, int(max_specs))
+        for path_spec in all_path_specs:
+            path_context = _path_context_from_spec(path_spec)
+            is_scene_locked = _is_scene_locked_spec(path_spec)
+            target_grounded = bool(
+                should_probe_clip(
+                    scope="targeted",
+                    path_type=str(path_spec.type),
+                    path_context=path_context,
+                )
+                and _is_target_grounded_path_context(path_context)
+            )
+            if is_scene_locked:
+                target_grounded = True
+            if bool(targeted_only) and not target_grounded:
+                continue
+            if len(rows) >= max_specs:
+                break
+
+            rng = np.random.default_rng(seed=clip_index * 42)
+            offset = _sample_start_offset(
+                config,
+                path_spec,
+                rng,
+                clip_repeat_index=0,
+                is_task_scoped=(
+                    str(getattr(path_spec, "source_tag", "")).strip().lower() == "task_scoped"
+                ),
+                target_grounded=bool(target_grounded),
+            )
+            if is_scene_locked:
+                offset = np.zeros(3, dtype=np.float64)
+
+            (
+                poses,
+                pre_count,
+                post_filter_count,
+                post_resample_count,
+                corrected_count,
+            ) = self._build_render_poses(
+                config=config,
+                path_spec=path_spec,
+                scene_center=scene_center,
+                occupancy=occupancy,
+                num_frames=int(probe_frames),
+                camera_height=float(config.render.camera_height_m),
+                look_down_deg=float(config.render.camera_look_down_deg),
+                resolution=probe_resolution,
+                start_offset=offset,
+            )
+
+            min_viable_ratio = float(config.render.stage1_probe_min_viable_pose_ratio)
+            viable_ratio = float(post_filter_count) / max(1.0, float(probe_frames))
+            min_unique_positions = int(config.render.stage1_probe_min_unique_positions)
+            if is_scene_locked:
+                min_unique_positions = min(min_unique_positions, 1)
+            unique_positions = _count_unique_camera_positions(poses)
+            target_xyz = _path_context_target_xyz(path_context)
+            target_extents = _path_context_target_extents(path_context)
+
+            visible_ratio: Optional[float] = None
+            center_ratio: Optional[float] = None
+            size_ratio: Optional[float] = None
+            los_ratio: Optional[float] = None
+            min_visible_ratio: Optional[float] = None
+            min_center_ratio: Optional[float] = None
+            min_los_ratio: Optional[float] = None
+
+            status = "ok"
+            reason = ""
+            issue_tags: List[str] = []
+            if not poses:
+                status = "pose_generation_failed"
+                reason = "probe_pose_generation_failed"
+                if target_grounded:
+                    issue_tags = ["target_missing"]
+            elif viable_ratio < min_viable_ratio:
+                status = "viability_reject"
+                reason = (
+                    f"probe_viability_reject ratio={viable_ratio:.3f} "
+                    f"threshold={min_viable_ratio:.3f}"
+                )
+                issue_tags = ["camera_motion_too_fast"]
+                if target_grounded:
+                    issue_tags.append("target_missing")
+            elif unique_positions < int(min_unique_positions):
+                status = "degenerate_positions"
+                reason = (
+                    f"probe_degenerate_positions unique={unique_positions} "
+                    f"min_required={min_unique_positions}"
+                )
+                issue_tags = ["unstable_view"]
+                if target_grounded:
+                    issue_tags.append("target_missing")
+            elif target_grounded:
+                if target_xyz is None:
+                    status = "target_presence_reject"
+                    reason = "target_presence_reject missing_target_annotation"
+                    issue_tags = ["target_missing"]
+                else:
+                    total_frames, visible_samples = project_target_to_poses(
+                        poses,
+                        target_xyz,
+                    )
+                    visible_frames, total_frames, center_frames, _angle_bins = analyze_target_visibility(
+                        total_frames=total_frames,
+                        visible_samples=visible_samples,
+                        angle_bin_deg=float(config.render.stage1_coverage_angle_bin_deg),
+                        center_band_x=config.render.stage1_coverage_center_band_x,
+                        center_band_y=config.render.stage1_coverage_center_band_y,
+                    )
+                    visible_ratio = (
+                        float(visible_frames) / float(total_frames) if total_frames > 0 else 0.0
+                    )
+                    center_ratio = (
+                        float(center_frames) / float(total_frames) if total_frames > 0 else 0.0
+                    )
+                    min_visible_ratio = max(
+                        float(config.render.stage1_coverage_min_visible_frame_ratio),
+                        float(_TARGET_PRESENCE_STRICT_MIN_VISIBLE_RATIO),
+                    )
+                    min_center_ratio = max(
+                        float(config.render.stage1_coverage_min_center_band_ratio),
+                        float(_TARGET_PRESENCE_STRICT_MIN_CENTER_RATIO),
+                    )
+                    if (
+                        float(visible_ratio) < float(min_visible_ratio)
+                        or float(center_ratio) < float(min_center_ratio)
+                    ):
+                        status = "target_presence_reject"
+                        reason = (
+                            "target_presence_reject "
+                            f"visible={float(visible_ratio):.3f}/{float(min_visible_ratio):.3f} "
+                            f"center={float(center_ratio):.3f}/{float(min_center_ratio):.3f}"
+                        )
+                        issue_tags = ["target_missing"]
+                        if float(center_ratio) < float(min_center_ratio):
+                            issue_tags.append("target_off_center")
+                    elif target_extents is not None:
+                        size_ratio = _estimate_target_projected_size_ratio(
+                            poses=poses,
+                            target_xyz=target_xyz,
+                            target_extents_m=target_extents,
+                        )
+                        if float(size_ratio) < float(_TARGET_PRESENCE_STRICT_MIN_SIZE_RATIO):
+                            status = "target_presence_reject"
+                            reason = (
+                                "target_presence_reject "
+                                f"size={float(size_ratio):.3f}/"
+                                f"{float(_TARGET_PRESENCE_STRICT_MIN_SIZE_RATIO):.3f}"
+                            )
+                            issue_tags = ["target_missing", "target_off_center"]
+
+                    if status == "ok":
+                        los_ratio = _compute_target_line_of_sight_ratio(
+                            poses=poses,
+                            target_xyz=target_xyz,
+                            occupancy=occupancy,
+                            min_clearance_m=float(config.render.min_clearance_m),
+                        )
+                        min_los_ratio = (
+                            0.0
+                            if bool(is_scene_locked)
+                            else float(_TARGET_PRESENCE_STRICT_MIN_LOS_RATIO)
+                        )
+                        if float(los_ratio) < float(min_los_ratio):
+                            status = "target_presence_reject"
+                            reason = (
+                                "target_presence_reject "
+                                f"line_of_sight={float(los_ratio):.3f}/{float(min_los_ratio):.3f}"
+                            )
+                            issue_tags = ["target_missing", "target_occluded"]
+
+            if target_grounded and not issue_tags and status != "ok":
+                issue_tags = ["target_missing"]
+            passed = bool(status == "ok")
+            row = {
+                "clip_name": f"geometry_{clip_index:03d}_{path_spec.type}",
+                "clip_index": int(clip_index),
+                "path_type": str(path_spec.type),
+                "source_tag": str(getattr(path_spec, "source_tag", "") or "default"),
+                "status": status,
+                "passed": bool(passed),
+                "reason": str(reason),
+                "issue_tags": issue_tags,
+                "target_grounded": bool(target_grounded),
+                "target_instance_id": path_context.get("target_instance_id"),
+                "target_label": path_context.get("target_label"),
+                "target_role": path_context.get("target_role"),
+                "target_xyz": target_xyz,
+                "target_extents_m": target_extents,
+                "num_frames_requested": int(probe_frames),
+                "pre_filter_count": int(pre_count),
+                "post_filter_count": int(post_filter_count),
+                "post_resample_count": int(post_resample_count),
+                "corrected_roll_count": int(corrected_count),
+                "viable_pose_ratio": round(float(viable_ratio), 6),
+                "min_viable_pose_ratio": round(float(min_viable_ratio), 6),
+                "unique_positions": int(unique_positions),
+                "min_unique_positions": int(min_unique_positions),
+                "target_visible_ratio": (
+                    None if visible_ratio is None else round(float(visible_ratio), 6)
+                ),
+                "target_center_ratio": (
+                    None if center_ratio is None else round(float(center_ratio), 6)
+                ),
+                "target_size_ratio": None if size_ratio is None else round(float(size_ratio), 6),
+                "target_los_ratio": None if los_ratio is None else round(float(los_ratio), 6),
+                "min_target_visible_ratio": (
+                    None
+                    if min_visible_ratio is None
+                    else round(float(min_visible_ratio), 6)
+                ),
+                "min_target_center_ratio": (
+                    None if min_center_ratio is None else round(float(min_center_ratio), 6)
+                ),
+                "min_target_los_ratio": (
+                    None if min_los_ratio is None else round(float(min_los_ratio), 6)
+                ),
+                "path_context": path_context,
+            }
+            _append_probe_score_row(rows_path, row)
+            rows.append(row)
+            clip_index += 1
+
+        target_rows = [row for row in rows if bool(row.get("target_grounded", False))]
+        first6 = target_rows[:6]
+
+        def _avg(rows_subset: List[Dict[str, object]], key: str) -> Optional[float]:
+            values: List[float] = []
+            for item in rows_subset:
+                value = item.get(key)
+                if isinstance(value, (int, float)):
+                    values.append(float(value))
+            if not values:
+                return None
+            return round(float(np.mean(np.asarray(values, dtype=np.float64))), 6)
+
+        summary: Dict[str, object] = {
+            "facility_name": facility.name,
+            "facility_description": facility.description,
+            "ply_path": str(facility.ply_path),
+            "task_hints_path": (
+                str(facility.task_hints_path) if facility.task_hints_path is not None else None
+            ),
+            "kitchen_0787_locked_mode": bool(kitchen_0787_locked_mode),
+            "targeted_only": bool(targeted_only),
+            "probe_frames": int(probe_frames),
+            "probe_resolution": [int(probe_resolution[0]), int(probe_resolution[1])],
+            "max_specs_requested": int(max_specs),
+            "num_specs_available": int(len(all_path_specs)),
+            "num_rows": int(len(rows)),
+            "num_target_grounded_rows": int(len(target_rows)),
+            "num_target_grounded_passed": int(sum(1 for r in target_rows if bool(r.get("passed")))),
+            "num_target_grounded_failed": int(
+                sum(1 for r in target_rows if not bool(r.get("passed")))
+            ),
+            "target_missing_count": int(
+                sum(
+                    1
+                    for r in target_rows
+                    if "target_missing" in list(r.get("issue_tags", []) or [])
+                )
+            ),
+            "first6_target_grounded_rows": int(len(first6)),
+            "first6_target_grounded_passed": int(sum(1 for r in first6 if bool(r.get("passed")))),
+            "first6_target_missing_count": int(
+                sum(
+                    1
+                    for r in first6
+                    if "target_missing" in list(r.get("issue_tags", []) or [])
+                )
+            ),
+            "first6_avg_target_visible_ratio": _avg(first6, "target_visible_ratio"),
+            "first6_avg_target_center_ratio": _avg(first6, "target_center_ratio"),
+            "first6_avg_target_size_ratio": _avg(first6, "target_size_ratio"),
+            "first6_avg_target_los_ratio": _avg(first6, "target_los_ratio"),
+            "orientation_candidates": orientation_meta.get("orientation_candidates"),
+            "orientation_score_selected": orientation_meta.get("orientation_score_selected"),
+            "orientation_score_runner_up": orientation_meta.get("orientation_score_runner_up"),
+            "rows_path": str(rows_path),
+            "summary_path": str(summary_path),
+        }
+        write_json(summary, summary_path)
+        return summary
+
+    def run_post_s1_audit(
+        self,
+        *,
+        config: ValidationConfig,
+        facility: FacilityConfig,
+        work_dir: Path,
+        geometry_max_specs: int = 12,
+        geometry_probe_frames_override: int = 0,
+        vlm_rescore_first: int = 6,
+    ) -> Dict[str, object]:
+        """Run CPU-only post-Stage-1 reliability checks in one pass.
+
+        Checks:
+        - geometry canary (no render),
+        - manifest-level Stage-1 coverage gate,
+        - video integrity/codec/decode sanity,
+        - clip-level quality metrics from camera path + target metadata,
+        - optional VLM rescoring on first N validated clips.
+        """
+        render_dir = work_dir / "renders"
+        audit_dir = render_dir / "post_s1_audit"
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        clip_rows_path = audit_dir / "post_s1_audit_clip_rows.jsonl"
+        vlm_rows_path = audit_dir / "post_s1_audit_vlm_rows.jsonl"
+        summary_path = audit_dir / "post_s1_audit_summary.json"
+        clip_rows_path.unlink(missing_ok=True)
+        vlm_rows_path.unlink(missing_ok=True)
+
+        manifest_path = render_dir / "render_manifest.json"
+        if not manifest_path.exists():
+            summary = {
+                "status": "failed",
+                "detail": (
+                    "Render manifest missing. Run Stage 1 render first "
+                    "(`... render --facility <id>`)."
+                ),
+                "facility_name": facility.name,
+                "manifest_path": str(manifest_path),
+                "summary_path": str(summary_path),
+            }
+            write_json(summary, summary_path)
+            return summary
+
+        render_manifest = read_json(manifest_path)
+        clips_raw = render_manifest.get("clips", [])
+        clips: List[Dict[str, object]] = list(clips_raw) if isinstance(clips_raw, list) else []
+        clip_by_name: Dict[str, Dict[str, object]] = {}
+        for clip in clips:
+            clip_name = str(clip.get("clip_name", "")).strip()
+            if clip_name and clip_name not in clip_by_name:
+                clip_by_name[clip_name] = clip
+
+        logger.info(
+            "Running post-S1 audit for facility=%s clips=%d",
+            facility.name,
+            len(clips),
+        )
+
+        geometry_summary: Dict[str, object] = {}
+        geometry_error: Optional[str] = None
+        try:
+            geometry_summary = self.run_geometry_canary(
+                config=config,
+                facility=facility,
+                work_dir=work_dir,
+                max_specs=max(1, int(geometry_max_specs)),
+                probe_frames_override=max(0, int(geometry_probe_frames_override)),
+                targeted_only=True,
+            )
+        except Exception as exc:
+            geometry_error = str(exc)
+            logger.warning(
+                "post_s1_audit geometry canary failed for facility=%s: %s",
+                facility.name,
+                exc,
+                exc_info=True,
+            )
+
+        clip_rows: List[Dict[str, object]] = []
+        quality_reason_counter: Counter[str] = Counter()
+        validated_video_by_clip: Dict[str, Path] = {}
+        for clip in clips:
+            clip_name = str(clip.get("clip_name", "")).strip() or "unknown"
+            path_type = str(clip.get("path_type", "")).strip().lower()
+            path_context = clip.get("path_context") or {}
+            if not isinstance(path_context, dict):
+                path_context = {}
+            target_xyz = _path_context_target_xyz(path_context)
+            target_grounded = bool(_is_target_grounded_path_context(path_context))
+            target_extents = _path_context_target_extents(path_context)
+
+            video_path = Path(str(clip.get("video_path", "")))
+            depth_video_path = Path(str(clip.get("depth_video_path", "")))
+            camera_path = Path(str(clip.get("camera_path", "")))
+            video_exists = bool(video_path.exists())
+            depth_exists = bool(depth_video_path.exists())
+            camera_path_exists = bool(camera_path.exists())
+
+            validate_status = "ok"
+            validate_error = ""
+            validated_video_path: Optional[Path] = None
+            validated_codec = ""
+            decoded_frames = 0
+            validated_resolution: Optional[List[int]] = None
+            monochrome_warning = False
+            content_max_std_dev: Optional[float] = None
+            transcoded = False
+            if video_exists:
+                try:
+                    min_frames = max(1, int(clip.get("num_frames", 1) or 1))
+                    validated = ensure_h264_video(
+                        input_path=video_path,
+                        min_decoded_frames=min_frames,
+                        output_path=audit_dir / f"{clip_name}_audit_h264.mp4",
+                        replace_source=False,
+                        crf=18,
+                        preset="medium",
+                    )
+                    validated_video_path = Path(validated.path)
+                    validated_codec = str(validated.codec_name)
+                    decoded_frames = int(validated.decoded_frames)
+                    validated_resolution = [
+                        int(validated.width or 0),
+                        int(validated.height or 0),
+                    ]
+                    monochrome_warning = bool(validated.content_monochrome_warning)
+                    content_max_std_dev = (
+                        None
+                        if validated.content_max_std_dev is None
+                        else float(validated.content_max_std_dev)
+                    )
+                    transcoded = bool(validated.transcoded)
+                except Exception as exc:
+                    validate_status = "video_invalid"
+                    validate_error = str(exc)
+            else:
+                validate_status = "video_missing"
+                validate_error = f"video missing: {video_path}"
+
+            quality_metrics: Dict[str, object] = {}
+            if video_exists and camera_path_exists:
+                clip_for_quality = dict(clip)
+                if validated_video_path is not None:
+                    clip_for_quality["video_path"] = str(validated_video_path)
+                quality_metrics = evaluate_clip_quality(
+                    clip_entry=clip_for_quality,
+                    target_xyz=target_xyz,
+                    blur_laplacian_min=float(config.render.stage1_coverage_blur_laplacian_min),
+                    min_visible_frame_ratio=float(
+                        config.render.stage1_coverage_min_visible_frame_ratio
+                    ),
+                    min_center_band_ratio=float(config.render.stage1_coverage_min_center_band_ratio),
+                    min_approach_angle_bins=int(config.render.stage1_coverage_min_approach_angle_bins),
+                    angle_bin_deg=float(config.render.stage1_coverage_angle_bin_deg),
+                    center_band_x=config.render.stage1_coverage_center_band_x,
+                    center_band_y=config.render.stage1_coverage_center_band_y,
+                    blur_sample_every_n_frames=int(
+                        config.render.stage1_coverage_blur_sample_every_n_frames
+                    ),
+                    blur_max_samples=int(config.render.stage1_coverage_blur_max_samples_per_clip),
+                    min_clip_score=float(config.render.stage1_quality_min_clip_score),
+                    require_target=bool(path_type == "manipulation"),
+                )
+                for reason in list(quality_metrics.get("quality_reject_reasons", []) or []):
+                    quality_reason_counter.update([str(reason)])
+
+            row: Dict[str, object] = {
+                "clip_name": clip_name,
+                "clip_index": int(clip.get("clip_index", -1) or -1),
+                "path_type": path_type,
+                "source_tag": str(path_context.get("source_tag", "") or ""),
+                "target_grounded": bool(target_grounded),
+                "target_instance_id": path_context.get("target_instance_id"),
+                "target_label": path_context.get("target_label"),
+                "target_role": path_context.get("target_role"),
+                "target_xyz": target_xyz,
+                "target_extents_m": target_extents,
+                "video_path": str(video_path),
+                "depth_video_path": str(depth_video_path),
+                "camera_path": str(camera_path),
+                "video_exists": bool(video_exists),
+                "depth_video_exists": bool(depth_exists),
+                "camera_path_exists": bool(camera_path_exists),
+                "video_validation_status": validate_status,
+                "video_validation_error": validate_error,
+                "validated_video_path": (None if validated_video_path is None else str(validated_video_path)),
+                "validated_codec": validated_codec,
+                "validated_decoded_frames": int(decoded_frames),
+                "validated_resolution": validated_resolution,
+                "validated_transcoded": bool(transcoded),
+                "content_monochrome_warning": bool(monochrome_warning),
+                "content_max_std_dev": content_max_std_dev,
+                **quality_metrics,
+            }
+            _append_probe_score_row(clip_rows_path, row)
+            clip_rows.append(row)
+            if validated_video_path is not None:
+                validated_video_by_clip[clip_name] = validated_video_path
+
+        # Coverage gate audit from Stage-1 render manifest (forced ON for audit).
+        coverage_summary: Dict[str, object] = {}
+        coverage_error: Optional[str] = None
+        try:
+            from .s2_enrich import _evaluate_stage1_coverage_gate
+
+            original_gate_enabled = bool(config.render.stage1_coverage_gate_enabled)
+            config.render.stage1_coverage_gate_enabled = True
+            try:
+                coverage_result = _evaluate_stage1_coverage_gate(render_manifest, config)
+            finally:
+                config.render.stage1_coverage_gate_enabled = original_gate_enabled
+
+            if coverage_result is None:
+                coverage_summary = {
+                    "coverage_gate_evaluated": False,
+                    "coverage_gate_passed": None,
+                    "coverage_gate_detail": "coverage gate returned no result",
+                    "coverage_metrics": {},
+                }
+            else:
+                coverage_summary = {
+                    "coverage_gate_evaluated": True,
+                    "coverage_gate_passed": bool(coverage_result.passed),
+                    "coverage_gate_detail": str(coverage_result.detail),
+                    "coverage_metrics": dict(coverage_result.metrics),
+                }
+        except Exception as exc:
+            coverage_error = str(exc)
+            logger.warning(
+                "post_s1_audit coverage gate evaluation failed for facility=%s: %s",
+                facility.name,
+                exc,
+                exc_info=True,
+            )
+
+        # Optional VLM rescoring on first N target-grounded, validated clips.
+        vlm_rows: List[Dict[str, object]] = []
+        vlm_requested = max(0, int(vlm_rescore_first))
+        if vlm_requested > 0:
+            candidate_rows = [
+                row
+                for row in clip_rows
+                if bool(row.get("target_grounded", False))
+                and str(row.get("video_validation_status", "")) == "ok"
+                and isinstance(row.get("validated_video_path"), str)
+            ]
+            if len(candidate_rows) < vlm_requested:
+                fallback_rows = [
+                    row
+                    for row in clip_rows
+                    if str(row.get("video_validation_status", "")) == "ok"
+                    and isinstance(row.get("validated_video_path"), str)
+                    and row not in candidate_rows
+                ]
+                candidate_rows.extend(fallback_rows)
+            selected_rows = candidate_rows[:vlm_requested]
+            for idx, row in enumerate(selected_rows):
+                clip_name = str(row.get("clip_name", "")).strip()
+                clip = clip_by_name.get(clip_name, {})
+                path_context = clip.get("path_context") or {}
+                if not isinstance(path_context, dict):
+                    path_context = {}
+                expected_focus_text = str(
+                    clip.get("expected_focus_text")
+                    or _build_expected_focus_text(
+                        path_type=str(row.get("path_type", "")),
+                        path_context=path_context,
+                    )
+                )
+                validated_path = Path(str(row.get("validated_video_path")))
+                consensus_status = "ok"
+                try:
+                    consensus = _score_stage1_probe_consensus(
+                        video_path=validated_path,
+                        expected_focus_text=expected_focus_text,
+                        config=config.eval_policy.vlm_judge,
+                        facility_description=str(facility.description or ""),
+                        votes=max(1, int(config.render.stage1_probe_consensus_votes)),
+                        primary_model_only=bool(config.render.stage1_probe_primary_model_only),
+                        tiebreak_extra_votes=max(
+                            0, int(config.render.stage1_probe_tiebreak_extra_votes)
+                        ),
+                        tiebreak_spread_threshold=float(
+                            config.render.stage1_probe_tiebreak_spread_threshold
+                        ),
+                    )
+                except Exception as exc:
+                    consensus = {
+                        "score": None,
+                        "error": str(exc),
+                        "num_api_failures": 1,
+                        "num_parse_failures": 0,
+                        "votes_effective": 0,
+                        "score_spread": None,
+                        "active_model_used": str(config.eval_policy.vlm_judge.model),
+                        "vote_rows": [],
+                    }
+                    consensus_status = "scoring_failed"
+
+                if consensus.get("score") is None:
+                    out = {
+                        "row_index": int(idx),
+                        "clip_name": clip_name,
+                        "status": str(consensus_status),
+                        "error": str(consensus.get("error", "probe_consensus_failed")),
+                        "score_spread": consensus.get("score_spread"),
+                        "votes_effective": int(consensus.get("votes_effective", 0)),
+                        "active_model_used": str(
+                            consensus.get("active_model_used")
+                            or config.eval_policy.vlm_judge.model
+                        ),
+                        "target_grounded": bool(row.get("target_grounded", False)),
+                    }
+                else:
+                    probe_score = consensus["score"]
+                    out = {
+                        "row_index": int(idx),
+                        "clip_name": clip_name,
+                        "status": "scored",
+                        "task_score": float(probe_score.task_score),
+                        "visual_score": float(probe_score.visual_score),
+                        "spatial_score": float(probe_score.spatial_score),
+                        "issue_tags": list(probe_score.issue_tags),
+                        "reasoning": str(probe_score.reasoning or ""),
+                        "score_spread": consensus.get("score_spread"),
+                        "votes_effective": int(consensus.get("votes_effective", 0)),
+                        "active_model_used": str(
+                            consensus.get("active_model_used")
+                            or config.eval_policy.vlm_judge.model
+                        ),
+                        "target_grounded": bool(row.get("target_grounded", False)),
+                    }
+                _append_probe_score_row(vlm_rows_path, out)
+                vlm_rows.append(out)
+
+        vlm_scored_rows = [row for row in vlm_rows if str(row.get("status")) == "scored"]
+        vlm_target_missing = sum(
+            1 for row in vlm_scored_rows if "target_missing" in list(row.get("issue_tags", []) or [])
+        )
+        vlm_task_avg = (
+            None
+            if not vlm_scored_rows
+            else round(
+                float(
+                    np.mean(
+                        np.asarray(
+                            [float(row.get("task_score", 0.0) or 0.0) for row in vlm_scored_rows],
+                            dtype=np.float64,
+                        )
+                    )
+                ),
+                6,
+            )
+        )
+        vlm_visual_avg = (
+            None
+            if not vlm_scored_rows
+            else round(
+                float(
+                    np.mean(
+                        np.asarray(
+                            [float(row.get("visual_score", 0.0) or 0.0) for row in vlm_scored_rows],
+                            dtype=np.float64,
+                        )
+                    )
+                ),
+                6,
+            )
+        )
+        vlm_spatial_avg = (
+            None
+            if not vlm_scored_rows
+            else round(
+                float(
+                    np.mean(
+                        np.asarray(
+                            [float(row.get("spatial_score", 0.0) or 0.0) for row in vlm_scored_rows],
+                            dtype=np.float64,
+                        )
+                    )
+                ),
+                6,
+            )
+        )
+
+        summary: Dict[str, object] = {
+            "status": "success",
+            "facility_name": facility.name,
+            "facility_description": facility.description,
+            "manifest_path": str(manifest_path),
+            "clip_rows_path": str(clip_rows_path),
+            "vlm_rows_path": str(vlm_rows_path),
+            "summary_path": str(summary_path),
+            "num_clips_in_manifest": int(len(clips)),
+            "num_target_grounded_clips": int(
+                sum(1 for row in clip_rows if bool(row.get("target_grounded", False)))
+            ),
+            "num_videos_missing": int(
+                sum(1 for row in clip_rows if str(row.get("video_validation_status")) == "video_missing")
+            ),
+            "num_videos_invalid": int(
+                sum(1 for row in clip_rows if str(row.get("video_validation_status")) == "video_invalid")
+            ),
+            "num_monochrome_warnings": int(
+                sum(1 for row in clip_rows if bool(row.get("content_monochrome_warning", False)))
+            ),
+            "num_quality_gate_passed": int(
+                sum(1 for row in clip_rows if bool(row.get("quality_gate_passed", False)))
+            ),
+            "num_quality_gate_failed": int(
+                sum(
+                    1
+                    for row in clip_rows
+                    if row.get("quality_gate_passed") is False
+                )
+            ),
+            "quality_reject_reason_counts": dict(sorted(quality_reason_counter.items())),
+            "coverage_summary": coverage_summary,
+            "coverage_error": coverage_error,
+            "geometry_summary": geometry_summary,
+            "geometry_error": geometry_error,
+            "vlm_rescore_requested": int(vlm_requested),
+            "vlm_rows_total": int(len(vlm_rows)),
+            "vlm_rows_scored": int(len(vlm_scored_rows)),
+            "vlm_rows_failed": int(len(vlm_rows) - len(vlm_scored_rows)),
+            "vlm_avg_task_score": vlm_task_avg,
+            "vlm_avg_visual_score": vlm_visual_avg,
+            "vlm_avg_spatial_score": vlm_spatial_avg,
+            "vlm_target_missing_count": int(vlm_target_missing),
+        }
+        write_json(summary, summary_path)
+        return summary
 
     def _render_from_cache(
         self,
