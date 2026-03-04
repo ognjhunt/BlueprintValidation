@@ -120,3 +120,62 @@ def test_generate_manipulation_arc_target_locked_projection_centered():
         v = pose.fy * (cam[1] / -cam[2]) + pose.cy
         assert abs(float(u) - pose.cx) < 1e-4
         assert abs(float(v) - pose.cy) < 1e-4
+
+
+def test_generate_path_orbit_applies_height_and_lookdown_overrides():
+    from blueprint_validation.config import CameraPathSpec
+    from blueprint_validation.rendering.camera_paths import generate_path_from_spec
+
+    base = generate_path_from_spec(
+        spec=CameraPathSpec(type="orbit", radius_m=2.0, num_orbits=1),
+        scene_center=np.array([0.0, 0.0, 0.0]),
+        num_frames=9,
+        camera_height=1.0,
+        look_down_deg=10.0,
+        resolution=(120, 160),
+    )
+    overridden = generate_path_from_spec(
+        spec=CameraPathSpec(
+            type="orbit",
+            radius_m=2.0,
+            num_orbits=1,
+            height_override_m=1.5,
+            look_down_override_deg=45.0,
+        ),
+        scene_center=np.array([0.0, 0.0, 0.0]),
+        num_frames=9,
+        camera_height=1.0,
+        look_down_deg=10.0,
+        resolution=(120, 160),
+    )
+    assert abs(float(overridden[0].position[2]) - 1.5) < 1e-6
+    assert abs(float(overridden[0].forward[2])) > abs(float(base[0].forward[2]))
+
+
+def test_generate_path_sweep_applies_height_and_lookdown_overrides():
+    from blueprint_validation.config import CameraPathSpec
+    from blueprint_validation.rendering.camera_paths import generate_path_from_spec
+
+    base = generate_path_from_spec(
+        spec=CameraPathSpec(type="sweep", length_m=4.0),
+        scene_center=np.array([0.0, 0.0, 0.0]),
+        num_frames=9,
+        camera_height=1.0,
+        look_down_deg=10.0,
+        resolution=(120, 160),
+    )
+    overridden = generate_path_from_spec(
+        spec=CameraPathSpec(
+            type="sweep",
+            length_m=4.0,
+            height_override_m=1.4,
+            look_down_override_deg=50.0,
+        ),
+        scene_center=np.array([0.0, 0.0, 0.0]),
+        num_frames=9,
+        camera_height=1.0,
+        look_down_deg=10.0,
+        resolution=(120, 160),
+    )
+    assert abs(float(overridden[0].position[2]) - 1.4) < 1e-6
+    assert abs(float(overridden[0].forward[2])) > abs(float(base[0].forward[2]))

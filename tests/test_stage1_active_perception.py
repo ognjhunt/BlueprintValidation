@@ -83,3 +83,20 @@ def test_apply_issue_corrections_target_missing_converts_to_manipulation():
     assert updated.approach_point == [0.1, -0.2, 0.3]
     assert updated.target_label == "bowl_101"
     assert float(updated.arc_radius_m) > 0.0
+
+
+def test_apply_issue_corrections_motion_reduction_changes_manipulation_arc():
+    spec = CameraPathSpec(
+        type="manipulation",
+        approach_point=[0.0, 0.0, 0.4],
+        arc_radius_m=0.5,
+        arc_span_deg=180.0,
+    )
+    updated = apply_issue_tag_corrections(
+        spec=spec,
+        issue_tags=["camera_motion_too_fast"],
+        default_camera_height=1.0,
+        default_look_down_deg=20.0,
+    )
+    assert float(updated.arc_radius_m) < float(spec.arc_radius_m)
+    assert float(updated.arc_span_deg) < float(spec.arc_span_deg)

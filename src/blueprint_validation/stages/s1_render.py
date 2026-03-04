@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import asdict, replace
+import hashlib
+import json
 from pathlib import Path
 import re
+import subprocess
 from typing import Dict, List, Optional
 
 import numpy as np
 
 from ..common import StageResult, get_logger, write_json
-from ..config import CameraPathSpec, FacilityConfig, ValidationConfig
+from ..config import CameraPathSpec, FacilityConfig, VLMJudgeConfig, ValidationConfig
 from ..evaluation.camera_quality import evaluate_clip_quality
 from ..evaluation.task_hints import tasks_from_task_hints
-from ..evaluation.vlm_judge import score_stage1_probe
+from ..evaluation.vlm_judge import Stage1ProbeScore, score_stage1_probe
 from ..rendering.camera_paths import generate_path_from_spec, save_path_to_json
 from ..rendering.camera_quality_planner import (
     plan_best_camera_spec,
@@ -46,6 +49,7 @@ from ..rendering.scene_geometry import (
     transform_means,
     transform_obbs,
 )
+from ..video_io import ensure_h264_video
 from ..warmup import load_cached_clips, load_warmup_cache
 from .base import PipelineStage
 
@@ -336,6 +340,7 @@ class RenderStage(PipelineStage):
                 fps,
                 scene_T if has_transform else None,
                 facility.description,
+                probe_orientation_fix=str(getattr(facility, "video_orientation_fix", "none")),
             )
 
         quality_gate_passed = bool(
@@ -347,6 +352,7 @@ class RenderStage(PipelineStage):
             )
         )
         quality_summary["quality_gate_passed"] = quality_gate_passed
+        stage1_run_metadata = _build_stage1_run_metadata(config=config)
         enforce_stage1_fail = (
             bool(config.render.stage1_quality_planner_enabled)
             or (
@@ -388,6 +394,10 @@ class RenderStage(PipelineStage):
                 "num_clips": len(manifest_entries),
                 "scene_aware": config.render.scene_aware,
                 "scene_aware_specs": extra_specs_count,
+                "git_commit": stage1_run_metadata["git_commit"],
+                "config_hash": stage1_run_metadata["config_hash"],
+                "stage1_code_hash": stage1_run_metadata["stage1_code_hash"],
+                "active_model_used": stage1_run_metadata["active_model_used"],
                 "clips": manifest_entries,
             }
             write_json(manifest, manifest_path)
@@ -412,6 +422,10 @@ class RenderStage(PipelineStage):
                     "orientation_score_runner_up": orientation_meta.get("orientation_score_runner_up"),
                     "num_poses_roll_corrected": num_poses_roll_corrected,
                     "num_clips_with_roll_correction": num_clips_with_roll_correction,
+                    "git_commit": stage1_run_metadata["git_commit"],
+                    "config_hash": stage1_run_metadata["config_hash"],
+                    "stage1_code_hash": stage1_run_metadata["stage1_code_hash"],
+                    "active_model_used": stage1_run_metadata["active_model_used"],
                     **quality_summary,
                 },
                 detail=detail,
@@ -425,6 +439,10 @@ class RenderStage(PipelineStage):
             "num_clips": len(manifest_entries),
             "scene_aware": config.render.scene_aware,
             "scene_aware_specs": extra_specs_count,
+            "git_commit": stage1_run_metadata["git_commit"],
+            "config_hash": stage1_run_metadata["config_hash"],
+            "stage1_code_hash": stage1_run_metadata["stage1_code_hash"],
+            "active_model_used": stage1_run_metadata["active_model_used"],
             "clips": manifest_entries,
         }
         write_json(manifest, manifest_path)
@@ -450,6 +468,10 @@ class RenderStage(PipelineStage):
                 "orientation_score_runner_up": orientation_meta.get("orientation_score_runner_up"),
                 "num_poses_roll_corrected": num_poses_roll_corrected,
                 "num_clips_with_roll_correction": num_clips_with_roll_correction,
+                "git_commit": stage1_run_metadata["git_commit"],
+                "config_hash": stage1_run_metadata["config_hash"],
+                "stage1_code_hash": stage1_run_metadata["stage1_code_hash"],
+                "active_model_used": stage1_run_metadata["active_model_used"],
                 **quality_summary,
             },
         )
@@ -574,6 +596,7 @@ class RenderStage(PipelineStage):
         fps: int,
         scene_T: Optional[np.ndarray] = None,
         facility_description: str = "",
+        probe_orientation_fix: str = "none",
     ) -> tuple[List[Dict], int, int, Dict[str, object]]:
         """Original path: generate camera paths from scratch, then render."""
         manifest_entries: List[Dict] = []
@@ -581,6 +604,7 @@ class RenderStage(PipelineStage):
         corrected_poses_total = 0
         corrected_clip_count = 0
         quality_summary = _empty_quality_summary()
+        seen_render_fingerprints: List[Dict[str, object]] = []
 
         for path_spec in all_path_specs:
             clip_repeats = int(config.render.num_clips_per_path)
@@ -591,7 +615,15 @@ class RenderStage(PipelineStage):
             for clip_num in range(clip_repeats):
                 # Add random offset for variety between clips
                 rng = np.random.default_rng(seed=clip_index * 42)
-                offset = _sample_start_offset(config, path_spec, rng)
+                offset = _sample_start_offset(
+                    config,
+                    path_spec,
+                    rng,
+                    clip_repeat_index=clip_num,
+                    is_task_scoped=(
+                        str(getattr(path_spec, "source_tag", "")).strip().lower() == "task_scoped"
+                    ),
+                )
                 requested_count = int(num_frames)
                 if (
                     str(getattr(path_spec, "source_tag", "")).strip().lower() == "task_scoped"
@@ -661,6 +693,7 @@ class RenderStage(PipelineStage):
                         fps=fps,
                         scene_T=scene_T,
                         facility_description=facility_description,
+                        probe_orientation_fix=probe_orientation_fix,
                     )
                     _update_vlm_probe_summary(
                         quality_summary=quality_summary,
@@ -680,6 +713,7 @@ class RenderStage(PipelineStage):
                         continue
 
                 attempt = 0
+                dedupe_regen_attempts = 0
                 entry: Dict[str, object] | None = None
                 while True:
                     (
@@ -739,6 +773,42 @@ class RenderStage(PipelineStage):
                         clip_name=clip_name,
                         fps=fps,
                     )
+                    dedupe_info = _detect_duplicate_clip(
+                        video_path=Path(str(output.video_path)),
+                        seen_fingerprints=seen_render_fingerprints,
+                        similarity_threshold=float(
+                            config.render.stage1_repeat_similarity_ssim_threshold
+                        ),
+                    )
+                    if bool(config.render.stage1_repeat_dedupe_enabled) and bool(
+                        dedupe_info.get("is_duplicate", False)
+                    ):
+                        quality_summary["num_repeat_duplicate_detected"] = int(
+                            quality_summary["num_repeat_duplicate_detected"]
+                        ) + 1
+                        if dedupe_regen_attempts < int(
+                            config.render.stage1_repeat_dedupe_max_regen_attempts
+                        ):
+                            dedupe_regen_attempts += 1
+                            quality_summary["num_repeat_duplicate_regenerated"] = int(
+                                quality_summary["num_repeat_duplicate_regenerated"]
+                            ) + 1
+                            offset = _offset_with_dedupe_jitter(
+                                offset=offset,
+                                attempt=dedupe_regen_attempts,
+                                min_jitter=float(config.render.stage1_repeat_min_xy_jitter_m),
+                            )
+                            if str(planned_spec.type).strip().lower() == "manipulation":
+                                planned_spec = replace(
+                                    planned_spec,
+                                    arc_phase_offset_deg=float(planned_spec.arc_phase_offset_deg)
+                                    + float(18.0 * dedupe_regen_attempts),
+                                )
+                            continue
+                        quality_summary["num_repeat_duplicate_unresolved"] = int(
+                            quality_summary["num_repeat_duplicate_unresolved"]
+                        ) + 1
+
                     initial_camera = _camera_pose_metadata(render_poses[0]) if render_poses else None
                     path_context = _path_context_from_spec(planned_spec)
                     entry = {
@@ -761,6 +831,14 @@ class RenderStage(PipelineStage):
                             path_type=str(planned_spec.type),
                             path_context=path_context,
                         ),
+                        "duplicate_clip_detected": bool(dedupe_info.get("is_duplicate", False)),
+                        "duplicate_clip_regen_attempts": int(dedupe_regen_attempts),
+                        "duplicate_clip_similarity": (
+                            None
+                            if dedupe_info.get("max_similarity") is None
+                            else float(dedupe_info["max_similarity"])
+                        ),
+                        "video_sha256": str(dedupe_info.get("sha256", "")),
                         "candidate_count_evaluated": int(candidate_count_evaluated),
                         **_manifest_vlm_probe_fields(probe_meta),
                         **planner_metrics,
@@ -784,6 +862,13 @@ class RenderStage(PipelineStage):
                 if entry is None:
                     clip_index += 1
                     continue
+                seen_render_fingerprints.append(
+                    {
+                        "sha256": str(entry.get("video_sha256", "")),
+                        "samples": dedupe_info.get("samples", []),
+                        "clip_name": str(entry.get("clip_name", "")),
+                    }
+                )
                 _update_quality_summary_from_entry(
                     quality_summary=quality_summary,
                     clip_entry=entry,
@@ -894,6 +979,7 @@ class RenderStage(PipelineStage):
         fps: int,
         scene_T: Optional[np.ndarray],
         facility_description: str,
+        probe_orientation_fix: str = "none",
     ) -> tuple[CameraPathSpec, Dict[str, object]]:
         budget = resolve_probe_budget(
             candidate_budget=config.render.stage1_quality_candidate_budget,
@@ -998,31 +1084,103 @@ class RenderStage(PipelineStage):
                     path_type=str(candidate_spec.type),
                     path_context=path_context,
                 )
+                probe_video_path = Path(str(output.video_path))
+                probe_oriented_path: Optional[Path] = None
+                probe_scoring_path: Optional[Path] = None
+                _orientation_mode = str(probe_orientation_fix or "none").strip().lower()
+                if _orientation_mode and _orientation_mode != "none":
+                    from ..evaluation.video_orientation import (
+                        normalize_video_orientation_fix,
+                        transform_video_orientation,
+                    )
+                    _norm_mode = normalize_video_orientation_fix(_orientation_mode)
+                    if _norm_mode != "none":
+                        probe_oriented_path = render_dir / f"{probe_clip_name}_oriented.mp4"
+                        try:
+                            transform_video_orientation(
+                                input_path=probe_video_path,
+                                output_path=probe_oriented_path,
+                                orientation_fix=_norm_mode,
+                                force_grayscale=False,
+                            )
+                            probe_video_path = probe_oriented_path
+                        except Exception as _orient_exc:
+                            logger.warning(
+                                "Probe orientation fix failed for %s (%s): %s — "
+                                "scoring unoriented video",
+                                probe_clip_name,
+                                _norm_mode,
+                                _orient_exc,
+                            )
+                            probe_oriented_path = None
                 try:
-                    probe_score = score_stage1_probe(
-                        video_path=Path(str(output.video_path)),
+                    probe_scoring_path = _ensure_probe_h264_for_scoring(
+                        video_path=probe_video_path,
+                        min_frames=max(1, int(budget.probe_frames)),
+                    )
+                    consensus = _score_stage1_probe_consensus(
+                        video_path=probe_scoring_path,
                         expected_focus_text=expected_focus_text,
                         config=config.eval_policy.vlm_judge,
                         facility_description=facility_description,
+                        votes=max(1, int(config.render.stage1_probe_consensus_votes)),
+                        primary_model_only=bool(config.render.stage1_probe_primary_model_only),
                     )
                 except Exception as exc:
-                    message = str(exc)
-                    lowered = message.lower()
-                    if "json" in lowered or "parse" in lowered:
-                        probe_meta["num_vlm_probe_parse_failures"] = int(
-                            probe_meta["num_vlm_probe_parse_failures"]
-                        ) + 1
-                    else:
-                        probe_meta["num_vlm_probe_api_failures"] = int(
-                            probe_meta["num_vlm_probe_api_failures"]
-                        ) + 1
+                    consensus = {
+                        "score": None,
+                        "error": str(exc),
+                        "num_api_failures": 1,
+                        "num_parse_failures": 0,
+                        "votes_effective": 0,
+                        "score_spread": None,
+                        "active_model_used": str(config.eval_policy.vlm_judge.model),
+                    }
+
+                probe_meta["num_vlm_probe_parse_failures"] = int(
+                    probe_meta["num_vlm_probe_parse_failures"]
+                ) + int(consensus.get("num_parse_failures", 0))
+                probe_meta["num_vlm_probe_api_failures"] = int(
+                    probe_meta["num_vlm_probe_api_failures"]
+                ) + int(consensus.get("num_api_failures", 0))
+                probe_meta["active_model_used"] = str(
+                    consensus.get("active_model_used") or config.eval_policy.vlm_judge.model
+                )
+                probe_meta["vlm_probe_consensus_votes_configured"] = int(
+                    max(1, int(config.render.stage1_probe_consensus_votes))
+                )
+                probe_meta["vlm_probe_consensus_votes_effective"] = int(
+                    max(0, int(consensus.get("votes_effective", 0)))
+                )
+                probe_meta["vlm_probe_score_spread"] = consensus.get("score_spread")
+                spread = consensus.get("score_spread")
+                if spread is not None and float(spread) >= float(
+                    config.render.stage1_probe_consensus_high_variance_delta
+                ):
+                    probe_meta["num_vlm_probe_high_variance"] = int(
+                        probe_meta.get("num_vlm_probe_high_variance", 0)
+                    ) + 1
+
+                if consensus.get("score") is None:
+                    message = str(consensus.get("error", "probe_consensus_failed"))
                     last_fail_reason = f"probe_scoring_failed: {message}"
                     probe_meta["vlm_probe_fail_reason"] = last_fail_reason
                     probe_meta["vlm_probe_passed"] = False
                     probe_meta["vlm_probe_evaluated"] = True
                     if not bool(config.render.stage1_keep_probe_videos):
                         _cleanup_probe_outputs(output)
-                    return initial_spec, probe_meta
+                        if probe_oriented_path is not None:
+                            try:
+                                probe_oriented_path.unlink(missing_ok=True)
+                            except Exception:
+                                pass
+                    if probe_scoring_path is not None and probe_scoring_path != probe_video_path:
+                        try:
+                            probe_scoring_path.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                    return current_spec, probe_meta
+                probe_score = consensus["score"]
 
                 passes = probe_passes_thresholds(
                     task_score=float(probe_score.task_score),
@@ -1052,6 +1210,16 @@ class RenderStage(PipelineStage):
                 probe_meta["vlm_probe_evaluated"] = True
                 if not bool(config.render.stage1_keep_probe_videos):
                     _cleanup_probe_outputs(output)
+                    if probe_oriented_path is not None:
+                        try:
+                            probe_oriented_path.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                if probe_scoring_path is not None and probe_scoring_path != probe_video_path:
+                    try:
+                        probe_scoring_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
 
                 # Track roll-correction side-effect for visibility.
                 if corrected_count > 0:
@@ -1087,7 +1255,9 @@ class RenderStage(PipelineStage):
         probe_meta["vlm_probe_issue_tags_final"] = list(last_issue_tags)
         if not passed:
             probe_meta["vlm_probe_fail_reason"] = str(last_fail_reason or "probe_failed")
-        return current_spec if passed else initial_spec, probe_meta
+        # Return the best-effort corrected spec regardless of pass/fail so that
+        # full renders benefit from the corrections even when no round passed threshold.
+        return current_spec, probe_meta
 
 
 def _resample_poses_nearest(poses: List, requested_count: int) -> List:
@@ -1476,6 +1646,9 @@ def _sample_start_offset(
     config: ValidationConfig,
     path_spec: CameraPathSpec,
     rng: np.random.Generator,
+    *,
+    clip_repeat_index: int = 0,
+    is_task_scoped: bool = False,
 ) -> np.ndarray:
     """Sample deterministic XY offset with stricter defaults for manipulation clips."""
     span = (
@@ -1484,10 +1657,33 @@ def _sample_start_offset(
         else float(config.render.non_manipulation_random_xy_offset_m)
     )
     offset = np.zeros(3, dtype=np.float64)
-    if span <= 0.0:
-        return offset
-    offset[:2] = rng.uniform(-span, span, size=2)
+    if span > 0.0:
+        offset[:2] = rng.uniform(-span, span, size=2)
+    # Repeated task-scoped clips need deterministic diversity even when span=0.
+    elif is_task_scoped and int(clip_repeat_index) > 0:
+        jitter = float(max(0.0, config.render.stage1_repeat_min_xy_jitter_m))
+        if jitter > 0.0:
+            theta = float(clip_repeat_index) * 1.1137
+            offset[0] = jitter * np.cos(theta)
+            offset[1] = jitter * np.sin(theta)
     return offset
+
+
+def _offset_with_dedupe_jitter(
+    *,
+    offset: np.ndarray,
+    attempt: int,
+    min_jitter: float,
+) -> np.ndarray:
+    updated = np.asarray(offset, dtype=np.float64).copy()
+    jitter = float(max(0.0, min_jitter))
+    if jitter <= 0.0:
+        return updated
+    scale = 1.0 + 0.5 * float(max(1, int(attempt)))
+    theta = 0.73 * float(max(1, int(attempt)))
+    updated[0] += jitter * scale * np.cos(theta)
+    updated[1] += jitter * scale * np.sin(theta)
+    return updated
 
 
 def _has_cuda() -> bool:
@@ -1598,10 +1794,17 @@ def _quality_cache_key(
         str(bool(config.render.stage1_active_perception_fail_closed)),
         str(int(config.render.stage1_probe_frames_override)),
         f"{float(config.render.stage1_probe_resolution_scale):.6f}",
+        str(int(config.render.stage1_probe_consensus_votes)),
+        f"{float(config.render.stage1_probe_consensus_high_variance_delta):.6f}",
+        str(bool(config.render.stage1_probe_primary_model_only)),
         f"{float(config.render.stage1_vlm_min_task_score):.6f}",
         f"{float(config.render.stage1_vlm_min_visual_score):.6f}",
         f"{float(config.render.stage1_vlm_min_spatial_score):.6f}",
         str(bool(config.render.stage1_keep_probe_videos)),
+        str(bool(config.render.stage1_repeat_dedupe_enabled)),
+        str(int(config.render.stage1_repeat_dedupe_max_regen_attempts)),
+        f"{float(config.render.stage1_repeat_min_xy_jitter_m):.6f}",
+        f"{float(config.render.stage1_repeat_similarity_ssim_threshold):.6f}",
         f"{float(config.eval_policy.vlm_judge.video_metadata_fps):.6f}",
         str(bool(config.render.vlm_fallback)),
         hints_sig,
@@ -1633,6 +1836,10 @@ def _empty_quality_summary() -> Dict[str, object]:
         "num_vlm_probe_recovered": 0,
         "num_vlm_probe_api_failures": 0,
         "num_vlm_probe_parse_failures": 0,
+        "num_vlm_probe_high_variance": 0,
+        "num_repeat_duplicate_detected": 0,
+        "num_repeat_duplicate_regenerated": 0,
+        "num_repeat_duplicate_unresolved": 0,
         "num_clips_with_target_metadata": 0,
         "num_missing_target_annotations": 0,
     }
@@ -1648,10 +1855,15 @@ def _default_vlm_probe_fields(*, selected_fps: float, candidate_count: int) -> D
         "vlm_probe_selected_fps": (
             None if float(selected_fps) <= 0.0 else round(float(selected_fps), 3)
         ),
+        "active_model_used": "",
+        "vlm_probe_consensus_votes_configured": 1,
+        "vlm_probe_consensus_votes_effective": 0,
+        "vlm_probe_score_spread": None,
         "vlm_probe_fail_reason": None,
         "vlm_probe_evaluated": False,
         "num_vlm_probe_api_failures": 0,
         "num_vlm_probe_parse_failures": 0,
+        "num_vlm_probe_high_variance": 0,
     }
 
 
@@ -1667,6 +1879,14 @@ def _manifest_vlm_probe_fields(probe_meta: Dict[str, object]) -> Dict[str, objec
             max(1, int(probe_meta.get("vlm_probe_candidate_count", 1) or 1))
         ),
         "vlm_probe_selected_fps": probe_meta.get("vlm_probe_selected_fps"),
+        "active_model_used": str(probe_meta.get("active_model_used", "") or ""),
+        "vlm_probe_consensus_votes_configured": int(
+            max(1, int(probe_meta.get("vlm_probe_consensus_votes_configured", 1) or 1))
+        ),
+        "vlm_probe_consensus_votes_effective": int(
+            max(0, int(probe_meta.get("vlm_probe_consensus_votes_effective", 0) or 0))
+        ),
+        "vlm_probe_score_spread": probe_meta.get("vlm_probe_score_spread"),
         "vlm_probe_fail_reason": probe_meta.get("vlm_probe_fail_reason"),
     }
 
@@ -1696,6 +1916,9 @@ def _update_vlm_probe_summary(
     quality_summary["num_vlm_probe_parse_failures"] = int(
         quality_summary["num_vlm_probe_parse_failures"]
     ) + int(max(0, int(probe_meta.get("num_vlm_probe_parse_failures", 0) or 0)))
+    quality_summary["num_vlm_probe_high_variance"] = int(
+        quality_summary["num_vlm_probe_high_variance"]
+    ) + int(max(0, int(probe_meta.get("num_vlm_probe_high_variance", 0) or 0)))
 
 
 def _update_quality_summary_from_entry(
@@ -1722,3 +1945,291 @@ def _update_quality_summary_from_entry(
         quality_summary["num_quality_recovered"] = int(quality_summary["num_quality_recovered"]) + 1
     if enforce_fail and not passed:
         quality_summary["num_quality_failures"] = int(quality_summary["num_quality_failures"]) + 1
+
+
+def _ensure_probe_h264_for_scoring(video_path: Path, min_frames: int) -> Path:
+    """Transcode probe clips to H.264 when needed for stable VLM ingestion."""
+    validated = ensure_h264_video(
+        input_path=video_path,
+        min_decoded_frames=max(1, int(min_frames)),
+        output_path=video_path.with_name(f"{video_path.stem}_h264.mp4"),
+        replace_source=False,
+    )
+    return Path(validated.path)
+
+
+def _score_stage1_probe_consensus(
+    *,
+    video_path: Path,
+    expected_focus_text: str,
+    config: VLMJudgeConfig,
+    facility_description: str,
+    votes: int,
+    primary_model_only: bool,
+) -> Dict[str, object]:
+    configured_votes = max(1, int(votes))
+    primary_cfg = replace(config, fallback_models=[]) if primary_model_only else config
+
+    def _collect_votes(judge_cfg: VLMJudgeConfig, *, phase: str) -> Dict[str, object]:
+        phase_successes: List[Stage1ProbeScore] = []
+        phase_api_failures = 0
+        phase_parse_failures = 0
+        phase_errors: List[str] = []
+        for vote_idx in range(configured_votes):
+            try:
+                phase_successes.append(
+                    score_stage1_probe(
+                        video_path=video_path,
+                        expected_focus_text=expected_focus_text,
+                        config=judge_cfg,
+                        facility_description=facility_description,
+                    )
+                )
+            except Exception as exc:
+                msg = str(exc)
+                phase_errors.append(f"{phase}:vote={vote_idx + 1}: {msg}")
+                lowered = msg.lower()
+                if "json" in lowered or "parse" in lowered:
+                    phase_parse_failures += 1
+                else:
+                    phase_api_failures += 1
+        return {
+            "successes": phase_successes,
+            "api_failures": int(phase_api_failures),
+            "parse_failures": int(phase_parse_failures),
+            "errors": phase_errors,
+        }
+
+    primary_out = _collect_votes(primary_cfg, phase="primary")
+    successes = list(primary_out["successes"])
+    api_failures = int(primary_out["api_failures"])
+    parse_failures = int(primary_out["parse_failures"])
+    errors: List[str] = list(primary_out["errors"])
+
+    # Strict runs prefer the primary model; only allow fallback if the primary
+    # model failed every vote (hard-failure path).
+    if (
+        primary_model_only
+        and not successes
+        and bool(config.fallback_models)
+    ):
+        fallback_out = _collect_votes(config, phase="fallback")
+        successes = list(fallback_out["successes"])
+        api_failures += int(fallback_out["api_failures"])
+        parse_failures += int(fallback_out["parse_failures"])
+        errors.extend(list(fallback_out["errors"]))
+
+    if not successes:
+        return {
+            "score": None,
+            "error": "all_probe_votes_failed: " + "; ".join(errors),
+            "num_api_failures": int(api_failures),
+            "num_parse_failures": int(parse_failures),
+            "votes_effective": 0,
+            "score_spread": None,
+            "active_model_used": str(config.model),
+        }
+
+    task_vals = np.array([float(s.task_score) for s in successes], dtype=np.float64)
+    visual_vals = np.array([float(s.visual_score) for s in successes], dtype=np.float64)
+    spatial_vals = np.array([float(s.spatial_score) for s in successes], dtype=np.float64)
+    sums = task_vals + visual_vals + spatial_vals
+    idx_best = int(np.argmax(sums))
+    reasoning = str(successes[idx_best].reasoning or "")
+
+    tag_votes: Dict[str, int] = {}
+    for rec in successes:
+        for tag in rec.issue_tags:
+            key = str(tag).strip().lower()
+            if not key:
+                continue
+            tag_votes[key] = int(tag_votes.get(key, 0)) + 1
+    min_votes = max(1, (len(successes) + 1) // 2)
+    tags = sorted([tag for tag, count in tag_votes.items() if count >= min_votes])
+
+    consensus_score = Stage1ProbeScore(
+        task_score=float(np.median(task_vals)),
+        visual_score=float(np.median(visual_vals)),
+        spatial_score=float(np.median(spatial_vals)),
+        issue_tags=tags,
+        reasoning=reasoning,
+        raw_response=json.dumps(
+            {
+                "mode": "consensus",
+                "votes_configured": configured_votes,
+                "votes_effective": len(successes),
+                "errors": errors,
+            },
+            sort_keys=True,
+        ),
+        model_used=str(getattr(successes[idx_best], "model_used", "") or str(config.model)),
+    )
+    spread = float(np.max(sums) - np.min(sums)) if len(sums) > 1 else 0.0
+    return {
+        "score": consensus_score,
+        "error": None,
+        "num_api_failures": int(api_failures),
+        "num_parse_failures": int(parse_failures),
+        "votes_effective": int(len(successes)),
+        "score_spread": round(spread, 6),
+        "active_model_used": str(getattr(consensus_score, "model_used", "") or str(config.model)),
+    }
+
+
+def _detect_duplicate_clip(
+    *,
+    video_path: Path,
+    seen_fingerprints: List[Dict[str, object]],
+    similarity_threshold: float,
+) -> Dict[str, object]:
+    fingerprint = _clip_fingerprint(video_path)
+    sha256 = str(fingerprint.get("sha256", ""))
+    max_similarity = None
+    for prev in seen_fingerprints:
+        if sha256 and sha256 == str(prev.get("sha256", "")):
+            return {
+                "is_duplicate": True,
+                "reason": "sha256",
+                "sha256": sha256,
+                "max_similarity": 1.0,
+                "samples": fingerprint.get("samples", []),
+            }
+        sim = _sample_similarity(
+            prev_samples=list(prev.get("samples", []) or []),
+            cur_samples=list(fingerprint.get("samples", []) or []),
+        )
+        if sim is None:
+            continue
+        if max_similarity is None or float(sim) > float(max_similarity):
+            max_similarity = float(sim)
+        if float(sim) >= float(similarity_threshold):
+            return {
+                "is_duplicate": True,
+                "reason": "frame_similarity",
+                "sha256": sha256,
+                "max_similarity": float(sim),
+                "samples": fingerprint.get("samples", []),
+            }
+    return {
+        "is_duplicate": False,
+        "reason": "",
+        "sha256": sha256,
+        "max_similarity": max_similarity,
+        "samples": fingerprint.get("samples", []),
+    }
+
+
+def _clip_fingerprint(video_path: Path) -> Dict[str, object]:
+    return {
+        "sha256": _sha256_file(video_path),
+        "samples": _sample_video_frames(video_path),
+    }
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    try:
+        with path.open("rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                if not chunk:
+                    break
+                h.update(chunk)
+    except OSError:
+        return ""
+    return h.hexdigest()
+
+
+def _sample_video_frames(video_path: Path, sample_count: int = 3) -> List[np.ndarray]:
+    try:
+        import cv2
+    except Exception:
+        return []
+
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        return []
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if total <= 0:
+        cap.release()
+        return []
+    indices = np.linspace(0, max(0, total - 1), num=max(1, int(sample_count)), dtype=np.int64)
+    frames: List[np.ndarray] = []
+    for idx in indices.tolist():
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            continue
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        small = cv2.resize(gray, (64, 64), interpolation=cv2.INTER_AREA)
+        frames.append(small)
+    cap.release()
+    return frames
+
+
+def _sample_similarity(
+    *,
+    prev_samples: List[np.ndarray],
+    cur_samples: List[np.ndarray],
+) -> Optional[float]:
+    if not prev_samples or not cur_samples:
+        return None
+    count = min(len(prev_samples), len(cur_samples))
+    vals: List[float] = []
+    for i in range(count):
+        a = prev_samples[i].astype(np.float32)
+        b = cur_samples[i].astype(np.float32)
+        diff = float(np.mean(np.abs(a - b)))
+        vals.append(max(0.0, min(1.0, 1.0 - diff / 255.0)))
+    if not vals:
+        return None
+    return float(np.mean(vals))
+
+
+def _build_stage1_run_metadata(*, config: ValidationConfig) -> Dict[str, str]:
+    return {
+        "git_commit": _resolve_git_commit(),
+        "config_hash": _stable_hash_payload(asdict(config)),
+        "stage1_code_hash": _stage1_code_hash(),
+        "active_model_used": str(config.eval_policy.vlm_judge.model),
+    }
+
+
+def _resolve_git_commit() -> str:
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=Path(__file__).resolve().parents[3],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        return out or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _stable_hash_payload(payload: object) -> str:
+    def _default(obj):
+        if isinstance(obj, Path):
+            return str(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return str(obj)
+
+    text = json.dumps(payload, sort_keys=True, default=_default, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _stage1_code_hash() -> str:
+    files = [
+        Path(__file__),
+        Path(__file__).resolve().parents[1] / "rendering" / "stage1_active_perception.py",
+        Path(__file__).resolve().parents[1] / "rendering" / "camera_paths.py",
+    ]
+    h = hashlib.sha256()
+    for file_path in files:
+        try:
+            data = file_path.read_bytes()
+            h.update(data)
+        except Exception:
+            h.update(str(file_path).encode("utf-8"))
+    return h.hexdigest()

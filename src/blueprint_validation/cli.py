@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import shlex
+import hashlib
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
@@ -56,6 +58,81 @@ def _load_local_env_defaults() -> None:
         _load_local_env_file(candidate)
 
 
+def _env_flag(name: str) -> bool:
+    return (os.environ.get(name, "") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_git_commit(cwd: Path) -> str:
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=cwd,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        return out
+    except Exception:
+        return ""
+
+
+def _stable_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    h.update(path.read_bytes())
+    return h.hexdigest()
+
+
+def _stage1_code_hash(cwd: Path) -> str:
+    files = [
+        cwd / "src/blueprint_validation/stages/s1_render.py",
+        cwd / "src/blueprint_validation/rendering/stage1_active_perception.py",
+        cwd / "src/blueprint_validation/rendering/camera_paths.py",
+    ]
+    h = hashlib.sha256()
+    for file_path in files:
+        h.update(file_path.read_bytes())
+    return h.hexdigest()
+
+
+def _enforce_repro_guardrails(config_path: Path) -> None:
+    if not _env_flag("BLUEPRINT_REQUIRE_PINNED_CHECKOUT"):
+        return
+
+    cwd = Path.cwd()
+    expected_commit = (os.environ.get("BLUEPRINT_PINNED_GIT_COMMIT", "") or "").strip()
+    if not expected_commit:
+        raise click.ClickException(
+            "Pinned checkout required but BLUEPRINT_PINNED_GIT_COMMIT is unset."
+        )
+    actual_commit = _resolve_git_commit(cwd)
+    if not actual_commit:
+        raise click.ClickException(
+            "Pinned checkout required but git commit could not be resolved "
+            "(run from a real git checkout, not an unversioned copy)."
+        )
+    if not actual_commit.startswith(expected_commit):
+        raise click.ClickException(
+            f"Pinned commit mismatch: expected={expected_commit} actual={actual_commit}."
+        )
+
+    expected_config_hash = (os.environ.get("BLUEPRINT_EXPECT_CONFIG_HASH", "") or "").strip()
+    if expected_config_hash:
+        actual_config_hash = _stable_sha256(config_path.resolve())
+        if actual_config_hash != expected_config_hash:
+            raise click.ClickException(
+                "Config hash mismatch: "
+                f"expected={expected_config_hash} actual={actual_config_hash}."
+            )
+
+    expected_stage1_hash = (os.environ.get("BLUEPRINT_EXPECT_STAGE1_CODE_HASH", "") or "").strip()
+    if expected_stage1_hash:
+        actual_stage1_hash = _stage1_code_hash(cwd)
+        if actual_stage1_hash != expected_stage1_hash:
+            raise click.ClickException(
+                "Stage-1 code hash mismatch: "
+                f"expected={expected_stage1_hash} actual={actual_stage1_hash}."
+            )
+
+
 @click.group()
 @click.option(
     "--config",
@@ -77,6 +154,7 @@ def cli(ctx: click.Context, config_path: str, work_dir: str, verbose: bool, dry_
     """BlueprintValidation: Gaussian splat to robot world model validation pipeline."""
     setup_logging(verbose)
     _load_local_env_defaults()
+    _enforce_repro_guardrails(Path(config_path))
     ctx.ensure_object(dict)
     ctx.obj["config"] = load_config(Path(config_path))
     ctx.obj["work_dir"] = Path(work_dir)

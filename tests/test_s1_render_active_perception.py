@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
@@ -55,6 +56,10 @@ def test_active_probe_selects_candidate_that_passes_threshold(sample_config, tmp
         return SimpleNamespace(video_path=video, depth_video_path=depth)
 
     monkeypatch.setattr("blueprint_validation.stages.s1_render.render_video", _fake_render_video)
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render._ensure_probe_h264_for_scoring",
+        lambda video_path, min_frames: video_path,
+    )
 
     def _fake_probe_score(*, video_path, **kwargs):
         if "_c00" in str(video_path):
@@ -129,6 +134,10 @@ def test_active_probe_fail_closed_on_scoring_error(sample_config, tmp_path, monk
 
     monkeypatch.setattr("blueprint_validation.stages.s1_render.render_video", _fake_render_video)
     monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render._ensure_probe_h264_for_scoring",
+        lambda video_path, min_frames: video_path,
+    )
+    monkeypatch.setattr(
         "blueprint_validation.stages.s1_render.score_stage1_probe",
         lambda **kwargs: (_ for _ in ()).throw(RuntimeError("api unavailable")),
     )
@@ -155,7 +164,7 @@ def test_active_probe_fail_closed_on_scoring_error(sample_config, tmp_path, monk
     assert selected.radius_m == spec.radius_m
     assert probe_meta["vlm_probe_passed"] is False
     assert "probe_scoring_failed" in str(probe_meta["vlm_probe_fail_reason"])
-    assert int(probe_meta["num_vlm_probe_api_failures"]) == 1
+    assert int(probe_meta["num_vlm_probe_api_failures"]) >= 1
 
 
 def test_stage1_bypasses_warmup_cache_when_active_perception_enabled(
@@ -229,3 +238,117 @@ def test_stage1_bypasses_warmup_cache_when_active_perception_enabled(
     assert result.status == "success"
     assert called["generate"] is True
     assert called["render_from_cache"] is False
+
+
+def test_probe_consensus_uses_median_scores_and_majority_tags(sample_config, monkeypatch, tmp_path):
+    from blueprint_validation.evaluation.vlm_judge import Stage1ProbeScore
+    from blueprint_validation.stages.s1_render import _score_stage1_probe_consensus
+
+    rows = [
+        Stage1ProbeScore(
+            task_score=6.0,
+            visual_score=7.0,
+            spatial_score=6.0,
+            issue_tags=["camera_motion_too_fast", "target_off_center"],
+            reasoning="r1",
+            raw_response="{}",
+            model_used="gemini-3-flash-preview",
+        ),
+        Stage1ProbeScore(
+            task_score=8.0,
+            visual_score=7.0,
+            spatial_score=7.0,
+            issue_tags=["camera_motion_too_fast"],
+            reasoning="r2",
+            raw_response="{}",
+            model_used="gemini-3-flash-preview",
+        ),
+        Stage1ProbeScore(
+            task_score=7.0,
+            visual_score=9.0,
+            spatial_score=6.0,
+            issue_tags=["target_off_center"],
+            reasoning="r3",
+            raw_response="{}",
+            model_used="gemini-3-flash-preview",
+        ),
+    ]
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render.score_stage1_probe",
+        lambda **kwargs: rows.pop(0),
+    )
+    out = _score_stage1_probe_consensus(
+        video_path=tmp_path / "probe.mp4",
+        expected_focus_text="target",
+        config=sample_config.eval_policy.vlm_judge,
+        facility_description="",
+        votes=3,
+        primary_model_only=True,
+    )
+    score = out["score"]
+    assert score is not None
+    assert score.task_score == 7.0
+    assert score.visual_score == 7.0
+    assert score.spatial_score == 6.0
+    assert score.issue_tags == ["camera_motion_too_fast", "target_off_center"]
+    assert out["votes_effective"] == 3
+    assert out["active_model_used"] == "gemini-3-flash-preview"
+
+
+def test_probe_consensus_uses_fallback_only_after_primary_hard_failure(
+    sample_config, monkeypatch, tmp_path
+):
+    from blueprint_validation.evaluation.vlm_judge import Stage1ProbeScore
+    from blueprint_validation.stages.s1_render import _score_stage1_probe_consensus
+
+    calls = {"primary": 0, "fallback": 0}
+
+    def _fake_score(**kwargs):
+        cfg = kwargs["config"]
+        if not list(getattr(cfg, "fallback_models", []) or []):
+            calls["primary"] += 1
+            raise RuntimeError("503 service unavailable")
+        calls["fallback"] += 1
+        return Stage1ProbeScore(
+            task_score=8.0,
+            visual_score=8.0,
+            spatial_score=7.0,
+            issue_tags=[],
+            reasoning="fallback ok",
+            raw_response="{}",
+            model_used="gemini-2.5-flash",
+        )
+
+    monkeypatch.setattr("blueprint_validation.stages.s1_render.score_stage1_probe", _fake_score)
+    cfg = replace(
+        sample_config.eval_policy.vlm_judge,
+        fallback_models=["gemini-2.5-flash"],
+    )
+    out = _score_stage1_probe_consensus(
+        video_path=tmp_path / "probe.mp4",
+        expected_focus_text="target",
+        config=cfg,
+        facility_description="",
+        votes=2,
+        primary_model_only=True,
+    )
+    assert calls["primary"] == 2
+    assert calls["fallback"] == 2
+    assert out["votes_effective"] == 2
+    assert out["active_model_used"] == "gemini-2.5-flash"
+
+
+def test_detect_duplicate_clip_flags_sha_match(monkeypatch, tmp_path):
+    from blueprint_validation.stages.s1_render import _detect_duplicate_clip
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render._clip_fingerprint",
+        lambda _video_path: {"sha256": "same_hash", "samples": []},
+    )
+    out = _detect_duplicate_clip(
+        video_path=tmp_path / "clip.mp4",
+        seen_fingerprints=[{"sha256": "same_hash", "samples": []}],
+        similarity_threshold=0.995,
+    )
+    assert out["is_duplicate"] is True
+    assert out["reason"] == "sha256"

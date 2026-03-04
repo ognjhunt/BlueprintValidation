@@ -130,6 +130,31 @@ def test_sample_start_offset_non_manipulation_retains_jitter(sample_config):
     assert float(offset[2]) == 0.0
 
 
+def test_sample_start_offset_task_scoped_repeat_gets_deterministic_jitter(sample_config):
+    from blueprint_validation.config import CameraPathSpec
+    from blueprint_validation.stages.s1_render import _sample_start_offset
+
+    rng = np.random.default_rng(3)
+    sample_config.render.manipulation_random_xy_offset_m = 0.0
+    sample_config.render.stage1_repeat_min_xy_jitter_m = 0.06
+    base = _sample_start_offset(
+        sample_config,
+        CameraPathSpec(type="manipulation"),
+        rng,
+        clip_repeat_index=0,
+        is_task_scoped=True,
+    )
+    repeated = _sample_start_offset(
+        sample_config,
+        CameraPathSpec(type="manipulation"),
+        rng,
+        clip_repeat_index=1,
+        is_task_scoped=True,
+    )
+    np.testing.assert_allclose(base, np.zeros(3, dtype=np.float64), atol=1e-10)
+    assert float(np.linalg.norm(repeated[:2])) > 0.0
+
+
 def test_generate_and_render_preserves_requested_frames_after_collision_filter(
     sample_config,
     tmp_path,
@@ -175,10 +200,14 @@ def test_generate_and_render_preserves_requested_frames_after_collision_filter(
     )
     monkeypatch.setattr(
         "blueprint_validation.stages.s1_render.render_video",
-        lambda **kwargs: SimpleNamespace(
-            video_path=tmp_path / "clip.mp4",
-            depth_video_path=tmp_path / "clip_depth.mp4",
-        ),
+        lambda **kwargs: (
+            (tmp_path / "clip.mp4").write_bytes(b"x"),
+            (tmp_path / "clip_depth.mp4").write_bytes(b"x"),
+            SimpleNamespace(
+                video_path=tmp_path / "clip.mp4",
+                depth_video_path=tmp_path / "clip_depth.mp4",
+            ),
+        )[-1],
     )
 
     stage = RenderStage()

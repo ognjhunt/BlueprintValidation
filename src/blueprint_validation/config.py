@@ -58,6 +58,8 @@ class CameraPathSpec:
     # manipulation arc params
     approach_point: Optional[List[float]] = None
     arc_radius_m: float = 0.4
+    arc_span_deg: float = 150.0
+    arc_phase_offset_deg: float = 0.0
     # internal metadata: where this spec came from
     source_tag: Optional[str] = None
     # optional target identity metadata
@@ -122,10 +124,17 @@ class RenderConfig:
     stage1_active_perception_fail_closed: bool = True
     stage1_probe_frames_override: int = 0
     stage1_probe_resolution_scale: float = 0.0
+    stage1_probe_consensus_votes: int = 3
+    stage1_probe_consensus_high_variance_delta: float = 3.0
+    stage1_probe_primary_model_only: bool = True
     stage1_vlm_min_task_score: float = 7.0
     stage1_vlm_min_visual_score: float = 7.0
     stage1_vlm_min_spatial_score: float = 6.0
     stage1_keep_probe_videos: bool = False
+    stage1_repeat_dedupe_enabled: bool = True
+    stage1_repeat_dedupe_max_regen_attempts: int = 2
+    stage1_repeat_min_xy_jitter_m: float = 0.06
+    stage1_repeat_similarity_ssim_threshold: float = 0.995
     orientation_autocorrect_enabled: bool = True
     orientation_autocorrect_mode: str = "auto"  # auto|fail_fast|warn_only
     manipulation_random_xy_offset_m: float = 0.0
@@ -761,6 +770,8 @@ def _parse_camera_paths(raw_list: List[Dict[str, Any]], base_dir: Path) -> List[
                 look_down_override_deg=raw.get("look_down_override_deg"),
                 approach_point=raw.get("approach_point"),
                 arc_radius_m=raw.get("arc_radius_m", 0.4),
+                arc_span_deg=raw.get("arc_span_deg", 150.0),
+                arc_phase_offset_deg=raw.get("arc_phase_offset_deg", 0.0),
                 source_tag=raw.get("source_tag"),
                 target_instance_id=raw.get("target_instance_id"),
                 target_label=raw.get("target_label"),
@@ -893,10 +904,23 @@ def load_config(path: Path) -> ValidationConfig:
             ),
             stage1_probe_frames_override=int(r.get("stage1_probe_frames_override", 0)),
             stage1_probe_resolution_scale=float(r.get("stage1_probe_resolution_scale", 0.0)),
+            stage1_probe_consensus_votes=int(r.get("stage1_probe_consensus_votes", 3)),
+            stage1_probe_consensus_high_variance_delta=float(
+                r.get("stage1_probe_consensus_high_variance_delta", 3.0)
+            ),
+            stage1_probe_primary_model_only=bool(r.get("stage1_probe_primary_model_only", True)),
             stage1_vlm_min_task_score=float(r.get("stage1_vlm_min_task_score", 7.0)),
             stage1_vlm_min_visual_score=float(r.get("stage1_vlm_min_visual_score", 7.0)),
             stage1_vlm_min_spatial_score=float(r.get("stage1_vlm_min_spatial_score", 6.0)),
             stage1_keep_probe_videos=bool(r.get("stage1_keep_probe_videos", False)),
+            stage1_repeat_dedupe_enabled=bool(r.get("stage1_repeat_dedupe_enabled", True)),
+            stage1_repeat_dedupe_max_regen_attempts=int(
+                r.get("stage1_repeat_dedupe_max_regen_attempts", 2)
+            ),
+            stage1_repeat_min_xy_jitter_m=float(r.get("stage1_repeat_min_xy_jitter_m", 0.06)),
+            stage1_repeat_similarity_ssim_threshold=float(
+                r.get("stage1_repeat_similarity_ssim_threshold", 0.995)
+            ),
             orientation_autocorrect_enabled=bool(r.get("orientation_autocorrect_enabled", True)),
             orientation_autocorrect_mode=str(r.get("orientation_autocorrect_mode", "auto")),
             manipulation_random_xy_offset_m=float(r.get("manipulation_random_xy_offset_m", 0.0)),
@@ -1619,12 +1643,22 @@ def load_config(path: Path) -> ValidationConfig:
         raise ValueError("render.stage1_probe_frames_override must be >= 0")
     if not (0.0 <= float(config.render.stage1_probe_resolution_scale) <= 1.0):
         raise ValueError("render.stage1_probe_resolution_scale must be in [0, 1]")
+    if int(config.render.stage1_probe_consensus_votes) < 1:
+        raise ValueError("render.stage1_probe_consensus_votes must be >= 1")
+    if not (0.0 <= float(config.render.stage1_probe_consensus_high_variance_delta) <= 30.0):
+        raise ValueError("render.stage1_probe_consensus_high_variance_delta must be in [0, 30]")
     if not (0.0 <= float(config.render.stage1_vlm_min_task_score) <= 10.0):
         raise ValueError("render.stage1_vlm_min_task_score must be in [0, 10]")
     if not (0.0 <= float(config.render.stage1_vlm_min_visual_score) <= 10.0):
         raise ValueError("render.stage1_vlm_min_visual_score must be in [0, 10]")
     if not (0.0 <= float(config.render.stage1_vlm_min_spatial_score) <= 10.0):
         raise ValueError("render.stage1_vlm_min_spatial_score must be in [0, 10]")
+    if int(config.render.stage1_repeat_dedupe_max_regen_attempts) < 0:
+        raise ValueError("render.stage1_repeat_dedupe_max_regen_attempts must be >= 0")
+    if float(config.render.stage1_repeat_min_xy_jitter_m) < 0.0:
+        raise ValueError("render.stage1_repeat_min_xy_jitter_m must be >= 0")
+    if not (0.0 <= float(config.render.stage1_repeat_similarity_ssim_threshold) <= 1.0):
+        raise ValueError("render.stage1_repeat_similarity_ssim_threshold must be in [0, 1]")
     if not (0.0 <= float(config.eval_policy.vlm_judge.video_metadata_fps) <= 24.0):
         raise ValueError("eval_policy.vlm_judge.video_metadata_fps must be in [0, 24]")
     if bool(config.eval_policy.reliability.fail_on_short_rollout):

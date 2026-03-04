@@ -7,7 +7,7 @@ import os
 import re
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Sequence
 
@@ -28,6 +28,7 @@ class JudgeScore:
     spatial_score: float
     reasoning: str
     raw_response: str
+    model_used: str = field(default="", kw_only=True)
 
 
 @dataclass
@@ -407,7 +408,7 @@ def _generate_with_retry(
     contents,
     config,
     max_retries: int = 3,
-):
+) -> tuple[object, str]:
     """Call generate_content with exponential backoff on transient errors."""
     model_candidates: List[str] = [str(model).strip()]
     for fallback in fallback_models:
@@ -425,7 +426,7 @@ def _generate_with_retry(
                     config=config,
                 )
                 _log_usage_metadata(candidate_model, response)
-                return response
+                return response, candidate_model
             except Exception as exc:
                 last_exc = exc
                 exc_text = str(exc).lower()
@@ -538,7 +539,7 @@ def score_rollout(
                     "between 0 and 10 and a non-empty reasoning field."
                 )
 
-            response = _generate_with_retry(
+            response, model_used = _generate_with_retry(
                 client,
                 model=config.model,
                 fallback_models=config.fallback_models,
@@ -559,6 +560,7 @@ def score_rollout(
                     spatial_score=spatial_score,
                     reasoning=reasoning,
                     raw_response=raw_text,
+                    model_used=model_used,
                 )
             except Exception as e:
                 errors.append(f"attempt={attempt + 1}: {e}")
@@ -620,7 +622,7 @@ def score_stage1_probe(
                 contents.append(
                     "Retry: return JSON only with required numeric fields, issue_tags array, and reasoning."
                 )
-            response = _generate_with_retry(
+            response, model_used = _generate_with_retry(
                 client,
                 model=config.model,
                 fallback_models=config.fallback_models,
@@ -644,6 +646,7 @@ def score_stage1_probe(
                     issue_tags=issue_tags,
                     reasoning=reasoning,
                     raw_response=raw_text,
+                    model_used=model_used,
                 )
             except Exception as e:
                 errors.append(f"attempt={attempt + 1}: {e}")
@@ -711,7 +714,7 @@ def score_stage2_enriched_clip(
                 contents.append(
                     "Retry: return JSON only with required numeric fields, issue_tags array, and reasoning."
                 )
-            response = _generate_with_retry(
+            response, model_used = _generate_with_retry(
                 client,
                 model=config.model,
                 fallback_models=config.fallback_models,
@@ -735,6 +738,7 @@ def score_stage2_enriched_clip(
                     issue_tags=issue_tags,
                     reasoning=reasoning,
                     raw_response=raw_text,
+                    model_used=model_used,
                 )
             except Exception as e:
                 errors.append(f"attempt={attempt + 1}: {e}")
@@ -797,7 +801,7 @@ def score_rollout_manipulation(
                     "Retry: return strict JSON only, include all required boolean manipulation fields."
                 )
 
-            response = _generate_with_retry(
+            response, model_used = _generate_with_retry(
                 client,
                 model=config.model,
                 fallback_models=config.fallback_models,
@@ -831,6 +835,7 @@ def score_rollout_manipulation(
                     stable_after_place=stable,
                     reasoning=reasoning,
                     raw_response=raw_text,
+                    model_used=model_used,
                 )
             except Exception as e:
                 errors.append(f"attempt={attempt + 1}: {e}")
@@ -889,7 +894,7 @@ def score_spatial_accuracy(
                     "Retry: return JSON only with task_score/visual_score/spatial_score in [0,10] "
                     "and a non-empty reasoning string."
                 )
-            response = _generate_with_retry(
+            response, model_used = _generate_with_retry(
                 client,
                 model=config.model,
                 fallback_models=config.fallback_models,
@@ -910,6 +915,7 @@ def score_spatial_accuracy(
                     spatial_score=spatial_score,
                     reasoning=reasoning,
                     raw_response=raw_text,
+                    model_used=model_used,
                 )
             except Exception as e:
                 errors.append(f"attempt={attempt + 1}: {e}")
@@ -961,7 +967,7 @@ def classify_facility(
                 contents.append(
                     "Retry: return JSON only with predicted_facility, confidence (0-1), reasoning."
                 )
-            response = _generate_with_retry(
+            response, model_used = _generate_with_retry(
                 client,
                 model=config.model,
                 fallback_models=config.fallback_models,
@@ -985,6 +991,7 @@ def classify_facility(
                     "confidence": confidence,
                     "reasoning": reasoning,
                     "raw_response": raw_text,
+                    "model_used": model_used,
                 }
             except Exception as e:
                 errors.append(f"attempt={attempt + 1}: {e}")

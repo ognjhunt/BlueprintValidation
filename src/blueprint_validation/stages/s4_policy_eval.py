@@ -29,6 +29,10 @@ from ..evaluation.task_start_selector import (
     save_shared_task_start_manifest,
     shared_manifest_is_compatible,
 )
+from ..evaluation.video_orientation import (
+    normalize_video_orientation_fix,
+    transform_video_orientation,
+)
 from ..evaluation.vlm_judge import (
     ManipulationJudgeScore,
     score_rollout,
@@ -454,16 +458,43 @@ class PolicyEvalStage(PipelineStage):
                         continue
 
                 try:
+                    _orient_mode = normalize_video_orientation_fix(
+                        str(getattr(facility, "video_orientation_fix", "none"))
+                    )
+                    _raw_rollout_path = rollout.video_path
+                    _oriented_rollout_path: Optional[Path] = None
+                    if _orient_mode != "none":
+                        _oriented_rollout_path = _raw_rollout_path.with_name(
+                            _raw_rollout_path.stem + f"_oriented_{_orient_mode}.mp4"
+                        )
+                        try:
+                            transform_video_orientation(
+                                input_path=_raw_rollout_path,
+                                output_path=_oriented_rollout_path,
+                                orientation_fix=_orient_mode,
+                                force_grayscale=False,
+                            )
+                            _rollout_path_for_scoring = _oriented_rollout_path
+                        except Exception as _oe:
+                            logger.warning(
+                                "orientation transform failed for %s: %s",
+                                _raw_rollout_path,
+                                _oe,
+                            )
+                            _rollout_path_for_scoring = _raw_rollout_path
+                            _oriented_rollout_path = None
+                    else:
+                        _rollout_path_for_scoring = _raw_rollout_path
                     if _is_manipulation_task(task):
                         score = score_rollout_manipulation(
-                            video_path=rollout.video_path,
+                            video_path=_rollout_path_for_scoring,
                             task_prompt=task,
                             config=config.eval_policy.vlm_judge,
                             facility_description=facility.description,
                         )
                     else:
                         score = score_rollout(
-                            video_path=rollout.video_path,
+                            video_path=_rollout_path_for_scoring,
                             task_prompt=task,
                             config=config.eval_policy.vlm_judge,
                             facility_description=facility.description,
@@ -473,6 +504,16 @@ class PolicyEvalStage(PipelineStage):
                     logger.warning(msg)
                     scoring_failures.append(msg)
                     continue
+                finally:
+                    if (
+                        "_oriented_rollout_path" in dir()
+                        and _oriented_rollout_path is not None
+                        and _oriented_rollout_path.exists()
+                    ):
+                        try:
+                            _oriented_rollout_path.unlink()
+                        except Exception:
+                            pass
 
                 all_scores.append(
                     {
@@ -977,15 +1018,42 @@ def _run_world_model_only_eval(
                             action_sequence=trace.get("action_sequence", []),
                             target_label=str(assignment.get("target_label") or ""),
                         )
+                _orient_mode_s = normalize_video_orientation_fix(
+                    str(getattr(facility, "video_orientation_fix", "none"))
+                )
+                _oriented_scored_path: Optional[Path] = None
+                if _orient_mode_s != "none":
+                    _oriented_scored_path = scored_video_path.with_name(
+                        scored_video_path.stem + f"_oriented_{_orient_mode_s}.mp4"
+                    )
+                    try:
+                        transform_video_orientation(
+                            input_path=scored_video_path,
+                            output_path=_oriented_scored_path,
+                            orientation_fix=_orient_mode_s,
+                            force_grayscale=False,
+                        )
+                        _scored_path_for_scoring = _oriented_scored_path
+                    except Exception as _oe:
+                        logger.warning(
+                            "orientation transform failed for %s: %s",
+                            scored_video_path,
+                            _oe,
+                        )
+                        _scored_path_for_scoring = scored_video_path
+                        _oriented_scored_path = None
+                else:
+                    _scored_path_for_scoring = scored_video_path
+                if _is_manipulation_task(task):
                     score = score_rollout_manipulation(
-                        video_path=scored_video_path,
+                        video_path=_scored_path_for_scoring,
                         task_prompt=task,
                         config=config.eval_policy.vlm_judge,
                         facility_description=facility.description,
                     )
                 else:
                     score = score_rollout(
-                        video_path=scored_video_path,
+                        video_path=_scored_path_for_scoring,
                         task_prompt=task,
                         config=config.eval_policy.vlm_judge,
                         facility_description=facility.description,
@@ -995,6 +1063,16 @@ def _run_world_model_only_eval(
                 logger.warning(msg)
                 scoring_failures.append(msg)
                 continue
+            finally:
+                if (
+                    "_oriented_scored_path" in dir()
+                    and _oriented_scored_path is not None
+                    and _oriented_scored_path.exists()
+                ):
+                    try:
+                        _oriented_scored_path.unlink()
+                    except Exception:
+                        pass
 
             all_scores.append(
                 {

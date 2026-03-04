@@ -25,6 +25,10 @@ from ..evaluation.task_start_selector import (
     save_shared_task_start_manifest,
     shared_manifest_is_compatible,
 )
+from ..evaluation.video_orientation import (
+    normalize_video_orientation_fix,
+    transform_video_orientation,
+)
 from ..evaluation.vlm_judge import (
     JudgeScore,
     ManipulationJudgeScore,
@@ -327,17 +331,41 @@ class TrainedPolicyEvalStage(PipelineStage):
                 scoring_failures.append(f"Rollout video missing for {clip_name}")
                 continue
 
+            _orient_mode_4e = normalize_video_orientation_fix(
+                str(getattr(facility, "video_orientation_fix", "none"))
+            )
+            _oriented_4e_path = None
+            if _orient_mode_4e != "none":
+                _oriented_4e_path = rollout.video_path.with_name(
+                    rollout.video_path.stem + f"_oriented_{_orient_mode_4e}.mp4"
+                )
+                try:
+                    transform_video_orientation(
+                        input_path=rollout.video_path,
+                        output_path=_oriented_4e_path,
+                        orientation_fix=_orient_mode_4e,
+                        force_grayscale=False,
+                    )
+                    _rollout_path_4e = _oriented_4e_path
+                except Exception as _oe:
+                    logger.warning(
+                        "orientation transform failed for %s: %s", rollout.video_path, _oe
+                    )
+                    _rollout_path_4e = rollout.video_path
+                    _oriented_4e_path = None
+            else:
+                _rollout_path_4e = rollout.video_path
             try:
                 if _is_manipulation_task(task):
                     score = score_rollout_manipulation(
-                        video_path=rollout.video_path,
+                        video_path=_rollout_path_4e,
                         task_prompt=task,
                         config=config.eval_policy.vlm_judge,
                         facility_description=facility.description,
                     )
                 else:
                     score = score_rollout(
-                        video_path=rollout.video_path,
+                        video_path=_rollout_path_4e,
                         task_prompt=task,
                         config=config.eval_policy.vlm_judge,
                         facility_description=facility.description,
@@ -345,6 +373,12 @@ class TrainedPolicyEvalStage(PipelineStage):
             except Exception as e:
                 scoring_failures.append(f"VLM scoring failed for {clip_name}: {e}")
                 score = JudgeScore(0, 0, 0, str(e), "")
+            finally:
+                if _oriented_4e_path is not None and _oriented_4e_path.exists():
+                    try:
+                        _oriented_4e_path.unlink()
+                    except Exception:
+                        pass
 
             trained_scores.append(
                 {

@@ -12,6 +12,10 @@ from ..common import StageResult, get_logger, read_json, write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..evaluation.openvla_runner import load_dreamdojo_world_model
 from ..evaluation.rollout_utils import run_rollout_with_adapter
+from ..evaluation.video_orientation import (
+    normalize_video_orientation_fix,
+    transform_video_orientation,
+)
 from ..evaluation.vlm_judge import score_rollout, score_rollout_manipulation
 from ..policy_adapters import get_policy_adapter
 from .base import PipelineStage
@@ -165,24 +169,55 @@ class PolicyPairEvalStage(PipelineStage):
                 rollout_video = rollout_result.video_path
                 actions = rollout_result.action_sequence
                 num_steps = rollout_result.num_steps
-                if _is_manipulation_task(task, config):
-                    score = score_rollout_manipulation(
-                        video_path=rollout_video,
-                        task_prompt=task,
-                        config=config.eval_policy.vlm_judge,
-                        facility_description=facility.description,
+                _orient_mode_4d = normalize_video_orientation_fix(
+                    str(getattr(facility, "video_orientation_fix", "none"))
+                )
+                _oriented_4d_path = None
+                if _orient_mode_4d != "none":
+                    _oriented_4d_path = rollout_video.with_name(
+                        rollout_video.stem + f"_oriented_{_orient_mode_4d}.mp4"
                     )
-                    success = _manip_success(score, config)
-                    manip_success = success
+                    try:
+                        transform_video_orientation(
+                            input_path=rollout_video,
+                            output_path=_oriented_4d_path,
+                            orientation_fix=_orient_mode_4d,
+                            force_grayscale=False,
+                        )
+                        _rollout_video_for_scoring = _oriented_4d_path
+                    except Exception as _oe:
+                        logger.warning(
+                            "orientation transform failed for %s: %s", rollout_video, _oe
+                        )
+                        _rollout_video_for_scoring = rollout_video
+                        _oriented_4d_path = None
                 else:
-                    score = score_rollout(
-                        video_path=rollout_video,
-                        task_prompt=task,
-                        config=config.eval_policy.vlm_judge,
-                        facility_description=facility.description,
-                    )
-                    success = score.task_score >= config.policy_compare.task_score_success_threshold
-                    manip_success = None
+                    _rollout_video_for_scoring = rollout_video
+                try:
+                    if _is_manipulation_task(task, config):
+                        score = score_rollout_manipulation(
+                            video_path=_rollout_video_for_scoring,
+                            task_prompt=task,
+                            config=config.eval_policy.vlm_judge,
+                            facility_description=facility.description,
+                        )
+                        success = _manip_success(score, config)
+                        manip_success = success
+                    else:
+                        score = score_rollout(
+                            video_path=_rollout_video_for_scoring,
+                            task_prompt=task,
+                            config=config.eval_policy.vlm_judge,
+                            facility_description=facility.description,
+                        )
+                        success = score.task_score >= config.policy_compare.task_score_success_threshold
+                        manip_success = None
+                finally:
+                    if _oriented_4d_path is not None and _oriented_4d_path.exists():
+                        try:
+                            _oriented_4d_path.unlink()
+                        except Exception:
+                            pass
 
                 score_rows.append(
                     {

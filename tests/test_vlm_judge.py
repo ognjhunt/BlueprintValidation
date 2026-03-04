@@ -105,7 +105,7 @@ def test_generate_with_retry_falls_back_on_quota():
             self.models = FakeModels()
 
     client = FakeClient()
-    out = _generate_with_retry(
+    out, model_used = _generate_with_retry(
         client,
         model="gemini-3-flash-preview",
         fallback_models=["gemini-2.5-flash"],
@@ -115,6 +115,7 @@ def test_generate_with_retry_falls_back_on_quota():
     )
     assert out["ok"] is True
     assert out["model"] == "gemini-2.5-flash"
+    assert model_used == "gemini-2.5-flash"
     assert client.models.calls == ["gemini-3-flash-preview", "gemini-2.5-flash"]
 
 

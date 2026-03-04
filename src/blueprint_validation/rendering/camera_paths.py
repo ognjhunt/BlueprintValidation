@@ -157,6 +157,7 @@ def generate_manipulation_arc(
     look_down_deg: float = 45.0,
     target_z_bias_m: float = 0.0,
     arc_span_deg: float = 150.0,
+    arc_phase_offset_deg: float = 0.0,
     resolution: tuple[int, int] = (480, 640),
     fov_deg: float = 60.0,
 ) -> List[CameraPose]:
@@ -170,10 +171,17 @@ def generate_manipulation_arc(
     cx, cy = w / 2.0, h / 2.0
 
     approach = np.asarray(approach_point, dtype=np.float64)
-    arc_span_rad = math.radians(arc_span_deg)
-    start_angle = -arc_span_rad / 2.0
+    arc_span_rad = math.radians(float(max(20.0, min(330.0, arc_span_deg))))
+    phase_offset_rad = math.radians(float(arc_phase_offset_deg))
+    start_angle = phase_offset_rad - arc_span_rad / 2.0
 
     poses = []
+    # Keep manipulation look-down meaningful by deriving camera height from desired pitch.
+    # This keeps the target centered but changes viewpoint geometry.
+    target_z = float(approach[2]) + float(target_z_bias_m)
+    desired_pitch = math.radians(float(max(5.0, min(80.0, look_down_deg))))
+    min_height_for_pitch = target_z + float(arc_radius) * math.tan(desired_pitch)
+    effective_height = max(float(height), float(min_height_for_pitch))
     for i in range(num_frames):
         t = i / max(num_frames - 1, 1)
         angle = start_angle + arc_span_rad * t
@@ -181,14 +189,14 @@ def generate_manipulation_arc(
             [
                 approach[0] + arc_radius * math.cos(angle),
                 approach[1] + arc_radius * math.sin(angle),
-                height,
+                effective_height,
             ]
         )
         target = np.array(
             [
                 approach[0],
                 approach[1],
-                approach[2] + float(target_z_bias_m),
+                target_z,
             ]
         )
         c2w = _look_at(eye, target)
@@ -243,28 +251,44 @@ def generate_path_from_spec(
     if spec.type == "orbit":
         center = scene_center[:2] if start_offset is None else scene_center[:2] + start_offset[:2]
         center_3d = np.array([center[0], center[1], 0.0])
+        effective_height = (
+            float(spec.height_override_m) if spec.height_override_m is not None else float(camera_height)
+        )
+        effective_look_down = (
+            float(spec.look_down_override_deg)
+            if spec.look_down_override_deg is not None
+            else float(look_down_deg)
+        )
         return generate_orbit(
             center=center_3d,
             radius=spec.radius_m,
-            height=camera_height,
+            height=effective_height,
             num_frames=num_frames,
             num_orbits=spec.num_orbits,
-            look_down_deg=look_down_deg,
+            look_down_deg=effective_look_down,
             resolution=resolution,
         )
     elif spec.type == "sweep":
         start = scene_center.copy()
         if start_offset is not None:
             start[:2] += start_offset[:2]
-        start[2] = camera_height
+        effective_height = (
+            float(spec.height_override_m) if spec.height_override_m is not None else float(camera_height)
+        )
+        effective_look_down = (
+            float(spec.look_down_override_deg)
+            if spec.look_down_override_deg is not None
+            else float(look_down_deg)
+        )
+        start[2] = effective_height
         direction = np.array([1.0, 0.0, 0.0])
         return generate_sweep(
             start=start,
             direction=direction,
             length=spec.length_m,
-            height=camera_height,
+            height=effective_height,
             num_frames=num_frames,
-            look_down_deg=look_down_deg,
+            look_down_deg=effective_look_down,
             resolution=resolution,
         )
     elif spec.type == "manipulation":
@@ -285,6 +309,8 @@ def generate_path_from_spec(
             height=effective_height,
             look_down_deg=effective_look_down,
             target_z_bias_m=float(manipulation_target_z_bias_m),
+            arc_span_deg=float(spec.arc_span_deg),
+            arc_phase_offset_deg=float(spec.arc_phase_offset_deg),
             num_frames=num_frames,
             resolution=resolution,
         )

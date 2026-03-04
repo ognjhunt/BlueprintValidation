@@ -221,7 +221,9 @@ def _convert_to_manipulation(
 ) -> CameraPathSpec:
     point = getattr(spec, "approach_point", None)
     if not (isinstance(point, list) and len(point) >= 3):
-        return spec
+        # No approach point to aim at — zoom in aggressively and lower camera
+        # to give the corrected render its best chance of capturing a target.
+        return _scale_standoff(spec, orbit_scale=0.60, sweep_scale=0.60, manip_scale=0.60)
 
     if str(spec.type).strip().lower() == "orbit":
         base_radius = max(0.2, min(1.8, float(spec.radius_m) * 0.8))
@@ -245,6 +247,8 @@ def _convert_to_manipulation(
         type="manipulation",
         approach_point=[float(point[0]), float(point[1]), float(point[2])],
         arc_radius_m=float(max(0.15, base_radius)),
+        arc_span_deg=120.0,
+        arc_phase_offset_deg=float(getattr(spec, "arc_phase_offset_deg", 0.0)),
         height_override_m=float(max(0.25, h0)),
         look_down_override_deg=float(max(5.0, min(80.0, l0))),
         source_tag=spec.source_tag,
@@ -309,13 +313,21 @@ def _add_look_down(
 def _apply_motion_reduction(spec: CameraPathSpec) -> CameraPathSpec:
     stype = str(spec.type).strip().lower()
     if stype == "orbit":
+        cur_orbits = int(spec.num_orbits)
+        new_orbits = max(1, cur_orbits - 1)
+        # When already at minimum orbits, reduce radius more aggressively (slows angular velocity).
+        radius_scale = 0.78 if cur_orbits <= 1 else 0.88
         return replace(
             spec,
-            num_orbits=max(1, int(spec.num_orbits) - 1),
-            radius_m=float(max(0.30, float(spec.radius_m) * 0.92)),
+            num_orbits=new_orbits,
+            radius_m=float(max(0.30, float(spec.radius_m) * radius_scale)),
         )
     if stype == "sweep":
-        return replace(spec, length_m=float(max(0.30, float(spec.length_m) * 0.85)))
+        return replace(spec, length_m=float(max(0.30, float(spec.length_m) * 0.78)))
     if stype == "manipulation":
-        return replace(spec, arc_radius_m=float(max(0.15, float(spec.arc_radius_m) * 0.92)))
+        return replace(
+            spec,
+            arc_radius_m=float(max(0.15, float(spec.arc_radius_m) * 0.82)),
+            arc_span_deg=float(max(40.0, min(300.0, float(spec.arc_span_deg) * 0.72))),
+        )
     return spec

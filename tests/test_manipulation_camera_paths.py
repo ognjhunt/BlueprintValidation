@@ -87,6 +87,30 @@ def test_generate_path_from_spec_manipulation():
         resolution=(120, 160),
     )
     assert len(poses) == 6
-    # Should use the override height, not the default
+    # Override is now treated as a floor; look-down can raise effective height
+    # to make pitch corrections materially affect geometry.
     for pose in poses:
-        assert abs(pose.position[2] - 0.6) < 0.01
+        assert float(pose.position[2]) >= 0.6
+
+
+def test_manipulation_lookdown_changes_view_geometry():
+    from blueprint_validation.rendering.camera_paths import generate_manipulation_arc
+
+    approach = np.array([0.0, 0.0, 0.3], dtype=np.float64)
+    shallow = generate_manipulation_arc(
+        approach_point=approach,
+        arc_radius=0.5,
+        height=0.35,
+        look_down_deg=15.0,
+        num_frames=7,
+    )
+    steep = generate_manipulation_arc(
+        approach_point=approach,
+        arc_radius=0.5,
+        height=0.35,
+        look_down_deg=60.0,
+        num_frames=7,
+    )
+    assert float(np.mean([p.position[2] for p in steep])) > float(
+        np.mean([p.position[2] for p in shallow])
+    )
