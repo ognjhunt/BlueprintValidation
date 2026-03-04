@@ -340,6 +340,21 @@ class RenderStage(PipelineStage):
             if has_transform:
                 base_specs = transform_camera_path_specs(base_specs, scene_T)
             all_path_specs = base_specs + extra_specs
+            if (
+                extra_specs
+                and bool(config.render.task_scoped_scene_aware)
+                and str(config.render.stage1_active_perception_scope).strip().lower()
+                == "targeted"
+            ):
+                # Fast-validation mode: evaluate targeted, object-grounded specs before
+                # generic seed paths so early canary probes reflect task-focused capture quality.
+                all_path_specs = extra_specs + base_specs
+                logger.info(
+                    "Using targeted-first path ordering for Stage-1 active-perception scope=targeted "
+                    "(targeted_specs=%d seed_specs=%d)",
+                    len(extra_specs),
+                    len(base_specs),
+                )
             if extra_specs:
                 logger.info(
                     "Added %d scene-aware camera paths (total: %d)",
