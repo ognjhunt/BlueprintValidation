@@ -11,6 +11,7 @@ import numpy as np
 
 from ..common import StageResult, get_logger, read_json, write_json
 from ..config import FacilityConfig, ValidationConfig
+from ..evaluation.claim_protocol import claim_protocol_enabled
 from ..training.rlds_export import export_rollouts_to_rlds_jsonl
 from ..validation import ManifestValidationError, load_and_validate_manifest
 from .base import PipelineStage
@@ -134,12 +135,26 @@ class RolloutDatasetStage(PipelineStage):
             for entry in baseline
             if str(entry.get("task", "")).strip() in eval_only_tasks
         }
-        split_train_ids, split_heldout_ids = _split_pairs(
-            entries=baseline,
-            seed=config.rollout_dataset.seed,
-            train_split=config.rollout_dataset.train_split,
-            forced_heldout_ids=forced_heldout_ids,
-        )
+        claim_split_path = work_dir / "policy_eval" / "claim_split_manifest.json"
+        if claim_protocol_enabled(config):
+            if not claim_split_path.exists():
+                return StageResult(
+                    stage_name=self.name,
+                    status="failed",
+                    elapsed_seconds=0,
+                    detail="Claim protocol requires policy_eval/claim_split_manifest.json.",
+                )
+            claim_split = read_json(claim_split_path)
+            split_train_ids = set(str(v) for v in claim_split.get("train_eval_cell_ids", []))
+            split_heldout_ids = set(str(v) for v in claim_split.get("eval_eval_cell_ids", []))
+            split_heldout_ids |= forced_heldout_ids
+        else:
+            split_train_ids, split_heldout_ids = _split_pairs(
+                entries=baseline,
+                seed=config.rollout_dataset.seed,
+                train_split=config.rollout_dataset.train_split,
+                forced_heldout_ids=forced_heldout_ids,
+            )
         baseline_train, baseline_heldout = _split_by_ids(
             baseline, split_train_ids, split_heldout_ids
         )
@@ -198,6 +213,8 @@ class RolloutDatasetStage(PipelineStage):
             "action_contract_hash": _action_contract_hash(action_contract),
             "eval_only_tasks": sorted(eval_only_tasks),
             "num_forced_heldout_pairs": len(forced_heldout_ids),
+            "claim_protocol": claim_protocol_enabled(config),
+            "claim_split_manifest_path": str(claim_split_path) if claim_split_path.exists() else "",
         }
         write_json(summary, dataset_root / "dataset_export_summary.json")
 
@@ -236,6 +253,9 @@ def _paired_rollouts(scores: List[dict]) -> Tuple[List[dict], List[dict]]:
 
 
 def _pair_id(entry: dict) -> str:
+    eval_cell_id = str(entry.get("eval_cell_id", "")).strip()
+    if eval_cell_id:
+        return eval_cell_id
     return f"{entry.get('rollout_index')}::{entry.get('task', '')}"
 
 

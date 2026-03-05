@@ -20,6 +20,9 @@ class RolloutBucketThresholds:
 
 
 def pair_id_for_rollout(entry: Dict[str, Any]) -> str:
+    eval_cell_id = str(entry.get("eval_cell_id", "")).strip()
+    if eval_cell_id:
+        return eval_cell_id
     return f"{entry.get('rollout_index')}::{entry.get('task', '')}"
 
 
@@ -28,6 +31,10 @@ def bucket_rollout(
     thresholds: RolloutBucketThresholds,
 ) -> str:
     """Classify a rollout into success / near_miss / hard_negative."""
+    if entry.get("task_success") is not None and bool(entry.get("task_success_available", False)):
+        if bool(entry.get("task_success", False)):
+            return "success"
+
     is_manip = bool(entry.get("is_manipulation_task", False))
     grasp = entry.get("grasp_acquired")
     lifted = entry.get("lifted_clear")

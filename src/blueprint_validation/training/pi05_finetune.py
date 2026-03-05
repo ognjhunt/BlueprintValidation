@@ -79,6 +79,8 @@ def build_pi05_train_command(
         str(finetune_config.learning_rate),
         "--max_steps",
         str(finetune_config.max_steps),
+        "--seed",
+        str(finetune_config.seed),
     ]
     if base_checkpoint and base_checkpoint.exists():
         cmd.extend(["--base_checkpoint", str(base_checkpoint)])

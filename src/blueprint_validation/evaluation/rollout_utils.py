@@ -35,7 +35,18 @@ def run_rollout_with_adapter(
 
     frames = [initial_frame.copy()]
     actions: List[list] = []
+    state_trace: List[dict] = []
     current = initial_frame
+    initial_state = _capture_task_state(
+        world_model=world_model,
+        frame=current,
+        action=None,
+        step_idx=0,
+        phase="initial",
+        task_prompt=task_prompt,
+    )
+    if initial_state is not None:
+        state_trace.append(initial_state)
     for step_idx in range(max_steps):
         action = policy_adapter.predict_action(
             handle=policy_handle,
@@ -54,6 +65,16 @@ def run_rollout_with_adapter(
         actions.append(action_list)
         next_frame = world_model.predict_next_frame(current, action)
         frames.append(next_frame)
+        captured = _capture_task_state(
+            world_model=world_model,
+            frame=next_frame,
+            action=action_list,
+            step_idx=step_idx + 1,
+            phase="post_step",
+            task_prompt=task_prompt,
+        )
+        if captured is not None:
+            state_trace.append(captured)
         current = next_frame
         # Placeholder for keyframe re-anchoring bookkeeping in claim mode.
         if reanchor_every and reanchor_every > 0 and (step_idx + 1) % reanchor_every == 0:
@@ -92,6 +113,7 @@ def run_rollout_with_adapter(
         video_path=video_path,
         action_sequence=actions,
         num_steps=len(actions),
+        state_trace=state_trace,
         action_contract={
             "policy_dim": policy_dim,
             "world_dim": world_dim,
@@ -100,3 +122,57 @@ def run_rollout_with_adapter(
             "reason": "" if compliant else "policy/world/dataset dims differ or missing",
         },
     )
+
+
+def _capture_task_state(
+    *,
+    world_model,
+    frame,
+    action,
+    step_idx: int,
+    phase: str,
+    task_prompt: str,
+) -> dict | None:
+    capture = getattr(world_model, "capture_rollout_state", None)
+    if callable(capture):
+        try:
+            payload = capture(
+                frame=frame,
+                action=action,
+                step_idx=step_idx,
+                phase=phase,
+                task_prompt=task_prompt,
+            )
+            if isinstance(payload, dict):
+                return payload
+        except TypeError:
+            try:
+                payload = capture(frame=frame, action=action, step_idx=step_idx)
+                if isinstance(payload, dict):
+                    return payload
+            except Exception:
+                return None
+        except Exception:
+            return None
+    extract = getattr(world_model, "extract_task_state", None)
+    if callable(extract):
+        try:
+            payload = extract(
+                frame=frame,
+                action=action,
+                step_idx=step_idx,
+                phase=phase,
+                task_prompt=task_prompt,
+            )
+            if isinstance(payload, dict):
+                return payload
+        except TypeError:
+            try:
+                payload = extract(frame=frame, action=action, step_idx=step_idx)
+                if isinstance(payload, dict):
+                    return payload
+            except Exception:
+                return None
+        except Exception:
+            return None
+    return None

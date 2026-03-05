@@ -369,6 +369,11 @@ class PolicyEvalReliabilityConfig:
 
 
 @dataclass
+class ClaimReplicationConfig:
+    training_seeds: List[int] = field(default_factory=lambda: [0, 1, 2, 3, 4])
+
+
+@dataclass
 class PolicyEvalConfig:
     model_name: str = "openvla/openvla-7b"
     checkpoint_path: Path = Path("./data/checkpoints/openvla-7b/")
@@ -389,6 +394,12 @@ class PolicyEvalConfig:
     min_absolute_difference: float = 1.0  # minimum raw score difference for PASS
     min_manip_success_delta_pp: float = 15.0
     require_native_action_compat: bool = True
+    claim_protocol: str = "none"  # none|fixed_same_facility_uplift
+    primary_endpoint: str = "vlm_task_score"  # vlm_task_score|task_success
+    freeze_world_snapshot: bool = False
+    split_strategy: str = "legacy"  # legacy|disjoint_tasks_and_starts
+    min_practical_success_lift_pp: float = 5.0
+    claim_replication: ClaimReplicationConfig = field(default_factory=ClaimReplicationConfig)
     reliability: PolicyEvalReliabilityConfig = field(default_factory=PolicyEvalReliabilityConfig)
     vlm_judge: VLMJudgeConfig = field(default_factory=VLMJudgeConfig)
 
@@ -435,6 +446,7 @@ class PolicyFinetuneConfig:
     use_continuous_actions: bool = True  # Legacy OFT option (ignored by vendored script).
     use_l1_regression: bool = True
     parallel_decoding: bool = True  # Legacy OFT option (ignored by vendored script).
+    seed: int = 0
     extra_args: List[str] = field(default_factory=list)
 
 
@@ -639,6 +651,9 @@ class PolicyCompareConfig:
     heldout_seed: int = 123
     eval_world_model: str = "adapted"
     heldout_tasks: List[str] = field(default_factory=list)
+    control_arms: List[str] = field(
+        default_factory=lambda: ["frozen_baseline", "site_trained", "generic_control"]
+    )
     task_score_success_threshold: float = 7.0
     manipulation_task_keywords: List[str] = field(
         default_factory=lambda: [
@@ -804,6 +819,9 @@ _ALLOWED_WM_REFRESH_SOURCE_CONDITIONS = {"baseline", "adapted"}
 _ALLOWED_MANIP_EVAL_MODES = {"overlay_marker", "raw"}
 _ALLOWED_STAGE1_QUALITY_CANDIDATE_BUDGETS = {"low", "medium", "high"}
 _ALLOWED_STAGE1_ACTIVE_PERCEPTION_SCOPES = {"all", "targeted", "manipulation"}
+_ALLOWED_CLAIM_PROTOCOLS = {"none", "fixed_same_facility_uplift"}
+_ALLOWED_PRIMARY_ENDPOINTS = {"vlm_task_score", "task_success"}
+_ALLOWED_CLAIM_SPLIT_STRATEGIES = {"legacy", "disjoint_tasks_and_starts"}
 
 
 def _parse_manip_eval_mode(raw_value: Any) -> str:
@@ -827,6 +845,30 @@ def _parse_stage1_active_perception_scope(raw_value: Any) -> str:
     if value not in _ALLOWED_STAGE1_ACTIVE_PERCEPTION_SCOPES:
         allowed = ", ".join(sorted(_ALLOWED_STAGE1_ACTIVE_PERCEPTION_SCOPES))
         raise ValueError(f"render.stage1_active_perception_scope must be one of: {allowed}")
+    return value
+
+
+def _parse_claim_protocol(raw_value: Any) -> str:
+    value = str(raw_value or "none").strip().lower()
+    if value not in _ALLOWED_CLAIM_PROTOCOLS:
+        allowed = ", ".join(sorted(_ALLOWED_CLAIM_PROTOCOLS))
+        raise ValueError(f"eval_policy.claim_protocol must be one of: {allowed}")
+    return value
+
+
+def _parse_primary_endpoint(raw_value: Any) -> str:
+    value = str(raw_value or "vlm_task_score").strip().lower()
+    if value not in _ALLOWED_PRIMARY_ENDPOINTS:
+        allowed = ", ".join(sorted(_ALLOWED_PRIMARY_ENDPOINTS))
+        raise ValueError(f"eval_policy.primary_endpoint must be one of: {allowed}")
+    return value
+
+
+def _parse_claim_split_strategy(raw_value: Any) -> str:
+    value = str(raw_value or "legacy").strip().lower()
+    if value not in _ALLOWED_CLAIM_SPLIT_STRATEGIES:
+        allowed = ", ".join(sorted(_ALLOWED_CLAIM_SPLIT_STRATEGIES))
+        raise ValueError(f"eval_policy.split_strategy must be one of: {allowed}")
     return value
 
 
@@ -1283,6 +1325,19 @@ def load_config(path: Path) -> ValidationConfig:
             min_absolute_difference=float(ep.get("min_absolute_difference", 1.0)),
             min_manip_success_delta_pp=float(ep.get("min_manip_success_delta_pp", 15.0)),
             require_native_action_compat=bool(ep.get("require_native_action_compat", True)),
+            claim_protocol=_parse_claim_protocol(ep.get("claim_protocol", "none")),
+            primary_endpoint=_parse_primary_endpoint(
+                ep.get("primary_endpoint", "vlm_task_score")
+            ),
+            freeze_world_snapshot=bool(ep.get("freeze_world_snapshot", False)),
+            split_strategy=_parse_claim_split_strategy(ep.get("split_strategy", "legacy")),
+            min_practical_success_lift_pp=float(ep.get("min_practical_success_lift_pp", 5.0)),
+            claim_replication=ClaimReplicationConfig(
+                training_seeds=[
+                    int(v)
+                    for v in (ep.get("replication", {}) or {}).get("training_seeds", [0, 1, 2, 3, 4])
+                ]
+            ),
             reliability=PolicyEvalReliabilityConfig(
                 max_horizon_steps=int(
                     (ep.get("reliability", {}) or {}).get("max_horizon_steps", 12)
@@ -1361,6 +1416,7 @@ def load_config(path: Path) -> ValidationConfig:
             use_continuous_actions=pf.get("use_continuous_actions", True),
             use_l1_regression=pf.get("use_l1_regression", True),
             parallel_decoding=pf.get("parallel_decoding", True),
+            seed=int(pf.get("seed", 0)),
             extra_args=[str(v) for v in pf.get("extra_args", [])],
         )
 
@@ -1704,6 +1760,14 @@ def load_config(path: Path) -> ValidationConfig:
             heldout_seed=pc.get("heldout_seed", 123),
             eval_world_model=pc.get("eval_world_model", "adapted"),
             heldout_tasks=pc.get("heldout_tasks", []),
+            control_arms=[
+                str(v)
+                for v in pc.get(
+                    "control_arms",
+                    ["frozen_baseline", "site_trained", "generic_control"],
+                )
+                if str(v).strip()
+            ],
             task_score_success_threshold=float(pc.get("task_score_success_threshold", 7.0)),
             manipulation_task_keywords=pc.get(
                 "manipulation_task_keywords",
@@ -1840,6 +1904,32 @@ def load_config(path: Path) -> ValidationConfig:
         raise ValueError("eval_policy.reliability.min_rollout_frames must be >= 2")
     if int(config.eval_policy.reliability.min_rollout_steps) < 1:
         raise ValueError("eval_policy.reliability.min_rollout_steps must be >= 1")
+    if (
+        str(config.eval_policy.claim_protocol).strip().lower() == "fixed_same_facility_uplift"
+        and str(config.eval_policy.primary_endpoint).strip().lower() != "task_success"
+    ):
+        raise ValueError(
+            "eval_policy.primary_endpoint must be 'task_success' when "
+            "claim_protocol=fixed_same_facility_uplift"
+        )
+    if (
+        str(config.eval_policy.claim_protocol).strip().lower() == "fixed_same_facility_uplift"
+        and not bool(config.eval_policy.freeze_world_snapshot)
+    ):
+        raise ValueError(
+            "eval_policy.freeze_world_snapshot must be true when "
+            "claim_protocol=fixed_same_facility_uplift"
+        )
+    if len(list(config.eval_policy.claim_replication.training_seeds or [])) < 1:
+        raise ValueError("eval_policy.replication.training_seeds must contain at least one seed")
+    if len({int(v) for v in list(config.eval_policy.claim_replication.training_seeds or [])}) != len(
+        list(config.eval_policy.claim_replication.training_seeds or [])
+    ):
+        raise ValueError("eval_policy.replication.training_seeds must be unique")
+    if float(config.eval_policy.min_practical_success_lift_pp) < 0.0:
+        raise ValueError("eval_policy.min_practical_success_lift_pp must be >= 0")
+    if not list(config.policy_compare.control_arms or []):
+        raise ValueError("policy_compare.control_arms must contain at least one arm")
     if int(config.policy_adapter.dreamzero.policy_action_dim) < 1:
         raise ValueError("policy_adapter.dreamzero.policy_action_dim must be >= 1")
     if int(config.policy_adapter.dreamzero.frame_history) < 1:

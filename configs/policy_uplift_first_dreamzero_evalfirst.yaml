@@ -7,8 +7,8 @@ facilities:
     ply_path: ./data/facilities/facility_a/splat.ply
     description: Primary deployment site
 
-# Use wm_uplift for the canonical same-facility trained-policy headline.
-# This mode is world-model-only and does not imply an IRL claim.
+# Use wm_uplift for the canonical same-facility WM-only headline.
+# This mode is for deployment-site world-model uplift only and does not answer IRL transfer.
 eval_policy:
   mode: research
   headline_scope: wm_uplift

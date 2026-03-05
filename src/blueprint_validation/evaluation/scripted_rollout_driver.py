@@ -118,10 +118,29 @@ def run_scripted_rollout(
     import cv2
 
     frames = [initial_frame.copy()]
+    state_trace: List[dict] = []
     current = initial_frame
+    initial_state = _capture_task_state(
+        world_model=world_model,
+        frame=current,
+        action=None,
+        step_idx=0,
+        phase="initial",
+    )
+    if initial_state is not None:
+        state_trace.append(initial_state)
     for step_idx, action in enumerate(action_sequence):
         next_frame = world_model.predict_next_frame(current, action)
         frames.append(next_frame)
+        captured = _capture_task_state(
+            world_model=world_model,
+            frame=next_frame,
+            action=action,
+            step_idx=step_idx + 1,
+            phase="post_step",
+        )
+        if captured is not None:
+            state_trace.append(captured)
         current = next_frame
         if reanchor_every and reanchor_every > 0 and (step_idx + 1) % reanchor_every == 0:
             current = frames[-1]
@@ -156,6 +175,7 @@ def run_scripted_rollout(
     return SimpleNamespace(
         video_path=video_path,
         action_sequence=action_sequence,
+        state_trace=state_trace,
         num_steps=len(action_sequence),
         trace_id=trace_id,
         driver_type="scripted",
@@ -167,6 +187,47 @@ def run_scripted_rollout(
             "reason": "" if compliant else "scripted trace dim does not match world-model dim",
         },
     )
+
+
+def _capture_task_state(
+    *,
+    world_model,
+    frame,
+    action,
+    step_idx: int,
+    phase: str,
+) -> dict | None:
+    capture = getattr(world_model, "capture_rollout_state", None)
+    if callable(capture):
+        try:
+            payload = capture(frame=frame, action=action, step_idx=step_idx, phase=phase)
+            if isinstance(payload, dict):
+                return payload
+        except TypeError:
+            try:
+                payload = capture(frame=frame, action=action, step_idx=step_idx)
+                if isinstance(payload, dict):
+                    return payload
+            except Exception:
+                return None
+        except Exception:
+            return None
+    extract = getattr(world_model, "extract_task_state", None)
+    if callable(extract):
+        try:
+            payload = extract(frame=frame, action=action, step_idx=step_idx, phase=phase)
+            if isinstance(payload, dict):
+                return payload
+        except TypeError:
+            try:
+                payload = extract(frame=frame, action=action, step_idx=step_idx)
+                if isinstance(payload, dict):
+                    return payload
+            except Exception:
+                return None
+        except Exception:
+            return None
+    return None
 
 
 def _assignment_key(assignment: dict) -> str:

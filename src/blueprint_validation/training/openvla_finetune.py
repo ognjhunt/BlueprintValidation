@@ -62,6 +62,8 @@ def build_openvla_finetune_command(
         str(config.save_steps),
         "--max_steps",
         str(config.max_steps),
+        "--seed",
+        str(config.seed),
         "--image_aug",
         "True" if config.image_aug else "False",
         "--use_l1_regression",

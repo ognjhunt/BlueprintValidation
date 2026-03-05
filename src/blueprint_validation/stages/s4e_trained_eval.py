@@ -9,6 +9,7 @@ import numpy as np
 
 from ..common import StageResult, get_logger, read_json, write_json
 from ..config import FacilityConfig, ValidationConfig
+from ..evaluation.claim_protocol import paired_eval_key
 from ..evaluation.openvla_runner import (
     load_dreamdojo_world_model,
 )
@@ -384,6 +385,10 @@ class TrainedPolicyEvalStage(PipelineStage):
                     "condition": "trained",
                     "task": task,
                     "rollout_index": rollout_idx,
+                    "eval_cell_id": assignment.get("eval_cell_id"),
+                    "task_spec_id": assignment.get("task_spec_id"),
+                    "start_region_id": assignment.get("start_region_id"),
+                    "world_snapshot_hash": assignment.get("world_snapshot_hash"),
                     "task_score": score.task_score,
                     "visual_score": score.visual_score,
                     "spatial_score": score.spatial_score,
@@ -729,32 +734,49 @@ def _build_pairwise_metrics(all_scores: List[Dict]) -> Dict:
     """Compute improvement, win rate, and p-value for each pair of conditions."""
     conditions = sorted({s["condition"] for s in all_scores})
     pairwise = {}
+    has_explicit_pairing = any(str(row.get("eval_cell_id", "")).strip() for row in all_scores)
 
     for i, c1 in enumerate(conditions):
         for c2 in conditions[i + 1 :]:
-            s1 = [s for s in all_scores if s["condition"] == c1]
-            s2 = [s for s in all_scores if s["condition"] == c2]
-            if not s1 or not s2:
-                continue
+            if has_explicit_pairing:
+                grouped: Dict[str, Dict[str, Dict]] = {}
+                for row in all_scores:
+                    condition = str(row.get("condition", "")).strip()
+                    if condition not in {c1, c2}:
+                        continue
+                    grouped.setdefault(paired_eval_key(row), {})[condition] = row
+                pairs = [
+                    (rows[c1], rows[c2])
+                    for rows in grouped.values()
+                    if c1 in rows and c2 in rows
+                ]
+                if not pairs:
+                    continue
+                s1 = [left for left, _ in pairs]
+                s2 = [right for _, right in pairs]
+            else:
+                s1 = [s for s in all_scores if s["condition"] == c1]
+                s2 = [s for s in all_scores if s["condition"] == c2]
+                if not s1 or not s2:
+                    continue
+                min_len = min(len(s1), len(s2))
+                pairs = list(zip(s1[:min_len], s2[:min_len]))
 
             mean1 = float(np.mean([s["task_score"] for s in s1]))
             mean2 = float(np.mean([s["task_score"] for s in s2]))
             improvement = ((mean2 - mean1) / max(mean1, 1e-8)) * 100
             abs_diff = mean2 - mean1
 
-            min_len = min(len(s1), len(s2))
-            wins = sum(
-                1 for a, b in zip(s1[:min_len], s2[:min_len]) if b["task_score"] > a["task_score"]
-            )
-            win_rate = wins / max(min_len, 1)
+            wins = sum(1 for a, b in pairs if b["task_score"] > a["task_score"])
+            win_rate = wins / max(len(pairs), 1)
 
             p_value = None
-            if min_len >= 2:
+            if len(pairs) >= 2:
                 try:
                     from scipy import stats
 
-                    v1 = [s["task_score"] for s in s1[:min_len]]
-                    v2 = [s["task_score"] for s in s2[:min_len]]
+                    v1 = [left["task_score"] for left, _ in pairs]
+                    v2 = [right["task_score"] for _, right in pairs]
                     _, p_value = stats.ttest_rel(v1, v2)
                     p_value = float(p_value)
                 except ImportError:
@@ -901,6 +923,7 @@ def _pair_condition_rows(
     exclude_tasks: set[str] | None,
 ) -> List[tuple[Dict, Dict]]:
     grouped: Dict[str, Dict[str, Dict]] = {}
+    has_explicit_pairing = any(str(row.get("eval_cell_id", "")).strip() for row in all_scores)
     for row in all_scores:
         condition = str(row.get("condition", "")).strip()
         if condition not in {left_condition, right_condition}:
@@ -910,7 +933,7 @@ def _pair_condition_rows(
             continue
         if exclude_tasks is not None and task in exclude_tasks:
             continue
-        pair_id = f"{int(row.get('rollout_index', 0))}::{task}"
+        pair_id = paired_eval_key(row) if has_explicit_pairing else f"{int(row.get('rollout_index', 0))}::{task}"
         grouped.setdefault(pair_id, {})[condition] = row
 
     pairs: List[tuple[Dict, Dict]] = []

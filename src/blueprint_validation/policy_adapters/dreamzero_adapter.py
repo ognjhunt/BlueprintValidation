@@ -154,6 +154,8 @@ class DreamZeroPolicyAdapter(PolicyAdapter):
             dataset_name,
             "--output_dir",
             str(output_dir),
+            "--seed",
+            str(finetune_config.seed),
         ]
         cmd.extend(list(self.backend.extra_train_args or []))
         cmd.extend(list(finetune_config.extra_args or []))

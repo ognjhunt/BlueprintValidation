@@ -14,6 +14,16 @@ This guide is the working playbook for future sessions when constraints are stri
 
 Current repo outputs are world-model-only. Any IRL numbers below are planning priors for future matched robot runs, not metrics produced by the current pipeline.
 
+Canonical question this repo can answer today:
+
+- Can same-facility policy training beat the frozen baseline inside the exact facility's site-adapted world model?
+
+Future same-facility deployment follow-up, not answered here:
+
+- If that uplift appears in the adapted world model, does it also carry over IRL in the exact same facility?
+
+Treat any IRL number below as future deployment planning only, not as a current repo output or headline claim.
+
 ## Scoring Convention
 
 All uplift estimates in this guide are **absolute points on a 100-point success-rate scale**.
@@ -35,14 +45,14 @@ Recently implemented fidelity + memory hooks (already in this repo) should prima
 
 Expected immediate impact from these already-applied changes:
 
-- world-model metrics: **+6 to +12 absolute points**
-- IRL transfer metrics: **+2 to +6 absolute points**
+- world-model metrics in this repo: **+6 to +12 absolute points**
+- future same-facility IRL planning prior once matched robot runs exist: **+2 to +6 absolute points**
 
-These are priors, not guarantees. Validate per-location with Stage 4/4e and held-out tasks.
+These are priors, not guarantees. Validate the current repo claim per-location with Stage 4/4e and held-out tasks inside the adapted world model.
 
 ## Decision Matrix (No-New-Real-Data Compatible)
 
-| Approach | Code available now? | Fits no-new-real-data rule? | Stack change | Extra data needed beyond current splay/sim outputs | Estimated uplift (world model / IRL, absolute points) |
+| Approach | Code available now? | Fits no-new-real-data rule? | Stack change | Extra data needed beyond current splay/sim outputs | Estimated uplift (WM now / future same-facility IRL planning prior, absolute points) |
 |---|---|---|---|---|---|
 | A. Existing fidelity + context hooks (already merged) | Yes (in-repo) | Yes | Small | None | +6 to +12 / +2 to +6 |
 | B. Stage 1 coverage densification + longer windows | Yes (in-repo knobs) | Yes | Small | None | +3 to +8 / +1 to +4 |
@@ -72,9 +82,12 @@ These are priors, not guarantees. Validate per-location with Stage 4/4e and held
 - Enable scene-index retrieval for context augmentation
 - Add hard-negative mining from failed policy rollouts in world model
 
-Target uplift:
+Target uplift in current repo:
 
 - world model: +4 to +10
+
+Future same-facility IRL planning prior (not measured here):
+
 - IRL transfer: +2 to +5
 
 ### Phase 2 (2-4 weeks): Synthetic closed-loop training
@@ -84,9 +97,12 @@ Target uplift:
 - Retrain world model and policy on success + near-success + hard failures
 - Use acceptance gates to prevent distribution drift
 
-Target uplift:
+Target uplift in current repo:
 
 - world model: +6 to +14
+
+Future same-facility IRL planning prior (not measured here):
+
 - IRL transfer: +3 to +8
 
 ### Phase 3 (4-8+ weeks): Add one photo-realistic simulator backbone
@@ -97,9 +113,12 @@ Pick one implementation path first:
 - DISCOVERSE if you want a broad modular 3DGS + MuJoCo pipeline
 - SplatSim if you want a narrower, faster-to-prototype sim2real path
 
-Target uplift (incremental over Phases 1-2):
+Target uplift in current repo (incremental over Phases 1-2):
 
 - world model: +4 to +12
+
+Future same-facility IRL planning prior (not measured here):
+
 - IRL transfer: +3 to +10
 
 ## Practical Constraints and Risks
@@ -116,12 +135,12 @@ Track these per location and aggregate weekly:
 - Stage 2 artifact pass rate (orientation, duration fidelity, quality gate)
 - World-model success on held-out scripted tasks
 - Policy success in adapted world model
-- IRL proxy score (if available) and final IRL success
-- Gap metric: world-model success minus IRL success
+- Future same-facility IRL proxy score and final IRL success, once matched robot runs exist
+- Gap metric: world-model success minus same-facility IRL success (future)
 
 Decision thresholds:
 
-- If world-model improves but IRL does not: prioritize sim2real robustness (domain randomization, retrieval context, hard negatives).
+- If world-model improves but future matched same-facility IRL runs do not: prioritize sim2real robustness (domain randomization, retrieval context, hard negatives).
 - If both stall: increase Stage 1 coverage and task-conditional diversity before adding new frameworks.
 
 ## Future Session Template

@@ -2,11 +2,15 @@
 
 Gaussian splat to robot world model validation pipeline for same-facility world-model evaluation.
 
-Current canonical research question:
+Current canonical executable question:
 
-> Can we train a robot policy for the exact facility we plan to deploy to, using that facility's site-adapted world model, and achieve measurably better performance than the frozen baseline inside that same adapted world model?
+> Can we train a robot policy for the exact facility we plan to deploy to, using a physics-grounded site-adapted world model of that facility, and achieve measurably better performance than the frozen baseline inside that same adapted world model?
 
-This repo is intentionally scoped to same-facility world-model evidence. It does not currently answer whether the uplift generalizes to a novel facility, and it does not establish IRL deployment performance yet. IRL transfer to the same facility remains unmeasured until matched real-robot runs are added in the target facility.
+Future same-facility deployment follow-up, not answered by the current repo:
+
+> If that same-facility uplift appears in the adapted world model, does it also carry over IRL in the exact same facility?
+
+This repo is intentionally scoped to same-facility world-model evidence. Novel-facility generalization is out of scope for the canonical headline, and IRL transfer to the same facility remains unmeasured until matched real-robot runs are added in the target facility. Until then, keep the headline WM-only.
 
 ## Pipeline
 
@@ -36,7 +40,7 @@ PLY file (from BlueprintCapturePipeline)
 
 Note: Stage 3d (`wm_refresh_loop.enabled`) is now enabled by default and runs in WM-only scope.
 
-For the canonical same-facility question, use `eval_policy.headline_scope=wm_uplift`. In that mode, Stage 4e (`s4e_trained_eval`) is the sole primary gate for the report headline; Stage 4 and Stage 4d are supporting world-model evidence only.
+For the canonical same-facility WM-only question, use `eval_policy.headline_scope=wm_uplift`. In that mode, Stage 4e (`s4e_trained_eval`) is the sole primary gate for the report headline; Stage 4 and Stage 4d are supporting world-model evidence only.
 
 ## Scene-Memory Mapping (Stage 1/2/3)
 
@@ -84,7 +88,7 @@ Key controls:
 - `policy_rl_loop.*` world-refresh and policy-refine mix ratios.
 
 Expected uplift prior (not guaranteed): around `+8 to +18` absolute points in WM eval.
-IRL transfer remains unmeasured in this repo until matched real-robot runs are added.
+IRL transfer to the exact same facility remains a future follow-up question until matched real-robot runs are added.
 
 ## Quick Start
 

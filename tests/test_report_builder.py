@@ -136,10 +136,10 @@ def test_executive_summary_accepts_world_fixed_s4e_fallback(sample_config):
     }
     _add_executive_summary(lines, data, sample_config)
     rendered = "\n".join(lines)
-    assert "| Primary Headline: Same-Facility Trained Policy Uplift | PASS |" in rendered
+    assert "| Primary Headline: Same-Facility WM Policy Uplift | PASS |" in rendered
     assert "| Supporting WM Evidence: Frozen Baseline vs Adapted World Model | PASS |" in rendered
-    assert "world-model evidence only" in rendered
-    assert "makes no IRL claim" in rendered
+    assert "same-facility world-model evidence only" in rendered
+    assert "does not establish whether the gain carries over IRL in that exact same facility" in rendered
     assert "Cross-Site Discrimination" not in rendered
 
 
@@ -191,7 +191,7 @@ def test_executive_summary_wm_uplift_does_not_let_s4_only_satisfy_primary_headli
     }
     _add_executive_summary(lines, data, sample_config)
     rendered = "\n".join(lines)
-    assert "| Primary Headline: Same-Facility Trained Policy Uplift | PENDING/FAIL |" in rendered
+    assert "| Primary Headline: Same-Facility WM Policy Uplift | PENDING/FAIL |" in rendered
     assert "| Supporting WM Evidence: Frozen Baseline vs Adapted World Model | PASS |" in rendered
     assert "does not satisfy the `wm_uplift` headline" in rendered
 
@@ -323,14 +323,59 @@ def test_report_builder_wm_uplift_reorders_sections_and_marks_supporting_evidenc
     output_path = tmp_path / "report.md"
     result = build_report(sample_config, work_dir, fmt="markdown", output_path=output_path)
     content = result.read_text()
-    assert "same-facility trained-policy uplift in the adapted world model only" in content
-    assert "makes no IRL claim" in content
-    assert "### Primary Headline: Same-Facility Trained Policy Uplift (S4e)" in content
+    assert "same-facility policy uplift in the adapted world model only" in content
+    assert "does not answer whether that uplift carries over IRL in the exact same facility" in content
+    assert "### Primary Headline: Same-Facility WM Policy Uplift (S4e)" in content
     assert "### Supporting Evidence: Frozen Policy Baseline vs Adapted World Model (S4)" in content
     assert "### Supporting Evidence: Policy Training Attribution Control (S4d)" in content
-    assert content.index("### Primary Headline: Same-Facility Trained Policy Uplift (S4e)") < content.index(
+    assert content.index("### Primary Headline: Same-Facility WM Policy Uplift (S4e)") < content.index(
         "### Supporting Evidence: Frozen Policy Baseline vs Adapted World Model (S4)"
     )
     assert content.index("### Supporting Evidence: Frozen Policy Baseline vs Adapted World Model (S4)") < content.index(
         "### Supporting Evidence: Policy Training Attribution Control (S4d)"
     )
+
+
+def test_report_builder_fixed_world_claim_uses_s4d_as_primary_headline(tmp_path, sample_config):
+    from blueprint_validation.common import write_json
+    from blueprint_validation.reporting.report_builder import build_report
+
+    sample_config.eval_policy.claim_protocol = "fixed_same_facility_uplift"
+    sample_config.eval_policy.primary_endpoint = "task_success"
+    sample_config.eval_policy.freeze_world_snapshot = True
+
+    work_dir = tmp_path / "outputs"
+    fac_dir = work_dir / "test_facility"
+    fac_dir.mkdir(parents=True)
+
+    write_json(
+        {
+            "stage_name": "s4d_policy_pair_eval",
+            "status": "success",
+            "metrics": {
+                "claim_protocol": "fixed_same_facility_uplift",
+                "primary_endpoint": "task_success",
+                "num_eval_cells": 12,
+                "claim_passed": True,
+                "bootstrap_site_vs_frozen": {
+                    "mean_lift_pp": 12.0,
+                    "ci_low_pp": 4.0,
+                    "ci_high_pp": 18.0,
+                    "positive_seed_count": 4,
+                },
+                "arm_summary": {
+                    "site_trained": {
+                        "per_seed_success_rate": {"0": 0.7, "1": 0.8, "2": 0.75, "3": 0.72}
+                    }
+                },
+            },
+        },
+        fac_dir / "s4d_policy_pair_eval_result.json",
+    )
+
+    output_path = tmp_path / "report.md"
+    result = build_report(sample_config, work_dir, fmt="markdown", output_path=output_path)
+    content = result.read_text()
+    assert "Primary Headline: Fixed-World Same-Facility Claim" in content
+    assert "fixed-world same-facility claim protocol in simulation only" in content
+    assert "Primary Headline: Fixed-World Same-Facility Claim | PASS" in content

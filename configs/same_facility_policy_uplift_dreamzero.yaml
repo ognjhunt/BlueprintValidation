@@ -8,7 +8,8 @@ facilities:
     description: Target deployment facility world model
 
 eval_policy:
-  # Canonical same-facility headline: trained policy vs frozen baseline in the adapted world model.
+  # Canonical executable headline: same-facility WM uplift only.
+  # This is for the deployment site's adapted world model, not novel-site or IRL generalization.
   mode: research
   headline_scope: wm_uplift
   num_rollouts: 24

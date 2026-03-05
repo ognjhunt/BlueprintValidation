@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Dict
 
 from ..common import StageResult, get_logger, read_json, write_json
 from ..config import FacilityConfig, ValidationConfig
+from ..evaluation.claim_protocol import claim_protocol_enabled
 from ..policy_adapters import get_policy_adapter
 from .base import PipelineStage
 
@@ -102,42 +104,122 @@ class PolicyPairTrainStage(PipelineStage):
         )
 
         common_model, common_checkpoint = adapter.base_model_ref(config.eval_policy)
-        base_result = adapter.train_policy(
-            base_model_name=common_model,
-            base_checkpoint=common_checkpoint,
-            dataset_root=base_dataset_root.parent,
-            dataset_name=config.rollout_dataset.baseline_dataset_name,
-            output_dir=base_root / "train",
-            finetune_config=config.policy_finetune,
-        )
-        site_result = adapter.train_policy(
-            base_model_name=common_model,
-            base_checkpoint=common_checkpoint,
-            dataset_root=site_dataset_root.parent,
-            dataset_name=config.rollout_dataset.adapted_dataset_name,
-            output_dir=site_root / "train",
-            finetune_config=config.policy_finetune,
-        )
+        if claim_protocol_enabled(config):
+            base_runs = []
+            site_runs = []
+            for seed in [int(v) for v in list(config.eval_policy.claim_replication.training_seeds)]:
+                seed_cfg = replace(config.policy_finetune, seed=int(seed))
+                base_result = adapter.train_policy(
+                    base_model_name=common_model,
+                    base_checkpoint=common_checkpoint,
+                    dataset_root=base_dataset_root.parent,
+                    dataset_name=config.rollout_dataset.baseline_dataset_name,
+                    output_dir=base_root / f"seed_{seed:02d}",
+                    finetune_config=seed_cfg,
+                )
+                site_result = adapter.train_policy(
+                    base_model_name=common_model,
+                    base_checkpoint=common_checkpoint,
+                    dataset_root=site_dataset_root.parent,
+                    dataset_name=config.rollout_dataset.adapted_dataset_name,
+                    output_dir=site_root / f"seed_{seed:02d}",
+                    finetune_config=seed_cfg,
+                )
+                base_runs.append(
+                    {
+                        "seed": int(seed),
+                        "status": base_result.status,
+                        "adapted_checkpoint_path": str(base_result.adapted_checkpoint_path or ""),
+                        "elapsed_seconds": base_result.elapsed_seconds,
+                        "detail": base_result.detail,
+                    }
+                )
+                site_runs.append(
+                    {
+                        "seed": int(seed),
+                        "status": site_result.status,
+                        "adapted_checkpoint_path": str(site_result.adapted_checkpoint_path or ""),
+                        "elapsed_seconds": site_result.elapsed_seconds,
+                        "detail": site_result.detail,
+                    }
+                )
+            primary_base = next((run for run in base_runs if run["status"] == "success"), base_runs[0])
+            primary_site = next((run for run in site_runs if run["status"] == "success"), site_runs[0])
+            status = (
+                "success"
+                if all(run["status"] == "success" for run in base_runs + site_runs)
+                else "failed"
+            )
+            summary = {
+                "claim_protocol": "fixed_same_facility_uplift",
+                "policy_base": primary_base,
+                "policy_site": primary_site,
+                "replicates": {
+                    "generic_control": base_runs,
+                    "site_trained": site_runs,
+                },
+            }
+            metrics = {
+                "policy_base_status": primary_base["status"],
+                "policy_site_status": primary_site["status"],
+                "policy_base_seconds": round(float(primary_base["elapsed_seconds"]), 2),
+                "policy_site_seconds": round(float(primary_site["elapsed_seconds"]), 2),
+                "num_training_seeds": len(base_runs),
+                "num_successful_generic_control": sum(
+                    1 for run in base_runs if run["status"] == "success"
+                ),
+                "num_successful_site_trained": sum(
+                    1 for run in site_runs if run["status"] == "success"
+                ),
+            }
+            detail = (
+                f"generic_control={metrics['num_successful_generic_control']}/{len(base_runs)} "
+                f"site_trained={metrics['num_successful_site_trained']}/{len(site_runs)}"
+            )
+        else:
+            base_result = adapter.train_policy(
+                base_model_name=common_model,
+                base_checkpoint=common_checkpoint,
+                dataset_root=base_dataset_root.parent,
+                dataset_name=config.rollout_dataset.baseline_dataset_name,
+                output_dir=base_root / "train",
+                finetune_config=config.policy_finetune,
+            )
+            site_result = adapter.train_policy(
+                base_model_name=common_model,
+                base_checkpoint=common_checkpoint,
+                dataset_root=site_dataset_root.parent,
+                dataset_name=config.rollout_dataset.adapted_dataset_name,
+                output_dir=site_root / "train",
+                finetune_config=config.policy_finetune,
+            )
 
-        status = (
-            "success"
-            if base_result.status == "success" and site_result.status == "success"
-            else "failed"
-        )
-        summary = {
-            "policy_base": {
-                "status": base_result.status,
-                "adapted_checkpoint_path": str(base_result.adapted_checkpoint_path or ""),
-                "elapsed_seconds": base_result.elapsed_seconds,
-                "detail": base_result.detail,
-            },
-            "policy_site": {
-                "status": site_result.status,
-                "adapted_checkpoint_path": str(site_result.adapted_checkpoint_path or ""),
-                "elapsed_seconds": site_result.elapsed_seconds,
-                "detail": site_result.detail,
-            },
-        }
+            status = (
+                "success"
+                if base_result.status == "success" and site_result.status == "success"
+                else "failed"
+            )
+            summary = {
+                "policy_base": {
+                    "status": base_result.status,
+                    "adapted_checkpoint_path": str(base_result.adapted_checkpoint_path or ""),
+                    "elapsed_seconds": base_result.elapsed_seconds,
+                    "detail": base_result.detail,
+                },
+                "policy_site": {
+                    "status": site_result.status,
+                    "adapted_checkpoint_path": str(site_result.adapted_checkpoint_path or ""),
+                    "elapsed_seconds": site_result.elapsed_seconds,
+                    "detail": site_result.detail,
+                },
+            }
+            metrics = {
+                "policy_base_status": base_result.status,
+                "policy_site_status": site_result.status,
+                "policy_base_seconds": round(base_result.elapsed_seconds, 2),
+                "policy_site_seconds": round(site_result.elapsed_seconds, 2),
+            }
+            detail = f"base={base_result.detail} site={site_result.detail}"
         write_json(summary, train_root / "policy_pair_train_summary.json")
 
         return StageResult(
@@ -146,15 +228,10 @@ class PolicyPairTrainStage(PipelineStage):
             elapsed_seconds=0,
             outputs={
                 "train_root": str(train_root),
-                "policy_base_checkpoint": str(base_result.adapted_checkpoint_path or ""),
-                "policy_site_checkpoint": str(site_result.adapted_checkpoint_path or ""),
+                "policy_base_checkpoint": str(summary["policy_base"].get("adapted_checkpoint_path", "")),
+                "policy_site_checkpoint": str(summary["policy_site"].get("adapted_checkpoint_path", "")),
                 "summary_path": str(train_root / "policy_pair_train_summary.json"),
             },
-            metrics={
-                "policy_base_status": base_result.status,
-                "policy_site_status": site_result.status,
-                "policy_base_seconds": round(base_result.elapsed_seconds, 2),
-                "policy_site_seconds": round(site_result.elapsed_seconds, 2),
-            },
-            detail=f"base={base_result.detail} site={site_result.detail}",
+            metrics=metrics,
+            detail=detail,
         )

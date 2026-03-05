@@ -5,8 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List
 
-from ..common import StageResult, get_logger, write_json
+from ..common import StageResult, get_logger, read_json, write_json
 from ..config import FacilityConfig, ValidationConfig
+from ..evaluation.claim_protocol import claim_protocol_enabled
 from ..training.rlds_export import (
     convert_jsonl_to_tfrecord,
     export_rollouts_to_rlds_jsonl,
@@ -157,6 +158,30 @@ class RLDSExportStage(PipelineStage):
         train_rollouts = list(curriculum_result.get("train_rollouts", []))
         eval_rollouts = list(curriculum_result.get("eval_rollouts", []))
         curriculum_manifest = dict(curriculum_result.get("curriculum", {}))
+        if claim_protocol_enabled(config):
+            claim_split_path = work_dir / "policy_eval" / "claim_split_manifest.json"
+            if not claim_split_path.exists():
+                return StageResult(
+                    stage_name=self.name,
+                    status="failed",
+                    elapsed_seconds=0,
+                    detail="Claim protocol requires policy_eval/claim_split_manifest.json.",
+                )
+            claim_split = read_json(claim_split_path)
+            train_ids = {str(v) for v in claim_split.get("train_eval_cell_ids", [])}
+            eval_ids = {str(v) for v in claim_split.get("eval_eval_cell_ids", [])}
+            train_rollouts = [
+                row
+                for row in filtered_rollouts
+                if str(row.get("eval_cell_id", "")) in train_ids
+            ]
+            eval_rollouts = [
+                row
+                for row in filtered_rollouts
+                if str(row.get("eval_cell_id", "")) in eval_ids
+            ]
+            curriculum_manifest["train_pair_ids"] = sorted(train_ids)
+            curriculum_manifest["eval_pair_ids"] = sorted(eval_ids)
         if not filtered_rollouts:
             return StageResult(
                 stage_name=self.name,
@@ -187,8 +212,8 @@ class RLDSExportStage(PipelineStage):
 
         split_manifest_path = stage_dir / "split_manifest.json"
         split_manifest = {
-            "train_pair_ids": list(curriculum_result.get("train_pair_ids", [])),
-            "eval_pair_ids": list(curriculum_result.get("eval_pair_ids", [])),
+            "train_pair_ids": list(curriculum_manifest.get("train_pair_ids", curriculum_result.get("train_pair_ids", []))),
+            "eval_pair_ids": list(curriculum_manifest.get("eval_pair_ids", curriculum_result.get("eval_pair_ids", []))),
         }
         write_json(split_manifest, split_manifest_path)
         curriculum_manifest_path = stage_dir / "curriculum_manifest.json"

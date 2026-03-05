@@ -17,6 +17,14 @@ from ..evaluation.openvla_runner import (
 )
 from ..evaluation.judge_audit import write_judge_audit_csv
 from ..evaluation.action_overlay import overlay_scripted_trace_on_video
+from ..evaluation.claim_protocol import (
+    build_claim_split_payload,
+    build_task_specs,
+    checkpoint_content_hash,
+    claim_manifest_payload,
+    claim_protocol_enabled,
+    paired_eval_key,
+)
 from ..evaluation.task_hints import (
     balance_eval_tasks,
     recommended_rollouts_per_condition,
@@ -43,6 +51,7 @@ from ..evaluation.scripted_rollout_driver import (
     run_scripted_rollout,
 )
 from ..evaluation.rollout_utils import run_rollout_with_adapter
+from ..evaluation.task_success import evaluate_task_success
 from ..policy_adapters import get_policy_adapter
 from .base import PipelineStage
 
@@ -67,6 +76,40 @@ class PolicyEvalStage(PipelineStage):
     ) -> StageResult:
         eval_dir = work_dir / "policy_eval"
         eval_dir.mkdir(parents=True, exist_ok=True)
+        fixed_claim_protocol = claim_protocol_enabled(config)
+        if fixed_claim_protocol:
+            if not bool(config.eval_policy.freeze_world_snapshot):
+                return StageResult(
+                    stage_name=self.name,
+                    status="failed",
+                    elapsed_seconds=0,
+                    detail=(
+                        "Fixed-world claim protocol requires "
+                        "eval_policy.freeze_world_snapshot=true."
+                    ),
+                )
+            if str(config.eval_policy.primary_endpoint).strip().lower() != "task_success":
+                return StageResult(
+                    stage_name=self.name,
+                    status="failed",
+                    elapsed_seconds=0,
+                    detail=(
+                        "Fixed-world claim protocol requires "
+                        "eval_policy.primary_endpoint=task_success."
+                    ),
+                )
+            for moving_stage in ("s3c_policy_rl_loop", "s3d_wm_refresh_loop"):
+                stage_result = previous_results.get(moving_stage)
+                if stage_result and stage_result.status == "success":
+                    return StageResult(
+                        stage_name=self.name,
+                        status="failed",
+                        elapsed_seconds=0,
+                        detail=(
+                            "Fixed-world claim protocol rejects refreshed-world artifacts from "
+                            f"{moving_stage}. Freeze a single Stage 3 adapted checkpoint."
+                        ),
+                    )
 
         # Check for fine-tuned checkpoint produced by Stage 3.
         adapted_dir = None
@@ -222,6 +265,55 @@ class PolicyEvalStage(PipelineStage):
                 detail="Could not extract initial frames for rollout assignments.",
             )
 
+        world_snapshot_hash = ""
+        task_specs: List[Dict[str, object]] = []
+        task_specs_by_prompt: Dict[str, Dict[str, object]] = {}
+        claim_manifest_path = eval_dir / "claim_manifest.json"
+        task_specs_path = eval_dir / "task_specs.json"
+        claim_split_manifest_path = eval_dir / "claim_split_manifest.json"
+        if fixed_claim_protocol:
+            world_snapshot_hash = checkpoint_content_hash(adapted_dir)
+            task_specs = build_task_specs(
+                config=config,
+                facility=facility,
+                tasks=tasks,
+            )
+            task_specs_by_prompt = {str(spec["task_prompt"]): spec for spec in task_specs}
+            claim_split_payload = build_claim_split_payload(
+                task_specs=task_specs,
+                assignments=rollout_assignments,
+                world_snapshot_hash=world_snapshot_hash,
+                train_split=float(config.rollout_dataset.train_split),
+                split_strategy=str(config.eval_policy.split_strategy),
+            )
+            write_json(task_specs, task_specs_path)
+            write_json(claim_split_payload, claim_split_manifest_path)
+            write_json(
+                claim_manifest_payload(
+                    config=config,
+                    facility=facility,
+                    adapted_checkpoint=adapted_dir,
+                    world_snapshot_hash=world_snapshot_hash,
+                    task_specs_path=task_specs_path,
+                    split_manifest_path=claim_split_manifest_path,
+                ),
+                claim_manifest_path,
+            )
+            claim_cell_lookup = {
+                (int(cell.get("rollout_index", -1)), str(cell.get("task_prompt", "")).strip()): cell
+                for cell in list(claim_split_payload.get("cells", []))
+            }
+            for assignment in rollout_assignments:
+                claim_cell = claim_cell_lookup.get(
+                    (int(assignment.get("rollout_index", -1)), str(assignment.get("task", "")).strip())
+                )
+                if not claim_cell:
+                    continue
+                assignment["eval_cell_id"] = claim_cell.get("eval_cell_id")
+                assignment["task_spec_id"] = claim_cell.get("task_spec_id")
+                assignment["start_region_id"] = claim_cell.get("start_region_id")
+                assignment["world_snapshot_hash"] = world_snapshot_hash
+
         num_rollouts = len(rollout_assignments)
         headline_scope = _headline_scope(config)
         claim_mode = (config.eval_policy.mode or "claim").strip().lower() == "claim"
@@ -320,6 +412,7 @@ class PolicyEvalStage(PipelineStage):
         observed_action_dims: set[int] = set()
         observed_policy_dims: set[int] = set()
         observed_world_dims: set[int] = set()
+        claim_state_failures: List[str] = []
 
         conditions = list(config.eval_policy.conditions)
         for condition in conditions:
@@ -524,54 +617,61 @@ class PolicyEvalStage(PipelineStage):
                             pass
 
                 all_scores.append(
-                    {
-                        "condition": condition,
-                        "task": task,
-                        "rollout_index": rollout_idx,
-                        "task_score": score.task_score,
-                        "visual_score": score.visual_score,
-                        "spatial_score": score.spatial_score,
-                        "reasoning": score.reasoning,
-                        "video_path": str(rollout.video_path),
-                        "num_steps": rollout_step_count,
-                        "rollout_frame_count": rollout_frame_count,
-                        "action_sequence": getattr(rollout, "action_sequence", []),
-                        "start_clip_index": clip_index,
-                        "start_clip_name": clip_stub,
-                        "start_path_type": str(assignment.get("path_type", "unknown")),
-                        "target_instance_id": assignment.get("target_instance_id"),
-                        "target_label": assignment.get("target_label"),
-                        "target_grounded": bool(assignment.get("target_grounded", False)),
-                        "assignment_quality_score": assignment.get("assignment_quality_score"),
-                        "assignment_reject_reason": assignment.get("assignment_reject_reason"),
-                        "start_frame_orientation_fix_applied": assignment.get(
-                            "start_frame_orientation_fix_applied", "none"
-                        ),
-                        "is_manipulation_task": _is_manipulation_task(task),
-                        "grasp_acquired": (
-                            score.grasp_acquired
-                            if isinstance(score, ManipulationJudgeScore)
-                            else None
-                        ),
-                        "lifted_clear": (
-                            score.lifted_clear
-                            if isinstance(score, ManipulationJudgeScore)
-                            else None
-                        ),
-                        "placed_in_target": (
-                            score.placed_in_target
-                            if isinstance(score, ManipulationJudgeScore)
-                            else None
-                        ),
-                        "stable_after_place": (
-                            score.stable_after_place
-                            if isinstance(score, ManipulationJudgeScore)
-                            else None
-                        ),
-                        "action_contract": action_contract,
-                        "overlay_video_path": None,
-                        "overlay_mode": "raw",
-                    }
+                    _attach_claim_row_metadata(
+                        base_row={
+                            "condition": condition,
+                            "task": task,
+                            "rollout_index": rollout_idx,
+                            "task_score": score.task_score,
+                            "visual_score": score.visual_score,
+                            "spatial_score": score.spatial_score,
+                            "reasoning": score.reasoning,
+                            "video_path": str(rollout.video_path),
+                            "num_steps": rollout_step_count,
+                            "rollout_frame_count": rollout_frame_count,
+                            "action_sequence": getattr(rollout, "action_sequence", []),
+                            "start_clip_index": clip_index,
+                            "start_clip_name": clip_stub,
+                            "start_path_type": str(assignment.get("path_type", "unknown")),
+                            "target_instance_id": assignment.get("target_instance_id"),
+                            "target_label": assignment.get("target_label"),
+                            "target_grounded": bool(assignment.get("target_grounded", False)),
+                            "assignment_quality_score": assignment.get("assignment_quality_score"),
+                            "assignment_reject_reason": assignment.get("assignment_reject_reason"),
+                            "start_frame_orientation_fix_applied": assignment.get(
+                                "start_frame_orientation_fix_applied", "none"
+                            ),
+                            "is_manipulation_task": _is_manipulation_task(task),
+                            "grasp_acquired": (
+                                score.grasp_acquired
+                                if isinstance(score, ManipulationJudgeScore)
+                                else None
+                            ),
+                            "lifted_clear": (
+                                score.lifted_clear
+                                if isinstance(score, ManipulationJudgeScore)
+                                else None
+                            ),
+                            "placed_in_target": (
+                                score.placed_in_target
+                                if isinstance(score, ManipulationJudgeScore)
+                                else None
+                            ),
+                            "stable_after_place": (
+                                score.stable_after_place
+                                if isinstance(score, ManipulationJudgeScore)
+                                else None
+                            ),
+                            "action_contract": action_contract,
+                            "overlay_video_path": None,
+                            "overlay_mode": "raw",
+                        },
+                        assignment=assignment,
+                        rollout=rollout,
+                        task_specs_by_prompt=task_specs_by_prompt,
+                        fixed_claim_protocol=fixed_claim_protocol,
+                        claim_state_failures=claim_state_failures,
+                    )
                 )
 
         # Compute aggregate metrics per condition
@@ -678,6 +778,10 @@ class PolicyEvalStage(PipelineStage):
 
         metrics = {
             "headline_scope": headline_scope,
+            "claim_protocol": (
+                "fixed_same_facility_uplift" if fixed_claim_protocol else "none"
+            ),
+            "primary_endpoint": str(config.eval_policy.primary_endpoint),
             "baseline_mean_task_score": round(float(baseline_mean), 3),
             "adapted_mean_task_score": round(float(adapted_mean), 3),
             "improvement_pct": round(float(improvement), 2),
@@ -733,10 +837,22 @@ class PolicyEvalStage(PipelineStage):
             "num_unresolved_manip_tasks_dropped": int(unresolved_manip_tasks_dropped),
             "num_rejected_task_start_assignments": int(num_rejected_task_start_assignments),
             "low_score_breakdown": _build_low_score_breakdown(all_scores),
+            "world_snapshot_hash": world_snapshot_hash or None,
+            "claim_manifest_path": str(claim_manifest_path) if fixed_claim_protocol else "",
+            "task_specs_path": str(task_specs_path) if fixed_claim_protocol else "",
+            "claim_split_manifest_path": (
+                str(claim_split_manifest_path) if fixed_claim_protocol else ""
+            ),
+            "num_claim_state_failures": len(claim_state_failures),
         }
 
         write_json(metrics, eval_dir / "policy_eval_report.json")
         detail_lines = list(scoring_failures[:5])
+        if fixed_claim_protocol and claim_state_failures:
+            detail_lines.append(
+                f"Claim protocol missing deterministic task-state evidence for "
+                f"{len(claim_state_failures)} rollouts."
+            )
         if (
             bool(config.eval_policy.reliability.enforce_stage_success)
             and not bool(reliability_gate.get("passed", False))
@@ -758,6 +874,7 @@ class PolicyEvalStage(PipelineStage):
             status=(
                 "success"
                 if all_scores
+                and (not fixed_claim_protocol or not claim_state_failures)
                 and (not claim_mode or claim_passed)
                 and (
                     not bool(config.eval_policy.reliability.enforce_stage_success)
@@ -806,6 +923,9 @@ def _run_world_model_only_eval(
     fail_on_short_rollout: bool,
 ) -> StageResult:
     rollout_driver = (config.eval_policy.rollout_driver or "scripted").strip().lower()
+    fixed_claim_protocol = False
+    task_specs_by_prompt: Dict[str, Dict[str, object]] = {}
+    claim_state_failures: List[str] = []
     if rollout_driver not in {"scripted", "both"}:
         return StageResult(
             stage_name="s4_policy_eval",
@@ -1083,50 +1203,63 @@ def _run_world_model_only_eval(
                         pass
 
             all_scores.append(
-                {
-                    "condition": condition,
-                    "task": task,
-                    "rollout_index": rollout_idx,
-                    "trace_id": trace["trace_id"],
-                    "driver_type": getattr(rollout, "driver_type", "scripted"),
-                    "task_score": score.task_score,
-                    "visual_score": score.visual_score,
-                    "spatial_score": score.spatial_score,
-                    "reasoning": score.reasoning,
-                    "video_path": str(rollout.video_path),
-                    "num_steps": rollout_step_count,
-                    "rollout_frame_count": rollout_frame_count,
-                    "action_sequence": getattr(rollout, "action_sequence", []),
-                    "start_clip_index": clip_index,
-                    "start_clip_name": clip_stub,
-                    "start_path_type": str(assignment.get("path_type", "unknown")),
-                    "target_instance_id": assignment.get("target_instance_id"),
-                    "target_label": assignment.get("target_label"),
-                    "target_grounded": bool(assignment.get("target_grounded", False)),
-                    "assignment_quality_score": assignment.get("assignment_quality_score"),
-                    "assignment_reject_reason": assignment.get("assignment_reject_reason"),
-                    "start_frame_orientation_fix_applied": assignment.get(
-                        "start_frame_orientation_fix_applied", "none"
-                    ),
-                    "is_manipulation_task": _is_manipulation_task(task),
-                    "grasp_acquired": (
-                        score.grasp_acquired if isinstance(score, ManipulationJudgeScore) else None
-                    ),
-                    "lifted_clear": (
-                        score.lifted_clear if isinstance(score, ManipulationJudgeScore) else None
-                    ),
-                    "placed_in_target": (
-                        score.placed_in_target if isinstance(score, ManipulationJudgeScore) else None
-                    ),
-                    "stable_after_place": (
-                        score.stable_after_place
-                        if isinstance(score, ManipulationJudgeScore)
-                        else None
-                    ),
-                    "action_contract": action_contract,
-                    "overlay_video_path": str(overlay_video_path) if overlay_video_path else None,
-                    "overlay_mode": overlay_mode,
-                }
+                _attach_claim_row_metadata(
+                    base_row={
+                        "condition": condition,
+                        "task": task,
+                        "rollout_index": rollout_idx,
+                        "trace_id": trace["trace_id"],
+                        "driver_type": getattr(rollout, "driver_type", "scripted"),
+                        "task_score": score.task_score,
+                        "visual_score": score.visual_score,
+                        "spatial_score": score.spatial_score,
+                        "reasoning": score.reasoning,
+                        "video_path": str(rollout.video_path),
+                        "num_steps": rollout_step_count,
+                        "rollout_frame_count": rollout_frame_count,
+                        "action_sequence": getattr(rollout, "action_sequence", []),
+                        "start_clip_index": clip_index,
+                        "start_clip_name": clip_stub,
+                        "start_path_type": str(assignment.get("path_type", "unknown")),
+                        "target_instance_id": assignment.get("target_instance_id"),
+                        "target_label": assignment.get("target_label"),
+                        "target_grounded": bool(assignment.get("target_grounded", False)),
+                        "assignment_quality_score": assignment.get("assignment_quality_score"),
+                        "assignment_reject_reason": assignment.get("assignment_reject_reason"),
+                        "start_frame_orientation_fix_applied": assignment.get(
+                            "start_frame_orientation_fix_applied", "none"
+                        ),
+                        "is_manipulation_task": _is_manipulation_task(task),
+                        "grasp_acquired": (
+                            score.grasp_acquired
+                            if isinstance(score, ManipulationJudgeScore)
+                            else None
+                        ),
+                        "lifted_clear": (
+                            score.lifted_clear
+                            if isinstance(score, ManipulationJudgeScore)
+                            else None
+                        ),
+                        "placed_in_target": (
+                            score.placed_in_target
+                            if isinstance(score, ManipulationJudgeScore)
+                            else None
+                        ),
+                        "stable_after_place": (
+                            score.stable_after_place
+                            if isinstance(score, ManipulationJudgeScore)
+                            else None
+                        ),
+                        "action_contract": action_contract,
+                        "overlay_video_path": str(overlay_video_path) if overlay_video_path else None,
+                        "overlay_mode": overlay_mode,
+                    },
+                    assignment=assignment,
+                    rollout=rollout,
+                    task_specs_by_prompt=task_specs_by_prompt,
+                    fixed_claim_protocol=fixed_claim_protocol,
+                    claim_state_failures=claim_state_failures,
+                )
             )
         _release_world_model(world_model)
 
@@ -1496,31 +1629,93 @@ def _resolve_adapted_policy_checkpoint(
     return None
 
 
+def _attach_claim_row_metadata(
+    *,
+    base_row: Dict[str, object],
+    assignment: dict,
+    rollout,
+    task_specs_by_prompt: Dict[str, Dict[str, object]],
+    fixed_claim_protocol: bool,
+    claim_state_failures: List[str],
+) -> Dict[str, object]:
+    row = dict(base_row)
+    row["eval_cell_id"] = assignment.get("eval_cell_id")
+    row["task_spec_id"] = assignment.get("task_spec_id")
+    row["start_region_id"] = assignment.get("start_region_id")
+    row["world_snapshot_hash"] = assignment.get("world_snapshot_hash")
+    row["state_trace"] = list(getattr(rollout, "state_trace", []) or [])
+    if not fixed_claim_protocol:
+        row["task_success"] = None
+        row["task_success_reason"] = ""
+        row["task_success_available"] = False
+        return row
+
+    task_spec = task_specs_by_prompt.get(str(row.get("task", "")).strip())
+    if not task_spec:
+        claim_state_failures.append(f"Missing task spec for task='{row.get('task', '')}'")
+        row["task_success"] = False
+        row["task_success_reason"] = "missing_task_spec"
+        row["task_success_available"] = False
+        return row
+
+    success_payload = evaluate_task_success(
+        task_spec=task_spec,
+        rollout_row=row,
+        state_trace=row.get("state_trace") or [],
+    )
+    row.update(success_payload)
+    if not bool(success_payload.get("task_success_available", False)):
+        claim_state_failures.append(
+            f"Unavailable task-success endpoint for {str(row.get('condition', ''))}:"
+            f"{str(row.get('task', ''))}"
+        )
+    return row
+
+
 def _build_pairwise_metrics(all_scores: List[Dict], conditions: List[str]) -> Dict:
     """Compute improvement, win rate, and p-value for each pair of conditions."""
     pairwise = {}
+    has_explicit_pairing = any(str(row.get("eval_cell_id", "")).strip() for row in all_scores)
     for i, c1 in enumerate(conditions):
         for c2 in conditions[i + 1 :]:
-            s1 = [s for s in all_scores if s["condition"] == c1]
-            s2 = [s for s in all_scores if s["condition"] == c2]
-            if not s1 or not s2:
-                continue
-            mean1 = float(np.mean([s["task_score"] for s in s1]))
-            mean2 = float(np.mean([s["task_score"] for s in s2]))
+            if has_explicit_pairing:
+                grouped: Dict[str, Dict[str, Dict]] = {}
+                for row in all_scores:
+                    condition = str(row.get("condition", "")).strip()
+                    if condition not in {c1, c2}:
+                        continue
+                    grouped.setdefault(paired_eval_key(row), {})[condition] = row
+                pairs = [
+                    (rows[c1], rows[c2])
+                    for rows in grouped.values()
+                    if c1 in rows and c2 in rows
+                ]
+                if not pairs:
+                    continue
+                left_rows = [left for left, _ in pairs]
+                right_rows = [right for _, right in pairs]
+            else:
+                left_rows = [s for s in all_scores if s["condition"] == c1]
+                right_rows = [s for s in all_scores if s["condition"] == c2]
+                if not left_rows or not right_rows:
+                    continue
+                min_len = min(len(left_rows), len(right_rows))
+                pairs = list(zip(left_rows[:min_len], right_rows[:min_len]))
+            mean1 = float(np.mean([s["task_score"] for s in left_rows]))
+            mean2 = float(np.mean([s["task_score"] for s in right_rows]))
             improvement = ((mean2 - mean1) / max(mean1, 1e-8)) * 100
             abs_diff = mean2 - mean1
-            min_len = min(len(s1), len(s2))
             wins = sum(
-                1 for a, b in zip(s1[:min_len], s2[:min_len]) if b["task_score"] > a["task_score"]
+                1 for a, b in pairs if float(b["task_score"]) > float(a["task_score"])
             )
-            win_rate = wins / max(min_len, 1)
+            win_rate = wins / max(len(pairs), 1)
             p_value = None
-            if min_len >= 2:
+            if len(pairs) >= 2:
                 try:
                     from scipy import stats
 
-                    v1 = [s["task_score"] for s in s1[:min_len]]
-                    v2 = [s["task_score"] for s in s2[:min_len]]
+                    v1 = [left["task_score"] for left, _ in pairs]
+                    v2 = [right["task_score"] for _, right in pairs]
                     _, p_value = stats.ttest_rel(v1, v2)
                     p_value = float(p_value)
                 except ImportError:

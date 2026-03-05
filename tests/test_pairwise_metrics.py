@@ -66,3 +66,19 @@ def test_manipulation_success_rate_empty():
     from blueprint_validation.stages.s4_policy_eval import _manipulation_success_rate
 
     assert _manipulation_success_rate([]) == 0.0
+
+
+def test_build_pairwise_metrics_uses_eval_cell_id_not_row_order():
+    from blueprint_validation.stages.s4_policy_eval import _build_pairwise_metrics
+
+    scores = [
+        {"condition": "adapted", "task_score": 2.0, "eval_cell_id": "cell_b"},
+        {"condition": "baseline", "task_score": 1.0, "eval_cell_id": "cell_a"},
+        {"condition": "baseline", "task_score": 3.0, "eval_cell_id": "cell_b"},
+        {"condition": "adapted", "task_score": 4.0, "eval_cell_id": "cell_a"},
+    ]
+    result = _build_pairwise_metrics(scores, ["baseline", "adapted"])
+    pair = result["baseline_vs_adapted"]
+    assert pair["baseline_mean"] == 2.0
+    assert pair["adapted_mean"] == 3.0
+    assert pair["absolute_difference"] == 1.0
