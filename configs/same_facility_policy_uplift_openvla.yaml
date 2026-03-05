@@ -1,0 +1,61 @@
+schema_version: v1
+project_name: Same-Facility Policy Uplift (OpenVLA)
+
+facilities:
+  facility_a:
+    name: Facility A
+    ply_path: ./data/facilities/facility_a/splat.ply
+    description: Target deployment facility world model
+
+eval_policy:
+  mode: research
+  headline_scope: dual
+  num_rollouts: 24
+  min_absolute_difference: 1.0
+  min_manip_success_delta_pp: 15.0
+  tasks:
+    - Navigate to the prep counter
+    - Approach the sink
+  manipulation_tasks:
+    - Pick up the bowl from the counter and place it in the sink
+    - Pick up the bottle from the shelf and place it in the target zone
+
+policy_finetune:
+  enabled: true
+
+rollout_dataset:
+  enabled: true
+  selection_mode: success_near_miss
+  near_miss_min_task_score: 5.0
+  near_miss_max_task_score: 6.99
+
+policy_compare:
+  enabled: true
+  heldout_num_rollouts: 24
+  heldout_seed: 123
+  eval_world_model: adapted
+  heldout_tasks:
+    - Pick up the bottle from the shelf and place it in the target zone
+
+policy_adapter:
+  name: openvla_oft
+  openvla:
+    openvla_repo: /opt/openvla-oft
+    finetune_script: vla-scripts/finetune.py
+    base_model_name: openvla/openvla-7b
+    base_checkpoint_path: ./data/checkpoints/openvla-7b
+
+splatsim:
+  enabled: false
+
+external_interaction:
+  enabled: false
+
+action_boost:
+  enabled: false
+
+policy_rl_loop:
+  enabled: false
+
+wm_refresh_loop:
+  enabled: false

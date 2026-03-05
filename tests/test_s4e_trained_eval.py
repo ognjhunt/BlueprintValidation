@@ -124,6 +124,27 @@ def test_manipulation_success_rate():
     assert rate == 0.5  # 2 out of 4
 
 
+def test_build_same_facility_subgroup_metrics_splits_seen_and_heldout_tasks():
+    from blueprint_validation.stages.s4e_trained_eval import _build_same_facility_subgroup_metrics
+
+    metrics = _build_same_facility_subgroup_metrics(
+        all_scores=[
+            {"condition": "adapted", "rollout_index": 0, "task": "Seen task", "task_score": 6.0},
+            {"condition": "trained", "rollout_index": 0, "task": "Seen task", "task_score": 8.0},
+            {"condition": "adapted", "rollout_index": 1, "task": "Heldout task", "task_score": 5.5},
+            {"condition": "trained", "rollout_index": 1, "task": "Heldout task", "task_score": 7.0},
+        ],
+        heldout_tasks={"Heldout task"},
+    )
+
+    seen_axis = metrics["seen_task_same_facility_frozen_vs_trained"]
+    heldout_axis = metrics["heldout_task_same_facility_frozen_vs_trained"]
+    assert seen_axis["available"] is True
+    assert seen_axis["task_score_absolute_difference"] == 2.0
+    assert heldout_axis["available"] is True
+    assert heldout_axis["task_score_absolute_difference"] == 1.5
+
+
 def test_build_rollout_plan():
     from blueprint_validation.stages.s4e_trained_eval import _build_rollout_plan
 
@@ -365,3 +386,162 @@ def test_trained_eval_fails_on_invalid_prior_policy_scores_manifest(
     result = stage.run(sample_config, fac, tmp_path, previous_results)
     assert result.status == "failed"
     assert "Invalid policy scores manifest" in result.detail
+
+
+def test_trained_eval_fails_when_heldout_task_subgroup_missing(sample_config, tmp_path, monkeypatch):
+    from blueprint_validation.common import StageResult, write_json
+    from blueprint_validation.stages.s4e_trained_eval import TrainedPolicyEvalStage
+
+    sample_config.eval_policy.headline_scope = "dual"
+    sample_config.eval_policy.num_rollouts = 1
+    sample_config.policy_compare.enabled = True
+    sample_config.policy_compare.heldout_tasks = ["Heldout task"]
+    sample_config.policy_finetune.enabled = True
+    sample_config.rollout_dataset.enabled = True
+    sample_config.action_boost.enabled = False
+
+    trained_ckpt = tmp_path / "trained_ckpt"
+    adapted_ckpt = tmp_path / "adapted_ckpt"
+    trained_ckpt.mkdir(parents=True, exist_ok=True)
+    adapted_ckpt.mkdir(parents=True, exist_ok=True)
+
+    render_manifest_path = tmp_path / "renders" / "render_manifest.json"
+    render_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json({"clips": [{"clip_index": 0, "clip_name": "clip_000"}]}, render_manifest_path)
+
+    split_manifest = tmp_path / "rlds_export" / "split_manifest.json"
+    split_manifest.parent.mkdir(parents=True, exist_ok=True)
+    write_json({"train_pair_ids": [], "eval_pair_ids": ["0::Seen task"]}, split_manifest)
+
+    rollout_video = tmp_path / "trained_eval" / "trained_rollouts" / "trained_clip.mp4"
+    rollout_video.parent.mkdir(parents=True, exist_ok=True)
+    rollout_video.write_bytes(b"x")
+
+    prior_scores_path = tmp_path / "policy_eval" / "vlm_scores.json"
+    prior_scores_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(
+        {
+            "scores": [
+                {
+                    "condition": "adapted",
+                    "task": "Seen task",
+                    "rollout_index": 0,
+                    "task_score": 6.0,
+                    "video_path": str(rollout_video),
+                }
+            ]
+        },
+        prior_scores_path,
+    )
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4e_trained_eval._resolve_trained_checkpoint",
+        lambda **_kwargs: trained_ckpt,
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4e_trained_eval._resolve_eval_world_checkpoint",
+        lambda *_args, **_kwargs: (adapted_ckpt, "s3"),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4e_trained_eval._build_task_list",
+        lambda *_args, **_kwargs: (["Seen task"], 0),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4e_trained_eval.load_shared_task_start_manifest",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4e_trained_eval.build_task_start_assignments",
+        lambda **_kwargs: [
+            {
+                "rollout_index": 0,
+                "task": "Seen task",
+                "clip_index": 0,
+                "clip_name": "clip_000",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4e_trained_eval.save_shared_task_start_manifest",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4e_trained_eval.load_initial_frames_for_assignments",
+        lambda *_args, **_kwargs: {0: object()},
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4e_trained_eval.load_dreamdojo_world_model",
+        lambda **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4e_trained_eval.run_rollout_with_adapter",
+        lambda **_kwargs: SimpleNamespace(
+            video_path=rollout_video,
+            num_steps=2,
+            action_sequence=[[0.0] * 7 for _ in range(2)],
+        ),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4e_trained_eval.score_rollout",
+        lambda **_kwargs: SimpleNamespace(
+            task_score=8.0,
+            visual_score=8.0,
+            spatial_score=8.0,
+            reasoning="ok",
+        ),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4e_trained_eval.score_rollout_manipulation",
+        lambda **_kwargs: SimpleNamespace(
+            task_score=8.0,
+            visual_score=8.0,
+            spatial_score=8.0,
+            reasoning="ok",
+            grasp_acquired=True,
+            lifted_clear=True,
+            placed_in_target=True,
+            stable_after_place=True,
+        ),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4e_trained_eval.write_judge_audit_csv",
+        lambda scores, path: path.write_text(str(len(scores)), encoding="utf-8"),
+    )
+
+    class _FakeAdapter:
+        def base_model_ref(self, _eval_policy):
+            return "base_model", None
+
+        def load_policy(self, **_kwargs):
+            return object()
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4e_trained_eval.get_policy_adapter",
+        lambda *_args, **_kwargs: _FakeAdapter(),
+    )
+
+    stage = TrainedPolicyEvalStage()
+    fac = list(sample_config.facilities.values())[0]
+    previous_results = {
+        "s3b_policy_finetune": StageResult(
+            stage_name="s3b_policy_finetune",
+            status="success",
+            elapsed_seconds=0,
+            outputs={"adapted_policy_checkpoint": str(trained_ckpt)},
+        ),
+        "s4_policy_eval": StageResult(
+            stage_name="s4_policy_eval",
+            status="success",
+            elapsed_seconds=0,
+            outputs={"scores_path": str(prior_scores_path)},
+        ),
+        "s4a_rlds_export": StageResult(
+            stage_name="s4a_rlds_export",
+            status="success",
+            elapsed_seconds=0,
+            outputs={"split_manifest_path": str(split_manifest)},
+        ),
+    }
+    result = stage.run(sample_config, fac, tmp_path, previous_results)
+    assert result.status == "failed"
+    assert "Heldout-task same-facility uplift subgroup is unavailable" in result.detail

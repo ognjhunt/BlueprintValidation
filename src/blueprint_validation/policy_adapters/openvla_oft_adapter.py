@@ -28,7 +28,9 @@ class OpenVLAOFTPolicyAdapter(PolicyAdapter):
         return "openvla_oft"
 
     def base_model_ref(self, eval_config: PolicyEvalConfig) -> tuple[str, Optional[Path]]:
-        return eval_config.model_name, eval_config.checkpoint_path
+        model_name = str(self.backend.base_model_name or eval_config.model_name or "").strip()
+        checkpoint_path = self.backend.base_checkpoint_path or eval_config.checkpoint_path
+        return model_name, checkpoint_path
 
     def load_policy(
         self,

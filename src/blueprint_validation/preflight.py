@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import inspect
 import os
 import re
 import shutil
@@ -16,6 +17,7 @@ from .common import PreflightCheck, get_logger
 from .config import ValidationConfig
 from .enrichment.cosmos_runner import build_controlnet_spec
 from .training.dreamdojo_finetune import resolve_dreamdojo_experiment_name
+from .validation import ManifestValidationError, load_and_validate_manifest
 
 logger = get_logger("preflight")
 
@@ -130,6 +132,29 @@ def _canonical_policy_adapter_name(name: str) -> str:
     return key
 
 
+def _effective_headline_scope(config: ValidationConfig) -> str:
+    """Resolve headline scope after action-boost runtime overrides."""
+    scope = (getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only").strip().lower()
+    action_boost = getattr(config, "action_boost", None)
+    if (
+        scope == "wm_only"
+        and bool(getattr(action_boost, "enabled", False))
+        and bool(getattr(action_boost, "auto_switch_headline_scope_to_dual", True))
+    ):
+        return "dual"
+    return scope
+
+
+def _effective_policy_finetune_enabled(config: ValidationConfig) -> bool:
+    """Resolve policy_finetune.enabled after action-boost runtime overrides."""
+    if bool(config.policy_finetune.enabled):
+        return True
+    action_boost = getattr(config, "action_boost", None)
+    return bool(getattr(action_boost, "enabled", False)) and bool(
+        getattr(action_boost, "auto_enable_policy_finetune", True)
+    )
+
+
 def _resolve_eval_world_action_dim(config: ValidationConfig) -> int | None:
     """Resolve expected DreamDojo world-model action dim from configured experiment hints."""
     token = (config.finetune.eval_world_experiment or config.finetune.experiment_config or "").strip()
@@ -172,10 +197,15 @@ def _resolve_eval_world_action_dim(config: ValidationConfig) -> int | None:
     return int(match.group(1))
 
 
-def _claim_mode_checks(config: ValidationConfig, adapter_name: str) -> list[PreflightCheck]:
+def _claim_mode_checks(
+    config: ValidationConfig,
+    adapter_name: str,
+    *,
+    scope_override: str | None = None,
+) -> list[PreflightCheck]:
     checks: list[PreflightCheck] = []
     mode = (config.eval_policy.mode or "").strip().lower()
-    scope = (getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only").strip().lower()
+    scope = str(scope_override or getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only").strip().lower()
     checks.append(
         PreflightCheck(
             name="eval_policy:mode",
@@ -304,6 +334,23 @@ def _is_openvla_like_reference(model_name: str, checkpoint_path: Path) -> bool:
     return "openvla" in model_text or "openvla" in ckpt_text
 
 
+def _resolve_policy_base_reference_for_adapter(
+    config: ValidationConfig,
+    adapter_name: str,
+) -> tuple[str, Path]:
+    if adapter_name == "openvla_oft":
+        backend = config.policy_adapter.openvla
+        model_name = str(backend.base_model_name or config.eval_policy.model_name or "").strip()
+        checkpoint_path = backend.base_checkpoint_path or config.eval_policy.checkpoint_path
+        return model_name, checkpoint_path
+    if adapter_name == "dreamzero":
+        backend = config.policy_adapter.dreamzero
+        model_name = str(backend.base_model_name or "").strip()
+        checkpoint_path = backend.checkpoint_path
+        return model_name, checkpoint_path
+    return config.eval_policy.model_name, config.eval_policy.checkpoint_path
+
+
 def check_policy_base_reference_for_adapter(
     adapter_name: str,
     model_name: str,
@@ -317,21 +364,32 @@ def check_policy_base_reference_for_adapter(
     )
     if ckpt_exists:
         if _is_openvla_like_reference("", checkpoint_path):
+            label = "dreamzero" if adapter_name == "dreamzero" else "pi05"
             return PreflightCheck(
                 name="policy:base_reference",
                 passed=False,
                 detail=(
-                    "pi05 adapter selected but eval_policy.checkpoint_path points to an OpenVLA-like "
-                    f"artifact: {checkpoint_path}. Set a pi05/OpenPI checkpoint instead."
+                    f"{label} adapter selected but configured checkpoint points to an OpenVLA-like "
+                    f"artifact: {checkpoint_path}. Set a {label}-compatible checkpoint instead."
                 ),
             )
         return PreflightCheck(
             name="policy:base_reference",
             passed=True,
-            detail=f"pi05 checkpoint reference: {checkpoint_path}",
+            detail=f"{adapter_name} checkpoint reference: {checkpoint_path}",
         )
 
     if adapter_name == "dreamzero" and model_name:
+        if _is_openvla_like_reference(model_name, Path("")):
+            return PreflightCheck(
+                name="policy:base_reference",
+                passed=False,
+                detail=(
+                    "dreamzero adapter selected but configured model reference is OpenVLA-like: "
+                    f"{model_name}. Set policy_adapter.dreamzero.base_model_name and/or "
+                    "policy_adapter.dreamzero.checkpoint_path to DreamZero-compatible values."
+                ),
+            )
         return PreflightCheck(
             name="policy:base_reference",
             passed=True,
@@ -350,8 +408,9 @@ def check_policy_base_reference_for_adapter(
             name="policy:base_reference",
             passed=False,
             detail=(
-                "dreamzero adapter selected but eval_policy reference is missing. "
-                "Set eval_policy.model_name and/or eval_policy.checkpoint_path."
+                "dreamzero adapter selected but no DreamZero-compatible base reference is configured. "
+                "Set policy_adapter.dreamzero.base_model_name and/or "
+                "policy_adapter.dreamzero.checkpoint_path."
             ),
         )
 
@@ -550,6 +609,150 @@ def check_api_key_for_scope(env_var: str, scope: str) -> PreflightCheck:
         passed=False,
         detail=f"{env_var} not set",
     )
+
+
+def check_external_interaction_manifest(config: ValidationConfig) -> PreflightCheck:
+    """Preflight strict schema/path validation for Stage 1f input manifests."""
+    ext_cfg = config.external_interaction
+    if not bool(ext_cfg.enabled):
+        return PreflightCheck(
+            name="external_interaction:manifest",
+            passed=True,
+            detail="external_interaction.enabled=false",
+        )
+
+    manifest_path = ext_cfg.manifest_path
+    if manifest_path is None:
+        return PreflightCheck(
+            name="external_interaction:manifest",
+            passed=False,
+            detail=(
+                "external_interaction.enabled=true but manifest_path is not set. "
+                "Set external_interaction.manifest_path to a valid stage1_source manifest."
+            ),
+        )
+    if not manifest_path.exists():
+        return PreflightCheck(
+            name="external_interaction:manifest",
+            passed=False,
+            detail=f"External interaction manifest not found: {manifest_path}",
+        )
+
+    try:
+        payload = load_and_validate_manifest(
+            manifest_path,
+            manifest_type="stage1_source",
+            require_existing_paths=True,
+        )
+    except ManifestValidationError as exc:
+        return PreflightCheck(
+            name="external_interaction:manifest",
+            passed=False,
+            detail=f"Invalid stage1_source manifest: {exc}",
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        return PreflightCheck(
+            name="external_interaction:manifest",
+            passed=False,
+            detail=f"Failed reading manifest: {exc}",
+        )
+
+    return PreflightCheck(
+        name="external_interaction:manifest",
+        passed=True,
+        detail=f"Validated stage1_source manifest ({len(payload.get('clips', []))} clips): {manifest_path}",
+    )
+
+
+def check_dreamzero_runtime_contract(
+    repo_path: Path,
+    inference_module: str,
+    inference_class: str,
+) -> PreflightCheck:
+    """Validate DreamZero runtime class exposes expected constructor/inference hooks."""
+    name = "policy_adapter:dreamzero:runtime_contract"
+    if not repo_path.exists():
+        return PreflightCheck(name=name, passed=False, detail=f"Path not found: {repo_path}")
+
+    inserted = False
+    try:
+        repo_str = str(repo_path)
+        if repo_str not in sys.path:
+            sys.path.insert(0, repo_str)
+            inserted = True
+
+        module = import_module(str(inference_module).strip())
+        runtime_cls = getattr(module, str(inference_class).strip(), None)
+        if runtime_cls is None:
+            return PreflightCheck(
+                name=name,
+                passed=False,
+                detail=f"Inference class not found: {inference_module}.{inference_class}",
+            )
+
+        from_pretrained = getattr(runtime_cls, "from_pretrained", None)
+        supports_from_pretrained = callable(from_pretrained)
+
+        supports_constructor = False
+        try:
+            signature = inspect.signature(runtime_cls)
+            params = list(signature.parameters.values())
+            has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params)
+            keyword_names = {
+                p.name
+                for p in params
+                if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+            }
+            supports_constructor = has_var_kw or bool(
+                {"model_path", "checkpoint_path", "model_name"} & keyword_names
+            )
+        except Exception:
+            # Some extension classes do not expose a Python signature; rely on from_pretrained/inference hooks.
+            supports_constructor = False
+
+        supports_inference = any(
+            callable(getattr(runtime_cls, m, None)) for m in ("predict_action", "infer_action", "infer", "generate")
+        )
+        if not supports_inference:
+            # Only accept __call__ when explicitly implemented on the runtime class.
+            cls_call = runtime_cls.__dict__.get("__call__")
+            supports_inference = callable(cls_call)
+
+        if not (supports_from_pretrained or supports_constructor):
+            return PreflightCheck(
+                name=name,
+                passed=False,
+                detail=(
+                    "Runtime class does not expose a recognized constructor contract "
+                    "(from_pretrained/model_path/checkpoint_path/model_name)."
+                ),
+            )
+        if not supports_inference:
+            return PreflightCheck(
+                name=name,
+                passed=False,
+                detail=(
+                    "Runtime class is missing inference entrypoints "
+                    "(predict_action/infer_action/infer/generate/__call__)."
+                ),
+            )
+        return PreflightCheck(
+            name=name,
+            passed=True,
+            detail=f"Validated runtime contract: {inference_module}.{inference_class}",
+        )
+    except Exception as exc:
+        return PreflightCheck(
+            name=name,
+            passed=False,
+            detail=f"Runtime contract check failed: {exc}",
+        )
+    finally:
+        if inserted:
+            try:
+                sys.path.remove(str(repo_path))
+            except ValueError:
+                pass
 
 
 def check_facility_ply(facility_id: str, ply_path: Path) -> PreflightCheck:
@@ -770,6 +973,20 @@ def check_openvla_finetune_contract(openvla_repo: Path, finetune_script: str) ->
     )
 
 
+def check_dreamzero_train_contract(repo_path: Path, train_script: str) -> PreflightCheck:
+    script_path = _resolve_script_path(repo_path, train_script)
+    return _check_script_cli_contract(
+        check_name="policy_adapter:dreamzero:train_contract",
+        script_path=script_path,
+        required_flags={"--base_model", "--dataset_root", "--dataset_name", "--output_dir"},
+        cwd=repo_path,
+        remediation=(
+            "Update policy_adapter.dreamzero.train_script or align DreamZeroPolicyAdapter.train_policy "
+            "with the actual train-script CLI."
+        ),
+    )
+
+
 def check_openvla_dataset_registry(openvla_repo: Path, dataset_names: set[str]) -> PreflightCheck:
     registry_path = openvla_repo / "prismatic" / "vla" / "datasets" / "rlds" / "oxe" / "configs.py"
     if not registry_path.exists():
@@ -921,11 +1138,30 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
     """Run all preflight checks and return results."""
     checks: List[PreflightCheck] = []
     adapter_name = _canonical_policy_adapter_name(config.policy_adapter.name)
-    wm_only_scope = (
-        (getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only").strip().lower()
-        == "wm_only"
-    )
-    checks.extend(_claim_mode_checks(config, adapter_name))
+    configured_scope = (getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only").strip().lower()
+    effective_scope = _effective_headline_scope(config)
+    wm_only_scope = effective_scope == "wm_only"
+    effective_policy_finetune_enabled = _effective_policy_finetune_enabled(config)
+    checks.extend(_claim_mode_checks(config, adapter_name, scope_override=effective_scope))
+    if configured_scope != effective_scope:
+        checks.append(
+            PreflightCheck(
+                name="action_boost:headline_scope_override",
+                passed=True,
+                detail=f"Configured '{configured_scope}' -> effective '{effective_scope}' at runtime.",
+            )
+        )
+    if bool(config.policy_finetune.enabled) != bool(effective_policy_finetune_enabled):
+        checks.append(
+            PreflightCheck(
+                name="action_boost:policy_finetune_override",
+                passed=True,
+                detail=(
+                    f"Configured policy_finetune.enabled={bool(config.policy_finetune.enabled)} -> "
+                    f"effective={bool(effective_policy_finetune_enabled)} at runtime."
+                ),
+            )
+        )
 
     # GPU
     checks.append(check_gpu())
@@ -970,11 +1206,15 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
             )
         )
     else:
+        model_name, checkpoint_path = _resolve_policy_base_reference_for_adapter(
+            config,
+            adapter_name,
+        )
         checks.append(
             check_policy_base_reference_for_adapter(
                 adapter_name=adapter_name,
-                model_name=config.eval_policy.model_name,
-                checkpoint_path=config.eval_policy.checkpoint_path,
+                model_name=model_name,
+                checkpoint_path=checkpoint_path,
             )
         )
     checks.append(check_hf_auth())
@@ -1136,6 +1376,29 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
             )
         )
 
+    checks.append(check_external_interaction_manifest(config))
+    if bool(config.external_interaction.enabled) and bool(config.splatsim.enabled):
+        checks.append(
+            PreflightCheck(
+                name="external_interaction:merge_with_splatsim",
+                passed=True,
+                detail="Stage 1f will merge S1e + external manifests with clip dedupe/source labels.",
+            )
+        )
+    if bool(config.policy_compare.enabled):
+        facility_count = len(config.facilities)
+        checks.append(
+            PreflightCheck(
+                name="policy_eval_matrix:mode",
+                passed=True,
+                detail=(
+                    "single_facility_same_site_policy_uplift"
+                    if facility_count < 2
+                    else f"multi_facility_cross_site ({facility_count} facilities)"
+                ),
+            )
+        )
+
     if wm_only_scope:
         checks.append(
             PreflightCheck(
@@ -1168,16 +1431,36 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
             )
         )
         checks.append(
+            check_dreamzero_runtime_contract(
+                repo_path=dz.repo_path,
+                inference_module=dz.inference_module,
+                inference_class=dz.inference_class,
+            )
+        )
+        requires_policy_training = bool(effective_policy_finetune_enabled)
+        allow_training_enabled = bool(dz.allow_training)
+        allow_training_pass = (not requires_policy_training) or allow_training_enabled
+        if requires_policy_training and not allow_training_enabled:
+            allow_training_detail = (
+                "Effective pipeline requires policy training (policy_finetune enabled directly or via action_boost), "
+                "but policy_adapter.dreamzero.allow_training=false. "
+                "Set allow_training=true or disable policy_finetune/action_boost auto-enable."
+            )
+        elif requires_policy_training:
+            allow_training_detail = "true (required by effective policy_finetune pipeline)"
+        else:
+            allow_training_detail = f"{allow_training_enabled} (policy training not required)"
+        checks.append(
             PreflightCheck(
                 name="policy_adapter:dreamzero:allow_training",
-                passed=True,
-                detail=str(bool(dz.allow_training)),
+                passed=allow_training_pass,
+                detail=allow_training_detail,
             )
         )
 
     if wm_only_scope:
         pass
-    elif config.policy_finetune.enabled:
+    elif effective_policy_finetune_enabled:
         if adapter_name == "openvla_oft":
             openvla_backend = config.policy_adapter.openvla
             checks.append(check_external_tool("torchrun"))
@@ -1330,8 +1613,7 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
                 )
         elif adapter_name == "dreamzero":
             dz = config.policy_adapter.dreamzero
-            if bool(dz.allow_training) and config.policy_finetune.enabled:
-                checks.append(check_external_tool("torchrun"))
+            if bool(dz.allow_training):
                 train_script = Path(dz.train_script)
                 if not train_script.is_absolute():
                     train_script = dz.repo_path / train_script
@@ -1341,6 +1623,7 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
                         "policy_adapter:dreamzero:train_script",
                     )
                 )
+                checks.append(check_dreamzero_train_contract(dz.repo_path, dz.train_script))
                 if config.rollout_dataset.enabled:
                     checks.append(
                         PreflightCheck(

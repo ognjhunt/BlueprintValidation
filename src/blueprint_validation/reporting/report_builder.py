@@ -388,21 +388,30 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
         lines.append("\n## Policy Eval Matrix\n")
         lines.append("| Axis | Available | Abs Diff | p-value |")
         lines.append("|------|-----------|----------|---------|")
-        for axis in (
-            "seen_task_seen_env",
-            "unseen_object_seen_env",
-            "seen_task_novel_env",
-        ):
+        if matrix.get("mode") == "single_facility_same_site_policy_uplift":
+            axis_names = (
+                "seen_task_same_facility_frozen_vs_trained",
+                "heldout_task_same_facility_frozen_vs_trained",
+                "heldout_task_same_facility_policy_base_vs_policy_site",
+            )
+        else:
+            axis_names = (
+                "seen_task_seen_env",
+                "unseen_object_seen_env",
+                "seen_task_novel_env",
+            )
+        for axis in axis_names:
             row = axes.get(axis, {})
             lines.append(
                 f"| {axis} | {row.get('available', False)} | "
                 f"{row.get('task_score_absolute_difference', 'N/A')} | "
                 f"{row.get('p_value_task_score', 'N/A')} |"
             )
-        lines.append(
-            f"- Forgetting ratio: {matrix.get('forgetting_ratio', 'N/A')} "
-            f"(gate <= {matrix.get('forgetting_ratio_gate', 'N/A')})"
-        )
+        if matrix.get("mode") != "single_facility_same_site_policy_uplift":
+            lines.append(
+                f"- Forgetting ratio: {matrix.get('forgetting_ratio', 'N/A')} "
+                f"(gate <= {matrix.get('forgetting_ratio_gate', 'N/A')})"
+            )
         lines.append("")
 
     # Configuration
@@ -429,50 +438,40 @@ def _add_executive_summary(lines: list, data: dict, config: ValidationConfig = N
     min_abs_diff = 0.5
     if config is not None:
         min_abs_diff = config.eval_policy.min_absolute_difference
+    same_facility_policy_uplift = bool(
+        config is not None
+        and len(config.facilities) == 1
+        and (getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only").strip().lower()
+        == "dual"
+        and bool(config.policy_finetune.enabled)
+    )
 
     # Check if primary test passed
     primary_passed = False
-    for fid, fac_data in data.get("facilities", {}).items():
-        if "s4d_policy_pair_eval" in fac_data:
-            metrics = fac_data["s4d_policy_pair_eval"].get("metrics", {})
-            abs_diff = metrics.get("task_score_absolute_difference", 0)
-            p_value = metrics.get("p_value_task_score")
-            if abs_diff >= min_abs_diff and (p_value is None or p_value < 0.05):
-                primary_passed = True
-        elif "s4_policy_eval" in fac_data:
-            metrics = fac_data["s4_policy_eval"].get("metrics", {})
-            abs_diff = metrics.get("absolute_difference", 0)
-            p_value = metrics.get("p_value")
-            if abs_diff >= min_abs_diff and (p_value is None or p_value < 0.05):
-                primary_passed = True
+    for _, fac_data in data.get("facilities", {}).items():
+        if "s4_policy_eval" not in fac_data:
+            continue
+        metrics = fac_data["s4_policy_eval"].get("metrics", {})
+        abs_diff = metrics.get("absolute_difference", 0)
+        p_value = metrics.get("p_value")
+        if abs_diff >= min_abs_diff and (p_value is None or p_value < 0.05):
+            primary_passed = True
 
-    # Check if trained policy test passed.
-    # Priority:
-    # 1) S4d (fixed evaluator, policy_base vs policy_site)
-    # 2) S4e only when claim comparison is world-fixed.
+    # Trained policy headline is driven only by S4e adapted_vs_trained.
     trained_passed = False
     for _, fac_data in data.get("facilities", {}).items():
-        if "s4d_policy_pair_eval" not in fac_data:
+        if "s4e_trained_eval" not in fac_data:
             continue
-        metrics = fac_data["s4d_policy_pair_eval"].get("metrics", {})
-        abs_diff = metrics.get("task_score_absolute_difference", 0)
-        p_value = metrics.get("p_value_task_score")
-        if abs_diff >= min_abs_diff and (p_value is None or p_value < 0.05):
+        te_metrics = fac_data["s4e_trained_eval"].get("metrics", {})
+        if not bool(te_metrics.get("claim_comparison_world_fixed", False)):
+            continue
+        if te_metrics.get("claim_comparison_key") not in {"adapted_vs_trained", "trained_vs_adapted"}:
+            continue
+        abs_d = te_metrics.get("claim_comparison_absolute_difference", 0)
+        pv = te_metrics.get("claim_comparison_p_value")
+        if abs_d >= min_abs_diff and (pv is None or pv < 0.05):
             trained_passed = True
             break
-
-    if not trained_passed:
-        for _, fac_data in data.get("facilities", {}).items():
-            if "s4e_trained_eval" not in fac_data:
-                continue
-            te_metrics = fac_data["s4e_trained_eval"].get("metrics", {})
-            if not bool(te_metrics.get("claim_comparison_world_fixed", False)):
-                continue
-            abs_d = te_metrics.get("claim_comparison_absolute_difference", 0)
-            pv = te_metrics.get("claim_comparison_p_value")
-            if abs_d >= min_abs_diff and (pv is None or pv < 0.05):
-                trained_passed = True
-                break
 
     cross_site_passed = False
     if data.get("cross_site"):
@@ -489,14 +488,20 @@ def _add_executive_summary(lines: list, data: dict, config: ValidationConfig = N
     )
     lines.append("")
 
-    if primary_passed:
+    if trained_passed and same_facility_policy_uplift:
+        lines.append(
+            f"**The policy fine-tuned in the site-adapted world model outperformed the frozen "
+            f"baseline in that same adapted world model (absolute difference >= {min_abs_diff}, p < 0.05).** "
+            "This is the main same-facility policy-uplift proxy claim for pre-deployment evaluation.\n"
+        )
+    elif primary_passed:
         lines.append(
             f"**The site-adapted world model produced higher policy task scores than the "
             f"baseline (absolute difference >= {min_abs_diff}, p < 0.05).** This validates "
-            f"that facility-specific Gaussian splat data improves the evaluation environment "
-            f"for robot policies.\n"
+            "that the site-adapted world model is a stronger evaluation environment for robot "
+            "policies than the generic baseline.\n"
         )
-    if trained_passed:
+    if trained_passed and not same_facility_policy_uplift:
         lines.append(
             "**Policies fine-tuned on site-adapted rollout data outperform frozen baselines.** "
             "This validates the stronger claim that robot policies perform better when "

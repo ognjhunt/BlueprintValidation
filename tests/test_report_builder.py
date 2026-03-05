@@ -95,6 +95,7 @@ def test_executive_summary_uses_s4e_only_when_world_fixed(sample_config):
             "test_facility": {
                 "s4e_trained_eval": {
                     "metrics": {
+                        "claim_comparison_key": "baseline_vs_trained",
                         "claim_comparison_world_fixed": False,
                         "claim_comparison_absolute_difference": 2.0,
                         "claim_comparison_p_value": 0.001,
@@ -117,6 +118,7 @@ def test_executive_summary_accepts_world_fixed_s4e_fallback(sample_config):
             "test_facility": {
                 "s4e_trained_eval": {
                     "metrics": {
+                        "claim_comparison_key": "adapted_vs_trained",
                         "claim_comparison_world_fixed": True,
                         "claim_comparison_absolute_difference": 2.0,
                         "claim_comparison_p_value": 0.001,
@@ -130,7 +132,7 @@ def test_executive_summary_accepts_world_fixed_s4e_fallback(sample_config):
     assert "| Trained Policy Improvement | PASS |" in rendered
 
 
-def test_executive_summary_prefers_s4d_for_trained_policy_uplift(sample_config):
+def test_executive_summary_does_not_let_s4d_satisfy_trained_headline(sample_config):
     from blueprint_validation.reporting.report_builder import _add_executive_summary
 
     lines: list[str] = []
@@ -145,6 +147,7 @@ def test_executive_summary_prefers_s4d_for_trained_policy_uplift(sample_config):
                 },
                 "s4e_trained_eval": {
                     "metrics": {
+                        "claim_comparison_key": "baseline_vs_trained",
                         "claim_comparison_world_fixed": False,
                         "claim_comparison_absolute_difference": 2.0,
                         "claim_comparison_p_value": 0.001,
@@ -155,4 +158,66 @@ def test_executive_summary_prefers_s4d_for_trained_policy_uplift(sample_config):
     }
     _add_executive_summary(lines, data, sample_config)
     rendered = "\n".join(lines)
-    assert "| Trained Policy Improvement | PASS |" in rendered
+    assert "| Trained Policy Improvement | PENDING/FAIL |" in rendered
+
+
+def test_executive_summary_does_not_let_s4d_satisfy_frozen_policy_headline(sample_config):
+    from blueprint_validation.reporting.report_builder import _add_executive_summary
+
+    lines: list[str] = []
+    data = {
+        "facilities": {
+            "test_facility": {
+                "s4d_policy_pair_eval": {
+                    "metrics": {
+                        "task_score_absolute_difference": 1.5,
+                        "p_value_task_score": 0.01,
+                    }
+                }
+            }
+        }
+    }
+    _add_executive_summary(lines, data, sample_config)
+    rendered = "\n".join(lines)
+    assert "| Frozen Policy Performance | PENDING/FAIL |" in rendered
+
+
+def test_report_builder_renders_single_facility_policy_matrix_without_forgetting_ratio(
+    tmp_path, sample_config
+):
+    from blueprint_validation.common import write_json
+    from blueprint_validation.reporting.report_builder import build_report
+
+    work_dir = tmp_path / "outputs"
+    fac_dir = work_dir / "test_facility"
+    fac_dir.mkdir(parents=True)
+    write_json(
+        {
+            "mode": "single_facility_same_site_policy_uplift",
+            "axes": {
+                "seen_task_same_facility_frozen_vs_trained": {
+                    "available": True,
+                    "task_score_absolute_difference": 1.2,
+                    "p_value_task_score": 0.02,
+                },
+                "heldout_task_same_facility_frozen_vs_trained": {
+                    "available": True,
+                    "task_score_absolute_difference": 1.0,
+                    "p_value_task_score": 0.03,
+                },
+                "heldout_task_same_facility_policy_base_vs_policy_site": {
+                    "available": False,
+                    "task_score_absolute_difference": None,
+                    "p_value_task_score": None,
+                },
+            },
+        },
+        work_dir / "policy_eval" / "matrix_report.json",
+    )
+
+    output_path = tmp_path / "report.md"
+    result = build_report(sample_config, work_dir, fmt="markdown", output_path=output_path)
+    content = result.read_text()
+    assert "seen_task_same_facility_frozen_vs_trained" in content
+    assert "heldout_task_same_facility_frozen_vs_trained" in content
+    assert "Forgetting ratio" not in content

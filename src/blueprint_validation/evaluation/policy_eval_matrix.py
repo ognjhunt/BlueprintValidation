@@ -23,11 +23,92 @@ logger = get_logger("evaluation.policy_eval_matrix")
 
 
 def build_policy_eval_matrix_artifact(config: ValidationConfig, work_dir: Path) -> Path | None:
-    """Aggregate available S4d outputs and emit policy_eval/matrix_report.json."""
+    """Aggregate available policy-uplift artifacts and emit policy_eval/matrix_report.json."""
     facility_ids = list(config.facilities.keys())
     if not facility_ids:
         return None
 
+    if len(facility_ids) == 1:
+        return _build_single_facility_policy_uplift_matrix(config, work_dir, facility_ids[0])
+    return _build_multi_facility_policy_eval_matrix(config, work_dir, facility_ids)
+
+
+def _build_single_facility_policy_uplift_matrix(
+    config: ValidationConfig,
+    work_dir: Path,
+    facility_id: str,
+) -> Path | None:
+    trained_payload = _load_trained_eval_payload(work_dir / facility_id)
+    if trained_payload is None:
+        logger.info("Skipping policy matrix: missing S4e payload for %s", facility_id)
+        return None
+
+    heldout_tasks = {
+        str(task).strip()
+        for task in (config.policy_compare.heldout_tasks or [])
+        if str(task).strip()
+    }
+    seen_axis = _axis_from_condition_pairs(
+        trained_payload["rows"],
+        left_condition="adapted",
+        right_condition="trained",
+        include_tasks=None,
+        exclude_tasks=heldout_tasks,
+    )
+    heldout_axis = _axis_from_condition_pairs(
+        trained_payload["rows"],
+        left_condition="adapted",
+        right_condition="trained",
+        include_tasks=heldout_tasks,
+        exclude_tasks=None,
+    )
+
+    attribution_axis: Dict[str, object]
+    pair_payload = _load_pair_eval_payload(work_dir / facility_id)
+    if pair_payload is None:
+        attribution_axis = {
+            "available": False,
+            "detail": "No S4d payload available for policy-base vs policy-site attribution.",
+        }
+    else:
+        attribution_axis = _axis_from_filtered_tasks(pair_payload["rows"], sorted(heldout_tasks))
+
+    matrix = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "mode": "single_facility_same_site_policy_uplift",
+        "facility": facility_id,
+        "axes": {
+            "seen_task_same_facility_frozen_vs_trained": {
+                "available": bool(seen_axis.get("available", False)),
+                "task_scope": "non_heldout",
+                **seen_axis,
+            },
+            "heldout_task_same_facility_frozen_vs_trained": {
+                "available": bool(heldout_axis.get("available", False)),
+                "task_scope": "heldout",
+                "task_filter": sorted(heldout_tasks),
+                **heldout_axis,
+            },
+            "heldout_task_same_facility_policy_base_vs_policy_site": {
+                "available": bool(attribution_axis.get("available", False)),
+                "task_scope": "heldout",
+                "task_filter": sorted(heldout_tasks),
+                **attribution_axis,
+            },
+        },
+    }
+
+    output_path = work_dir / "policy_eval" / "matrix_report.json"
+    write_json(matrix, output_path)
+    logger.info("Policy eval matrix written to %s", output_path)
+    return output_path
+
+
+def _build_multi_facility_policy_eval_matrix(
+    config: ValidationConfig,
+    work_dir: Path,
+    facility_ids: List[str],
+) -> Path | None:
     primary_facility = facility_ids[0]
     novel_facility = facility_ids[1] if len(facility_ids) > 1 else None
 
@@ -71,6 +152,25 @@ def build_policy_eval_matrix_artifact(config: ValidationConfig, work_dir: Path) 
     return output_path
 
 
+def _load_trained_eval_payload(facility_dir: Path | None) -> Dict | None:
+    if facility_dir is None:
+        return None
+    stage_path = facility_dir / "s4e_trained_eval_result.json"
+    if not stage_path.exists():
+        return None
+    stage_payload = read_json(stage_path)
+    outputs = stage_payload.get("outputs", {}) if isinstance(stage_payload, dict) else {}
+    score_path_raw = outputs.get("scores_path")
+    score_path = Path(str(score_path_raw)) if score_path_raw else facility_dir / "trained_eval" / "vlm_scores_combined.json"
+    if not score_path.exists():
+        return None
+    score_payload = read_json(score_path)
+    rows = score_payload.get("scores", [])
+    if not isinstance(rows, list):
+        rows = []
+    return {"metrics": stage_payload.get("metrics", {}), "rows": rows}
+
+
 def _load_pair_eval_payload(facility_dir: Path | None) -> Dict | None:
     if facility_dir is None:
         return None
@@ -112,6 +212,43 @@ def _axis_from_filtered_tasks(rows: List[Dict], tasks: List[str]) -> Dict:
     metrics["available"] = True
     metrics["task_filter"] = list(tasks)
     return metrics
+
+
+def _axis_from_condition_pairs(
+    rows: List[Dict],
+    *,
+    left_condition: str,
+    right_condition: str,
+    include_tasks: set[str] | None,
+    exclude_tasks: set[str] | None,
+) -> Dict:
+    paired = _build_condition_pairs(
+        rows,
+        left_condition=left_condition,
+        right_condition=right_condition,
+        include_tasks=include_tasks,
+        exclude_tasks=exclude_tasks,
+    )
+    if not paired:
+        return {"available": False, "detail": "No paired rows matched the requested condition/task filter."}
+
+    left_scores = [float(left.get("task_score", 0.0)) for left, _ in paired]
+    right_scores = [float(right.get("task_score", 0.0)) for _, right in paired]
+    p_value = _paired_ttest_p_value(left_scores, right_scores)
+    wins = sum(1 for left, right in zip(left_scores, right_scores) if right > left)
+    return {
+        "available": True,
+        "num_pairs": len(paired),
+        "frozen_condition": left_condition,
+        "trained_condition": right_condition,
+        "frozen_mean_task_score": round(float(np.mean(left_scores)), 3),
+        "trained_mean_task_score": round(float(np.mean(right_scores)), 3),
+        "task_score_absolute_difference": round(
+            float(np.mean(right_scores)) - float(np.mean(left_scores)), 3
+        ),
+        "p_value_task_score": round(p_value, 6) if p_value is not None else None,
+        "win_rate_trained_over_frozen": round(wins / max(len(paired), 1), 3),
+    }
 
 
 def _axis_seen_task_novel_env(
@@ -162,6 +299,37 @@ def _build_pairs(rows: Iterable[Dict]) -> List[Tuple[Dict, Dict]]:
         if base is None or site is None:
             continue
         pairs.append((base, site))
+    return pairs
+
+
+def _build_condition_pairs(
+    rows: Iterable[Dict],
+    *,
+    left_condition: str,
+    right_condition: str,
+    include_tasks: set[str] | None,
+    exclude_tasks: set[str] | None,
+) -> List[Tuple[Dict, Dict]]:
+    grouped: Dict[str, Dict[str, Dict]] = {}
+    for row in rows:
+        condition = str(row.get("condition", "")).strip()
+        if condition not in {left_condition, right_condition}:
+            continue
+        task = str(row.get("task", "")).strip()
+        if include_tasks is not None and task not in include_tasks:
+            continue
+        if exclude_tasks is not None and task in exclude_tasks:
+            continue
+        key = f"{int(row.get('rollout_index', 0))}::{task}"
+        grouped.setdefault(key, {})[condition] = row
+
+    pairs: List[Tuple[Dict, Dict]] = []
+    for entry in grouped.values():
+        left = entry.get(left_condition)
+        right = entry.get(right_condition)
+        if left is None or right is None:
+            continue
+        pairs.append((left, right))
     return pairs
 
 

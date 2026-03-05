@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 import numpy as np
 import pytest
@@ -241,6 +242,73 @@ def test_rlds_export_stage_reports_action_quality_filters(sample_config, tmp_pat
     assert split.exists()
     payload = read_json(split)
     assert set(payload.keys()) == {"train_pair_ids", "eval_pair_ids"}
+
+
+def test_rlds_export_stage_excludes_eval_only_heldout_tasks_from_training(sample_config, tmp_path):
+    from blueprint_validation.common import StageResult, write_json
+    from blueprint_validation.stages.s4a_rlds_export import RLDSExportStage
+
+    sample_config.rollout_dataset.enabled = True
+    sample_config.policy_finetune.enabled = True
+    sample_config.policy_compare.enabled = True
+    sample_config.policy_compare.heldout_tasks = ["Heldout task"]
+    sample_config.rollout_dataset.task_score_threshold = 5.0
+    sample_config.rollout_dataset.min_steps_per_rollout = 2
+
+    video = tmp_path / "rollout.mp4"
+    _write_tiny_video(video)
+
+    scores = {
+        "scores": [
+            {
+                "condition": "adapted",
+                "task": "Seen task",
+                "task_score": 8.0,
+                "rollout_index": 0,
+                "video_path": str(video),
+                "action_sequence": [[0.0] * 7 for _ in range(5)],
+            },
+            {
+                "condition": "adapted",
+                "task": "Seen task",
+                "task_score": 8.0,
+                "rollout_index": 1,
+                "video_path": str(video),
+                "action_sequence": [[0.0] * 7 for _ in range(5)],
+            },
+            {
+                "condition": "adapted",
+                "task": "Heldout task",
+                "task_score": 8.0,
+                "rollout_index": 2,
+                "video_path": str(video),
+                "action_sequence": [[0.0] * 7 for _ in range(5)],
+            },
+        ]
+    }
+    scores_path = tmp_path / "vlm_scores.json"
+    write_json(scores, scores_path)
+
+    s4_result = StageResult(
+        stage_name="s4_policy_eval",
+        status="success",
+        elapsed_seconds=0,
+        outputs={"scores_path": str(scores_path)},
+    )
+
+    stage = RLDSExportStage()
+    fac = list(sample_config.facilities.values())[0]
+    result = stage.run(sample_config, fac, tmp_path, {"s4_policy_eval": s4_result})
+    assert result.status == "success"
+    assert result.metrics["num_eval_only_rollouts_excluded"] == 1
+
+    for jsonl_path in (result.outputs["train_jsonl"], result.outputs["eval_jsonl"]):
+        path = Path(jsonl_path)
+        if not path.exists():
+            continue
+        for line in path.read_text().splitlines():
+            payload = json.loads(line)
+            assert payload["task"] != "Heldout task"
 
 
 def test_rlds_export_stage_selection_mode_includes_near_miss(sample_config, tmp_path):

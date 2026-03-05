@@ -95,6 +95,16 @@ def test_preflight_pi05_invalid_profile_runtime_backend(sample_config, monkeypat
     monkeypatch.setattr(
         preflight, "check_cloud_shutdown_enforcement", lambda *a, **k: _ok("shutdown")
     )
+    monkeypatch.setattr(
+        preflight,
+        "check_external_interaction_manifest",
+        lambda *a, **k: _ok("external_interaction"),
+    )
+    monkeypatch.setattr(
+        preflight,
+        "check_dreamzero_runtime_contract",
+        lambda *a, **k: _ok("dreamzero_runtime"),
+    )
 
     # Ensure OpenVLA-only checks are skipped for pi05.
     monkeypatch.setattr(
@@ -170,6 +180,15 @@ def _patch_preflight_fast(monkeypatch, preflight):
     monkeypatch.setattr(preflight, "check_cosmos_wrapper_contract", lambda *a, **k: _ok("cosmos"))
     monkeypatch.setattr(preflight, "check_dreamdojo_contract", lambda *a, **k: _ok("dreamdojo"))
     monkeypatch.setattr(preflight, "check_python_import_from_path", lambda *a, **k: _ok("import"))
+    monkeypatch.setattr(
+        preflight, "check_external_interaction_manifest", lambda *a, **k: _ok("external_interaction")
+    )
+    monkeypatch.setattr(
+        preflight, "check_dreamzero_runtime_contract", lambda *a, **k: _ok("dreamzero_runtime")
+    )
+    monkeypatch.setattr(
+        preflight, "check_dreamzero_train_contract", lambda *a, **k: _ok("dreamzero_train_contract")
+    )
     monkeypatch.setattr(preflight, "check_api_key", lambda *a, **k: _ok("api_key"))
     monkeypatch.setattr(preflight, "check_api_key_for_scope", lambda *a, **k: _ok("api_scope"))
     monkeypatch.setattr(preflight, "check_cloud_budget_enforcement", lambda *a, **k: _ok("budget"))
@@ -266,6 +285,34 @@ def test_preflight_pi05_base_reference_passes_with_explicit_model(
     checks = preflight.run_preflight(sample_config)
     by_name = {c.name: c for c in checks}
     assert by_name["policy:base_reference"].passed is True
+
+
+def test_preflight_dreamzero_base_reference_rejects_openvla_like_model(sample_config, monkeypatch):
+    import blueprint_validation.preflight as preflight
+
+    _patch_preflight_fast(monkeypatch, preflight)
+    sample_config.policy_adapter.name = "dreamzero"
+    sample_config.policy_adapter.dreamzero.base_model_name = "openvla/openvla-7b"
+    sample_config.eval_policy.headline_scope = "dual"
+
+    checks = preflight.run_preflight(sample_config)
+    by_name = {c.name: c for c in checks}
+    assert by_name["policy:base_reference"].passed is False
+    assert "openvla-like" in by_name["policy:base_reference"].detail.lower()
+
+
+def test_preflight_single_facility_policy_compare_uses_same_facility_matrix_mode(
+    sample_config, monkeypatch
+):
+    import blueprint_validation.preflight as preflight
+
+    _patch_preflight_fast(monkeypatch, preflight)
+    sample_config.policy_compare.enabled = True
+
+    checks = preflight.run_preflight(sample_config)
+    by_name = {c.name: c for c in checks}
+    assert by_name["policy_eval_matrix:mode"].passed is True
+    assert "single_facility" in by_name["policy_eval_matrix:mode"].detail
 
 
 def test_preflight_pi05_dataset_dir_required_when_rollout_dataset_disabled(
@@ -470,3 +517,120 @@ def test_preflight_dreamzero_runtime_checks_run_without_policy_finetune(
     by_name = {c.name: c for c in checks}
     assert by_name["policy_adapter:dreamzero:repo_path"].passed is True
     assert by_name["policy_adapter:dreamzero:checkpoint_path"].passed is True
+
+
+def test_preflight_external_interaction_manifest_fails_on_invalid_schema(sample_config, tmp_path):
+    from blueprint_validation.common import write_json
+    import blueprint_validation.preflight as preflight
+
+    invalid_manifest = tmp_path / "bad_external_manifest.json"
+    write_json({"clips": [{"video_path": ""}]}, invalid_manifest)
+
+    sample_config.external_interaction.enabled = True
+    sample_config.external_interaction.manifest_path = invalid_manifest
+
+    result = preflight.check_external_interaction_manifest(sample_config)
+    assert result.passed is False
+    assert "invalid stage1_source manifest" in result.detail.lower()
+
+
+def test_preflight_external_interaction_manifest_passes_with_valid_schema(sample_config, tmp_path):
+    from blueprint_validation.common import write_json
+    import blueprint_validation.preflight as preflight
+
+    video = tmp_path / "external.mp4"
+    video.write_bytes(b"video")
+    manifest = tmp_path / "external_manifest.json"
+    write_json({"clips": [{"clip_name": "ext_000", "video_path": str(video)}]}, manifest)
+
+    sample_config.external_interaction.enabled = True
+    sample_config.external_interaction.manifest_path = manifest
+
+    result = preflight.check_external_interaction_manifest(sample_config)
+    assert result.passed is True
+    assert "validated stage1_source manifest" in result.detail.lower()
+
+
+def test_preflight_dreamzero_training_required_when_effective_policy_finetune_enabled(
+    sample_config, monkeypatch
+):
+    import blueprint_validation.preflight as preflight
+
+    _patch_preflight_fast(monkeypatch, preflight)
+    sample_config.policy_adapter.name = "dreamzero"
+    sample_config.policy_adapter.dreamzero.allow_training = False
+    sample_config.policy_finetune.enabled = True
+    sample_config.eval_policy.mode = "research"
+    sample_config.eval_policy.headline_scope = "dual"
+
+    checks = preflight.run_preflight(sample_config)
+    by_name = {c.name: c for c in checks}
+    assert by_name["policy_adapter:dreamzero:allow_training"].passed is False
+    assert "requires policy training" in by_name["policy_adapter:dreamzero:allow_training"].detail.lower()
+
+
+def test_preflight_dreamzero_training_required_when_action_boost_auto_enables_policy_finetune(
+    sample_config, monkeypatch
+):
+    import blueprint_validation.preflight as preflight
+
+    _patch_preflight_fast(monkeypatch, preflight)
+    sample_config.policy_adapter.name = "dreamzero"
+    sample_config.policy_adapter.dreamzero.allow_training = False
+    sample_config.policy_finetune.enabled = False
+    sample_config.action_boost.enabled = True
+    sample_config.action_boost.auto_enable_policy_finetune = True
+    sample_config.eval_policy.mode = "research"
+    sample_config.eval_policy.headline_scope = "dual"
+
+    checks = preflight.run_preflight(sample_config)
+    by_name = {c.name: c for c in checks}
+    assert by_name["action_boost:policy_finetune_override"].passed is True
+    assert by_name["policy_adapter:dreamzero:allow_training"].passed is False
+
+
+def test_check_dreamzero_runtime_contract_passes_for_supported_class(tmp_path):
+    import blueprint_validation.preflight as preflight
+
+    repo = tmp_path / "dz_repo"
+    repo.mkdir(parents=True, exist_ok=True)
+    (repo / "dummy_runtime.py").write_text(
+        """
+class Runtime:
+    @classmethod
+    def from_pretrained(cls, model_id, device=None):
+        return cls()
+
+    def predict_action(self, *, frames, prompt):
+        return {"action": [0.0]}
+""".strip()
+    )
+
+    result = preflight.check_dreamzero_runtime_contract(
+        repo_path=repo,
+        inference_module="dummy_runtime",
+        inference_class="Runtime",
+    )
+    assert result.passed is True
+
+
+def test_check_dreamzero_runtime_contract_fails_without_inference_entrypoint(tmp_path):
+    import blueprint_validation.preflight as preflight
+
+    repo = tmp_path / "dz_repo"
+    repo.mkdir(parents=True, exist_ok=True)
+    (repo / "bad_runtime.py").write_text(
+        """
+class Runtime:
+    def __init__(self, model_path=None):
+        self.model_path = model_path
+""".strip()
+    )
+
+    result = preflight.check_dreamzero_runtime_contract(
+        repo_path=repo,
+        inference_module="bad_runtime",
+        inference_class="Runtime",
+    )
+    assert result.passed is False
+    assert "missing inference entrypoints" in result.detail.lower()

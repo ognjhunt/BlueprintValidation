@@ -1326,6 +1326,7 @@ def test_config_parses_dreamzero_and_external_interaction(tmp_path):
                     "name": "dreamzero",
                     "dreamzero": {
                         "repo_path": str(repo),
+                        "base_model_name": "dreamzero/base",
                         "checkpoint_path": str(checkpoint),
                         "inference_module": "dreamzero.inference",
                         "inference_class": "DreamZeroInference",
@@ -1346,7 +1347,89 @@ def test_config_parses_dreamzero_and_external_interaction(tmp_path):
     cfg = load_config(config_path)
     assert cfg.policy_adapter.name == "dreamzero"
     assert cfg.policy_adapter.dreamzero.repo_path == repo.resolve()
+    assert cfg.policy_adapter.dreamzero.base_model_name == "dreamzero/base"
     assert cfg.policy_adapter.dreamzero.checkpoint_path == checkpoint.resolve()
+    assert cfg.policy_adapter.dreamzero.strict_action_min == -1.0
+    assert cfg.policy_adapter.dreamzero.strict_action_max == 1.0
     assert cfg.external_interaction.enabled is True
     assert cfg.external_interaction.manifest_path == manifest_path.resolve()
     assert cfg.external_interaction.source_name == "polaris"
+
+
+def test_config_parses_openvla_adapter_owned_base_reference(tmp_path):
+    import yaml
+
+    from blueprint_validation.config import load_config
+
+    checkpoint = tmp_path / "openvla_ckpt"
+    checkpoint.mkdir(parents=True, exist_ok=True)
+    repo = tmp_path / "openvla_repo"
+    repo.mkdir(parents=True, exist_ok=True)
+
+    config_path = tmp_path / "openvla_adapter_base.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "OpenVLA Adapter Ref Test",
+                "facilities": {"a": {"name": "A", "ply_path": str(tmp_path / "a.ply")}},
+                "policy_adapter": {
+                    "name": "openvla_oft",
+                    "openvla": {
+                        "openvla_repo": str(repo),
+                        "base_model_name": "openvla/custom-7b",
+                        "base_checkpoint_path": str(checkpoint),
+                    },
+                },
+            }
+        )
+    )
+
+    cfg = load_config(config_path)
+    assert cfg.policy_adapter.openvla.base_model_name == "openvla/custom-7b"
+    assert cfg.policy_adapter.openvla.base_checkpoint_path == checkpoint.resolve()
+
+
+def test_config_rejects_invalid_dreamzero_action_bounds(tmp_path):
+    import yaml
+
+    from blueprint_validation.config import load_config
+
+    config_path = tmp_path / "bad_dreamzero_bounds.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad DreamZero Bounds",
+                "facilities": {"a": {"name": "A", "ply_path": str(tmp_path / "a.ply")}},
+                "policy_adapter": {
+                    "name": "dreamzero",
+                    "dreamzero": {
+                        "repo_path": str(tmp_path / "repo"),
+                        "checkpoint_path": str(tmp_path / "ckpt"),
+                        "strict_action_min": 1.0,
+                        "strict_action_max": 1.0,
+                    },
+                },
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="strict_action_min"):
+        load_config(config_path)
+
+
+def test_same_facility_policy_uplift_configs_load():
+    from pathlib import Path
+
+    from blueprint_validation.config import load_config
+
+    for relpath, adapter_name in (
+        ("configs/same_facility_policy_uplift_openvla.yaml", "openvla_oft"),
+        ("configs/same_facility_policy_uplift_dreamzero.yaml", "dreamzero"),
+    ):
+        cfg = load_config(Path(relpath))
+        assert len(cfg.facilities) == 1
+        assert cfg.eval_policy.headline_scope == "dual"
+        assert cfg.policy_finetune.enabled is True
+        assert cfg.rollout_dataset.enabled is True
+        assert cfg.policy_compare.enabled is True
+        assert cfg.policy_adapter.name == adapter_name

@@ -18,6 +18,16 @@ from .base import PipelineStage
 logger = get_logger("stages.s4b_rollout_dataset")
 
 
+def _eval_only_task_set(config: ValidationConfig) -> set[str]:
+    if not bool(config.policy_compare.enabled):
+        return set()
+    return {
+        str(task).strip()
+        for task in (config.policy_compare.heldout_tasks or [])
+        if str(task).strip()
+    }
+
+
 class RolloutDatasetStage(PipelineStage):
     @property
     def name(self) -> str:
@@ -118,10 +128,17 @@ class RolloutDatasetStage(PipelineStage):
                 detail="No paired rollouts passed consistency filters for dataset export.",
             )
 
+        eval_only_tasks = _eval_only_task_set(config)
+        forced_heldout_ids = {
+            _pair_id(entry)
+            for entry in baseline
+            if str(entry.get("task", "")).strip() in eval_only_tasks
+        }
         split_train_ids, split_heldout_ids = _split_pairs(
-            pair_ids=[_pair_id(r) for r in baseline],
+            entries=baseline,
             seed=config.rollout_dataset.seed,
             train_split=config.rollout_dataset.train_split,
+            forced_heldout_ids=forced_heldout_ids,
         )
         baseline_train, baseline_heldout = _split_by_ids(
             baseline, split_train_ids, split_heldout_ids
@@ -179,6 +196,8 @@ class RolloutDatasetStage(PipelineStage):
             "action_contract": action_contract,
             "reliability_gate": reliability_gate,
             "action_contract_hash": _action_contract_hash(action_contract),
+            "eval_only_tasks": sorted(eval_only_tasks),
+            "num_forced_heldout_pairs": len(forced_heldout_ids),
         }
         write_json(summary, dataset_root / "dataset_export_summary.json")
 
@@ -196,6 +215,7 @@ class RolloutDatasetStage(PipelineStage):
                 "num_pairs_input": min(len(baseline), len(adapted)),
                 "num_pairs_train": len(split_train_ids),
                 "num_pairs_heldout": len(split_heldout_ids),
+                "num_forced_heldout_pairs": len(forced_heldout_ids),
                 "baseline_train_episodes": baseline_train_meta["num_episodes"],
                 "adapted_train_episodes": adapted_train_meta["num_episodes"],
             },
@@ -219,18 +239,27 @@ def _pair_id(entry: dict) -> str:
     return f"{entry.get('rollout_index')}::{entry.get('task', '')}"
 
 
-def _split_pairs(pair_ids: List[str], seed: int, train_split: float) -> Tuple[set[str], set[str]]:
-    if not pair_ids:
+def _split_pairs(
+    entries: List[dict],
+    seed: int,
+    train_split: float,
+    forced_heldout_ids: set[str] | None = None,
+) -> Tuple[set[str], set[str]]:
+    if not entries:
         return set(), set()
-    ids = sorted(set(pair_ids))
+    forced_heldout_ids = set(forced_heldout_ids or set())
+    ids = sorted({_pair_id(entry) for entry in entries})
+    trainable_ids = [pair_id for pair_id in ids if pair_id not in forced_heldout_ids]
+    if not trainable_ids:
+        return set(), set(forced_heldout_ids)
     rng = np.random.default_rng(seed=seed)
-    perm = rng.permutation(len(ids))
-    cutoff = int(round(len(ids) * train_split))
-    train_ids = {ids[i] for i in perm[:cutoff]}
-    heldout_ids = {ids[i] for i in perm[cutoff:]}
+    perm = rng.permutation(len(trainable_ids))
+    cutoff = int(round(len(trainable_ids) * train_split))
+    train_ids = {trainable_ids[i] for i in perm[:cutoff]}
+    heldout_ids = {trainable_ids[i] for i in perm[cutoff:]} | forced_heldout_ids
     if not heldout_ids:
-        heldout_ids = {ids[perm[-1]]}
-        train_ids = set(ids) - heldout_ids
+        heldout_ids = {trainable_ids[perm[-1]]} | forced_heldout_ids
+        train_ids = set(trainable_ids) - {trainable_ids[perm[-1]]}
     return train_ids, heldout_ids
 
 

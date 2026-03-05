@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
 import pytest
 
@@ -63,6 +61,50 @@ def test_dreamzero_adapter_strict_action_contract_raises(monkeypatch):
         adapter.predict_action(handle, np.zeros((4, 4, 3), dtype=np.uint8), "task", None, "cpu")
 
 
+def test_dreamzero_adapter_strict_action_bounds_raises(monkeypatch):
+    from blueprint_validation.config import PolicyAdapterConfig
+    from blueprint_validation.policy_adapters.dreamzero_adapter import DreamZeroPolicyAdapter
+
+    cfg = PolicyAdapterConfig(name="dreamzero")
+    cfg.dreamzero.policy_action_dim = 3
+    cfg.dreamzero.strict_action_contract = True
+    cfg.dreamzero.strict_action_min = -1.0
+    cfg.dreamzero.strict_action_max = 1.0
+
+    class FakeRuntime:
+        def predict_action(self, *, frames, prompt):
+            del frames, prompt
+            return {"action": [0.0, 2.0, 0.0]}
+
+    adapter = DreamZeroPolicyAdapter(cfg)
+    monkeypatch.setattr(adapter, "_instantiate_runtime", lambda **kwargs: FakeRuntime())
+    handle = adapter.load_policy("dz-base", checkpoint_path=None, device="cpu")
+
+    with pytest.raises(RuntimeError, match="out of bounds"):
+        adapter.predict_action(handle, np.zeros((4, 4, 3), dtype=np.uint8), "task", None, "cpu")
+
+
+def test_dreamzero_adapter_rejects_non_finite_actions(monkeypatch):
+    from blueprint_validation.config import PolicyAdapterConfig
+    from blueprint_validation.policy_adapters.dreamzero_adapter import DreamZeroPolicyAdapter
+
+    cfg = PolicyAdapterConfig(name="dreamzero")
+    cfg.dreamzero.policy_action_dim = 3
+    cfg.dreamzero.strict_action_contract = False
+
+    class FakeRuntime:
+        def predict_action(self, *, frames, prompt):
+            del frames, prompt
+            return {"action": [0.0, float("nan"), 0.1]}
+
+    adapter = DreamZeroPolicyAdapter(cfg)
+    monkeypatch.setattr(adapter, "_instantiate_runtime", lambda **kwargs: FakeRuntime())
+    handle = adapter.load_policy("dz-base", checkpoint_path=None, device="cpu")
+
+    with pytest.raises(RuntimeError, match="non-finite"):
+        adapter.predict_action(handle, np.zeros((4, 4, 3), dtype=np.uint8), "task", None, "cpu")
+
+
 def test_dreamzero_adapter_train_policy_disabled_by_default(tmp_path):
     from blueprint_validation.config import PolicyAdapterConfig, PolicyFinetuneConfig
     from blueprint_validation.policy_adapters.dreamzero_adapter import DreamZeroPolicyAdapter
@@ -82,3 +124,25 @@ def test_dreamzero_adapter_train_policy_disabled_by_default(tmp_path):
     assert result.status == "skipped"
     assert "disabled" in result.detail.lower()
     assert result.raw.get("reason") == "dreamzero_training_disabled"
+
+
+def test_dreamzero_adapter_base_model_ref_uses_adapter_owned_reference():
+    from pathlib import Path
+
+    from blueprint_validation.config import PolicyAdapterConfig, PolicyEvalConfig
+    from blueprint_validation.policy_adapters.dreamzero_adapter import DreamZeroPolicyAdapter
+
+    cfg = PolicyAdapterConfig(name="dreamzero")
+    cfg.dreamzero.base_model_name = "dreamzero/base"
+    cfg.dreamzero.checkpoint_path = Path("/tmp/dreamzero_ckpt")
+
+    adapter = DreamZeroPolicyAdapter(cfg)
+    model_name, checkpoint = adapter.base_model_ref(
+        PolicyEvalConfig(
+            model_name="openvla/openvla-7b",
+            checkpoint_path=Path("/tmp/openvla_ckpt"),
+        )
+    )
+
+    assert model_name == "dreamzero/base"
+    assert checkpoint == Path("/tmp/dreamzero_ckpt")

@@ -222,9 +222,7 @@ class TrainedPolicyEvalStage(PipelineStage):
                 assignments=rollout_assignments,
             )
 
-        strict_disjoint_eval = bool(getattr(config.action_boost, "enabled", False)) and bool(
-            getattr(config.action_boost, "strict_disjoint_eval", True)
-        )
+        strict_disjoint_eval = _should_enforce_disjoint_eval(config)
         split_manifest_path = _resolve_split_manifest_path(previous_results, work_dir)
         disjoint_eval_ids: set[str] = set()
         train_ids: set[str] = set()
@@ -472,7 +470,18 @@ class TrainedPolicyEvalStage(PipelineStage):
             "pairwise": pairwise,
             "judge_audit_csv": str(audit_csv_path),
         }
+        eval_only_tasks = {
+            str(task).strip()
+            for task in (config.policy_compare.heldout_tasks or [])
+            if str(task).strip()
+        }
+        subgroup_metrics = _build_same_facility_subgroup_metrics(
+            all_scores=all_scores,
+            heldout_tasks=eval_only_tasks,
+        )
+        metrics["same_facility_subgroups"] = subgroup_metrics
         claim_failure_reasons: List[str] = []
+        structural_failure_reasons: List[str] = []
         claim_pair_key, claim_pair, claim_world_fixed = _select_claim_pairwise_comparison(pairwise)
         claim_abs_diff = _trained_uplift_abs_diff(claim_pair_key, claim_pair)
         if claim_pair is None:
@@ -522,6 +531,14 @@ class TrainedPolicyEvalStage(PipelineStage):
         metrics["manipulation_success_delta_pp"] = (
             round(float(manip_delta_pp), 6) if manip_delta_pp is not None else None
         )
+        if eval_only_tasks and bool(config.policy_compare.enabled):
+            heldout_axis = subgroup_metrics.get("heldout_task_same_facility_frozen_vs_trained", {})
+            if not bool(heldout_axis.get("available", False)):
+                structural_failure_reasons.append(
+                    "Heldout-task same-facility uplift subgroup is unavailable. "
+                    "Reserve heldout tasks for evaluation and ensure S4e executes those assignments."
+                )
+        metrics["structural_failure_reasons"] = structural_failure_reasons
 
         write_json(metrics, eval_dir / "trained_eval_report.json")
 
@@ -529,7 +546,7 @@ class TrainedPolicyEvalStage(PipelineStage):
             stage_name=self.name,
             status=(
                 "success"
-                if trained_scores and (not claim_mode or claim_passed)
+                if trained_scores and not structural_failure_reasons and (not claim_mode or claim_passed)
                 else "failed"
             ),
             elapsed_seconds=0,
@@ -542,7 +559,7 @@ class TrainedPolicyEvalStage(PipelineStage):
                 "split_manifest_path": str(split_manifest_path) if split_manifest_path else "",
             },
             metrics=metrics,
-            detail="\n".join(scoring_failures[:5]),
+            detail="\n".join((structural_failure_reasons + scoring_failures)[:5]),
         )
 
 
@@ -690,6 +707,16 @@ def _assignment_pair_id(assignment: Dict) -> str:
     return f"{int(assignment.get('rollout_index', 0))}::{str(assignment.get('task', ''))}"
 
 
+def _should_enforce_disjoint_eval(config: ValidationConfig) -> bool:
+    if not (bool(config.policy_finetune.enabled) and bool(config.rollout_dataset.enabled)):
+        return False
+    if bool(config.policy_compare.enabled):
+        return True
+    return bool(getattr(config.action_boost, "enabled", False)) and bool(
+        getattr(config.action_boost, "strict_disjoint_eval", True)
+    )
+
+
 def _has_successful_training_stage(previous_results: Dict[str, StageResult]) -> bool:
     for key in ("s3c_policy_rl_loop", "s3b_policy_finetune"):
         stage = previous_results.get(key)
@@ -785,3 +812,112 @@ def _comparison_condition_for_claim(pair_key: str) -> str:
     if "_vs_trained" in pair_key:
         return pair_key.split("_vs_trained", 1)[0].strip()
     return "adapted"
+
+
+def _build_same_facility_subgroup_metrics(
+    *,
+    all_scores: List[Dict],
+    heldout_tasks: set[str],
+) -> Dict[str, Dict]:
+    seen_task_metrics = _condition_pair_metrics(
+        all_scores=all_scores,
+        left_condition="adapted",
+        right_condition="trained",
+        include_tasks=None,
+        exclude_tasks=heldout_tasks,
+    )
+    heldout_metrics = _condition_pair_metrics(
+        all_scores=all_scores,
+        left_condition="adapted",
+        right_condition="trained",
+        include_tasks=heldout_tasks,
+        exclude_tasks=None,
+    )
+    return {
+        "seen_task_same_facility_frozen_vs_trained": {
+            "available": bool(seen_task_metrics.get("num_pairs", 0)),
+            "task_scope": "non_heldout",
+            **seen_task_metrics,
+        },
+        "heldout_task_same_facility_frozen_vs_trained": {
+            "available": bool(heldout_metrics.get("num_pairs", 0)),
+            "task_scope": "heldout",
+            "task_filter": sorted(heldout_tasks),
+            **heldout_metrics,
+        },
+    }
+
+
+def _condition_pair_metrics(
+    *,
+    all_scores: List[Dict],
+    left_condition: str,
+    right_condition: str,
+    include_tasks: set[str] | None,
+    exclude_tasks: set[str] | None,
+) -> Dict[str, object]:
+    paired = _pair_condition_rows(
+        all_scores=all_scores,
+        left_condition=left_condition,
+        right_condition=right_condition,
+        include_tasks=include_tasks,
+        exclude_tasks=exclude_tasks,
+    )
+    if not paired:
+        return {"num_pairs": 0}
+
+    left_scores = [float(left.get("task_score", 0.0)) for left, _ in paired]
+    right_scores = [float(right.get("task_score", 0.0)) for _, right in paired]
+    wins = sum(1 for left, right in zip(left_scores, right_scores) if right > left)
+    p_value = None
+    if len(left_scores) >= 2:
+        try:
+            from scipy import stats
+
+            _, p_value = stats.ttest_rel(left_scores, right_scores)
+            p_value = float(p_value)
+        except Exception:
+            p_value = None
+    return {
+        "num_pairs": len(paired),
+        "frozen_condition": left_condition,
+        "trained_condition": right_condition,
+        "frozen_mean_task_score": round(float(np.mean(left_scores)), 3),
+        "trained_mean_task_score": round(float(np.mean(right_scores)), 3),
+        "task_score_absolute_difference": round(
+            float(np.mean(right_scores)) - float(np.mean(left_scores)), 3
+        ),
+        "p_value_task_score": round(p_value, 6) if p_value is not None else None,
+        "win_rate_trained_over_frozen": round(wins / max(len(paired), 1), 3),
+    }
+
+
+def _pair_condition_rows(
+    *,
+    all_scores: List[Dict],
+    left_condition: str,
+    right_condition: str,
+    include_tasks: set[str] | None,
+    exclude_tasks: set[str] | None,
+) -> List[tuple[Dict, Dict]]:
+    grouped: Dict[str, Dict[str, Dict]] = {}
+    for row in all_scores:
+        condition = str(row.get("condition", "")).strip()
+        if condition not in {left_condition, right_condition}:
+            continue
+        task = str(row.get("task", "")).strip()
+        if include_tasks is not None and task not in include_tasks:
+            continue
+        if exclude_tasks is not None and task in exclude_tasks:
+            continue
+        pair_id = f"{int(row.get('rollout_index', 0))}::{task}"
+        grouped.setdefault(pair_id, {})[condition] = row
+
+    pairs: List[tuple[Dict, Dict]] = []
+    for rows in grouped.values():
+        left = rows.get(left_condition)
+        right = rows.get(right_condition)
+        if left is None or right is None:
+            continue
+        pairs.append((left, right))
+    return pairs

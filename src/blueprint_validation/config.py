@@ -442,6 +442,8 @@ class PolicyFinetuneConfig:
 class OpenVLAAdapterBackendConfig:
     openvla_repo: Path = Path("/opt/openvla-oft")
     finetune_script: str = "vla-scripts/finetune.py"
+    base_model_name: Optional[str] = None
+    base_checkpoint_path: Optional[Path] = None
     policy_action_dim: int = 7
     extra_train_args: List[str] = field(default_factory=list)
 
@@ -464,6 +466,7 @@ class Pi05AdapterBackendConfig:
 @dataclass
 class DreamZeroAdapterBackendConfig:
     repo_path: Path = Path("/opt/dreamzero")
+    base_model_name: Optional[str] = None
     checkpoint_path: Path = Path("./data/checkpoints/dreamzero/")
     # Import target used by the adapter to instantiate inference runtime.
     inference_module: str = "dreamzero.inference"
@@ -471,6 +474,8 @@ class DreamZeroAdapterBackendConfig:
     policy_action_dim: int = 7
     frame_history: int = 4
     strict_action_contract: bool = True
+    strict_action_min: float = -1.0
+    strict_action_max: float = 1.0
     train_script: str = "scripts/train.py"
     extra_train_args: List[str] = field(default_factory=list)
     # Keep policy training disabled by default in pragmatic single-GPU mode.
@@ -1373,6 +1378,14 @@ def load_config(path: Path) -> ValidationConfig:
                 finetune_script=str(
                     openvla_raw.get("finetune_script", config.policy_finetune.finetune_script)
                 ),
+                base_model_name=(
+                    str(openvla_raw.get("base_model_name", "")).strip() or None
+                ),
+                base_checkpoint_path=(
+                    _resolve_path(openvla_raw["base_checkpoint_path"], base_dir)
+                    if openvla_raw.get("base_checkpoint_path") is not None
+                    else None
+                ),
                 policy_action_dim=int(openvla_raw.get("policy_action_dim", 7)),
                 extra_train_args=[str(v) for v in openvla_raw.get("extra_train_args", [])],
             ),
@@ -1401,6 +1414,9 @@ def load_config(path: Path) -> ValidationConfig:
                     dreamzero_raw.get("repo_path", "/opt/dreamzero"),
                     base_dir,
                 ),
+                base_model_name=(
+                    str(dreamzero_raw.get("base_model_name", "")).strip() or None
+                ),
                 checkpoint_path=_resolve_path(
                     dreamzero_raw.get("checkpoint_path", "./data/checkpoints/dreamzero/"),
                     base_dir,
@@ -1414,6 +1430,8 @@ def load_config(path: Path) -> ValidationConfig:
                 policy_action_dim=int(dreamzero_raw.get("policy_action_dim", 7)),
                 frame_history=int(dreamzero_raw.get("frame_history", 4)),
                 strict_action_contract=bool(dreamzero_raw.get("strict_action_contract", True)),
+                strict_action_min=float(dreamzero_raw.get("strict_action_min", -1.0)),
+                strict_action_max=float(dreamzero_raw.get("strict_action_max", 1.0)),
                 train_script=str(dreamzero_raw.get("train_script", "scripts/train.py")),
                 extra_train_args=[str(v) for v in dreamzero_raw.get("extra_train_args", [])],
                 allow_training=bool(dreamzero_raw.get("allow_training", False)),
@@ -1825,6 +1843,13 @@ def load_config(path: Path) -> ValidationConfig:
         raise ValueError("policy_adapter.dreamzero.policy_action_dim must be >= 1")
     if int(config.policy_adapter.dreamzero.frame_history) < 1:
         raise ValueError("policy_adapter.dreamzero.frame_history must be >= 1")
+    if float(config.policy_adapter.dreamzero.strict_action_min) >= float(
+        config.policy_adapter.dreamzero.strict_action_max
+    ):
+        raise ValueError(
+            "policy_adapter.dreamzero.strict_action_min must be < "
+            "policy_adapter.dreamzero.strict_action_max"
+        )
     if not str(config.policy_adapter.dreamzero.inference_module).strip():
         raise ValueError("policy_adapter.dreamzero.inference_module must be non-empty")
     if not str(config.policy_adapter.dreamzero.inference_class).strip():

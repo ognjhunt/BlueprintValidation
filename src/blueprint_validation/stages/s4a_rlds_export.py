@@ -18,6 +18,16 @@ from .base import PipelineStage
 logger = get_logger("stages.s4a_rlds_export")
 
 
+def _eval_only_task_set(config: ValidationConfig) -> set[str]:
+    if not bool(config.policy_compare.enabled):
+        return set()
+    return {
+        str(task).strip()
+        for task in (config.policy_compare.heldout_tasks or [])
+        if str(task).strip()
+    }
+
+
 class RLDSExportStage(PipelineStage):
     @property
     def name(self) -> str:
@@ -108,6 +118,30 @@ class RLDSExportStage(PipelineStage):
                 elapsed_seconds=0,
                 detail="No adapted-condition rollouts found in Stage 4 output.",
             )
+        eval_only_tasks = _eval_only_task_set(config)
+        num_eval_only_rollouts_excluded = 0
+        if eval_only_tasks:
+            filtered_for_training = [
+                row
+                for row in adapted_rollouts_all
+                if str(row.get("task", "")).strip() not in eval_only_tasks
+            ]
+            num_eval_only_rollouts_excluded = len(adapted_rollouts_all) - len(filtered_for_training)
+            adapted_rollouts_all = filtered_for_training
+            if not adapted_rollouts_all:
+                return StageResult(
+                    stage_name=self.name,
+                    status="failed",
+                    elapsed_seconds=0,
+                    detail=(
+                        "All adapted-condition rollouts were excluded from policy training because "
+                        "their tasks are reserved for evaluation-only heldout testing."
+                    ),
+                    metrics={
+                        "num_eval_only_rollouts_excluded": num_eval_only_rollouts_excluded,
+                        "eval_only_tasks": sorted(eval_only_tasks),
+                    },
+                )
 
         curriculum_result = sample_policy_curriculum(
             adapted_rollouts_all,
@@ -163,6 +197,8 @@ class RLDSExportStage(PipelineStage):
         strict_disjoint_eval = bool(getattr(config.action_boost, "enabled", False)) and bool(
             getattr(config.action_boost, "strict_disjoint_eval", True)
         )
+        if bool(config.policy_compare.enabled):
+            strict_disjoint_eval = True
         if strict_disjoint_eval and not split_manifest["eval_pair_ids"]:
             return StageResult(
                 stage_name=self.name,
@@ -275,6 +311,8 @@ class RLDSExportStage(PipelineStage):
                 "num_train_hard_negative": int(
                     curriculum_manifest.get("train_bucket_counts", {}).get("hard_negative", 0)
                 ),
+                "num_eval_only_rollouts_excluded": num_eval_only_rollouts_excluded,
+                "eval_only_tasks": sorted(eval_only_tasks),
                 "max_action_delta_norm": config.rollout_dataset.max_action_delta_norm,
                 "require_consistent_action_dim": (
                     config.rollout_dataset.require_consistent_action_dim

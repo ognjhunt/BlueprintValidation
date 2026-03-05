@@ -35,9 +35,11 @@ class DreamZeroPolicyAdapter(PolicyAdapter):
         return "dreamzero"
 
     def base_model_ref(self, eval_config: PolicyEvalConfig) -> tuple[str, Optional[Path]]:
-        if eval_config.checkpoint_path and eval_config.checkpoint_path.exists():
-            return eval_config.model_name, eval_config.checkpoint_path
-        return eval_config.model_name, self.backend.checkpoint_path
+        del eval_config
+        model_name = str(
+            self.backend.base_model_name or self.backend.checkpoint_path or ""
+        ).strip()
+        return model_name, self.backend.checkpoint_path
 
     def load_policy(
         self,
@@ -139,7 +141,6 @@ class DreamZeroPolicyAdapter(PolicyAdapter):
             )
 
         model_ref = str(base_checkpoint) if base_checkpoint else str(base_model_name)
-        dataset_dir = dataset_root / dataset_name
         output_dir.mkdir(parents=True, exist_ok=True)
 
         cmd = [
@@ -317,12 +318,23 @@ class DreamZeroPolicyAdapter(PolicyAdapter):
 
     def _normalize_action(self, action) -> np.ndarray:
         arr = np.asarray(action, dtype=np.float32).reshape(-1)
+        if not np.all(np.isfinite(arr)):
+            raise RuntimeError("DreamZero action contract violation: non-finite action values detected.")
         target_dim = int(self.backend.policy_action_dim)
         if self.backend.strict_action_contract and arr.shape[0] != target_dim:
             raise RuntimeError(
                 "DreamZero strict_action_contract violation: "
                 f"received action_dim={arr.shape[0]}, expected={target_dim}."
             )
+        if self.backend.strict_action_contract:
+            lower = float(self.backend.strict_action_min)
+            upper = float(self.backend.strict_action_max)
+            if np.any(arr < lower) or np.any(arr > upper):
+                raise RuntimeError(
+                    "DreamZero strict_action_contract violation: "
+                    f"action values out of bounds [{lower}, {upper}] "
+                    f"(min={float(np.min(arr)):.4f}, max={float(np.max(arr)):.4f})."
+                )
         if arr.shape[0] < target_dim:
             arr = np.pad(arr, (0, target_dim - arr.shape[0]))
         elif arr.shape[0] > target_dim:
