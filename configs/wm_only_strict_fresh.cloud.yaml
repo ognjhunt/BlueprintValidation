@@ -217,7 +217,7 @@ eval_policy:
     video_metadata_fps: 10.0
 
 # Full action-success boost mode (scan-only, no new real data).
-# Keeps wm_only in config but runtime auto-switches to dual when enabled.
+# Keeps wm_only in config but runtime auto-switches to wm_uplift when enabled.
 action_boost:
   enabled: false
   require_full_pipeline: false

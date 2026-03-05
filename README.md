@@ -1,6 +1,8 @@
 # BlueprintValidation
 
-Gaussian splat to robot world model validation pipeline. Proves that scanning a facility and turning it into training data makes robot policies perform better in a world model that knows that specific site.
+Gaussian splat to robot world model validation pipeline for same-facility world-model evaluation. It tests whether scanning a facility and adapting a world model improves robot-policy performance inside that adapted world model.
+
+Current repo outputs are world-model evidence only. They do not establish IRL deployment performance until matched real-robot runs are added in the target facility.
 
 ## Pipeline
 
@@ -71,12 +73,12 @@ The pipeline supports a default-on full mixed-data path (scan-only, no new real 
 6. Stage 4e enforces strict disjoint evaluation (eval starts/tasks not used for policy training).
 
 Key controls:
-- `action_boost.*` for runtime orchestration (`wm_only` auto-switch to `dual`, full-path enforcement).
+- `action_boost.*` for runtime orchestration (`wm_only` auto-switch to `wm_uplift`, full-path enforcement).
 - `rollout_dataset.selection_mode` and near-miss/hard-negative fractions.
 - `policy_rl_loop.*` world-refresh and policy-refine mix ratios.
 
-Expected uplift prior (not guaranteed): around `+8 to +18` absolute points in WM eval and
-`+3 to +9` absolute points in IRL transfer when gates pass.
+Expected uplift prior (not guaranteed): around `+8 to +18` absolute points in WM eval.
+IRL transfer remains unmeasured in this repo until matched real-robot runs are added.
 
 ## Quick Start
 

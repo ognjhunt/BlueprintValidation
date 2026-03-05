@@ -463,9 +463,9 @@ class ValidationPipeline:
             scope = (getattr(self.config.eval_policy, "headline_scope", "wm_only") or "wm_only").strip().lower()
             if scope == "wm_only":
                 logger.warning(
-                    "ActionBoost enabled: overriding eval_policy.headline_scope from wm_only to dual."
+                    "ActionBoost enabled: overriding eval_policy.headline_scope from wm_only to wm_uplift."
                 )
-                self.config.eval_policy.headline_scope = "dual"
+                self.config.eval_policy.headline_scope = "wm_uplift"
 
         if bool(getattr(cfg, "auto_enable_rollout_dataset", True)):
             self.config.rollout_dataset.enabled = True

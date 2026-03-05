@@ -9,7 +9,7 @@ facilities:
 
 eval_policy:
   mode: research
-  headline_scope: dual
+  headline_scope: wm_uplift
   num_rollouts: 24
   min_absolute_difference: 1.0
   min_manip_success_delta_pp: 15.0

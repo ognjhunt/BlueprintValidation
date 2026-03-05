@@ -255,7 +255,7 @@ def test_pipeline_wm_only_skips_openvla_stages(sample_config, tmp_path, monkeypa
         assert call_counts.get(stage_name, 0) == 0
 
 
-def test_pipeline_action_boost_auto_switches_wm_only(sample_config, tmp_path, monkeypatch):
+def test_pipeline_action_boost_auto_switches_wm_only_to_wm_uplift(sample_config, tmp_path, monkeypatch):
     call_counts = {}
     pipeline_mod = _patch_pipeline_stages_with_dummies(monkeypatch, call_counts)
     sample_config.cloud.max_cost_usd = 0
@@ -266,7 +266,7 @@ def test_pipeline_action_boost_auto_switches_wm_only(sample_config, tmp_path, mo
     pipeline = pipeline_mod.ValidationPipeline(sample_config, work_dir)
 
     results = pipeline.run_all(resume_from_results=False)
-    assert sample_config.eval_policy.headline_scope == "dual"
+    assert sample_config.eval_policy.headline_scope == "wm_uplift"
     for stage_name in ("s4a_rlds_export", "s3b_policy_finetune", "s3c_policy_rl_loop", "s4e_trained_eval"):
         key = f"test_facility/{stage_name}"
         assert results[key].status == "success"

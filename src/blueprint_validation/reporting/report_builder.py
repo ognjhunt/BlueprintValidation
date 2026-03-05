@@ -105,6 +105,10 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
     lines = []
     lines.append(f"# Validation Report: {data.get('project_name', 'BlueprintValidation')}")
     lines.append(f"*Generated: {data.get('generated_at', '')}*\n")
+    if len(config.facilities) == 1:
+        lines.append(
+            "*Scope: same-facility world-model evaluation only. No matched real-robot evidence is included.*\n"
+        )
 
     # Executive Summary
     lines.append("## Executive Summary\n")
@@ -439,11 +443,10 @@ def _add_executive_summary(lines: list, data: dict, config: ValidationConfig = N
     if config is not None:
         min_abs_diff = config.eval_policy.min_absolute_difference
     same_facility_policy_uplift = bool(
-        config is not None
-        and len(config.facilities) == 1
-        and (getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only").strip().lower()
-        == "dual"
-        and bool(config.policy_finetune.enabled)
+        config is not None and len(config.facilities) == 1 and bool(config.policy_finetune.enabled)
+    )
+    cross_site_applicable = bool(
+        (config is not None and len(config.facilities) > 1) or data.get("cross_site")
     )
 
     # Check if primary test passed
@@ -483,16 +486,18 @@ def _add_executive_summary(lines: list, data: dict, config: ValidationConfig = N
     lines.append("|------|--------|")
     lines.append(f"| Frozen Policy Performance | {'PASS' if primary_passed else 'PENDING/FAIL'} |")
     lines.append(f"| Trained Policy Improvement | {'PASS' if trained_passed else 'PENDING/FAIL'} |")
-    lines.append(
-        f"| Cross-Site Discrimination | {'PASS' if cross_site_passed else 'PENDING/FAIL'} |"
-    )
+    if cross_site_applicable:
+        lines.append(
+            f"| Cross-Site Discrimination | {'PASS' if cross_site_passed else 'PENDING/FAIL'} |"
+        )
     lines.append("")
 
     if trained_passed and same_facility_policy_uplift:
         lines.append(
-            f"**The policy fine-tuned in the site-adapted world model outperformed the frozen "
-            f"baseline in that same adapted world model (absolute difference >= {min_abs_diff}, p < 0.05).** "
-            "This is the main same-facility policy-uplift proxy claim for pre-deployment evaluation.\n"
+            f"**In the same facility's adapted world model, the fine-tuned policy outperformed the frozen "
+            f"baseline (absolute difference >= {min_abs_diff}, p < 0.05).** "
+            "This is world-model evidence only. It does not establish IRL deployment performance because "
+            "no matched real-robot runs were performed in that facility.\n"
         )
     elif primary_passed:
         lines.append(
@@ -503,7 +508,7 @@ def _add_executive_summary(lines: list, data: dict, config: ValidationConfig = N
         )
     if trained_passed and not same_facility_policy_uplift:
         lines.append(
-            "**Policies fine-tuned on site-adapted rollout data outperform frozen baselines.** "
-            "This validates the stronger claim that robot policies perform better when "
-            "**trained** in a site-adapted world model.\n"
+            "**Policies fine-tuned on site-adapted rollout data outperform frozen baselines in the "
+            "evaluated world model.** This remains simulator/world-model evidence unless matched "
+            "real-robot runs are added.\n"
         )

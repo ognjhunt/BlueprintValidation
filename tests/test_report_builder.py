@@ -130,6 +130,8 @@ def test_executive_summary_accepts_world_fixed_s4e_fallback(sample_config):
     _add_executive_summary(lines, data, sample_config)
     rendered = "\n".join(lines)
     assert "| Trained Policy Improvement | PASS |" in rendered
+    assert "world-model evidence only" in rendered
+    assert "Cross-Site Discrimination" not in rendered
 
 
 def test_executive_summary_does_not_let_s4d_satisfy_trained_headline(sample_config):

@@ -378,7 +378,7 @@ class PolicyEvalConfig:
     tasks: List[str] = field(default_factory=list)
     manipulation_tasks: List[str] = field(default_factory=list)
     conditions: List[str] = field(default_factory=lambda: ["baseline", "adapted"])
-    headline_scope: str = "wm_only"  # wm_only|dual
+    headline_scope: str = "wm_only"  # wm_only|wm_uplift|dual
     rollout_driver: str = "scripted"  # scripted|stress|both
     scripted_rollouts_per_task: int = 12
     mode: str = "claim"  # claim|research
@@ -623,6 +623,7 @@ class RolloutDatasetConfig:
 class ActionBoostConfig:
     enabled: bool = True
     require_full_pipeline: bool = True
+    # Legacy key name retained for compatibility; runtime auto-switch now targets wm_uplift.
     auto_switch_headline_scope_to_dual: bool = True
     auto_enable_rollout_dataset: bool = True
     auto_enable_policy_finetune: bool = True

@@ -226,14 +226,22 @@ class PolicyEvalStage(PipelineStage):
         headline_scope = _headline_scope(config)
         claim_mode = (config.eval_policy.mode or "claim").strip().lower() == "claim"
         required_dim = int(config.eval_policy.required_action_dim)
-        if claim_mode and headline_scope == "dual" and config.policy_adapter.name.strip().lower() != "openvla_oft":
+        if (
+            claim_mode
+            and headline_scope in {"wm_uplift", "dual"}
+            and config.policy_adapter.name.strip().lower() != "openvla_oft"
+        ):
             return StageResult(
                 stage_name=self.name,
                 status="failed",
                 elapsed_seconds=0,
                 detail="Claim mode only supports policy_adapter.name=openvla_oft.",
             )
-        if claim_mode and headline_scope == "dual" and not config.eval_policy.require_native_action_compat:
+        if (
+            claim_mode
+            and headline_scope in {"wm_uplift", "dual"}
+            and not config.eval_policy.require_native_action_compat
+        ):
             return StageResult(
                 stage_name=self.name,
                 status="failed",
@@ -1530,7 +1538,7 @@ def _build_pairwise_metrics(all_scores: List[Dict], conditions: List[str]) -> Di
 
 def _headline_scope(config: ValidationConfig) -> str:
     scope = (getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only").strip().lower()
-    return scope if scope in {"wm_only", "dual"} else "wm_only"
+    return scope if scope in {"wm_only", "wm_uplift", "dual"} else "wm_only"
 
 
 def _resolve_world_action_dim_from_config(config: ValidationConfig) -> int | None:

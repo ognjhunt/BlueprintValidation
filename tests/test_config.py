@@ -1428,7 +1428,7 @@ def test_same_facility_policy_uplift_configs_load():
     ):
         cfg = load_config(Path(relpath))
         assert len(cfg.facilities) == 1
-        assert cfg.eval_policy.headline_scope == "dual"
+        assert cfg.eval_policy.headline_scope == "wm_uplift"
         assert cfg.policy_finetune.enabled is True
         assert cfg.rollout_dataset.enabled is True
         assert cfg.policy_compare.enabled is True

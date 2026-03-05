@@ -7,10 +7,10 @@ facilities:
     ply_path: ./data/facilities/facility_a/splat.ply
     description: Primary deployment site
 
-# Keep this as dual when you want policy-uplift stages enabled.
+# Use wm_uplift to run same-facility policy-uplift stages without implying IRL evidence.
 eval_policy:
   mode: research
-  headline_scope: dual
+  headline_scope: wm_uplift
   num_rollouts: 24
   min_absolute_difference: 1.0
 

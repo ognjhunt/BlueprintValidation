@@ -141,7 +141,7 @@ def _effective_headline_scope(config: ValidationConfig) -> str:
         and bool(getattr(action_boost, "enabled", False))
         and bool(getattr(action_boost, "auto_switch_headline_scope_to_dual", True))
     ):
-        return "dual"
+        return "wm_uplift"
     return scope
 
 
@@ -216,7 +216,7 @@ def _claim_mode_checks(
     checks.append(
         PreflightCheck(
             name="eval_policy:headline_scope",
-            passed=scope in {"wm_only", "dual"},
+            passed=scope in {"wm_only", "wm_uplift", "dual"},
             detail=scope or "<unset>",
         )
     )

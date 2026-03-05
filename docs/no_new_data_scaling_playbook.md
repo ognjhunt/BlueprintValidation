@@ -12,6 +12,8 @@ This guide is the working playbook for future sessions when constraints are stri
 - only existing site captures ("splay") + synthetic videos/trajectories/demos/world-model rollouts
 - target operating mode: scale to 100+ locations per week
 
+Current repo outputs are world-model-only. Any IRL numbers below are planning priors for future matched robot runs, not metrics produced by the current pipeline.
+
 ## Scoring Convention
 
 All uplift estimates in this guide are **absolute points on a 100-point success-rate scale**.
