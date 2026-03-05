@@ -135,6 +135,12 @@ splatsim:
   min_successful_rollouts_per_zone: 1
   fallback_to_prior_manifest: true
 
+# ---- Stage 1f: External interaction ingest (PolaRiS-style, eval-first) ----
+external_interaction:
+  enabled: false
+  manifest_path: ../data/external_interaction/interaction_manifest.json
+  source_name: polaris
+
 # ---- Legacy Stage 1d compatibility (one release cycle) ----
 robosplat_scan:
   enabled: true
@@ -280,6 +286,17 @@ policy_adapter:
     norm_stats_script: scripts/compute_norm_stats.py
     policy_action_dim: 7
     policy_state_dim: 7
+    extra_train_args: []
+  dreamzero:
+    repo_path: /opt/dreamzero
+    checkpoint_path: ../data/checkpoints/dreamzero/
+    inference_module: dreamzero.inference
+    inference_class: DreamZeroInference
+    policy_action_dim: 7
+    frame_history: 4
+    strict_action_contract: true
+    allow_training: false
+    train_script: scripts/train.py
     extra_train_args: []
 
 # pi0.5 switch example (required refs; preflight will fail if OpenVLA-like refs remain):

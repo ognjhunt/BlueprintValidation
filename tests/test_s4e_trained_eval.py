@@ -79,6 +79,38 @@ def test_build_pairwise_metrics():
     assert ab["baseline_mean"] == 4.5
 
 
+def test_claim_pair_selection_prefers_world_fixed_comparison():
+    from blueprint_validation.stages.s4e_trained_eval import _select_claim_pairwise_comparison
+
+    pairwise = {
+        "baseline_vs_trained": {"absolute_difference": 1.2},
+        "adapted_vs_trained": {"absolute_difference": 0.8},
+    }
+    key, pair, world_fixed = _select_claim_pairwise_comparison(pairwise)
+    assert key == "adapted_vs_trained"
+    assert pair == pairwise["adapted_vs_trained"]
+    assert world_fixed is True
+
+
+def test_claim_pair_selection_falls_back_to_non_isolated_when_needed():
+    from blueprint_validation.stages.s4e_trained_eval import _select_claim_pairwise_comparison
+
+    pairwise = {"baseline_vs_trained": {"absolute_difference": 1.2}}
+    key, pair, world_fixed = _select_claim_pairwise_comparison(pairwise)
+    assert key == "baseline_vs_trained"
+    assert pair == pairwise["baseline_vs_trained"]
+    assert world_fixed is False
+
+
+def test_trained_uplift_abs_diff_handles_reverse_pair_key():
+    from blueprint_validation.stages.s4e_trained_eval import _trained_uplift_abs_diff
+
+    forward = _trained_uplift_abs_diff("adapted_vs_trained", {"absolute_difference": 0.7})
+    reverse = _trained_uplift_abs_diff("trained_vs_adapted", {"absolute_difference": -0.7})
+    assert forward == 0.7
+    assert reverse == 0.7
+
+
 def test_manipulation_success_rate():
     from blueprint_validation.stages.s4e_trained_eval import _manipulation_success_rate
 

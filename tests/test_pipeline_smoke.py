@@ -136,6 +136,7 @@ def _patch_pipeline_stages_with_dummies(monkeypatch, call_counts):
         "GeminiPolishStage": "s1c_gemini_polish",
         "GaussianAugmentStage": "s1d_gaussian_augment",
         "SplatSimInteractionStage": "s1e_splatsim_interaction",
+        "ExternalInteractionIngestStage": "s1f_external_interaction_ingest",
         "EnrichStage": "s2_enrich",
         "FinetuneStage": "s3_finetune",
         "PolicyEvalStage": "s4_policy_eval",
@@ -224,7 +225,7 @@ def test_pipeline_post_stage_sync_hook(sample_config, tmp_path, monkeypatch):
     pipeline.run_all(resume_from_results=False)
 
     lines = hook_log.read_text().strip().splitlines()
-    assert len(lines) == 20
+    assert len(lines) == 21
     assert any(line.startswith("test_facility/s1_render|success") for line in lines)
 
 
@@ -307,6 +308,11 @@ def test_pipeline_action_boost_require_full_converts_skipped_to_failed(
     monkeypatch.setattr(pipeline_mod, "GeminiPolishStage", lambda: DummyStage("s1c_gemini_polish"))
     monkeypatch.setattr(pipeline_mod, "GaussianAugmentStage", lambda: DummyStage("s1d_gaussian_augment"))
     monkeypatch.setattr(pipeline_mod, "SplatSimInteractionStage", lambda: DummyStage("s1e_splatsim_interaction"))
+    monkeypatch.setattr(
+        pipeline_mod,
+        "ExternalInteractionIngestStage",
+        lambda: DummyStage("s1f_external_interaction_ingest"),
+    )
     monkeypatch.setattr(pipeline_mod, "EnrichStage", lambda: DummyStage("s2_enrich"))
     monkeypatch.setattr(pipeline_mod, "FinetuneStage", lambda: DummyStage("s3_finetune"))
     monkeypatch.setattr(pipeline_mod, "PolicyEvalStage", lambda: DummyStage("s4_policy_eval"))
@@ -349,6 +355,7 @@ def test_pipeline_summary_includes_run_metadata_and_stage_provenance(
     assert summary["run_mode"] == "fresh"
     assert summary["run_started_at"]
     assert summary["run_finished_at"]
+    assert "policy_eval_matrix_path" in summary
     for stage_payload in summary["stages"].values():
         provenance = stage_payload.get("provenance", {})
         assert provenance.get("source") == "executed"

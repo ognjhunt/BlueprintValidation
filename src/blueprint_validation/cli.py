@@ -432,6 +432,26 @@ def simulate_interaction(ctx: click.Context, facility: str) -> None:
     click.echo(f"SplatSim interaction complete: {result.status} ({result.elapsed_seconds:.1f}s)")
 
 
+@cli.command("ingest-external-interaction")
+@click.option("--facility", required=True, help="Facility ID.")
+@click.pass_context
+def ingest_external_interaction(ctx: click.Context, facility: str) -> None:
+    """Stage 1f: Ingest external interaction manifest into stage-1 source format."""
+    from .stages.s1f_external_interaction_ingest import ExternalInteractionIngestStage
+
+    config = ctx.obj["config"]
+    fac = _get_facility(ctx, facility)
+    work_dir = _get_stage_work_dir(ctx, facility)
+
+    stage = ExternalInteractionIngestStage()
+    result = stage.execute(config, fac, work_dir, {})
+    result.save(work_dir / "s1f_external_interaction_ingest_result.json")
+    click.echo(
+        "External interaction ingest complete: "
+        f"{result.status} ({result.elapsed_seconds:.1f}s)"
+    )
+
+
 @cli.command()
 @click.option("--facility", required=True, help="Facility ID.")
 @click.pass_context
@@ -802,6 +822,7 @@ def status(ctx: click.Context) -> None:
         "s1c_gemini_polish",
         "s1d_gaussian_augment",
         "s1e_splatsim_interaction",
+        "s1f_external_interaction_ingest",
         "s2_enrich",
         "s3_finetune",
         "s3b_policy_finetune",

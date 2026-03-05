@@ -411,3 +411,62 @@ def test_preflight_claim_dual_keeps_action_contract_checks(sample_config, monkey
     by_name = {c.name: c for c in checks}
     assert by_name["claim:policy_action_dim"].passed is True
     assert by_name["claim:world_model_action_dim"].passed is True
+
+
+def test_preflight_dreamzero_checks_action_dim(sample_config, monkeypatch):
+    import blueprint_validation.preflight as preflight
+
+    _patch_preflight_fast(monkeypatch, preflight)
+    sample_config.policy_adapter.name = "dreamzero"
+    sample_config.policy_adapter.dreamzero.policy_action_dim = 0
+    sample_config.eval_policy.mode = "research"
+    sample_config.eval_policy.headline_scope = "dual"
+
+    checks = preflight.run_preflight(sample_config)
+    by_name = {c.name: c for c in checks}
+    assert by_name["policy_adapter:dreamzero:action_dim"].passed is False
+
+
+def test_preflight_dreamzero_checks_inference_import(sample_config, monkeypatch):
+    import blueprint_validation.preflight as preflight
+    from blueprint_validation.common import PreflightCheck
+
+    _patch_preflight_fast(monkeypatch, preflight)
+    sample_config.policy_adapter.name = "dreamzero"
+    sample_config.eval_policy.mode = "research"
+    sample_config.eval_policy.headline_scope = "dual"
+
+    def _import_check(module_name, extra_path, name):
+        if name == "policy_adapter:dreamzero:inference_import":
+            return PreflightCheck(name=name, passed=False, detail="cannot import")
+        return PreflightCheck(name=name, passed=True, detail="ok")
+
+    monkeypatch.setattr(preflight, "check_python_import_from_path", _import_check)
+
+    checks = preflight.run_preflight(sample_config)
+    by_name = {c.name: c for c in checks}
+    assert by_name["policy_adapter:dreamzero:inference_import"].passed is False
+
+
+def test_preflight_dreamzero_runtime_checks_run_without_policy_finetune(
+    sample_config, monkeypatch
+):
+    import blueprint_validation.preflight as preflight
+    from blueprint_validation.common import PreflightCheck
+
+    _patch_preflight_fast(monkeypatch, preflight)
+    sample_config.policy_adapter.name = "dreamzero"
+    sample_config.policy_finetune.enabled = False
+    sample_config.eval_policy.mode = "research"
+    sample_config.eval_policy.headline_scope = "dual"
+
+    monkeypatch.setattr(
+        preflight,
+        "check_path_exists",
+        lambda path, name: PreflightCheck(name=name, passed=True, detail=str(path)),
+    )
+
+    checks = preflight.run_preflight(sample_config)
+    by_name = {c.name: c for c in checks}
+    assert by_name["policy_adapter:dreamzero:repo_path"].passed is True
+    assert by_name["policy_adapter:dreamzero:checkpoint_path"].passed is True

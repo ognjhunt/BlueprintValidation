@@ -12,12 +12,14 @@ from typing import Dict
 
 from .common import StageResult, get_logger, read_json, write_json
 from .config import ValidationConfig
+from .evaluation.policy_eval_matrix import build_policy_eval_matrix_artifact
 from .stages.s0_task_hints_bootstrap import TaskHintsBootstrapStage
 from .stages.s1_render import RenderStage
 from .stages.s1b_robot_composite import RobotCompositeStage
 from .stages.s1c_gemini_polish import GeminiPolishStage
 from .stages.s1d_gaussian_augment import GaussianAugmentStage
 from .stages.s1e_splatsim_interaction import SplatSimInteractionStage
+from .stages.s1f_external_interaction_ingest import ExternalInteractionIngestStage
 from .stages.s2_enrich import EnrichStage
 from .stages.s3_finetune import FinetuneStage
 from .stages.s3b_policy_finetune import PolicyFinetuneStage
@@ -163,6 +165,7 @@ class ValidationPipeline:
             GeminiPolishStage(),  # S1c: optional Gemini photorealism polish
             GaussianAugmentStage(),  # S1d: Full RoboSplat-default augmentation
             SplatSimInteractionStage(),  # S1e: Optional PyBullet interaction augmentation
+            ExternalInteractionIngestStage(),  # S1f: Optional external interaction ingest
             EnrichStage(),  # S2: Cosmos Transfer variants
             FinetuneStage(),  # S3: DreamDojo LoRA fine-tune
             PolicyEvalStage(),  # S4: frozen policy eval (baseline + adapted)
@@ -408,6 +411,16 @@ class ValidationPipeline:
         else:
             logger.info("Skipping cross-site test (requires 2+ facilities)")
 
+        matrix_report_path: str | None = None
+        if aborted_early:
+            logger.info("Skipping policy eval matrix (pipeline aborted early).")
+        else:
+            try:
+                matrix_path = build_policy_eval_matrix_artifact(self.config, self.work_dir)
+                matrix_report_path = str(matrix_path) if matrix_path is not None else None
+            except Exception as exc:
+                logger.warning("Policy eval matrix generation failed: %s", exc)
+
         # Write pipeline summary
         run_finished_at = datetime.now(timezone.utc).isoformat()
         stages_summary = {}
@@ -430,6 +443,7 @@ class ValidationPipeline:
             "run_finished_at": run_finished_at,
             "aborted_early": aborted_early,
             "failed_stage_keys": failed_stage_keys,
+            "policy_eval_matrix_path": matrix_report_path,
         }
         write_json(summary, self.work_dir / "pipeline_summary.json")
 

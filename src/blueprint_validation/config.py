@@ -462,10 +462,27 @@ class Pi05AdapterBackendConfig:
 
 
 @dataclass
+class DreamZeroAdapterBackendConfig:
+    repo_path: Path = Path("/opt/dreamzero")
+    checkpoint_path: Path = Path("./data/checkpoints/dreamzero/")
+    # Import target used by the adapter to instantiate inference runtime.
+    inference_module: str = "dreamzero.inference"
+    inference_class: str = "DreamZeroInference"
+    policy_action_dim: int = 7
+    frame_history: int = 4
+    strict_action_contract: bool = True
+    train_script: str = "scripts/train.py"
+    extra_train_args: List[str] = field(default_factory=list)
+    # Keep policy training disabled by default in pragmatic single-GPU mode.
+    allow_training: bool = False
+
+
+@dataclass
 class PolicyAdapterConfig:
     name: str = "openvla_oft"
     openvla: OpenVLAAdapterBackendConfig = field(default_factory=OpenVLAAdapterBackendConfig)
     pi05: Pi05AdapterBackendConfig = field(default_factory=Pi05AdapterBackendConfig)
+    dreamzero: DreamZeroAdapterBackendConfig = field(default_factory=DreamZeroAdapterBackendConfig)
 
 
 @dataclass
@@ -518,6 +535,13 @@ class SplatSimConfig:
     horizon_steps: int = 30
     min_successful_rollouts_per_zone: int = 1
     fallback_to_prior_manifest: bool = True
+
+
+@dataclass
+class ExternalInteractionConfig:
+    enabled: bool = False
+    manifest_path: Optional[Path] = None
+    source_name: str = "external"
 
 
 @dataclass
@@ -672,6 +696,7 @@ class ValidationConfig:
     robosplat: RoboSplatConfig = field(default_factory=RoboSplatConfig)
     robosplat_scan: RoboSplatScanConfig = field(default_factory=RoboSplatScanConfig)
     splatsim: SplatSimConfig = field(default_factory=SplatSimConfig)
+    external_interaction: ExternalInteractionConfig = field(default_factory=ExternalInteractionConfig)
     action_boost: ActionBoostConfig = field(default_factory=ActionBoostConfig)
     policy_rl_loop: PolicyRLLoopConfig = field(default_factory=PolicyRLLoopConfig)
     wm_refresh_loop: WorldModelRefreshLoopConfig = field(default_factory=WorldModelRefreshLoopConfig)
@@ -1337,6 +1362,7 @@ def load_config(path: Path) -> ValidationConfig:
         pa = raw["policy_adapter"]
         openvla_raw = pa.get("openvla", {}) if isinstance(pa, dict) else {}
         pi05_raw = pa.get("pi05", {}) if isinstance(pa, dict) else {}
+        dreamzero_raw = pa.get("dreamzero", {}) if isinstance(pa, dict) else {}
         config.policy_adapter = PolicyAdapterConfig(
             name=pa.get("name", "openvla_oft"),
             openvla=OpenVLAAdapterBackendConfig(
@@ -1370,6 +1396,28 @@ def load_config(path: Path) -> ValidationConfig:
                 ),
                 extra_train_args=[str(v) for v in pi05_raw.get("extra_train_args", [])],
             ),
+            dreamzero=DreamZeroAdapterBackendConfig(
+                repo_path=_resolve_path(
+                    dreamzero_raw.get("repo_path", "/opt/dreamzero"),
+                    base_dir,
+                ),
+                checkpoint_path=_resolve_path(
+                    dreamzero_raw.get("checkpoint_path", "./data/checkpoints/dreamzero/"),
+                    base_dir,
+                ),
+                inference_module=str(
+                    dreamzero_raw.get("inference_module", "dreamzero.inference")
+                ),
+                inference_class=str(
+                    dreamzero_raw.get("inference_class", "DreamZeroInference")
+                ),
+                policy_action_dim=int(dreamzero_raw.get("policy_action_dim", 7)),
+                frame_history=int(dreamzero_raw.get("frame_history", 4)),
+                strict_action_contract=bool(dreamzero_raw.get("strict_action_contract", True)),
+                train_script=str(dreamzero_raw.get("train_script", "scripts/train.py")),
+                extra_train_args=[str(v) for v in dreamzero_raw.get("extra_train_args", [])],
+                allow_training=bool(dreamzero_raw.get("allow_training", False)),
+            ),
         )
     else:
         # Keep adapter backend defaults synchronized with policy_finetune defaults
@@ -1382,6 +1430,7 @@ def load_config(path: Path) -> ValidationConfig:
                 extra_train_args=[],
             ),
             pi05=config.policy_adapter.pi05,
+            dreamzero=config.policy_adapter.dreamzero,
         )
 
     if "robosplat" in raw:
@@ -1490,6 +1539,19 @@ def load_config(path: Path) -> ValidationConfig:
             horizon_steps=int(ss.get("horizon_steps", 30)),
             min_successful_rollouts_per_zone=int(ss.get("min_successful_rollouts_per_zone", 1)),
             fallback_to_prior_manifest=ss.get("fallback_to_prior_manifest", True),
+        )
+
+    if "external_interaction" in raw:
+        ei = raw["external_interaction"]
+        manifest_raw = ei.get("manifest_path")
+        config.external_interaction = ExternalInteractionConfig(
+            enabled=bool(ei.get("enabled", False)),
+            manifest_path=(
+                _resolve_path(manifest_raw, base_dir)
+                if manifest_raw is not None and str(manifest_raw).strip()
+                else None
+            ),
+            source_name=str(ei.get("source_name", "external")),
         )
 
     if "action_boost" in raw:
@@ -1759,6 +1821,18 @@ def load_config(path: Path) -> ValidationConfig:
         raise ValueError("eval_policy.reliability.min_rollout_frames must be >= 2")
     if int(config.eval_policy.reliability.min_rollout_steps) < 1:
         raise ValueError("eval_policy.reliability.min_rollout_steps must be >= 1")
+    if int(config.policy_adapter.dreamzero.policy_action_dim) < 1:
+        raise ValueError("policy_adapter.dreamzero.policy_action_dim must be >= 1")
+    if int(config.policy_adapter.dreamzero.frame_history) < 1:
+        raise ValueError("policy_adapter.dreamzero.frame_history must be >= 1")
+    if not str(config.policy_adapter.dreamzero.inference_module).strip():
+        raise ValueError("policy_adapter.dreamzero.inference_module must be non-empty")
+    if not str(config.policy_adapter.dreamzero.inference_class).strip():
+        raise ValueError("policy_adapter.dreamzero.inference_class must be non-empty")
+    if not str(config.policy_adapter.dreamzero.train_script).strip():
+        raise ValueError("policy_adapter.dreamzero.train_script must be non-empty")
+    if not str(config.external_interaction.source_name).strip():
+        raise ValueError("external_interaction.source_name must be non-empty")
     if int(config.enrich.min_source_clips) < 0:
         raise ValueError("enrich.min_source_clips must be >= 0")
     if int(config.enrich.min_valid_outputs) < 0:

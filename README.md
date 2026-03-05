@@ -122,6 +122,7 @@ blueprint-validate polish-gemini --facility facility_a    # optional
 blueprint-validate augment-gaussian --facility facility_a # optional Stage 1d (full RoboSplat default)
 blueprint-validate augment-robosplat --facility facility_a # alias
 blueprint-validate simulate-interaction --facility facility_a # optional Stage 1e
+blueprint-validate ingest-external-interaction --facility facility_a # optional Stage 1f
 blueprint-validate enrich --facility facility_a
 blueprint-validate finetune --facility facility_a
 blueprint-validate eval-policy --facility facility_a
@@ -316,6 +317,7 @@ Adapter switching is config-only:
 
 - Default (OpenVLA-OFT): `policy_adapter.name: openvla_oft`
 - pi0.5: `policy_adapter.name: pi05`
+- DreamZero (action-only adapter mode): `policy_adapter.name: dreamzero`
 
 Required config for pi0.5:
 
@@ -325,6 +327,23 @@ Required config for pi0.5:
   - `eval_policy.checkpoint_path` (non-OpenVLA checkpoint path)
 - optional overrides:
   - `policy_adapter.pi05.profile` (`pi05_libero` default, or `pi05_droid`)
+
+Required config for DreamZero action-only adapter mode:
+
+- `policy_adapter.dreamzero.repo_path`
+- `policy_adapter.dreamzero.checkpoint_path`
+- `policy_adapter.dreamzero.inference_module`
+- `policy_adapter.dreamzero.inference_class`
+- `policy_adapter.dreamzero.policy_action_dim`
+
+DreamZero limitations and defaults in this repo:
+
+- Inference integration is full and runtime-selectable.
+- Training path is integrated but `policy_adapter.dreamzero.allow_training=false` by default.
+- To enable full DreamZero training later, set:
+  - `policy_adapter.dreamzero.allow_training: true`
+  - valid `policy_adapter.dreamzero.train_script`
+  - dataset path inputs (`policy_finetune.data_root_dir` or Stage 4b/4c outputs).
 
 ### pi05 Pre-GPU Gate
 
@@ -349,6 +368,24 @@ Backward compatibility:
 
 - Legacy `eval_policy.openvla_model` and `eval_policy.openvla_checkpoint` are still accepted and mapped to `model_name` / `checkpoint_path` with deprecation warnings.
 - Legacy stage output keys (`adapted_openvla_checkpoint*`) are still emitted alongside canonical adapter-neutral keys (`adapted_policy_checkpoint*`).
+
+## External Interaction Ingest (Eval-First)
+
+Stage 1f allows you to ingest external interaction manifests (for example PolaRiS-produced clips) without coupling the runtime to PolaRiS directly.
+
+Config:
+
+- `external_interaction.enabled: true`
+- `external_interaction.manifest_path: <stage1_source_manifest.json>`
+- `external_interaction.source_name: polaris`
+
+Behavior:
+
+- Stage 1f validates the incoming manifest as `stage1_source`.
+- It writes normalized output to:
+  - `<work_dir>/<facility>/external_interaction/interaction_manifest.json`
+- Stage 2 source resolution precedence is:
+  - `s1f_external_interaction_ingest` > `s1e_splatsim_interaction` > `s1d_gaussian_augment` > ...
 
 ## Manipulation-Focused Setup
 

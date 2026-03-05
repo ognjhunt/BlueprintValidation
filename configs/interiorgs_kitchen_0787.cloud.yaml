@@ -87,7 +87,7 @@ gemini_polish:
   sample_every_n_frames: 2
 
 robosplat:
-  enabled: true
+  enabled: false
   backend: auto
   parity_mode: hybrid
   runtime_preset: balanced
@@ -225,6 +225,22 @@ policy_adapter:
     policy_action_dim: 7
     policy_state_dim: 7
     extra_train_args: []
+  dreamzero:
+    repo_path: /app/data/vendor/dreamzero
+    checkpoint_path: /models/checkpoints/dreamzero/
+    inference_module: dreamzero.inference
+    inference_class: DreamZeroInference
+    policy_action_dim: 7
+    frame_history: 4
+    strict_action_contract: true
+    allow_training: false
+    train_script: scripts/train.py
+    extra_train_args: []
+
+external_interaction:
+  enabled: false
+  manifest_path: /models/inputs/external_interaction/interaction_manifest.json
+  source_name: polaris
 
 # pi0.5 switch example (required refs; preflight will fail if OpenVLA-like refs remain):
 # policy_adapter:

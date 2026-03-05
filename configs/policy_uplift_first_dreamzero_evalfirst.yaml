@@ -1,0 +1,54 @@
+schema_version: v1
+project_name: Policy Uplift First (DreamZero + External Interaction Eval-First)
+
+facilities:
+  facility_a:
+    name: Facility A
+    ply_path: ./data/facilities/facility_a/splat.ply
+    description: Primary deployment site
+
+# Keep this as dual when you want policy-uplift stages enabled.
+eval_policy:
+  mode: research
+  headline_scope: dual
+  num_rollouts: 24
+  min_absolute_difference: 1.0
+
+# Policy-uplift A/B gate (fixed evaluator) remains the primary headline.
+policy_compare:
+  enabled: true
+  heldout_num_rollouts: 24
+  heldout_seed: 123
+  eval_world_model: adapted
+  # Use explicit heldout tasks to power unseen-object axis in matrix_report.json.
+  heldout_tasks:
+    - Pick up bottle and place it in the target zone
+    - Pick up bowl and place it in the target zone
+
+policy_adapter:
+  name: dreamzero
+  dreamzero:
+    repo_path: /opt/dreamzero
+    checkpoint_path: ./data/checkpoints/dreamzero
+    inference_module: dreamzero.inference
+    inference_class: DreamZeroInference
+    policy_action_dim: 7
+    frame_history: 4
+    strict_action_contract: true
+    allow_training: true
+    train_script: scripts/train.py
+
+# External physics interaction ingest (PolaRiS-style eval-first) is integrated but OFF by default.
+external_interaction:
+  enabled: false
+  manifest_path: ./data/external_interaction/interaction_manifest.json
+  source_name: polaris
+
+# Keep existing fallback interaction generation available.
+splatsim:
+  enabled: true
+  mode: hybrid
+
+# Optional: disable action-boost autoswitch if you want manual stage control.
+action_boost:
+  enabled: false

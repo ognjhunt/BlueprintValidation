@@ -1092,6 +1092,10 @@ def _resolve_render_manifest_source(
         previous_results=previous_results or {},
         candidates=[
             ManifestCandidate(
+                stage_name="s1f_external_interaction_ingest",
+                manifest_relpath=Path("external_interaction/interaction_manifest.json"),
+            ),
+            ManifestCandidate(
                 stage_name="s1e_splatsim_interaction",
                 manifest_relpath=Path("splatsim/interaction_manifest.json"),
             ),

@@ -8,6 +8,9 @@ def test_pipeline_stage_smoke_imports(sample_config, tmp_path):
     from blueprint_validation.pipeline import ValidationPipeline
     from blueprint_validation.stages.s0_task_hints_bootstrap import TaskHintsBootstrapStage
     from blueprint_validation.stages.s1e_splatsim_interaction import SplatSimInteractionStage
+    from blueprint_validation.stages.s1f_external_interaction_ingest import (
+        ExternalInteractionIngestStage,
+    )
     from blueprint_validation.stages.s3b_policy_finetune import PolicyFinetuneStage
     from blueprint_validation.stages.s3c_policy_rl_loop import PolicyRLLoopStage
     from blueprint_validation.stages.s3d_wm_refresh_loop import WorldModelRefreshLoopStage
@@ -19,6 +22,7 @@ def test_pipeline_stage_smoke_imports(sample_config, tmp_path):
 
     assert TaskHintsBootstrapStage().name == "s0_task_hints_bootstrap"
     assert SplatSimInteractionStage().name == "s1e_splatsim_interaction"
+    assert ExternalInteractionIngestStage().name == "s1f_external_interaction_ingest"
     assert PolicyFinetuneStage().name == "s3b_policy_finetune"
     assert PolicyRLLoopStage().name == "s3c_policy_rl_loop"
     assert WorldModelRefreshLoopStage().name == "s3d_wm_refresh_loop"
@@ -34,6 +38,9 @@ def test_stage_names_are_unique():
     from blueprint_validation.stages.s1c_gemini_polish import GeminiPolishStage
     from blueprint_validation.stages.s1d_gaussian_augment import GaussianAugmentStage
     from blueprint_validation.stages.s1e_splatsim_interaction import SplatSimInteractionStage
+    from blueprint_validation.stages.s1f_external_interaction_ingest import (
+        ExternalInteractionIngestStage,
+    )
     from blueprint_validation.stages.s2_enrich import EnrichStage
     from blueprint_validation.stages.s3_finetune import FinetuneStage
     from blueprint_validation.stages.s3b_policy_finetune import PolicyFinetuneStage
@@ -56,6 +63,7 @@ def test_stage_names_are_unique():
         GeminiPolishStage(),
         GaussianAugmentStage(),
         SplatSimInteractionStage(),
+        ExternalInteractionIngestStage(),
         EnrichStage(),
         FinetuneStage(),
         PolicyEvalStage(),
@@ -118,6 +126,11 @@ def test_pipeline_reruns_s4_after_successful_s3d(sample_config, tmp_path, monkey
     monkeypatch.setattr(pipeline_mod, "GeminiPolishStage", lambda: OrderedStage("s1c_gemini_polish"))
     monkeypatch.setattr(pipeline_mod, "GaussianAugmentStage", lambda: OrderedStage("s1d_gaussian_augment"))
     monkeypatch.setattr(pipeline_mod, "SplatSimInteractionStage", lambda: OrderedStage("s1e_splatsim_interaction"))
+    monkeypatch.setattr(
+        pipeline_mod,
+        "ExternalInteractionIngestStage",
+        lambda: OrderedStage("s1f_external_interaction_ingest"),
+    )
     monkeypatch.setattr(pipeline_mod, "EnrichStage", lambda: OrderedStage("s2_enrich"))
     monkeypatch.setattr(pipeline_mod, "FinetuneStage", lambda: OrderedStage("s3_finetune"))
     monkeypatch.setattr(pipeline_mod, "PolicyEvalStage", lambda: OrderedStage("s4_policy_eval"))

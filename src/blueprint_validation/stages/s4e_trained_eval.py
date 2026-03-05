@@ -473,28 +473,36 @@ class TrainedPolicyEvalStage(PipelineStage):
             "judge_audit_csv": str(audit_csv_path),
         }
         claim_failure_reasons: List[str] = []
-        claim_pair = pairwise.get("baseline_vs_trained") or pairwise.get("trained_vs_baseline")
-        abs_diff = 0.0
-        if claim_pair is not None:
-            abs_diff = float(claim_pair.get("absolute_difference", 0.0) or 0.0)
-        if abs_diff < float(config.eval_policy.min_absolute_difference):
+        claim_pair_key, claim_pair, claim_world_fixed = _select_claim_pairwise_comparison(pairwise)
+        claim_abs_diff = _trained_uplift_abs_diff(claim_pair_key, claim_pair)
+        if claim_pair is None:
+            claim_failure_reasons.append(
+                "No trained-policy comparison pair found in metrics (expected adapted_vs_trained)."
+            )
+        elif not claim_world_fixed:
+            claim_failure_reasons.append(
+                "World-fixed claim comparison unavailable. "
+                "Trained-policy headline requires adapted_vs_trained."
+            )
+        elif claim_abs_diff < float(config.eval_policy.min_absolute_difference):
             claim_failure_reasons.append(
                 "Absolute task-score difference below threshold: "
-                f"{abs_diff:.3f} < {config.eval_policy.min_absolute_difference:.3f}"
+                f"{claim_abs_diff:.3f} < {config.eval_policy.min_absolute_difference:.3f}"
             )
-        baseline_manip = None
-        for row in prior_scores:
-            if row.get("condition") == "baseline":
-                baseline_manip = row
-                break
-        baseline_manip_rate = None
-        if baseline_manip is not None:
-            baseline_manip_rows = [s for s in prior_scores if s.get("condition") == "baseline" and s.get("is_manipulation_task")]
-            baseline_manip_rate = _manipulation_success_rate(baseline_manip_rows)
+
+        comparator_condition = _comparison_condition_for_claim(claim_pair_key)
+        comparator_manip_rows = [
+            s
+            for s in prior_scores
+            if s.get("condition") == comparator_condition and s.get("is_manipulation_task")
+        ]
+        comparator_manip_rate = (
+            _manipulation_success_rate(comparator_manip_rows) if comparator_manip_rows else None
+        )
         trained_manip_rate = _manipulation_success_rate(trained_manip)
         manip_delta_pp = None
-        if baseline_manip_rate is not None:
-            manip_delta_pp = (trained_manip_rate - baseline_manip_rate) * 100.0
+        if comparator_manip_rate is not None:
+            manip_delta_pp = (trained_manip_rate - comparator_manip_rate) * 100.0
             if manip_delta_pp < float(config.eval_policy.min_manip_success_delta_pp):
                 claim_failure_reasons.append(
                     "Manipulation success delta below threshold: "
@@ -504,6 +512,13 @@ class TrainedPolicyEvalStage(PipelineStage):
         metrics["claim_mode"] = claim_mode
         metrics["claim_passed"] = claim_passed
         metrics["claim_failure_reasons"] = claim_failure_reasons
+        metrics["claim_comparison_key"] = claim_pair_key
+        metrics["claim_comparison_world_fixed"] = claim_world_fixed
+        metrics["claim_comparison_other_condition"] = comparator_condition
+        metrics["claim_comparison_absolute_difference"] = round(float(claim_abs_diff), 6)
+        metrics["claim_comparison_p_value"] = (
+            claim_pair.get("p_value") if isinstance(claim_pair, dict) else None
+        )
         metrics["manipulation_success_delta_pp"] = (
             round(float(manip_delta_pp), 6) if manip_delta_pp is not None else None
         )
@@ -728,3 +743,45 @@ def _build_pairwise_metrics(all_scores: List[Dict]) -> Dict:
             }
 
     return pairwise
+
+
+def _select_claim_pairwise_comparison(pairwise: Dict) -> tuple[str, Dict | None, bool]:
+    """Choose trained-policy claim pair with world-model isolation preference.
+
+    Priority:
+    1) adapted_vs_trained (world fixed, preferred)
+    2) trained_vs_adapted (world fixed)
+    3) baseline_vs_trained (not world fixed)
+    4) trained_vs_baseline (not world fixed)
+    """
+
+    preferred = (
+        ("adapted_vs_trained", True),
+        ("trained_vs_adapted", True),
+        ("baseline_vs_trained", False),
+        ("trained_vs_baseline", False),
+    )
+    for key, world_fixed in preferred:
+        pair = pairwise.get(key)
+        if isinstance(pair, dict):
+            return key, pair, world_fixed
+    return "", None, False
+
+
+def _trained_uplift_abs_diff(pair_key: str, pair_data: Dict | None) -> float:
+    if not isinstance(pair_data, dict):
+        return 0.0
+    raw = float(pair_data.get("absolute_difference", 0.0) or 0.0)
+    if pair_key.startswith("trained_vs_"):
+        return -raw
+    return raw
+
+
+def _comparison_condition_for_claim(pair_key: str) -> str:
+    if not pair_key:
+        return "adapted"
+    if pair_key.startswith("trained_vs_"):
+        return pair_key[len("trained_vs_") :].strip()
+    if "_vs_trained" in pair_key:
+        return pair_key.split("_vs_trained", 1)[0].strip()
+    return "adapted"

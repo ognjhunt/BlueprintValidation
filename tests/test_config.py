@@ -1302,3 +1302,51 @@ def test_config_rejects_invalid_wm_refresh_vlm_floor_score(tmp_path):
 
     with pytest.raises(ValueError, match="min_refresh_spatial_score"):
         load_config(config_path)
+
+
+def test_config_parses_dreamzero_and_external_interaction(tmp_path):
+    import yaml
+
+    from blueprint_validation.config import load_config
+
+    manifest_path = tmp_path / "external_manifest.json"
+    manifest_path.write_text("{}")
+    checkpoint = tmp_path / "dreamzero_ckpt"
+    checkpoint.mkdir(parents=True, exist_ok=True)
+    repo = tmp_path / "dreamzero_repo"
+    repo.mkdir(parents=True, exist_ok=True)
+
+    config_path = tmp_path / "dreamzero_external.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "DreamZero External Test",
+                "facilities": {"a": {"name": "A", "ply_path": str(tmp_path / "a.ply")}},
+                "policy_adapter": {
+                    "name": "dreamzero",
+                    "dreamzero": {
+                        "repo_path": str(repo),
+                        "checkpoint_path": str(checkpoint),
+                        "inference_module": "dreamzero.inference",
+                        "inference_class": "DreamZeroInference",
+                        "policy_action_dim": 7,
+                        "frame_history": 4,
+                        "allow_training": False,
+                    },
+                },
+                "external_interaction": {
+                    "enabled": True,
+                    "manifest_path": str(manifest_path),
+                    "source_name": "polaris",
+                },
+            }
+        )
+    )
+
+    cfg = load_config(config_path)
+    assert cfg.policy_adapter.name == "dreamzero"
+    assert cfg.policy_adapter.dreamzero.repo_path == repo.resolve()
+    assert cfg.policy_adapter.dreamzero.checkpoint_path == checkpoint.resolve()
+    assert cfg.external_interaction.enabled is True
+    assert cfg.external_interaction.manifest_path == manifest_path.resolve()
+    assert cfg.external_interaction.source_name == "polaris"

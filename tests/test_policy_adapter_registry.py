@@ -36,11 +36,20 @@ def test_registry_maps_pi05_aliases():
         assert adapter.name == "pi05"
 
 
+def test_registry_maps_dreamzero_aliases():
+    from blueprint_validation.config import PolicyAdapterConfig
+    from blueprint_validation.policy_adapters.registry import get_policy_adapter
+
+    for alias in ("dreamzero", "dream-zero", "dz"):
+        adapter = get_policy_adapter(PolicyAdapterConfig(name=alias))
+        assert adapter.name == "dreamzero"
+
+
 def test_registry_rejects_unknown_adapter():
     import pytest
 
     from blueprint_validation.config import PolicyAdapterConfig
     from blueprint_validation.policy_adapters.registry import get_policy_adapter
 
-    with pytest.raises(ValueError, match="Supported adapters: openvla_oft, pi05"):
+    with pytest.raises(ValueError, match="Supported adapters: openvla_oft, pi05, dreamzero"):
         get_policy_adapter(PolicyAdapterConfig(name="unknown_policy"))

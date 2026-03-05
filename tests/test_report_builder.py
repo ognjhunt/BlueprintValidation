@@ -84,3 +84,75 @@ def test_report_builder_json(tmp_path, sample_config):
     assert result.exists()
     data = json.loads(result.read_text())
     assert data["project_name"] == "Test Project"
+
+
+def test_executive_summary_uses_s4e_only_when_world_fixed(sample_config):
+    from blueprint_validation.reporting.report_builder import _add_executive_summary
+
+    lines: list[str] = []
+    data = {
+        "facilities": {
+            "test_facility": {
+                "s4e_trained_eval": {
+                    "metrics": {
+                        "claim_comparison_world_fixed": False,
+                        "claim_comparison_absolute_difference": 2.0,
+                        "claim_comparison_p_value": 0.001,
+                    }
+                }
+            }
+        }
+    }
+    _add_executive_summary(lines, data, sample_config)
+    rendered = "\n".join(lines)
+    assert "| Trained Policy Improvement | PENDING/FAIL |" in rendered
+
+
+def test_executive_summary_accepts_world_fixed_s4e_fallback(sample_config):
+    from blueprint_validation.reporting.report_builder import _add_executive_summary
+
+    lines: list[str] = []
+    data = {
+        "facilities": {
+            "test_facility": {
+                "s4e_trained_eval": {
+                    "metrics": {
+                        "claim_comparison_world_fixed": True,
+                        "claim_comparison_absolute_difference": 2.0,
+                        "claim_comparison_p_value": 0.001,
+                    }
+                }
+            }
+        }
+    }
+    _add_executive_summary(lines, data, sample_config)
+    rendered = "\n".join(lines)
+    assert "| Trained Policy Improvement | PASS |" in rendered
+
+
+def test_executive_summary_prefers_s4d_for_trained_policy_uplift(sample_config):
+    from blueprint_validation.reporting.report_builder import _add_executive_summary
+
+    lines: list[str] = []
+    data = {
+        "facilities": {
+            "test_facility": {
+                "s4d_policy_pair_eval": {
+                    "metrics": {
+                        "task_score_absolute_difference": 1.5,
+                        "p_value_task_score": 0.01,
+                    }
+                },
+                "s4e_trained_eval": {
+                    "metrics": {
+                        "claim_comparison_world_fixed": False,
+                        "claim_comparison_absolute_difference": 2.0,
+                        "claim_comparison_p_value": 0.001,
+                    }
+                },
+            }
+        }
+    }
+    _add_executive_summary(lines, data, sample_config)
+    rendered = "\n".join(lines)
+    assert "| Trained Policy Improvement | PASS |" in rendered

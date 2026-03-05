@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from ..config import PolicyAdapterConfig
 from .base import PolicyAdapter
+from .dreamzero_adapter import DreamZeroPolicyAdapter
 from .openvla_oft_adapter import OpenVLAOFTPolicyAdapter
 from .pi05_adapter import Pi05PolicyAdapter
 
@@ -15,6 +16,9 @@ def get_policy_adapter(adapter_config: PolicyAdapterConfig) -> PolicyAdapter:
         return OpenVLAOFTPolicyAdapter(adapter_config)
     if key in {"pi05", "pi0.5", "openpi"}:
         return Pi05PolicyAdapter(adapter_config)
+    if key in {"dreamzero", "dream-zero", "dz"}:
+        return DreamZeroPolicyAdapter(adapter_config)
     raise ValueError(
-        f"Unsupported policy adapter: {adapter_config.name}. Supported adapters: openvla_oft, pi05"
+        "Unsupported policy adapter: "
+        f"{adapter_config.name}. Supported adapters: openvla_oft, pi05, dreamzero"
     )

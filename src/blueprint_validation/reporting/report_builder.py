@@ -49,6 +49,7 @@ def _collect_results(config: ValidationConfig, work_dir: Path) -> Dict[str, Any]
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "facilities": {},
         "cross_site": None,
+        "policy_eval_matrix": None,
     }
 
     stages = [
@@ -58,6 +59,7 @@ def _collect_results(config: ValidationConfig, work_dir: Path) -> Dict[str, Any]
         "s1c_gemini_polish",
         "s1d_gaussian_augment",
         "s1e_splatsim_interaction",
+        "s1f_external_interaction_ingest",
         "s2_enrich",
         "s3_finetune",
         "s4_policy_eval",
@@ -90,6 +92,10 @@ def _collect_results(config: ValidationConfig, work_dir: Path) -> Dict[str, Any]
     summary_file = work_dir / "pipeline_summary.json"
     if summary_file.exists():
         results["pipeline_summary"] = read_json(summary_file)
+
+    matrix_file = work_dir / "policy_eval" / "matrix_report.json"
+    if matrix_file.exists():
+        results["policy_eval_matrix"] = read_json(matrix_file)
 
     return results
 
@@ -186,6 +192,13 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
                 f"{te_metrics.get('trained_manipulation_success_rate', 'N/A')} |"
             )
             lines.append(f"| Num rollouts | {te_metrics.get('num_rollouts_trained', 'N/A')} |")
+            lines.append(
+                f"| Claim comparison | {te_metrics.get('claim_comparison_key', 'N/A')} |"
+            )
+            lines.append(
+                "| Claim comparison world fixed | "
+                f"{te_metrics.get('claim_comparison_world_fixed', 'N/A')} |"
+            )
             lines.append("")
 
             te_pairwise = te_metrics.get("pairwise", {})
@@ -284,6 +297,16 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
             lines.append(f"- Rejected by quality gate: {gm.get('num_rejected_quality', 'N/A')}")
             lines.append("")
 
+        if "s1f_external_interaction_ingest" in fac_data:
+            ei = fac_data["s1f_external_interaction_ingest"]
+            em = ei.get("metrics", {})
+            eo = ei.get("outputs", {})
+            lines.append("### External Interaction Ingest (S1f)\n")
+            lines.append(f"- Status: {ei.get('status', 'N/A')}")
+            lines.append(f"- Source: {eo.get('source_name', em.get('source_name', 'N/A'))}")
+            lines.append(f"- Clips ingested: {em.get('num_clips', 'N/A')}")
+            lines.append("")
+
         if "s3_finetune" in fac_data:
             ft = fac_data["s3_finetune"].get("metrics", {})
             lines.append("### Fine-tuning\n")
@@ -359,6 +382,29 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
                 lines.append(row)
             lines.append("")
 
+    if data.get("policy_eval_matrix"):
+        matrix = data["policy_eval_matrix"]
+        axes = matrix.get("axes", {})
+        lines.append("\n## Policy Eval Matrix\n")
+        lines.append("| Axis | Available | Abs Diff | p-value |")
+        lines.append("|------|-----------|----------|---------|")
+        for axis in (
+            "seen_task_seen_env",
+            "unseen_object_seen_env",
+            "seen_task_novel_env",
+        ):
+            row = axes.get(axis, {})
+            lines.append(
+                f"| {axis} | {row.get('available', False)} | "
+                f"{row.get('task_score_absolute_difference', 'N/A')} | "
+                f"{row.get('p_value_task_score', 'N/A')} |"
+            )
+        lines.append(
+            f"- Forgetting ratio: {matrix.get('forgetting_ratio', 'N/A')} "
+            f"(gate <= {matrix.get('forgetting_ratio_gate', 'N/A')})"
+        )
+        lines.append("")
+
     # Configuration
     lines.append("\n## Configuration\n")
     lines.append(f"- Project: {config.project_name}")
@@ -400,18 +446,33 @@ def _add_executive_summary(lines: list, data: dict, config: ValidationConfig = N
             if abs_diff >= min_abs_diff and (p_value is None or p_value < 0.05):
                 primary_passed = True
 
-    # Check if trained policy test passed (S4e)
+    # Check if trained policy test passed.
+    # Priority:
+    # 1) S4d (fixed evaluator, policy_base vs policy_site)
+    # 2) S4e only when claim comparison is world-fixed.
     trained_passed = False
-    for fid, fac_data in data.get("facilities", {}).items():
-        if "s4e_trained_eval" in fac_data:
+    for _, fac_data in data.get("facilities", {}).items():
+        if "s4d_policy_pair_eval" not in fac_data:
+            continue
+        metrics = fac_data["s4d_policy_pair_eval"].get("metrics", {})
+        abs_diff = metrics.get("task_score_absolute_difference", 0)
+        p_value = metrics.get("p_value_task_score")
+        if abs_diff >= min_abs_diff and (p_value is None or p_value < 0.05):
+            trained_passed = True
+            break
+
+    if not trained_passed:
+        for _, fac_data in data.get("facilities", {}).items():
+            if "s4e_trained_eval" not in fac_data:
+                continue
             te_metrics = fac_data["s4e_trained_eval"].get("metrics", {})
-            te_pairwise = te_metrics.get("pairwise", {})
-            for pair_key, pair_data in te_pairwise.items():
-                if "trained" in pair_key:
-                    abs_d = pair_data.get("absolute_difference", 0)
-                    pv = pair_data.get("p_value")
-                    if abs_d >= min_abs_diff and (pv is None or pv < 0.05):
-                        trained_passed = True
+            if not bool(te_metrics.get("claim_comparison_world_fixed", False)):
+                continue
+            abs_d = te_metrics.get("claim_comparison_absolute_difference", 0)
+            pv = te_metrics.get("claim_comparison_p_value")
+            if abs_d >= min_abs_diff and (pv is None or pv < 0.05):
+                trained_passed = True
+                break
 
     cross_site_passed = False
     if data.get("cross_site"):

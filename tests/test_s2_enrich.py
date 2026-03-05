@@ -220,6 +220,52 @@ def test_s2_manifest_resolution_prefers_s1e(tmp_path):
     assert _resolve_render_manifest(tmp_path) == splat
 
 
+def test_s2_manifest_resolution_prefers_s1f_over_s1e_and_s1d(tmp_path):
+    from blueprint_validation.stages.s2_enrich import _resolve_render_manifest
+
+    ext = tmp_path / "external_interaction" / "interaction_manifest.json"
+    splat = tmp_path / "splatsim" / "interaction_manifest.json"
+    gauss = tmp_path / "gaussian_augment" / "augmented_manifest.json"
+    ext.parent.mkdir(parents=True, exist_ok=True)
+    splat.parent.mkdir(parents=True, exist_ok=True)
+    gauss.parent.mkdir(parents=True, exist_ok=True)
+    ext.write_text("{}")
+    splat.write_text("{}")
+    gauss.write_text("{}")
+
+    assert _resolve_render_manifest(tmp_path) == ext
+
+
+def test_s2_manifest_resolution_prefers_s1f_in_previous_results(tmp_path):
+    from blueprint_validation.common import StageResult
+    from blueprint_validation.stages.s2_enrich import _resolve_render_manifest_source
+
+    ext = tmp_path / "external_interaction" / "interaction_manifest.json"
+    splat = tmp_path / "splatsim" / "interaction_manifest.json"
+    ext.parent.mkdir(parents=True, exist_ok=True)
+    splat.parent.mkdir(parents=True, exist_ok=True)
+    ext.write_text("{}")
+    splat.write_text("{}")
+
+    prev = {
+        "s1f_external_interaction_ingest": StageResult(
+            stage_name="s1f_external_interaction_ingest",
+            status="success",
+            elapsed_seconds=0,
+            outputs={"manifest_path": str(ext)},
+        ),
+        "s1e_splatsim_interaction": StageResult(
+            stage_name="s1e_splatsim_interaction",
+            status="success",
+            elapsed_seconds=0,
+            outputs={"manifest_path": str(splat)},
+        ),
+    }
+    source = _resolve_render_manifest_source(tmp_path, prev)
+    assert source is not None
+    assert source.source_stage == "s1f_external_interaction_ingest"
+
+
 def test_s2_enrich_prefers_previous_results_manifest(sample_config, tmp_path, monkeypatch):
     from blueprint_validation.common import StageResult, write_json
     from blueprint_validation.config import VariantSpec
