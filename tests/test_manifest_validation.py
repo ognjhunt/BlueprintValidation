@@ -89,3 +89,62 @@ def test_load_and_validate_policy_scores_manifest(tmp_path: Path) -> None:
         require_existing_paths=True,
     )
     assert len(validated["scores"]) == 1
+
+
+def test_validate_stage1_source_manifest_rejects_num_clips_mismatch() -> None:
+    payload = {
+        "num_clips": 2,
+        "clips": [
+            {
+                "clip_name": "clip_000",
+                "video_path": "/tmp/clip_000.mp4",
+            }
+        ],
+    }
+    with pytest.raises(ManifestValidationError, match="num_clips mismatch"):
+        validate_manifest_schema(
+            payload,
+            manifest_type="stage1_source",
+            require_existing_paths=False,
+        )
+
+
+def test_validate_stage1_source_manifest_rejects_duplicate_clip_name() -> None:
+    payload = {
+        "clips": [
+            {"clip_name": "clip_000", "video_path": "/tmp/clip_000.mp4"},
+            {"clip_name": "clip_000", "video_path": "/tmp/clip_001.mp4"},
+        ]
+    }
+    with pytest.raises(ManifestValidationError, match="duplicate clip_name"):
+        validate_manifest_schema(
+            payload,
+            manifest_type="stage1_source",
+            require_existing_paths=False,
+        )
+
+
+@pytest.mark.parametrize(
+    ("bad_clip", "error_match"),
+    [
+        ({"clip_name": "clip_000", "video_path": "/tmp/a.mp4", "fps": 0}, "fps must be > 0"),
+        (
+            {"clip_name": "clip_000", "video_path": "/tmp/a.mp4", "num_frames": 0},
+            "num_frames must be >= 1",
+        ),
+        (
+            {"clip_name": "clip_000", "video_path": "/tmp/a.mp4", "resolution": [0, 640]},
+            "resolution out of bounds",
+        ),
+    ],
+)
+def test_validate_stage1_source_manifest_rejects_invalid_numeric_fields(
+    bad_clip: dict,
+    error_match: str,
+) -> None:
+    with pytest.raises(ManifestValidationError, match=error_match):
+        validate_manifest_schema(
+            {"clips": [bad_clip]},
+            manifest_type="stage1_source",
+            require_existing_paths=False,
+        )

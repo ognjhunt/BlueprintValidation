@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
@@ -74,6 +75,64 @@ def _validate_paths_exist(
             )
 
 
+def _validate_optional_numeric_fields(
+    clip: Dict[str, Any],
+    *,
+    manifest_type: str,
+    clip_index: int,
+    manifest_path: Path | None,
+) -> None:
+    """Validate optional numeric metadata fields for stage-1 style clip rows."""
+    where = f" ({manifest_path})" if manifest_path is not None else ""
+
+    fps_val = clip.get("fps")
+    if fps_val is not None:
+        try:
+            fps = float(fps_val)
+        except Exception as exc:  # pragma: no cover - defensive
+            raise ManifestValidationError(
+                f"{manifest_type} manifest clip[{clip_index}] invalid fps={fps_val!r}{where}"
+            ) from exc
+        if not math.isfinite(fps) or fps <= 0.0:
+            raise ManifestValidationError(
+                f"{manifest_type} manifest clip[{clip_index}] fps must be > 0; got {fps_val!r}{where}"
+            )
+
+    num_frames_val = clip.get("num_frames")
+    if num_frames_val is not None:
+        try:
+            num_frames = int(num_frames_val)
+        except Exception as exc:  # pragma: no cover - defensive
+            raise ManifestValidationError(
+                f"{manifest_type} manifest clip[{clip_index}] invalid num_frames={num_frames_val!r}{where}"
+            ) from exc
+        if num_frames < 1:
+            raise ManifestValidationError(
+                f"{manifest_type} manifest clip[{clip_index}] num_frames must be >= 1; "
+                f"got {num_frames}{where}"
+            )
+
+    resolution_val = clip.get("resolution")
+    if resolution_val is not None:
+        if not isinstance(resolution_val, (list, tuple)) or len(resolution_val) != 2:
+            raise ManifestValidationError(
+                f"{manifest_type} manifest clip[{clip_index}] resolution must be [H, W]{where}"
+            )
+        try:
+            height = int(resolution_val[0])
+            width = int(resolution_val[1])
+        except Exception as exc:  # pragma: no cover - defensive
+            raise ManifestValidationError(
+                f"{manifest_type} manifest clip[{clip_index}] resolution values must be ints; "
+                f"got {resolution_val!r}{where}"
+            ) from exc
+        if not (1 <= height <= 16384 and 1 <= width <= 16384):
+            raise ManifestValidationError(
+                f"{manifest_type} manifest clip[{clip_index}] resolution out of bounds: "
+                f"{resolution_val!r}{where}"
+            )
+
+
 def validate_manifest_schema(
     payload: Any,
     *,
@@ -86,20 +145,48 @@ def validate_manifest_schema(
 
     if manifest_type in {"stage1_source", "render", "source"}:
         clips = _coerce_clips(data, manifest_type=manifest_type, manifest_path=manifest_path)
+        declared_num_clips = data.get("num_clips")
+        if declared_num_clips is not None:
+            where = f" ({manifest_path})" if manifest_path is not None else ""
+            try:
+                declared_num_clips_int = int(declared_num_clips)
+            except Exception as exc:  # pragma: no cover - defensive
+                raise ManifestValidationError(
+                    f"{manifest_type} manifest field 'num_clips' must be int{where}; "
+                    f"got {declared_num_clips!r}"
+                ) from exc
+            if declared_num_clips_int != len(clips):
+                raise ManifestValidationError(
+                    f"{manifest_type} manifest num_clips mismatch: "
+                    f"{declared_num_clips_int} != len(clips)={len(clips)}{where}"
+                )
+        seen_clip_names: set[str] = set()
         for idx, clip in enumerate(clips):
-            _require_nonempty_text(
+            clip_name = _require_nonempty_text(
                 clip,
                 "clip_name",
                 manifest_type=manifest_type,
                 clip_index=idx,
                 manifest_path=manifest_path,
             )
+            if clip_name in seen_clip_names:
+                where = f" ({manifest_path})" if manifest_path is not None else ""
+                raise ManifestValidationError(
+                    f"{manifest_type} manifest has duplicate clip_name '{clip_name}'{where}"
+                )
+            seen_clip_names.add(clip_name)
             source_video = str(clip.get("video_path") or clip.get("output_video_path") or "").strip()
             if not source_video:
                 where = f" ({manifest_path})" if manifest_path is not None else ""
                 raise ManifestValidationError(
                     f"{manifest_type} manifest clip[{idx}] missing 'video_path'/'output_video_path'{where}"
                 )
+            _validate_optional_numeric_fields(
+                clip,
+                manifest_type=manifest_type,
+                clip_index=idx,
+                manifest_path=manifest_path,
+            )
             if require_existing_paths:
                 _validate_paths_exist(
                     path_values=[

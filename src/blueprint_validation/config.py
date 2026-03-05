@@ -1765,6 +1765,21 @@ def load_config(path: Path) -> ValidationConfig:
         raise ValueError("enrich.min_valid_outputs must be >= 0")
     if int(config.enrich.max_input_frames) < 0:
         raise ValueError("enrich.max_input_frames must be >= 0")
+    if (
+        str(config.enrich.context_frame_mode).strip().lower() == "fixed"
+        and config.enrich.context_frame_index is None
+    ):
+        raise ValueError(
+            "enrich.context_frame_index must be set when enrich.context_frame_mode='fixed'"
+        )
+    if len(list(config.enrich.multi_view_context_offsets or [])) < 1:
+        raise ValueError("enrich.multi_view_context_offsets must contain at least one offset")
+    if bool(config.enrich.multi_view_context_enabled) and 0 not in {
+        int(v) for v in list(config.enrich.multi_view_context_offsets or [])
+    }:
+        raise ValueError(
+            "enrich.multi_view_context_offsets must include 0 when multi_view_context_enabled=true"
+        )
     if not (0.0 <= float(config.enrich.max_blur_reject_rate) <= 1.0):
         raise ValueError("enrich.max_blur_reject_rate must be in [0, 1]")
     if not (0.0 <= float(config.enrich.green_frame_ratio_max) <= 1.0):

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
+import os
 import re
 import sys
+import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -80,7 +83,25 @@ class StageResult:
 
 def write_json(data: Any, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, default=str))
+    payload = json.dumps(data, indent=2, default=str)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            tmp.write(payload)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+            tmp_path = Path(tmp.name)
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
 
 
 def read_json(path: Path) -> Any:
@@ -107,3 +128,29 @@ def sanitize_filename_component(
         if not text:
             text = "item"
     return text
+
+
+def sanitize_filename_component_with_hash(
+    value: object,
+    *,
+    fallback: str = "item",
+    max_length: int = 120,
+    hash_len: int = 8,
+) -> str:
+    """Return a path-safe component with a stable short hash suffix.
+
+    The hash prevents collisions when distinct raw values collapse to the same
+    sanitized stem.
+    """
+    stem = sanitize_filename_component(value, fallback=fallback, max_length=max_length)
+    raw = str(value or "")
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[: max(4, int(hash_len))]
+    with_hash = f"{stem}-{digest}"
+    if int(max_length) > 0 and len(with_hash) > int(max_length):
+        trim_budget = int(max_length) - (len(digest) + 1)
+        if trim_budget > 0:
+            trimmed_stem = stem[:trim_budget].rstrip("._-")
+            if not trimmed_stem:
+                trimmed_stem = str(fallback or "item")
+            return f"{trimmed_stem}-{digest}"
+    return with_hash

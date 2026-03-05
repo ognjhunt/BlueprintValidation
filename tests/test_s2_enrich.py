@@ -1463,6 +1463,7 @@ def test_s2_task_targeted_selection_fail_closed_blocks_stage(sample_config, tmp_
     assert "failed closed" in (result.detail or "").lower()
     assert result.metrics["source_clip_selection_fallback"] == "missing_task_hints"
     assert result.metrics["source_clip_selection_fail_closed"] is True
+    assert result.metrics["error_code"] == "s2_source_selection_task_targeted_fail_closed"
 
 
 def test_s2_explicit_selection_missing_name_blocks_stage(sample_config, tmp_path):
@@ -1501,6 +1502,7 @@ def test_s2_explicit_selection_missing_name_blocks_stage(sample_config, tmp_path
     assert "explicit source selection failed closed" in (result.detail or "").lower()
     assert result.metrics["source_clip_selection_fallback"] == "explicit_clip_not_set"
     assert result.metrics["source_clip_selection_fail_closed"] is True
+    assert result.metrics["error_code"] == "s2_source_selection_explicit_fail_closed"
 
 
 def test_s2_explicit_selection_unknown_name_blocks_stage(sample_config, tmp_path):
@@ -1539,6 +1541,7 @@ def test_s2_explicit_selection_unknown_name_blocks_stage(sample_config, tmp_path
     assert "explicit source selection failed closed" in (result.detail or "").lower()
     assert result.metrics["source_clip_selection_fallback"] == "explicit_clip_not_found"
     assert result.metrics["source_clip_selection_fail_closed"] is True
+    assert result.metrics["error_code"] == "s2_source_selection_explicit_fail_closed"
 
 
 def test_resolve_multi_view_context_indices_clamps_and_dedupes():
@@ -1587,6 +1590,7 @@ def test_s2_fails_when_selected_source_clips_below_min_source_clips(sample_confi
     assert result.status == "failed"
     assert result.metrics["num_selected_source_clips"] == 1
     assert "selected_source_target_distribution" in result.metrics
+    assert result.metrics["error_code"] == "s2_min_source_clips_not_met"
 
 
 def test_s2_visual_collapse_gate_rejects_blur_green_and_low_motion(

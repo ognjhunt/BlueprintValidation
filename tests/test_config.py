@@ -970,6 +970,25 @@ def test_config_rejects_invalid_enrich_context_frame_mode(tmp_path):
         load_config(config_path)
 
 
+def test_config_rejects_fixed_context_mode_without_index(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "fixed_context_missing_index.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Fixed Context",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "enrich": {"context_frame_mode": "fixed"},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="context_frame_index must be set"):
+        load_config(config_path)
+
+
 def test_config_rejects_invalid_enrich_min_frame0_ssim(tmp_path):
     from blueprint_validation.config import load_config
     import yaml
@@ -1005,6 +1024,47 @@ def test_config_rejects_invalid_enrich_max_input_frames(tmp_path):
     )
 
     with pytest.raises(ValueError, match="enrich.max_input_frames"):
+        load_config(config_path)
+
+
+def test_config_rejects_empty_multi_view_context_offsets(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "bad_multi_view_offsets_empty.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Multi-View Offsets",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "enrich": {"multi_view_context_offsets": []},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="multi_view_context_offsets must contain at least one"):
+        load_config(config_path)
+
+
+def test_config_rejects_multi_view_offsets_without_zero_anchor(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "bad_multi_view_offsets_no_zero.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Multi-View Anchor",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "enrich": {
+                    "multi_view_context_enabled": True,
+                    "multi_view_context_offsets": [-8, 8],
+                },
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="must include 0"):
         load_config(config_path)
 
 

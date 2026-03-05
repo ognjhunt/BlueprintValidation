@@ -274,10 +274,12 @@ class RenderStage(PipelineStage):
                         "Provide task_targets.synthetic.json/task_targets.json and rerun."
                     ),
                     outputs={
+                        "error_code": "s1_task_hints_required_missing",
                         "task_hints_path": (
                             str(facility.task_hints_path) if facility.task_hints_path is not None else None
                         )
                     },
+                    metrics={"error_code": "s1_task_hints_required_missing"},
                 )
 
         if (
@@ -294,7 +296,14 @@ class RenderStage(PipelineStage):
                         "Stage 1 strict active-perception requires ffmpeg/ffprobe at runtime. "
                         f"Missing tools: {', '.join(missing)}."
                     ),
-                    outputs={"missing_tools": missing},
+                    outputs={
+                        "missing_tools": missing,
+                        "error_code": "s1_missing_runtime_tools",
+                    },
+                    metrics={
+                        "error_code": "s1_missing_runtime_tools",
+                        "missing_tools_count": len(missing),
+                    },
                 )
 
         render_dir = work_dir / "renders"
@@ -430,7 +439,9 @@ class RenderStage(PipelineStage):
                     outputs={
                         "render_dir": str(render_dir),
                         "facility_name": facility.name,
+                        "error_code": "s1_kitchen_locked_requires_active_perception",
                     },
+                    metrics={"error_code": "s1_kitchen_locked_requires_active_perception"},
                 )
 
             # Scene-aware camera placement
@@ -464,7 +475,9 @@ class RenderStage(PipelineStage):
                                 if facility.task_hints_path is not None
                                 else None
                             ),
+                            "error_code": "s1_kitchen_locked_no_specs",
                         },
+                        metrics={"error_code": "s1_kitchen_locked_no_specs"},
                     )
                 extra_specs_count = len(all_path_specs)
                 logger.info(
@@ -585,6 +598,7 @@ class RenderStage(PipelineStage):
                     "manifest_path": str(manifest_path),
                     "num_clips": len(manifest_entries),
                     "resolved_up_axis": facility.up_axis,
+                    "error_code": "s1_quality_gate_failed",
                 },
                 metrics={
                     "num_clips": len(manifest_entries),
@@ -601,6 +615,7 @@ class RenderStage(PipelineStage):
                     "config_hash": stage1_run_metadata["config_hash"],
                     "stage1_code_hash": stage1_run_metadata["stage1_code_hash"],
                     "active_model_used": stage1_run_metadata["active_model_used"],
+                    "error_code": "s1_quality_gate_failed",
                     **quality_summary,
                 },
                 detail=detail,

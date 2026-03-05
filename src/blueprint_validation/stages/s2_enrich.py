@@ -7,7 +7,12 @@ import math
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-from ..common import StageResult, get_logger, sanitize_filename_component, write_json
+from ..common import (
+    StageResult,
+    get_logger,
+    sanitize_filename_component_with_hash,
+    write_json,
+)
 from ..config import FacilityConfig, ValidationConfig
 from ..enrichment.cosmos_runner import enrich_clip
 from ..enrichment.scene_index import build_scene_index, query_nearest_context_candidates
@@ -140,17 +145,35 @@ class EnrichStage(PipelineStage):
         enrich_dir = work_dir / "enriched"
         enrich_dir.mkdir(parents=True, exist_ok=True)
 
-        # Load render manifest
-        source = _resolve_render_manifest_source(work_dir, previous_results)
-        if source is None:
+        def _failed_result(
+            *,
+            detail: str,
+            error_code: str,
+            outputs: Dict[str, object] | None = None,
+            metrics: Dict[str, object] | None = None,
+        ) -> StageResult:
+            out = dict(outputs or {})
+            met = dict(metrics or {})
+            out["error_code"] = error_code
+            met["error_code"] = error_code
             return StageResult(
                 stage_name=self.name,
                 status="failed",
                 elapsed_seconds=0,
+                detail=detail,
+                outputs=out,
+                metrics=met,
+            )
+
+        # Load render manifest
+        source = _resolve_render_manifest_source(work_dir, previous_results)
+        if source is None:
+            return _failed_result(
                 detail=(
                     "Render/composite/polish manifest not found. Run Stage 1 first "
                     "(and Stage 1b/1c if enabled)."
                 ),
+                error_code="s2_source_manifest_missing",
             )
 
         try:
@@ -160,11 +183,9 @@ class EnrichStage(PipelineStage):
                 require_existing_paths=True,
             )
         except ManifestValidationError as exc:
-            return StageResult(
-                stage_name=self.name,
-                status="failed",
-                elapsed_seconds=0,
+            return _failed_result(
                 detail=f"Invalid source manifest for Stage 2 enrich: {exc}",
+                error_code="s2_source_manifest_invalid",
                 outputs=source.to_metadata(),
                 metrics=source.to_metadata(),
             )
@@ -176,11 +197,9 @@ class EnrichStage(PipelineStage):
             coverage_outputs["coverage_gate_passed"] = coverage_gate_result.passed
             coverage_metrics.update(coverage_gate_result.metrics)
             if not coverage_gate_result.passed:
-                return StageResult(
-                    stage_name=self.name,
-                    status="failed",
-                    elapsed_seconds=0,
+                return _failed_result(
                     detail=coverage_gate_result.detail,
+                    error_code="s2_coverage_gate_failed",
                     outputs={
                         **source.to_metadata(),
                         **coverage_outputs,
@@ -213,11 +232,14 @@ class EnrichStage(PipelineStage):
                     f"{fallback_reason}. Set enrich.source_clip_name to a valid Stage-1 clip_name, "
                     "or switch enrich.source_clip_selection_mode."
                 )
-            return StageResult(
-                stage_name=self.name,
-                status="failed",
-                elapsed_seconds=0,
+            selection_error_code = "s2_source_selection_empty"
+            if selection_mode == "task_targeted" and fail_closed and fallback_reason:
+                selection_error_code = "s2_source_selection_task_targeted_fail_closed"
+            elif selection_mode == "explicit" and fail_closed and fallback_reason:
+                selection_error_code = "s2_source_selection_explicit_fail_closed"
+            return _failed_result(
                 detail=detail,
+                error_code=selection_error_code,
                 outputs={
                     **source.to_metadata(),
                     "source_clip_selection_mode": clip_selection_meta.get("selection_mode"),
@@ -235,14 +257,12 @@ class EnrichStage(PipelineStage):
         selected_clip_target_distribution = _summarize_target_distribution(source_clips)
         min_source_clips = max(0, int(config.enrich.min_source_clips))
         if min_source_clips > 0 and len(source_clips) < min_source_clips:
-            return StageResult(
-                stage_name=self.name,
-                status="failed",
-                elapsed_seconds=0,
+            return _failed_result(
                 detail=(
                     "Insufficient selected source clips for Stage 2 strict gate: "
                     f"{len(source_clips)} < min_source_clips={min_source_clips}."
                 ),
+                error_code="s2_min_source_clips_not_met",
                 outputs={
                     **source.to_metadata(),
                     "num_selected_source_clips": len(source_clips),
@@ -377,7 +397,10 @@ class EnrichStage(PipelineStage):
             if not clip_name:
                 logger.warning("Skipping clip with missing clip_name in render manifest")
                 continue
-            clip_artifact_name = sanitize_filename_component(clip_name, fallback="clip")
+            clip_artifact_name = sanitize_filename_component_with_hash(
+                clip_name,
+                fallback="clip",
+            )
             if not source_video_path.exists():
                 logger.warning("Video not found: %s", source_video_path)
                 continue
@@ -548,7 +571,7 @@ class EnrichStage(PipelineStage):
                                     attempt_multi_view_context_indices,
                                 )
                                 if attempt_frames:
-                                    safe_variant_name = sanitize_filename_component(
+                                    safe_variant_name = sanitize_filename_component_with_hash(
                                         variant.name, fallback="variant"
                                     )
                                     attempt_image_context_path = _write_context_montage(
@@ -862,22 +885,31 @@ class EnrichStage(PipelineStage):
             else 0.0
         )
         stage_fail_reasons: List[str] = []
-        if min_valid_outputs > 0 and total_enriched < min_valid_outputs:
-            stage_fail_reasons.append(
-                "Insufficient valid enriched outputs: "
-                f"{total_enriched} < min_valid_outputs={min_valid_outputs}."
-            )
-        if visual_collapse_gate_enabled and blur_reject_rate > max_blur_reject_rate:
-            stage_fail_reasons.append(
-                "Visual-collapse blur reject rate exceeded cap: "
-                f"{blur_reject_rate:.3f} > max_blur_reject_rate={max_blur_reject_rate:.3f}."
-            )
+        stage_fail_error_codes: List[str] = []
         if vlm_quality_gate_enabled and vlm_quality_fail_closed and unresolved_vlm_failures:
             sample_reason = unresolved_vlm_failures[0]
             stage_fail_reasons.append(
                 "VLM quality gate unresolved failures under fail-closed policy: "
                 f"{len(unresolved_vlm_failures)} clip variants. Example: {sample_reason}"
             )
+            stage_fail_error_codes.append("s2_vlm_fail_closed_unresolved")
+        if visual_collapse_gate_enabled and blur_reject_rate > max_blur_reject_rate:
+            stage_fail_reasons.append(
+                "Visual-collapse blur reject rate exceeded cap: "
+                f"{blur_reject_rate:.3f} > max_blur_reject_rate={max_blur_reject_rate:.3f}."
+            )
+            stage_fail_error_codes.append("s2_blur_reject_rate_exceeded")
+        if min_valid_outputs > 0 and total_enriched < min_valid_outputs:
+            stage_fail_reasons.append(
+                "Insufficient valid enriched outputs: "
+                f"{total_enriched} < min_valid_outputs={min_valid_outputs}."
+            )
+            stage_fail_error_codes.append("s2_min_valid_outputs_not_met")
+
+        stage_status = "success" if total_enriched > 0 and not stage_fail_reasons else "failed"
+        if stage_status == "failed" and not stage_fail_error_codes:
+            stage_fail_error_codes.append("s2_no_enriched_outputs")
+        stage_error_code = stage_fail_error_codes[0] if stage_status == "failed" else None
 
         # Write enriched manifest
         manifest_path = enrich_dir / "enriched_manifest.json"
@@ -926,7 +958,7 @@ class EnrichStage(PipelineStage):
 
         return StageResult(
             stage_name=self.name,
-            status="success" if total_enriched > 0 and not stage_fail_reasons else "failed",
+            status=stage_status,
             elapsed_seconds=0,
             outputs={
                 "enrich_dir": str(enrich_dir),
@@ -949,6 +981,8 @@ class EnrichStage(PipelineStage):
                 "num_selected_source_clips": len(source_clips),
                 "selected_source_clips": selected_clip_names,
                 "selected_source_target_distribution": selected_clip_target_distribution,
+                "error_code": stage_error_code,
+                "error_codes": list(stage_fail_error_codes) if stage_status == "failed" else None,
                 **coverage_outputs,
                 **source.to_metadata(),
             },
@@ -1035,6 +1069,8 @@ class EnrichStage(PipelineStage):
                     else None
                 ),
                 "variants_used": [v.name for v in variants],
+                "error_code": stage_error_code,
+                "error_codes": list(stage_fail_error_codes) if stage_status == "failed" else None,
                 **coverage_metrics,
                 **source.to_metadata(),
             },
@@ -1535,7 +1571,7 @@ def _prepare_cosmos_input(
     """Prepare Cosmos inputs with optional pre-trim for long clips."""
     min_frames = max(1, int(min_required_frames))
 
-    safe_clip_name = sanitize_filename_component(clip_name, fallback="clip")
+    safe_clip_name = sanitize_filename_component_with_hash(clip_name, fallback="clip")
 
     def _enforce_h264(
         *,
