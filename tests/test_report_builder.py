@@ -112,10 +112,17 @@ def test_executive_summary_uses_s4e_only_when_world_fixed(sample_config):
 def test_executive_summary_accepts_world_fixed_s4e_fallback(sample_config):
     from blueprint_validation.reporting.report_builder import _add_executive_summary
 
+    sample_config.eval_policy.headline_scope = "wm_uplift"
     lines: list[str] = []
     data = {
         "facilities": {
             "test_facility": {
+                "s4_policy_eval": {
+                    "metrics": {
+                        "absolute_difference": 1.4,
+                        "p_value": 0.01,
+                    }
+                },
                 "s4e_trained_eval": {
                     "metrics": {
                         "claim_comparison_key": "adapted_vs_trained",
@@ -129,8 +136,10 @@ def test_executive_summary_accepts_world_fixed_s4e_fallback(sample_config):
     }
     _add_executive_summary(lines, data, sample_config)
     rendered = "\n".join(lines)
-    assert "| Trained Policy Improvement | PASS |" in rendered
+    assert "| Primary Headline: Same-Facility Trained Policy Uplift | PASS |" in rendered
+    assert "| Supporting WM Evidence: Frozen Baseline vs Adapted World Model | PASS |" in rendered
     assert "world-model evidence only" in rendered
+    assert "makes no IRL claim" in rendered
     assert "Cross-Site Discrimination" not in rendered
 
 
@@ -161,6 +170,30 @@ def test_executive_summary_does_not_let_s4d_satisfy_trained_headline(sample_conf
     _add_executive_summary(lines, data, sample_config)
     rendered = "\n".join(lines)
     assert "| Trained Policy Improvement | PENDING/FAIL |" in rendered
+
+
+def test_executive_summary_wm_uplift_does_not_let_s4_only_satisfy_primary_headline(sample_config):
+    from blueprint_validation.reporting.report_builder import _add_executive_summary
+
+    sample_config.eval_policy.headline_scope = "wm_uplift"
+    lines: list[str] = []
+    data = {
+        "facilities": {
+            "test_facility": {
+                "s4_policy_eval": {
+                    "metrics": {
+                        "absolute_difference": 1.5,
+                        "p_value": 0.01,
+                    }
+                }
+            }
+        }
+    }
+    _add_executive_summary(lines, data, sample_config)
+    rendered = "\n".join(lines)
+    assert "| Primary Headline: Same-Facility Trained Policy Uplift | PENDING/FAIL |" in rendered
+    assert "| Supporting WM Evidence: Frozen Baseline vs Adapted World Model | PASS |" in rendered
+    assert "does not satisfy the `wm_uplift` headline" in rendered
 
 
 def test_executive_summary_does_not_let_s4d_satisfy_frozen_policy_headline(sample_config):
@@ -218,8 +251,86 @@ def test_report_builder_renders_single_facility_policy_matrix_without_forgetting
     )
 
     output_path = tmp_path / "report.md"
+    sample_config.eval_policy.headline_scope = "wm_uplift"
     result = build_report(sample_config, work_dir, fmt="markdown", output_path=output_path)
     content = result.read_text()
-    assert "seen_task_same_facility_frozen_vs_trained" in content
-    assert "heldout_task_same_facility_frozen_vs_trained" in content
+    assert "Seen tasks, same facility: frozen vs trained" in content
+    assert "Heldout tasks, same facility: frozen vs trained" in content
+    assert "Heldout tasks, same facility: policy base vs policy site control" in content
     assert "Forgetting ratio" not in content
+
+
+def test_report_builder_wm_uplift_reorders_sections_and_marks_supporting_evidence(
+    tmp_path, sample_config
+):
+    from blueprint_validation.common import write_json
+    from blueprint_validation.reporting.report_builder import build_report
+
+    sample_config.eval_policy.headline_scope = "wm_uplift"
+    work_dir = tmp_path / "outputs"
+    fac_dir = work_dir / "test_facility"
+    fac_dir.mkdir(parents=True)
+
+    write_json(
+        {
+            "stage_name": "s4_policy_eval",
+            "status": "success",
+            "metrics": {
+                "baseline_mean_task_score": 4.0,
+                "adapted_mean_task_score": 5.5,
+                "absolute_difference": 1.5,
+                "improvement_pct": 37.5,
+                "win_rate": 0.75,
+                "p_value": 0.01,
+            },
+        },
+        fac_dir / "s4_policy_eval_result.json",
+    )
+    write_json(
+        {
+            "stage_name": "s4e_trained_eval",
+            "status": "success",
+            "metrics": {
+                "trained_mean_task_score": 6.5,
+                "trained_manipulation_success_rate": 0.5,
+                "num_rollouts_trained": 8,
+                "claim_comparison_key": "adapted_vs_trained",
+                "claim_comparison_world_fixed": True,
+                "claim_comparison_absolute_difference": 1.0,
+                "claim_comparison_p_value": 0.01,
+            },
+        },
+        fac_dir / "s4e_trained_eval_result.json",
+    )
+    write_json(
+        {
+            "stage_name": "s4d_policy_pair_eval",
+            "status": "success",
+            "metrics": {
+                "policy_base_mean_task_score": 5.0,
+                "policy_site_mean_task_score": 5.8,
+                "task_score_absolute_difference": 0.8,
+                "task_score_improvement_pct": 16.0,
+                "policy_base_success_rate": 0.25,
+                "policy_site_success_rate": 0.5,
+                "win_rate_site_over_base": 0.625,
+                "p_value_task_score": 0.03,
+            },
+        },
+        fac_dir / "s4d_policy_pair_eval_result.json",
+    )
+
+    output_path = tmp_path / "report.md"
+    result = build_report(sample_config, work_dir, fmt="markdown", output_path=output_path)
+    content = result.read_text()
+    assert "same-facility trained-policy uplift in the adapted world model only" in content
+    assert "makes no IRL claim" in content
+    assert "### Primary Headline: Same-Facility Trained Policy Uplift (S4e)" in content
+    assert "### Supporting Evidence: Frozen Policy Baseline vs Adapted World Model (S4)" in content
+    assert "### Supporting Evidence: Policy Training Attribution Control (S4d)" in content
+    assert content.index("### Primary Headline: Same-Facility Trained Policy Uplift (S4e)") < content.index(
+        "### Supporting Evidence: Frozen Policy Baseline vs Adapted World Model (S4)"
+    )
+    assert content.index("### Supporting Evidence: Frozen Policy Baseline vs Adapted World Model (S4)") < content.index(
+        "### Supporting Evidence: Policy Training Attribution Control (S4d)"
+    )

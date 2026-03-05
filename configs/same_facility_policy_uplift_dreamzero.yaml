@@ -8,6 +8,7 @@ facilities:
     description: Target deployment facility world model
 
 eval_policy:
+  # Canonical same-facility headline: trained policy vs frozen baseline in the adapted world model.
   mode: research
   headline_scope: wm_uplift
   num_rollouts: 24
@@ -30,10 +31,12 @@ rollout_dataset:
   near_miss_max_task_score: 6.99
 
 policy_compare:
+  # Secondary attribution/control check in the same facility; not the primary headline.
   enabled: true
   heldout_num_rollouts: 24
   heldout_seed: 123
   eval_world_model: adapted
+  # Heldout tasks feed the same-facility heldout-task matrix axes.
   heldout_tasks:
     - Pick up the bottle from the shelf and place it in the target zone
 

@@ -1,7 +1,15 @@
 """Build policy-evaluation matrix artifacts across facilities.
 
-This utility is intentionally lightweight and stage-free. It aggregates existing
-S4d artifacts into a policy-uplift matrix with three axes:
+This utility is intentionally lightweight and stage-free.
+
+For single-facility same-site policy-uplift runs, it aggregates S4e/S4d artifacts
+into three same-facility axes:
+
+1) seen_task_same_facility_frozen_vs_trained
+2) heldout_task_same_facility_frozen_vs_trained
+3) heldout_task_same_facility_policy_base_vs_policy_site
+
+For multi-facility runs, it retains the cross-site axes:
 
 1) seen_task_seen_env
 2) unseen_object_seen_env

@@ -7,20 +7,21 @@ facilities:
     ply_path: ./data/facilities/facility_a/splat.ply
     description: Primary deployment site
 
-# Use wm_uplift to run same-facility policy-uplift stages without implying IRL evidence.
+# Use wm_uplift for the canonical same-facility trained-policy headline.
+# This mode is world-model-only and does not imply an IRL claim.
 eval_policy:
   mode: research
   headline_scope: wm_uplift
   num_rollouts: 24
   min_absolute_difference: 1.0
 
-# Policy-uplift A/B gate (fixed evaluator) remains the primary headline.
+# Heldout policy A/B is a secondary attribution/control check, not the primary headline.
 policy_compare:
   enabled: true
   heldout_num_rollouts: 24
   heldout_seed: 123
   eval_world_model: adapted
-  # Use explicit heldout tasks to power unseen-object axis in matrix_report.json.
+  # Use explicit heldout tasks to power same-facility heldout-task axes in matrix_report.json.
   heldout_tasks:
     - Pick up bottle and place it in the target zone
     - Pick up bowl and place it in the target zone

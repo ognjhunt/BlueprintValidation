@@ -100,14 +100,219 @@ def _collect_results(config: ValidationConfig, work_dir: Path) -> Dict[str, Any]
     return results
 
 
+def _headline_scope(config: ValidationConfig | None) -> str:
+    if config is None:
+        return "wm_only"
+    return (getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only").strip().lower()
+
+
+def _is_same_facility_wm_uplift(config: ValidationConfig | None) -> bool:
+    return bool(config is not None and len(config.facilities) == 1 and _headline_scope(config) == "wm_uplift")
+
+
+def _append_s4_policy_eval_section(lines: list[str], fac_data: Dict[str, Any], *, supporting: bool) -> None:
+    if "s4_policy_eval" not in fac_data:
+        return
+    pe = fac_data["s4_policy_eval"]
+    metrics = pe.get("metrics", {})
+    lines.append(
+        "### Supporting Evidence: Frozen Policy Baseline vs Adapted World Model (S4)\n"
+        if supporting
+        else "### Policy Performance (Primary Test)\n"
+    )
+    if supporting:
+        lines.append(
+            "*Supporting world-model evidence only. This section does not determine the top-line "
+            "`wm_uplift` result.*\n"
+        )
+    lines.append("| Metric | Value |")
+    lines.append("|--------|-------|")
+    lines.append(
+        f"| Baseline mean task score | {metrics.get('baseline_mean_task_score', 'N/A')} |"
+    )
+    lines.append(
+        f"| Adapted mean task score | {metrics.get('adapted_mean_task_score', 'N/A')} |"
+    )
+    lines.append(f"| Absolute difference | {metrics.get('absolute_difference', 'N/A')} |")
+    lines.append(f"| Improvement | {metrics.get('improvement_pct', 'N/A')}% |")
+    lines.append(f"| Win rate | {metrics.get('win_rate', 'N/A')} |")
+    lines.append(f"| p-value | {metrics.get('p_value', 'N/A')} |")
+    lines.append("")
+
+    pairwise = metrics.get("pairwise", {})
+    if pairwise:
+        lines.append("#### Pairwise Condition Comparisons\n")
+        lines.append(
+            "| Comparison | Score A | Score B | Abs Diff | Improvement | Win Rate | p-value |"
+        )
+        lines.append(
+            "|------------|---------|---------|----------|-------------|----------|---------|"
+        )
+        for pair_key, pair_data in pairwise.items():
+            parts = pair_key.split("_vs_")
+            if len(parts) == 2:
+                c1, c2 = parts
+                lines.append(
+                    f"| {c1} vs {c2} "
+                    f"| {pair_data.get(f'{c1}_mean', 'N/A')} "
+                    f"| {pair_data.get(f'{c2}_mean', 'N/A')} "
+                    f"| {pair_data.get('absolute_difference', 'N/A')} "
+                    f"| {pair_data.get('improvement_pct', 'N/A')}% "
+                    f"| {pair_data.get('win_rate', 'N/A')} "
+                    f"| {pair_data.get('p_value', 'N/A')} |"
+                )
+        lines.append("")
+
+    per_condition = metrics.get("per_condition", {})
+    has_manip = any(v.get("manipulation_success_rate", 0) > 0 for v in per_condition.values())
+    if has_manip:
+        lines.append("#### Manipulation Performance\n")
+        lines.append("| Condition | Success Rate | Mean Task Score |")
+        lines.append("|-----------|-------------|-----------------|")
+        for cond, cdata in per_condition.items():
+            lines.append(
+                f"| {cond} "
+                f"| {cdata.get('manipulation_success_rate', 'N/A')} "
+                f"| {cdata.get('mean_task_score', 'N/A')} |"
+            )
+        lines.append("")
+
+
+def _append_s4e_trained_eval_section(lines: list[str], fac_data: Dict[str, Any], *, primary: bool) -> None:
+    if "s4e_trained_eval" not in fac_data:
+        return
+    te = fac_data["s4e_trained_eval"]
+    te_metrics = te.get("metrics", {})
+    lines.append(
+        "### Primary Headline: Same-Facility Trained Policy Uplift (S4e)\n"
+        if primary
+        else "### Trained Policy Evaluation (S4e)\n"
+    )
+    if primary:
+        lines.append(
+            "*This is the sole primary gate for `headline_scope=wm_uplift`. It is world-model "
+            "evidence only and makes no IRL claim.*\n"
+        )
+    lines.append("| Metric | Value |")
+    lines.append("|--------|-------|")
+    lines.append(
+        f"| Trained mean task score | {te_metrics.get('trained_mean_task_score', 'N/A')} |"
+    )
+    lines.append(
+        f"| Trained manipulation success | "
+        f"{te_metrics.get('trained_manipulation_success_rate', 'N/A')} |"
+    )
+    lines.append(f"| Num rollouts | {te_metrics.get('num_rollouts_trained', 'N/A')} |")
+    lines.append(f"| Claim comparison | {te_metrics.get('claim_comparison_key', 'N/A')} |")
+    lines.append(
+        "| Claim comparison world fixed | "
+        f"{te_metrics.get('claim_comparison_world_fixed', 'N/A')} |"
+    )
+    lines.append("")
+
+    te_pairwise = te_metrics.get("pairwise", {})
+    if te_pairwise:
+        lines.append("#### Trained vs Frozen Comparisons\n")
+        lines.append(
+            "| Comparison | Score A | Score B | Abs Diff | Improvement | Win Rate | p-value |"
+        )
+        lines.append(
+            "|------------|---------|---------|----------|-------------|----------|---------|"
+        )
+        for pair_key, pair_data in te_pairwise.items():
+            parts = pair_key.split("_vs_")
+            if len(parts) == 2:
+                c1, c2 = parts
+                lines.append(
+                    f"| {c1} vs {c2} "
+                    f"| {pair_data.get(f'{c1}_mean', 'N/A')} "
+                    f"| {pair_data.get(f'{c2}_mean', 'N/A')} "
+                    f"| {pair_data.get('absolute_difference', 'N/A')} "
+                    f"| {pair_data.get('improvement_pct', 'N/A')}% "
+                    f"| {pair_data.get('win_rate', 'N/A')} "
+                    f"| {pair_data.get('p_value', 'N/A')} |"
+                )
+        lines.append("")
+
+
+def _append_s4d_policy_pair_eval_section(lines: list[str], fac_data: Dict[str, Any], *, supporting: bool) -> None:
+    if "s4d_policy_pair_eval" not in fac_data:
+        return
+    pe2 = fac_data["s4d_policy_pair_eval"]
+    metrics = pe2.get("metrics", {})
+    lines.append(
+        "### Supporting Evidence: Policy Training Attribution Control (S4d)\n"
+        if supporting
+        else "### Policy Training A/B (Heldout)\n"
+    )
+    if supporting:
+        lines.append(
+            "*Supporting attribution/control evidence only. This section does not determine the "
+            "top-line `wm_uplift` result.*\n"
+        )
+    lines.append("| Metric | Value |")
+    lines.append("|--------|-------|")
+    lines.append(
+        f"| Policy base mean task score | {metrics.get('policy_base_mean_task_score', 'N/A')} |"
+    )
+    lines.append(
+        f"| Policy site mean task score | {metrics.get('policy_site_mean_task_score', 'N/A')} |"
+    )
+    lines.append(
+        f"| Absolute difference | {metrics.get('task_score_absolute_difference', 'N/A')} |"
+    )
+    lines.append(f"| Improvement | {metrics.get('task_score_improvement_pct', 'N/A')}% |")
+    lines.append(
+        f"| Policy base success rate | {metrics.get('policy_base_success_rate', 'N/A')} |"
+    )
+    lines.append(
+        f"| Policy site success rate | {metrics.get('policy_site_success_rate', 'N/A')} |"
+    )
+    lines.append(
+        f"| Win rate (site over base) | {metrics.get('win_rate_site_over_base', 'N/A')} |"
+    )
+    lines.append(f"| p-value (task score) | {metrics.get('p_value_task_score', 'N/A')} |")
+    lines.append("")
+
+
+def _policy_eval_matrix_axis_rows(matrix_mode: str) -> list[tuple[str, str]]:
+    if matrix_mode == "single_facility_same_site_policy_uplift":
+        return [
+            (
+                "Seen tasks, same facility: frozen vs trained",
+                "seen_task_same_facility_frozen_vs_trained",
+            ),
+            (
+                "Heldout tasks, same facility: frozen vs trained",
+                "heldout_task_same_facility_frozen_vs_trained",
+            ),
+            (
+                "Heldout tasks, same facility: policy base vs policy site control",
+                "heldout_task_same_facility_policy_base_vs_policy_site",
+            ),
+        ]
+    return [
+        ("Seen task, seen environment", "seen_task_seen_env"),
+        ("Unseen object, seen environment", "unseen_object_seen_env"),
+        ("Seen task, novel environment", "seen_task_novel_env"),
+    ]
+
+
 def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
     """Render the report as Markdown."""
     lines = []
     lines.append(f"# Validation Report: {data.get('project_name', 'BlueprintValidation')}")
     lines.append(f"*Generated: {data.get('generated_at', '')}*\n")
-    if len(config.facilities) == 1:
+    same_facility_wm_uplift = _is_same_facility_wm_uplift(config)
+    if same_facility_wm_uplift:
         lines.append(
-            "*Scope: same-facility world-model evaluation only. No matched real-robot evidence is included.*\n"
+            "*Scope: same-facility trained-policy uplift in the adapted world model only. "
+            "No matched real-robot evidence is included, so this report makes no IRL claim.*\n"
+        )
+    elif len(config.facilities) == 1:
+        lines.append(
+            "*Scope: same-facility world-model evaluation only. No matched real-robot evidence is "
+            "included, so this report makes no IRL claim.*\n"
         )
 
     # Executive Summary
@@ -120,142 +325,14 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
         fac_name = fac_config.name if fac_config else fid
         lines.append(f"\n## Facility: {fac_name}\n")
 
-        # Policy Eval (the headline result)
-        if "s4_policy_eval" in fac_data:
-            pe = fac_data["s4_policy_eval"]
-            metrics = pe.get("metrics", {})
-            lines.append("### Policy Performance (Primary Test)\n")
-            lines.append("| Metric | Value |")
-            lines.append("|--------|-------|")
-            lines.append(
-                f"| Baseline mean task score | {metrics.get('baseline_mean_task_score', 'N/A')} |"
-            )
-            lines.append(
-                f"| Adapted mean task score | {metrics.get('adapted_mean_task_score', 'N/A')} |"
-            )
-            lines.append(f"| Absolute difference | {metrics.get('absolute_difference', 'N/A')} |")
-            lines.append(f"| Improvement | {metrics.get('improvement_pct', 'N/A')}% |")
-            lines.append(f"| Win rate | {metrics.get('win_rate', 'N/A')} |")
-            lines.append(f"| p-value | {metrics.get('p_value', 'N/A')} |")
-            lines.append("")
-
-            # Pairwise comparisons (N-way)
-            pairwise = metrics.get("pairwise", {})
-            if pairwise:
-                lines.append("#### Pairwise Condition Comparisons\n")
-                lines.append(
-                    "| Comparison | Score A | Score B | Abs Diff | Improvement | Win Rate | p-value |"
-                )
-                lines.append(
-                    "|------------|---------|---------|----------|-------------|----------|---------|"
-                )
-                for pair_key, pair_data in pairwise.items():
-                    parts = pair_key.split("_vs_")
-                    if len(parts) == 2:
-                        c1, c2 = parts
-                        lines.append(
-                            f"| {c1} vs {c2} "
-                            f"| {pair_data.get(f'{c1}_mean', 'N/A')} "
-                            f"| {pair_data.get(f'{c2}_mean', 'N/A')} "
-                            f"| {pair_data.get('absolute_difference', 'N/A')} "
-                            f"| {pair_data.get('improvement_pct', 'N/A')}% "
-                            f"| {pair_data.get('win_rate', 'N/A')} "
-                            f"| {pair_data.get('p_value', 'N/A')} |"
-                        )
-                lines.append("")
-
-            # Manipulation performance per condition
-            per_condition = metrics.get("per_condition", {})
-            has_manip = any(
-                v.get("manipulation_success_rate", 0) > 0 for v in per_condition.values()
-            )
-            if has_manip:
-                lines.append("#### Manipulation Performance\n")
-                lines.append("| Condition | Success Rate | Mean Task Score |")
-                lines.append("|-----------|-------------|-----------------|")
-                for cond, cdata in per_condition.items():
-                    lines.append(
-                        f"| {cond} "
-                        f"| {cdata.get('manipulation_success_rate', 'N/A')} "
-                        f"| {cdata.get('mean_task_score', 'N/A')} |"
-                    )
-                lines.append("")
-
-        # Trained policy eval (S4e)
-        if "s4e_trained_eval" in fac_data:
-            te = fac_data["s4e_trained_eval"]
-            te_metrics = te.get("metrics", {})
-            lines.append("### Trained Policy Evaluation (S4e)\n")
-            lines.append("| Metric | Value |")
-            lines.append("|--------|-------|")
-            lines.append(
-                f"| Trained mean task score | {te_metrics.get('trained_mean_task_score', 'N/A')} |"
-            )
-            lines.append(
-                f"| Trained manipulation success | "
-                f"{te_metrics.get('trained_manipulation_success_rate', 'N/A')} |"
-            )
-            lines.append(f"| Num rollouts | {te_metrics.get('num_rollouts_trained', 'N/A')} |")
-            lines.append(
-                f"| Claim comparison | {te_metrics.get('claim_comparison_key', 'N/A')} |"
-            )
-            lines.append(
-                "| Claim comparison world fixed | "
-                f"{te_metrics.get('claim_comparison_world_fixed', 'N/A')} |"
-            )
-            lines.append("")
-
-            te_pairwise = te_metrics.get("pairwise", {})
-            if te_pairwise:
-                lines.append("#### Trained vs Frozen Comparisons\n")
-                lines.append(
-                    "| Comparison | Score A | Score B | Abs Diff | Improvement | Win Rate | p-value |"
-                )
-                lines.append(
-                    "|------------|---------|---------|----------|-------------|----------|---------|"
-                )
-                for pair_key, pair_data in te_pairwise.items():
-                    parts = pair_key.split("_vs_")
-                    if len(parts) == 2:
-                        c1, c2 = parts
-                        lines.append(
-                            f"| {c1} vs {c2} "
-                            f"| {pair_data.get(f'{c1}_mean', 'N/A')} "
-                            f"| {pair_data.get(f'{c2}_mean', 'N/A')} "
-                            f"| {pair_data.get('absolute_difference', 'N/A')} "
-                            f"| {pair_data.get('improvement_pct', 'N/A')}% "
-                            f"| {pair_data.get('win_rate', 'N/A')} "
-                            f"| {pair_data.get('p_value', 'N/A')} |"
-                        )
-                lines.append("")
-
-        if "s4d_policy_pair_eval" in fac_data:
-            pe2 = fac_data["s4d_policy_pair_eval"]
-            metrics = pe2.get("metrics", {})
-            lines.append("### Policy Training A/B (Heldout)\n")
-            lines.append("| Metric | Value |")
-            lines.append("|--------|-------|")
-            lines.append(
-                f"| Policy base mean task score | {metrics.get('policy_base_mean_task_score', 'N/A')} |"
-            )
-            lines.append(
-                f"| Policy site mean task score | {metrics.get('policy_site_mean_task_score', 'N/A')} |"
-            )
-            lines.append(
-                f"| Absolute difference | {metrics.get('task_score_absolute_difference', 'N/A')} |"
-            )
-            lines.append(f"| Improvement | {metrics.get('task_score_improvement_pct', 'N/A')}% |")
-            lines.append(
-                f"| Policy base success rate | {metrics.get('policy_base_success_rate', 'N/A')} |"
-            )
-            lines.append(
-                f"| Policy site success rate | {metrics.get('policy_site_success_rate', 'N/A')} |"
-            )
-            lines.append(
-                f"| Win rate (site over base) | {metrics.get('win_rate_site_over_base', 'N/A')} |"
-            )
-            lines.append(f"| p-value (task score) | {metrics.get('p_value_task_score', 'N/A')} |")
-            lines.append("")
+        if same_facility_wm_uplift:
+            _append_s4e_trained_eval_section(lines, fac_data, primary=True)
+            _append_s4_policy_eval_section(lines, fac_data, supporting=True)
+            _append_s4d_policy_pair_eval_section(lines, fac_data, supporting=True)
+        else:
+            _append_s4_policy_eval_section(lines, fac_data, supporting=False)
+            _append_s4e_trained_eval_section(lines, fac_data, primary=False)
+            _append_s4d_policy_pair_eval_section(lines, fac_data, supporting=False)
 
         # Visual Fidelity
         if "s5_visual_fidelity" in fac_data:
@@ -392,26 +469,15 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
         lines.append("\n## Policy Eval Matrix\n")
         lines.append("| Axis | Available | Abs Diff | p-value |")
         lines.append("|------|-----------|----------|---------|")
-        if matrix.get("mode") == "single_facility_same_site_policy_uplift":
-            axis_names = (
-                "seen_task_same_facility_frozen_vs_trained",
-                "heldout_task_same_facility_frozen_vs_trained",
-                "heldout_task_same_facility_policy_base_vs_policy_site",
-            )
-        else:
-            axis_names = (
-                "seen_task_seen_env",
-                "unseen_object_seen_env",
-                "seen_task_novel_env",
-            )
-        for axis in axis_names:
+        matrix_mode = str(matrix.get("mode", ""))
+        for axis_label, axis in _policy_eval_matrix_axis_rows(matrix_mode):
             row = axes.get(axis, {})
             lines.append(
-                f"| {axis} | {row.get('available', False)} | "
+                f"| {axis_label} | {row.get('available', False)} | "
                 f"{row.get('task_score_absolute_difference', 'N/A')} | "
                 f"{row.get('p_value_task_score', 'N/A')} |"
             )
-        if matrix.get("mode") != "single_facility_same_site_policy_uplift":
+        if matrix_mode != "single_facility_same_site_policy_uplift":
             lines.append(
                 f"- Forgetting ratio: {matrix.get('forgetting_ratio', 'N/A')} "
                 f"(gate <= {matrix.get('forgetting_ratio_gate', 'N/A')})"
@@ -442,9 +508,7 @@ def _add_executive_summary(lines: list, data: dict, config: ValidationConfig = N
     min_abs_diff = 0.5
     if config is not None:
         min_abs_diff = config.eval_policy.min_absolute_difference
-    same_facility_policy_uplift = bool(
-        config is not None and len(config.facilities) == 1 and bool(config.policy_finetune.enabled)
-    )
+    same_facility_wm_uplift = _is_same_facility_wm_uplift(config)
     cross_site_applicable = bool(
         (config is not None and len(config.facilities) > 1) or data.get("cross_site")
     )
@@ -484,21 +548,45 @@ def _add_executive_summary(lines: list, data: dict, config: ValidationConfig = N
 
     lines.append("| Test | Result |")
     lines.append("|------|--------|")
-    lines.append(f"| Frozen Policy Performance | {'PASS' if primary_passed else 'PENDING/FAIL'} |")
-    lines.append(f"| Trained Policy Improvement | {'PASS' if trained_passed else 'PENDING/FAIL'} |")
+    if same_facility_wm_uplift:
+        lines.append(
+            "| Primary Headline: Same-Facility Trained Policy Uplift | "
+            f"{'PASS' if trained_passed else 'PENDING/FAIL'} |"
+        )
+        lines.append(
+            "| Supporting WM Evidence: Frozen Baseline vs Adapted World Model | "
+            f"{'PASS' if primary_passed else 'PENDING/FAIL'} |"
+        )
+    else:
+        lines.append(f"| Frozen Policy Performance | {'PASS' if primary_passed else 'PENDING/FAIL'} |")
+        lines.append(f"| Trained Policy Improvement | {'PASS' if trained_passed else 'PENDING/FAIL'} |")
     if cross_site_applicable:
         lines.append(
             f"| Cross-Site Discrimination | {'PASS' if cross_site_passed else 'PENDING/FAIL'} |"
         )
     lines.append("")
 
-    if trained_passed and same_facility_policy_uplift:
+    if same_facility_wm_uplift and trained_passed:
         lines.append(
-            f"**In the same facility's adapted world model, the fine-tuned policy outperformed the frozen "
-            f"baseline (absolute difference >= {min_abs_diff}, p < 0.05).** "
-            "This is world-model evidence only. It does not establish IRL deployment performance because "
-            "no matched real-robot runs were performed in that facility.\n"
+            f"**Canonical same-facility answer: yes in the adapted world model.** The fine-tuned "
+            f"policy outperformed the frozen baseline in the exact facility's site-adapted world "
+            f"model (absolute difference >= {min_abs_diff}, p < 0.05). This is world-model evidence "
+            "only and makes no IRL claim because no matched real-robot runs were performed in that "
+            "facility.\n"
         )
+    elif same_facility_wm_uplift:
+        lines.append(
+            "**Canonical same-facility answer: not yet established.** The report does not yet show "
+            "a passing world-fixed trained-vs-frozen uplift in the exact facility's adapted world "
+            "model. Any frozen-policy or policy-pair results below are supporting world-model "
+            "evidence only and do not establish IRL deployment performance.\n"
+        )
+        if primary_passed:
+            lines.append(
+                f"Supporting evidence: the site-adapted world model improved frozen-policy scores "
+                f"relative to baseline (absolute difference >= {min_abs_diff}, p < 0.05), but that "
+                "does not satisfy the `wm_uplift` headline without a passing S4e world-fixed uplift.\n"
+            )
     elif primary_passed:
         lines.append(
             f"**The site-adapted world model produced higher policy task scores than the "
@@ -506,7 +594,7 @@ def _add_executive_summary(lines: list, data: dict, config: ValidationConfig = N
             "that the site-adapted world model is a stronger evaluation environment for robot "
             "policies than the generic baseline.\n"
         )
-    if trained_passed and not same_facility_policy_uplift:
+    if trained_passed and not same_facility_wm_uplift:
         lines.append(
             "**Policies fine-tuned on site-adapted rollout data outperform frozen baselines in the "
             "evaluated world model.** This remains simulator/world-model evidence unless matched "
