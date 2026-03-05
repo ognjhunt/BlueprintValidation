@@ -67,6 +67,13 @@ def test_s4_reliability_enforcement_fails_on_scoring_failure_rate(sample_config,
         lambda *args, **kwargs: FakeWorldModel(),
     )
     monkeypatch.setattr(
+        "blueprint_validation.stages.s4_policy_eval.get_policy_adapter",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            base_model_ref=lambda _eval_policy: ("fake_model", None),
+            resolve_latest_checkpoint=lambda _run_root: None,
+        ),
+    )
+    monkeypatch.setattr(
         "blueprint_validation.stages.s4_policy_eval.build_scripted_trace_manifest",
         lambda assignments, action_dim, max_steps: {
             f"{a['rollout_index']}::{a['clip_index']}::{a['task']}": {
@@ -371,3 +378,194 @@ def test_s4_short_step_rollout_guard_fails_stage(sample_config, tmp_path, monkey
     assert result.status == "failed"
     assert result.metrics["num_short_step_rollouts"] > 0
     assert result.metrics["min_rollout_steps_required"] == 12
+
+
+def test_s4_fixed_claim_protocol_does_not_fail_on_supporting_task_score_thresholds(
+    sample_config, tmp_path, monkeypatch
+):
+    sample_config.eval_policy.claim_protocol = "fixed_same_facility_uplift"
+    sample_config.eval_policy.primary_endpoint = "task_success"
+    sample_config.eval_policy.freeze_world_snapshot = True
+    sample_config.eval_policy.split_strategy = "disjoint_tasks_and_starts"
+    sample_config.eval_policy.mode = "claim"
+    sample_config.eval_policy.headline_scope = "wm_only"
+    sample_config.eval_policy.num_rollouts = 4
+    sample_config.eval_policy.tasks = [
+        "Pick up bowl_101 and place it in the target zone",
+        "Pick up mug_102 and place it in the target zone",
+    ]
+    sample_config.eval_policy.rollout_driver = "scripted"
+    sample_config.eval_policy.reliability.max_scoring_failure_rate = 1.0
+    sample_config.eval_policy.reliability.min_replay_pass_rate = 0.0
+    sample_config.eval_policy.reliability.min_controllability_pass_rate = 0.0
+    sample_config.finetune.eval_world_experiment = (
+        "cosmos_predict2p5_2B_reason_embeddings_action_conditioned_rectified_flow_bridge_13frame_256x320"
+    )
+
+    fac = sample_config.facilities["test_facility"]
+    work_dir = tmp_path / "outputs" / "test_facility"
+    adapted_ckpt = work_dir / "finetune" / "adapted_checkpoint"
+    adapted_ckpt.mkdir(parents=True, exist_ok=True)
+    (adapted_ckpt / "weights.bin").write_bytes(b"world")
+    render_dir = work_dir / "renders"
+    render_dir.mkdir(parents=True, exist_ok=True)
+    (render_dir / "render_manifest.json").write_text('{"clips":[]}')
+
+    frame = np.zeros((16, 16, 3), dtype=np.uint8)
+    assignments = [
+        {
+            "rollout_index": 0,
+            "task": sample_config.eval_policy.tasks[0],
+            "clip_index": 0,
+            "clip_name": "clip_000",
+            "path_type": "manipulation",
+            "target_label": "bowl",
+            "target_instance_id": "101",
+            "target_grounded": True,
+            "assignment_quality_score": 1.0,
+            "assignment_reject_reason": None,
+            "video_orientation_fix": "none",
+        },
+        {
+            "rollout_index": 1,
+            "task": sample_config.eval_policy.tasks[1],
+            "clip_index": 0,
+            "clip_name": "clip_000",
+            "path_type": "manipulation",
+            "target_label": "mug",
+            "target_instance_id": "102",
+            "target_grounded": True,
+            "assignment_quality_score": 1.0,
+            "assignment_reject_reason": None,
+            "video_orientation_fix": "none",
+        },
+        {
+            "rollout_index": 2,
+            "task": sample_config.eval_policy.tasks[0],
+            "clip_index": 1,
+            "clip_name": "clip_001",
+            "path_type": "manipulation",
+            "target_label": "bowl",
+            "target_instance_id": "101",
+            "target_grounded": True,
+            "assignment_quality_score": 1.0,
+            "assignment_reject_reason": None,
+            "video_orientation_fix": "none",
+        },
+        {
+            "rollout_index": 3,
+            "task": sample_config.eval_policy.tasks[1],
+            "clip_index": 1,
+            "clip_name": "clip_001",
+            "path_type": "manipulation",
+            "target_label": "mug",
+            "target_instance_id": "102",
+            "target_grounded": True,
+            "assignment_quality_score": 1.0,
+            "assignment_reject_reason": None,
+            "video_orientation_fix": "none",
+        },
+    ]
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4_policy_eval.build_task_start_assignments",
+        lambda **kwargs: assignments,
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4_policy_eval.load_initial_frames_for_assignments",
+        lambda assignments: {0: frame, 1: frame},
+    )
+
+    class FakeWorldModel:
+        expected_action_dim = 7
+
+        def predict_next_frame(self, current_frame, action):
+            return current_frame
+
+        def capture_rollout_state(self, **kwargs):
+            return {
+                "grasp_acquired": True,
+                "lifted_clear": True,
+                "placed_in_target": True,
+                "stable_after_place": True,
+            }
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4_policy_eval.load_dreamdojo_world_model",
+        lambda *args, **kwargs: FakeWorldModel(),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4_policy_eval.build_scripted_trace_manifest",
+        lambda assignments, action_dim, max_steps: {
+            f"{a['rollout_index']}::{a['clip_index']}::{a['task']}": {
+                "trace_id": f"trace_{a['rollout_index']}",
+                "trace_type": "manipulation_scripted",
+                "seed": 7,
+                "action_sequence": [[0.02] * action_dim for _ in range(4)],
+            }
+            for a in assignments
+        },
+    )
+
+    def _fake_run_scripted_rollout(**kwargs):
+        video_path = kwargs["output_dir"] / f"{kwargs['clip_name']}.mp4"
+        video_path.parent.mkdir(parents=True, exist_ok=True)
+        video_path.write_bytes(b"x")
+        return SimpleNamespace(
+            video_path=video_path,
+            action_sequence=kwargs["action_sequence"],
+            num_steps=len(kwargs["action_sequence"]),
+            driver_type="scripted",
+            state_trace=[
+                {"grasp_acquired": True},
+                {"lifted_clear": True},
+                {"placed_in_target": True},
+                {"stable_after_place": True},
+            ],
+            action_contract={
+                "policy_dim": None,
+                "world_dim": 7,
+                "dataset_dim": 7,
+                "compliant": True,
+                "reason": "",
+            },
+        )
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4_policy_eval.run_scripted_rollout",
+        _fake_run_scripted_rollout,
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4_policy_eval.overlay_scripted_trace_on_video",
+        lambda **kwargs: kwargs["input_video_path"],
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4_policy_eval.score_rollout_manipulation",
+        lambda **_kwargs: ManipulationJudgeScore(
+            task_score=5.0,
+            visual_score=8.0,
+            spatial_score=8.0,
+            grasp_acquired=True,
+            lifted_clear=True,
+            placed_in_target=True,
+            stable_after_place=True,
+            reasoning="ok",
+            raw_response="{}",
+        ),
+    )
+
+    result = PolicyEvalStage().execute(
+        sample_config,
+        fac,
+        work_dir,
+        {
+            "s3_finetune": StageResult(
+                stage_name="s3_finetune",
+                status="success",
+                elapsed_seconds=0.0,
+                outputs={"adapted_checkpoint_path": str(adapted_ckpt)},
+            )
+        },
+    )
+    assert result.status == "success"
+    assert result.metrics["absolute_difference"] == 0.0
+    assert result.metrics["manipulation_success_delta_pp"] == 0.0

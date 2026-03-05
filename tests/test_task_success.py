@@ -46,6 +46,29 @@ def test_articulation_task_success_requires_open_then_close_sequence():
     assert result["task_success_available"] is True
 
 
+def test_articulation_task_success_supports_single_open_sequence():
+    spec = {
+        "success_predicate": {
+            "type": "articulation_open_close_sequence",
+            "target_instance_id": "7",
+            "joint_key": "joint_position",
+            "open_threshold": 0.8,
+            "close_threshold": 0.2,
+            "sequence": ["open"],
+        }
+    }
+    result = evaluate_task_success(
+        task_spec=spec,
+        rollout_row={},
+        state_trace=[
+            {"joint_positions": {"7": 0.1}, "invalid_collision": False},
+            {"joint_positions": {"7": 0.9}, "invalid_collision": False},
+        ],
+    )
+    assert result["task_success"] is True
+    assert result["task_success_available"] is True
+
+
 def test_manipulation_task_success_requires_grasp_lift_place_and_stability():
     spec = {
         "success_predicate": {
@@ -66,6 +89,29 @@ def test_manipulation_task_success_requires_grasp_lift_place_and_stability():
         ],
     )
     assert result["task_success"] is True
+    assert result["task_success_available"] is True
+
+
+def test_manipulation_task_success_requires_ordered_events():
+    spec = {
+        "success_predicate": {
+            "type": "manipulation_pick_place_stable",
+            "target_instance_id": "bowl_1",
+            "goal_region_id": "target_zone",
+            "require_stable_after_place": True,
+        }
+    }
+    result = evaluate_task_success(
+        task_spec=spec,
+        rollout_row={},
+        state_trace=[
+            {"placed_in_target": True},
+            {"grasp_acquired": True},
+            {"lifted_clear": True},
+            {"stable_after_place": True},
+        ],
+    )
+    assert result["task_success"] is False
     assert result["task_success_available"] is True
 
 

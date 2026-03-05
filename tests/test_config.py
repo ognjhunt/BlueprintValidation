@@ -1417,6 +1417,96 @@ def test_config_rejects_invalid_dreamzero_action_bounds(tmp_path):
         load_config(config_path)
 
 
+def test_config_rejects_fixed_claim_protocol_without_disjoint_split_strategy(tmp_path):
+    import yaml
+
+    from blueprint_validation.config import load_config
+
+    config_path = tmp_path / "bad_claim_split.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Claim Split",
+                "facilities": {"a": {"name": "A", "ply_path": str(tmp_path / "a.ply")}},
+                "eval_policy": {
+                    "claim_protocol": "fixed_same_facility_uplift",
+                    "primary_endpoint": "task_success",
+                    "freeze_world_snapshot": True,
+                    "replication": {"training_seeds": [0, 1, 2, 3, 4]},
+                    "split_strategy": "legacy",
+                },
+                "policy_compare": {
+                    "enabled": True,
+                    "control_arms": ["frozen_baseline", "site_trained", "generic_control"],
+                },
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="split_strategy"):
+        load_config(config_path)
+
+
+def test_config_rejects_fixed_claim_protocol_without_required_control_arms(tmp_path):
+    import yaml
+
+    from blueprint_validation.config import load_config
+
+    config_path = tmp_path / "bad_claim_arms.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Claim Arms",
+                "facilities": {"a": {"name": "A", "ply_path": str(tmp_path / "a.ply")}},
+                "eval_policy": {
+                    "claim_protocol": "fixed_same_facility_uplift",
+                    "primary_endpoint": "task_success",
+                    "freeze_world_snapshot": True,
+                    "split_strategy": "disjoint_tasks_and_starts",
+                    "replication": {"training_seeds": [0, 1, 2, 3, 4]},
+                },
+                "policy_compare": {
+                    "enabled": True,
+                    "control_arms": ["frozen_baseline", "site_trained"],
+                },
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="generic_control"):
+        load_config(config_path)
+
+
+def test_config_rejects_fixed_claim_protocol_with_too_few_training_seeds(tmp_path):
+    import yaml
+
+    from blueprint_validation.config import load_config
+
+    config_path = tmp_path / "bad_claim_seeds.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Claim Seeds",
+                "facilities": {"a": {"name": "A", "ply_path": str(tmp_path / "a.ply")}},
+                "eval_policy": {
+                    "claim_protocol": "fixed_same_facility_uplift",
+                    "primary_endpoint": "task_success",
+                    "freeze_world_snapshot": True,
+                    "split_strategy": "disjoint_tasks_and_starts",
+                    "replication": {"training_seeds": [0, 1, 2]},
+                },
+                "policy_compare": {
+                    "enabled": True,
+                    "control_arms": ["frozen_baseline", "site_trained", "generic_control"],
+                },
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="at least 5 seeds"):
+        load_config(config_path)
+
+
 def test_same_facility_policy_uplift_configs_load():
     from pathlib import Path
 

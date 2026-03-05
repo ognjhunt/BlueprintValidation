@@ -279,13 +279,21 @@ class PolicyEvalStage(PipelineStage):
                 tasks=tasks,
             )
             task_specs_by_prompt = {str(spec["task_prompt"]): spec for spec in task_specs}
-            claim_split_payload = build_claim_split_payload(
-                task_specs=task_specs,
-                assignments=rollout_assignments,
-                world_snapshot_hash=world_snapshot_hash,
-                train_split=float(config.rollout_dataset.train_split),
-                split_strategy=str(config.eval_policy.split_strategy),
-            )
+            try:
+                claim_split_payload = build_claim_split_payload(
+                    task_specs=task_specs,
+                    assignments=rollout_assignments,
+                    world_snapshot_hash=world_snapshot_hash,
+                    train_split=float(config.rollout_dataset.train_split),
+                    split_strategy=str(config.eval_policy.split_strategy),
+                )
+            except ValueError as exc:
+                return StageResult(
+                    stage_name=self.name,
+                    status="failed",
+                    elapsed_seconds=0,
+                    detail=f"Failed building fixed-world claim split: {exc}",
+                )
             write_json(task_specs, task_specs_path)
             write_json(claim_split_payload, claim_split_manifest_path)
             write_json(
@@ -317,6 +325,7 @@ class PolicyEvalStage(PipelineStage):
         num_rollouts = len(rollout_assignments)
         headline_scope = _headline_scope(config)
         claim_mode = (config.eval_policy.mode or "claim").strip().lower() == "claim"
+        fixed_world_claim_mode = claim_mode and fixed_claim_protocol
         required_dim = int(config.eval_policy.required_action_dim)
         if (
             claim_mode
@@ -388,6 +397,12 @@ class PolicyEvalStage(PipelineStage):
                 max_steps=max_steps,
                 device=device,
                 claim_mode=claim_mode,
+                fixed_claim_protocol=fixed_claim_protocol,
+                task_specs_by_prompt=task_specs_by_prompt,
+                world_snapshot_hash=world_snapshot_hash,
+                claim_manifest_path=claim_manifest_path,
+                task_specs_path=task_specs_path,
+                claim_split_manifest_path=claim_split_manifest_path,
                 unresolved_manip_tasks_dropped=unresolved_manip_tasks_dropped,
                 num_rejected_task_start_assignments=num_rejected_task_start_assignments,
                 min_rollout_frames=min_rollout_frames,
@@ -764,12 +779,16 @@ class PolicyEvalStage(PipelineStage):
                     f"replay_pass_rate={reliability_gate['replay_pass_rate']:.3f}, "
                     f"controllability_pass_rate={reliability_gate['controllability_pass_rate']:.3f}"
                 )
-            if float(absolute_difference) < float(config.eval_policy.min_absolute_difference):
+            if not fixed_world_claim_mode and float(absolute_difference) < float(
+                config.eval_policy.min_absolute_difference
+            ):
                 claim_failure_reasons.append(
                     "Absolute task-score difference below threshold: "
                     f"{absolute_difference:.3f} < {config.eval_policy.min_absolute_difference:.3f}"
                 )
-            if float(manip_delta_pp) < float(config.eval_policy.min_manip_success_delta_pp):
+            if not fixed_world_claim_mode and float(manip_delta_pp) < float(
+                config.eval_policy.min_manip_success_delta_pp
+            ):
                 claim_failure_reasons.append(
                     "Manipulation success delta below threshold: "
                     f"{manip_delta_pp:.2f}pp < {config.eval_policy.min_manip_success_delta_pp:.2f}pp"
@@ -916,6 +935,12 @@ def _run_world_model_only_eval(
     max_steps: int,
     device: str,
     claim_mode: bool,
+    fixed_claim_protocol: bool,
+    task_specs_by_prompt: Dict[str, Dict[str, object]],
+    world_snapshot_hash: str,
+    claim_manifest_path: Path,
+    task_specs_path: Path,
+    claim_split_manifest_path: Path,
     unresolved_manip_tasks_dropped: int,
     num_rejected_task_start_assignments: int,
     min_rollout_frames: int,
@@ -923,8 +948,6 @@ def _run_world_model_only_eval(
     fail_on_short_rollout: bool,
 ) -> StageResult:
     rollout_driver = (config.eval_policy.rollout_driver or "scripted").strip().lower()
-    fixed_claim_protocol = False
-    task_specs_by_prompt: Dict[str, Dict[str, object]] = {}
     claim_state_failures: List[str] = []
     if rollout_driver not in {"scripted", "both"}:
         return StageResult(
@@ -1346,12 +1369,16 @@ def _run_world_model_only_eval(
                 f"replay_pass_rate={reliability_gate['replay_pass_rate']:.3f}, "
                 f"controllability_pass_rate={reliability_gate['controllability_pass_rate']:.3f}"
             )
-        if float(absolute_difference) < float(config.eval_policy.min_absolute_difference):
+        if not fixed_claim_protocol and float(absolute_difference) < float(
+            config.eval_policy.min_absolute_difference
+        ):
             claim_failure_reasons.append(
                 "Absolute task-score difference below threshold: "
                 f"{absolute_difference:.3f} < {config.eval_policy.min_absolute_difference:.3f}"
             )
-        if float(manip_delta_pp) < float(config.eval_policy.min_manip_success_delta_pp):
+        if not fixed_claim_protocol and float(manip_delta_pp) < float(
+            config.eval_policy.min_manip_success_delta_pp
+        ):
             claim_failure_reasons.append(
                 "Manipulation success delta below threshold: "
                 f"{manip_delta_pp:.2f}pp < {config.eval_policy.min_manip_success_delta_pp:.2f}pp"
@@ -1361,6 +1388,8 @@ def _run_world_model_only_eval(
     metrics = {
         "headline_scope": "wm_only",
         "rollout_driver": rollout_driver,
+        "claim_protocol": "fixed_same_facility_uplift" if fixed_claim_protocol else "none",
+        "primary_endpoint": str(config.eval_policy.primary_endpoint),
         "baseline_mean_task_score": round(float(baseline_mean), 3),
         "adapted_mean_task_score": round(float(adapted_mean), 3),
         "improvement_pct": round(float(improvement), 2),
@@ -1420,9 +1449,21 @@ def _run_world_model_only_eval(
         "num_unresolved_manip_tasks_dropped": int(unresolved_manip_tasks_dropped),
         "num_rejected_task_start_assignments": int(num_rejected_task_start_assignments),
         "low_score_breakdown": _build_low_score_breakdown(all_scores),
+        "world_snapshot_hash": world_snapshot_hash or None,
+        "claim_manifest_path": str(claim_manifest_path) if fixed_claim_protocol else "",
+        "task_specs_path": str(task_specs_path) if fixed_claim_protocol else "",
+        "claim_split_manifest_path": (
+            str(claim_split_manifest_path) if fixed_claim_protocol else ""
+        ),
+        "num_claim_state_failures": len(claim_state_failures),
     }
     write_json(metrics, eval_dir / "policy_eval_report.json")
     detail_lines = list(scoring_failures[:5])
+    if fixed_claim_protocol and claim_state_failures:
+        detail_lines.append(
+            f"Claim protocol missing deterministic task-state evidence for "
+            f"{len(claim_state_failures)} rollouts."
+        )
     if (
         bool(config.eval_policy.reliability.enforce_stage_success)
         and not bool(reliability_gate.get("passed", False))
@@ -1444,6 +1485,7 @@ def _run_world_model_only_eval(
         status=(
             "success"
             if all_scores
+            and (not fixed_claim_protocol or not claim_state_failures)
             and (not claim_mode or claim_passed)
             and (
                 not bool(config.eval_policy.reliability.enforce_stage_success)

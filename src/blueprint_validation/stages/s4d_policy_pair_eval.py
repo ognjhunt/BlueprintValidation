@@ -10,11 +10,7 @@ import numpy as np
 
 from ..common import StageResult, get_logger, read_json, write_json
 from ..config import FacilityConfig, ValidationConfig
-from ..evaluation.claim_protocol import (
-    build_task_specs,
-    checkpoint_content_hash,
-    claim_protocol_enabled,
-)
+from ..evaluation.claim_protocol import checkpoint_content_hash, claim_protocol_enabled
 from ..evaluation.claim_stats import bootstrap_site_vs_baseline, success_rate
 from ..evaluation.openvla_runner import load_dreamdojo_world_model
 from ..evaluation.rollout_utils import run_rollout_with_adapter
@@ -339,9 +335,86 @@ def _run_fixed_world_claim_eval(
     task_specs = read_json(task_specs_path)
     task_specs_by_id = {str(spec.get("task_spec_id", "")): spec for spec in task_specs}
     task_specs_by_prompt = {str(spec.get("task_prompt", "")): spec for spec in task_specs}
+    if str(claim_manifest.get("claim_protocol", "")).strip().lower() != "fixed_same_facility_uplift":
+        return StageResult(
+            stage_name="s4d_policy_pair_eval",
+            status="failed",
+            elapsed_seconds=0,
+            detail="Claim manifest does not describe the fixed-world same-facility protocol.",
+        )
+    if str(claim_manifest.get("primary_endpoint", "task_success")).strip().lower() != "task_success":
+        return StageResult(
+            stage_name="s4d_policy_pair_eval",
+            status="failed",
+            elapsed_seconds=0,
+            detail="Claim manifest primary endpoint must be task_success.",
+        )
+    training_seeds = [int(v) for v in list(config.eval_policy.claim_replication.training_seeds or [])]
+    if len(training_seeds) < 5:
+        return StageResult(
+            stage_name="s4d_policy_pair_eval",
+            status="failed",
+            elapsed_seconds=0,
+            detail="Fixed-world claim protocol requires at least 5 training seeds.",
+        )
+    configured_arms = {
+        str(v).strip()
+        for v in list(config.policy_compare.control_arms or [])
+        if str(v).strip()
+    }
+    required_arms = {"frozen_baseline", "site_trained", "generic_control"}
+    missing_required_arms = sorted(required_arms - configured_arms)
+    if missing_required_arms:
+        return StageResult(
+            stage_name="s4d_policy_pair_eval",
+            status="failed",
+            elapsed_seconds=0,
+            detail=(
+                "Fixed-world claim protocol requires control arms "
+                "frozen_baseline, site_trained, and generic_control "
+                f"(missing: {', '.join(missing_required_arms)})."
+            ),
+        )
+    eval_ids = {str(v) for v in claim_split.get("eval_eval_cell_ids", []) if str(v).strip()}
+    if not eval_ids:
+        return StageResult(
+            stage_name="s4d_policy_pair_eval",
+            status="failed",
+            elapsed_seconds=0,
+            detail="Claim split manifest does not contain heldout eval cells.",
+        )
+    claim_cells = {
+        str(cell.get("eval_cell_id", "")).strip(): cell
+        for cell in claim_split.get("cells", [])
+        if str(cell.get("eval_cell_id", "")).strip()
+    }
 
     episodes = _load_heldout_episodes(heldout_path)
-    eval_ids = {str(v) for v in claim_split.get("eval_eval_cell_ids", [])}
+    if any(not str(ep.get("eval_cell_id", "")).strip() for ep in episodes):
+        return StageResult(
+            stage_name="s4d_policy_pair_eval",
+            status="failed",
+            elapsed_seconds=0,
+            detail="Heldout claim dataset contains episodes without eval_cell_id metadata.",
+        )
+    extra_eval_ids = sorted(
+        {
+            str(ep.get("eval_cell_id", "")).strip()
+            for ep in episodes
+            if str(ep.get("eval_cell_id", "")).strip()
+            and str(ep.get("eval_cell_id", "")).strip() not in eval_ids
+        }
+    )
+    if extra_eval_ids:
+        return StageResult(
+            stage_name="s4d_policy_pair_eval",
+            status="failed",
+            elapsed_seconds=0,
+            detail=(
+                "Heldout claim dataset contains eval cells outside the registered claim split: "
+                f"{', '.join(extra_eval_ids[:5])}"
+            ),
+        )
     if eval_ids:
         episodes = [ep for ep in episodes if str(ep.get("eval_cell_id", "")) in eval_ids]
     if config.policy_compare.heldout_tasks:
@@ -374,6 +447,19 @@ def _run_fixed_world_claim_eval(
                 "Refusing to continue."
             ),
         )
+    episode_validation_error = _validate_claim_episodes(
+        episodes=episodes,
+        eval_ids=eval_ids,
+        claim_cells=claim_cells,
+        world_snapshot_hash=world_snapshot_hash,
+    )
+    if episode_validation_error is not None:
+        return StageResult(
+            stage_name="s4d_policy_pair_eval",
+            status="failed",
+            elapsed_seconds=0,
+            detail=episode_validation_error,
+        )
 
     device = "cuda" if _has_cuda() else "cpu"
     world_model = load_dreamdojo_world_model(
@@ -389,6 +475,17 @@ def _run_fixed_world_claim_eval(
     base_model_name, base_checkpoint = adapter.base_model_ref(config.eval_policy)
 
     expected_arms = [str(v) for v in list(config.policy_compare.control_arms or [])]
+    replicate_validation_error = _validate_claim_replicates(
+        pair_summary=pair_summary,
+        training_seeds=training_seeds,
+    )
+    if replicate_validation_error is not None:
+        return StageResult(
+            stage_name="s4d_policy_pair_eval",
+            status="failed",
+            elapsed_seconds=0,
+            detail=replicate_validation_error,
+        )
     arm_entries = _claim_arm_entries(
         pair_summary=pair_summary,
         base_checkpoint=base_checkpoint,
@@ -443,7 +540,11 @@ def _run_fixed_world_claim_eval(
                 max_steps=config.eval_policy.max_steps_per_rollout,
                 unnorm_key=config.eval_policy.unnorm_key,
                 output_dir=video_dir,
-                clip_name=f"{policy_label}_{i:03d}",
+                clip_name=(
+                    f"{policy_label}_seed_{int(seed):02d}_{i:03d}"
+                    if seed is not None
+                    else f"{policy_label}_{i:03d}"
+                ),
                 device=device,
             )
             score = _score_rollout_video(
@@ -559,6 +660,7 @@ def _run_fixed_world_claim_eval(
         "task_specs_path": str(task_specs_path),
         "num_eval_cells": len(eval_ids) if eval_ids else len({str(ep.get("eval_cell_id", "")) for ep in episodes}),
         "required_positive_seed_count": int(required_positive),
+        "configured_training_seed_count": len(training_seeds),
         "min_practical_success_lift_pp": float(config.eval_policy.min_practical_success_lift_pp),
         "bootstrap_site_vs_frozen": bootstrap,
         "arm_summary": arm_summary,
@@ -658,6 +760,75 @@ def _claim_arm_entries(
                     }
                 )
     return entries
+
+
+def _validate_claim_episodes(
+    *,
+    episodes: List[dict],
+    eval_ids: set[str],
+    claim_cells: Dict[str, dict],
+    world_snapshot_hash: str,
+) -> str | None:
+    seen_ids: set[str] = set()
+    duplicate_ids: set[str] = set()
+    for episode in episodes:
+        eval_cell_id = str(episode.get("eval_cell_id", "")).strip()
+        if not eval_cell_id:
+            return "Heldout claim episode is missing eval_cell_id metadata."
+        if eval_cell_id in seen_ids:
+            duplicate_ids.add(eval_cell_id)
+        seen_ids.add(eval_cell_id)
+        expected = claim_cells.get(eval_cell_id)
+        if expected is None:
+            return f"Heldout claim episode references unknown eval cell '{eval_cell_id}'."
+        if str(episode.get("world_snapshot_hash", "")).strip() != world_snapshot_hash:
+            return (
+                "Heldout claim episodes were exported from a different world snapshot than the "
+                "frozen claim manifest."
+            )
+        if str(episode.get("task_spec_id", "")).strip() != str(expected.get("task_spec_id", "")).strip():
+            return f"Heldout claim episode '{eval_cell_id}' does not match the registered task_spec_id."
+        if str(episode.get("start_region_id", "")).strip() != str(
+            expected.get("start_region_id", "")
+        ).strip():
+            return f"Heldout claim episode '{eval_cell_id}' does not match the registered start_region_id."
+    if duplicate_ids:
+        return (
+            "Heldout claim dataset contains duplicate eval cells: "
+            f"{', '.join(sorted(duplicate_ids))}"
+        )
+    missing_eval_ids = sorted(eval_ids - seen_ids)
+    if missing_eval_ids:
+        return (
+            "Heldout claim dataset is missing registered eval cells: "
+            f"{', '.join(missing_eval_ids[:5])}"
+        )
+    return None
+
+
+def _validate_claim_replicates(
+    *,
+    pair_summary: dict,
+    training_seeds: List[int],
+) -> str | None:
+    replicates = pair_summary.get("replicates", {}) if isinstance(pair_summary, dict) else {}
+    for arm_name in ("generic_control", "site_trained"):
+        rows = replicates.get(arm_name)
+        if not isinstance(rows, list) or not rows:
+            return f"Missing replicated checkpoints for claim arm '{arm_name}'."
+        available_seeds = {
+            int(row.get("seed", -1))
+            for row in rows
+            if str(row.get("status", "")).strip().lower() == "success"
+            and Path(str(row.get("adapted_checkpoint_path", "") or "")).exists()
+        }
+        missing_seeds = [seed for seed in training_seeds if seed not in available_seeds]
+        if missing_seeds:
+            return (
+                f"Missing successful checkpoints for claim arm '{arm_name}' on seeds: "
+                f"{', '.join(str(seed) for seed in missing_seeds)}"
+            )
+    return None
 
 
 def _score_rollout_video(

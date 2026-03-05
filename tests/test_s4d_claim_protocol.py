@@ -13,15 +13,23 @@ def _write_frame(path: Path) -> Path:
     return path
 
 
-def _prepare_claim_eval_workspace(sample_config, tmp_path: Path) -> tuple[Path, Path]:
+def _prepare_claim_eval_workspace(
+    sample_config,
+    tmp_path: Path,
+    *,
+    training_seeds: list[int] | None = None,
+    num_eval_cells: int = 1,
+) -> tuple[Path, Path]:
     from blueprint_validation.common import write_json
     from blueprint_validation.evaluation.claim_protocol import checkpoint_content_hash
 
+    training_seeds = training_seeds or [0, 1, 2, 3, 4]
     sample_config.eval_policy.claim_protocol = "fixed_same_facility_uplift"
     sample_config.eval_policy.primary_endpoint = "task_success"
     sample_config.eval_policy.freeze_world_snapshot = True
     sample_config.eval_policy.min_practical_success_lift_pp = 0.0
-    sample_config.eval_policy.claim_replication.training_seeds = [0]
+    sample_config.eval_policy.split_strategy = "disjoint_tasks_and_starts"
+    sample_config.eval_policy.claim_replication.training_seeds = training_seeds
     sample_config.policy_compare.enabled = True
     sample_config.policy_compare.control_arms = [
         "frozen_baseline",
@@ -57,25 +65,28 @@ def _prepare_claim_eval_workspace(sample_config, tmp_path: Path) -> tuple[Path, 
         ],
         policy_eval_dir / "task_specs.json",
     )
+    eval_cells = [
+        {
+            "eval_cell_id": f"eval_cell_{idx + 1:03d}",
+            "task_spec_id": "task_spec_pick",
+            "task_prompt": "Pick up bowl_101 and place it in the target zone",
+            "start_region_id": f"manipulation:{100 + idx}",
+            "world_snapshot_hash": world_hash,
+        }
+        for idx in range(num_eval_cells)
+    ]
     write_json(
         {
-            "eval_eval_cell_ids": ["eval_cell_001"],
+            "eval_eval_cell_ids": [cell["eval_cell_id"] for cell in eval_cells],
             "train_eval_cell_ids": [],
-            "cells": [
-                {
-                    "eval_cell_id": "eval_cell_001",
-                    "task_spec_id": "task_spec_pick",
-                    "task_prompt": "Pick up bowl_101 and place it in the target zone",
-                    "start_region_id": "manipulation:101",
-                    "world_snapshot_hash": world_hash,
-                }
-            ],
+            "cells": eval_cells,
         },
         policy_eval_dir / "claim_split_manifest.json",
     )
     write_json(
         {
             "claim_protocol": "fixed_same_facility_uplift",
+            "primary_endpoint": "task_success",
             "world_snapshot_hash": world_hash,
             "task_specs_path": str(policy_eval_dir / "task_specs.json"),
             "split_manifest_path": str(policy_eval_dir / "claim_split_manifest.json"),
@@ -83,66 +94,66 @@ def _prepare_claim_eval_workspace(sample_config, tmp_path: Path) -> tuple[Path, 
         policy_eval_dir / "claim_manifest.json",
     )
 
-    episode_payload = {
-        "episode_id": "episode_0000",
-        "task": "Pick up bowl_101 and place it in the target zone",
-        "eval_cell_id": "eval_cell_001",
-        "task_spec_id": "task_spec_pick",
-        "start_region_id": "manipulation:101",
-        "world_snapshot_hash": world_hash,
-        "steps": [
-            {
-                "observation": {"image_path": str(frame_path)},
-                "action": [0.0] * 7,
-                "language_instruction": "Pick up bowl_101 and place it in the target zone",
-                "reward": 0.0,
-                "is_first": True,
-                "is_last": True,
-                "is_terminal": True,
-            }
-        ],
-    }
-    (dataset_root / "episodes.jsonl").write_text(json.dumps(episode_payload) + "\n")
+    episode_payloads = [
+        {
+            "episode_id": f"episode_{idx:04d}",
+            "task": "Pick up bowl_101 and place it in the target zone",
+            "eval_cell_id": cell["eval_cell_id"],
+            "task_spec_id": "task_spec_pick",
+            "start_region_id": cell["start_region_id"],
+            "world_snapshot_hash": world_hash,
+            "steps": [
+                {
+                    "observation": {"image_path": str(frame_path)},
+                    "action": [0.0] * 7,
+                    "language_instruction": "Pick up bowl_101 and place it in the target zone",
+                    "reward": 0.0,
+                    "is_first": True,
+                    "is_last": True,
+                    "is_terminal": True,
+                }
+            ],
+        }
+        for idx, cell in enumerate(eval_cells)
+    ]
+    (dataset_root / "episodes.jsonl").write_text(
+        "\n".join(json.dumps(payload) for payload in episode_payloads) + "\n"
+    )
 
     pair_train_dir = work_dir / "policy_pair_train"
     pair_train_dir.mkdir(parents=True, exist_ok=True)
-    generic_ckpt = pair_train_dir / "generic_seed_0"
-    site_ckpt = pair_train_dir / "site_seed_0"
-    generic_ckpt.mkdir(parents=True, exist_ok=True)
-    site_ckpt.mkdir(parents=True, exist_ok=True)
-    write_json(
-        {
-            "policy_base": {
+    generic_runs = []
+    site_runs = []
+    for seed in training_seeds:
+        generic_ckpt = pair_train_dir / f"generic_seed_{seed}"
+        site_ckpt = pair_train_dir / f"site_seed_{seed}"
+        generic_ckpt.mkdir(parents=True, exist_ok=True)
+        site_ckpt.mkdir(parents=True, exist_ok=True)
+        generic_runs.append(
+            {
+                "seed": seed,
                 "status": "success",
                 "adapted_checkpoint_path": str(generic_ckpt),
                 "elapsed_seconds": 1.0,
                 "detail": "",
-            },
-            "policy_site": {
+            }
+        )
+        site_runs.append(
+            {
+                "seed": seed,
                 "status": "success",
                 "adapted_checkpoint_path": str(site_ckpt),
                 "elapsed_seconds": 1.0,
                 "detail": "",
-            },
+            }
+        )
+    write_json(
+        {
+            "policy_base": generic_runs[0],
+            "policy_site": site_runs[0],
             "replicates": {
-                "generic_control": [
-                    {
-                        "seed": 0,
-                        "status": "success",
-                        "adapted_checkpoint_path": str(generic_ckpt),
-                        "elapsed_seconds": 1.0,
-                        "detail": "",
-                    }
-                ],
-                "site_trained": [
-                    {
-                        "seed": 0,
-                        "status": "success",
-                        "adapted_checkpoint_path": str(site_ckpt),
-                        "elapsed_seconds": 1.0,
-                        "detail": "",
-                    }
-                ],
+                "generic_control": generic_runs,
+                "site_trained": site_runs,
             },
         },
         pair_train_dir / "policy_pair_train_summary.json",
@@ -255,3 +266,71 @@ def test_s4d_claim_protocol_emits_claim_report(sample_config, tmp_path, monkeypa
     assert result.metrics["claim_protocol"] == "fixed_same_facility_uplift"
     assert result.metrics["claim_passed"] is True
     assert Path(result.outputs["claim_report_path"]).exists()
+
+
+def test_s4d_claim_protocol_fails_when_heldout_eval_cells_are_missing(
+    sample_config, tmp_path, monkeypatch
+):
+    from blueprint_validation.stages.s4d_policy_pair_eval import PolicyPairEvalStage
+
+    work_dir, _adapted_ckpt = _prepare_claim_eval_workspace(
+        sample_config,
+        tmp_path,
+        num_eval_cells=2,
+    )
+    heldout_path = (
+        sample_config.rollout_dataset.export_dir
+        / work_dir.name
+        / "adapted"
+        / "heldout"
+        / "episodes.jsonl"
+    )
+    lines = heldout_path.read_text().splitlines()
+    heldout_path.write_text(lines[0] + "\n")
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4d_policy_pair_eval.get_policy_adapter",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            base_model_ref=lambda _eval_policy: ("fake_model", None),
+            load_policy=lambda **_kwargs: {"checkpoint": "ok"},
+        ),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4d_policy_pair_eval.load_dreamdojo_world_model",
+        lambda **_kwargs: object(),
+    )
+
+    fac = sample_config.facilities["test_facility"]
+    result = PolicyPairEvalStage().run(sample_config, fac, work_dir, {})
+    assert result.status == "failed"
+    assert "missing registered eval cells" in result.detail
+
+
+def test_s4d_claim_protocol_fails_when_generic_control_seed_is_missing(
+    sample_config, tmp_path, monkeypatch
+):
+    from blueprint_validation.common import read_json, write_json
+    from blueprint_validation.stages.s4d_policy_pair_eval import PolicyPairEvalStage
+
+    work_dir, _adapted_ckpt = _prepare_claim_eval_workspace(sample_config, tmp_path)
+    summary_path = work_dir / "policy_pair_train" / "policy_pair_train_summary.json"
+    payload = read_json(summary_path)
+    payload["replicates"]["generic_control"] = payload["replicates"]["generic_control"][:-1]
+    write_json(payload, summary_path)
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4d_policy_pair_eval.get_policy_adapter",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            base_model_ref=lambda _eval_policy: ("fake_model", None),
+            load_policy=lambda **_kwargs: {"checkpoint": "ok"},
+        ),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4d_policy_pair_eval.load_dreamdojo_world_model",
+        lambda **_kwargs: object(),
+    )
+
+    fac = sample_config.facilities["test_facility"]
+    result = PolicyPairEvalStage().run(sample_config, fac, work_dir, {})
+    assert result.status == "failed"
+    assert "generic_control" in result.detail
+    assert "seeds" in result.detail

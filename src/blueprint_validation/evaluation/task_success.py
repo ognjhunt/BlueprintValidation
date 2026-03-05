@@ -79,8 +79,12 @@ def _evaluate_articulation(
     joint_key = str(predicate.get("joint_key", "joint_position")).strip() or "joint_position"
     open_threshold = float(predicate.get("open_threshold", 0.8))
     close_threshold = float(predicate.get("close_threshold", 0.2))
-    opened = False
-    closed_after_open = False
+    sequence = [
+        str(token).strip().lower()
+        for token in list(predicate.get("sequence", ["open", "close"]) or ["open", "close"])
+        if str(token).strip()
+    ]
+    matched = 0
     for state in trace:
         if bool(state.get("invalid_collision", False)):
             return {
@@ -91,15 +95,19 @@ def _evaluate_articulation(
         value = _joint_position_for_state(state, target_instance_id, joint_key)
         if value is None:
             continue
-        if value >= open_threshold:
-            opened = True
-        if opened and value <= close_threshold:
-            closed_after_open = True
+        if matched >= len(sequence):
             break
+        target_state = sequence[matched]
+        if target_state == "open" and value >= open_threshold:
+            matched += 1
+        elif target_state == "close" and value <= close_threshold:
+            matched += 1
     return {
-        "task_success": bool(opened and closed_after_open),
+        "task_success": bool(matched == len(sequence) and bool(sequence)),
         "task_success_reason": (
-            "opened_and_closed" if opened and closed_after_open else "sequence_incomplete"
+            "sequence_completed"
+            if matched == len(sequence) and bool(sequence)
+            else "sequence_incomplete"
         ),
         "task_success_available": True,
     }
@@ -112,17 +120,26 @@ def _evaluate_manipulation(
     if not trace:
         return _unavailable("Missing state_trace for manipulation predicate.")
     require_stable = bool(predicate.get("require_stable_after_place", True))
-    grasp = any(bool(state.get("grasp_acquired", False)) for state in trace)
-    lifted = any(bool(state.get("lifted_clear", False)) for state in trace)
-    placed = any(bool(state.get("placed_in_target", False)) for state in trace)
-    stable = any(bool(state.get("stable_after_place", False)) for state in trace)
     if any(bool(state.get("invalid_collision", False)) for state in trace):
         return {
             "task_success": False,
             "task_success_reason": "invalid_collision",
             "task_success_available": True,
         }
-    success = grasp and lifted and placed and (stable if require_stable else True)
+    grasp_idx = _first_true_index(trace, "grasp_acquired")
+    lift_idx = _first_true_index(trace, "lifted_clear", start=grasp_idx + 1 if grasp_idx is not None else 0)
+    place_idx = _first_true_index(trace, "placed_in_target", start=lift_idx + 1 if lift_idx is not None else 0)
+    stable_idx = _first_true_index(
+        trace,
+        "stable_after_place",
+        start=place_idx + 1 if place_idx is not None else 0,
+    )
+    success = (
+        grasp_idx is not None
+        and lift_idx is not None
+        and place_idx is not None
+        and (stable_idx is not None if require_stable else True)
+    )
     return {
         "task_success": bool(success),
         "task_success_reason": (
@@ -172,3 +189,15 @@ def _unavailable(reason: str) -> Dict[str, object]:
         "task_success_reason": str(reason),
         "task_success_available": False,
     }
+
+
+def _first_true_index(
+    trace: List[Dict[str, object]],
+    key: str,
+    *,
+    start: int = 0,
+) -> int | None:
+    for idx, state in enumerate(trace[start:], start=start):
+        if bool(state.get(key, False)):
+            return idx
+    return None

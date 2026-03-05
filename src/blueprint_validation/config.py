@@ -1920,16 +1920,53 @@ def load_config(path: Path) -> ValidationConfig:
             "eval_policy.freeze_world_snapshot must be true when "
             "claim_protocol=fixed_same_facility_uplift"
         )
-    if len(list(config.eval_policy.claim_replication.training_seeds or [])) < 1:
+    training_seeds = list(config.eval_policy.claim_replication.training_seeds or [])
+    if len(training_seeds) < 1:
         raise ValueError("eval_policy.replication.training_seeds must contain at least one seed")
-    if len({int(v) for v in list(config.eval_policy.claim_replication.training_seeds or [])}) != len(
-        list(config.eval_policy.claim_replication.training_seeds or [])
-    ):
+    if len({int(v) for v in training_seeds}) != len(training_seeds):
         raise ValueError("eval_policy.replication.training_seeds must be unique")
+    if (
+        str(config.eval_policy.claim_protocol).strip().lower() == "fixed_same_facility_uplift"
+        and str(config.eval_policy.split_strategy).strip().lower() != "disjoint_tasks_and_starts"
+    ):
+        raise ValueError(
+            "eval_policy.split_strategy must be 'disjoint_tasks_and_starts' when "
+            "claim_protocol=fixed_same_facility_uplift"
+        )
+    if (
+        str(config.eval_policy.claim_protocol).strip().lower() == "fixed_same_facility_uplift"
+        and not bool(config.policy_compare.enabled)
+    ):
+        raise ValueError(
+            "policy_compare.enabled must be true when "
+            "claim_protocol=fixed_same_facility_uplift"
+        )
+    if (
+        str(config.eval_policy.claim_protocol).strip().lower() == "fixed_same_facility_uplift"
+        and len(training_seeds) < 5
+    ):
+        raise ValueError(
+            "eval_policy.replication.training_seeds must contain at least 5 seeds when "
+            "claim_protocol=fixed_same_facility_uplift"
+        )
     if float(config.eval_policy.min_practical_success_lift_pp) < 0.0:
         raise ValueError("eval_policy.min_practical_success_lift_pp must be >= 0")
     if not list(config.policy_compare.control_arms or []):
         raise ValueError("policy_compare.control_arms must contain at least one arm")
+    if str(config.eval_policy.claim_protocol).strip().lower() == "fixed_same_facility_uplift":
+        configured_arms = {
+            str(v).strip()
+            for v in list(config.policy_compare.control_arms or [])
+            if str(v).strip()
+        }
+        required_arms = {"frozen_baseline", "site_trained", "generic_control"}
+        missing_arms = sorted(required_arms - configured_arms)
+        if missing_arms:
+            raise ValueError(
+                "policy_compare.control_arms must include frozen_baseline, site_trained, and "
+                "generic_control when claim_protocol=fixed_same_facility_uplift "
+                f"(missing: {', '.join(missing_arms)})"
+            )
     if int(config.policy_adapter.dreamzero.policy_action_dim) < 1:
         raise ValueError("policy_adapter.dreamzero.policy_action_dim must be >= 1")
     if int(config.policy_adapter.dreamzero.frame_history) < 1:

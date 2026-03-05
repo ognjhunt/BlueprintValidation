@@ -62,7 +62,12 @@ def build_task_specs(
         target_label = target.get("label") if isinstance(target, dict) else None
         target_instance_id = target.get("instance_id") if isinstance(target, dict) else None
         goal_region_id = _goal_region_id_for_task(prompt, family, target)
-        predicate = _success_predicate_for_family(family, target, goal_region_id)
+        predicate = _success_predicate_for_family(
+            prompt=prompt,
+            family=family,
+            target=target,
+            goal_region_id=goal_region_id,
+        )
         task_spec_id = _stable_protocol_id(
             "task_spec",
             {
@@ -150,25 +155,44 @@ def build_claim_split_payload(
             "heldout_start_region_ids": [],
         }
 
-    task_spec_ids = sorted({str(spec["task_spec_id"]) for spec in task_specs})
-    start_clip_ids = sorted({str(cell["start_clip_id"]) for cell in cells})
-    holdout_task_count = _holdout_count(len(task_spec_ids), train_split)
-    holdout_start_count = _holdout_count(len(start_clip_ids), train_split)
+    if not cells:
+        return {
+            "split_strategy": "disjoint_tasks_and_starts",
+            "world_snapshot_hash": world_snapshot_hash,
+            "cells": [],
+            "train_eval_cell_ids": [],
+            "eval_eval_cell_ids": [],
+            "unused_eval_cell_ids": [],
+            "heldout_task_spec_ids": [],
+            "heldout_task_families": [],
+            "heldout_start_clip_ids": [],
+            "heldout_start_region_ids": [],
+            "task_split_axis": "task_spec_id",
+            "start_split_axis": "start_clip_id",
+        }
 
-    heldout_task_spec_ids = set(task_spec_ids[-holdout_task_count:]) if holdout_task_count else set()
-    heldout_start_clip_ids = set(start_clip_ids[-holdout_start_count:]) if holdout_start_count else set()
-    heldout_start_region_ids = {
-        str(cell["start_region_id"])
-        for cell in cells
-        if str(cell["start_clip_id"]) in heldout_start_clip_ids
-    }
+    task_axis, task_ids = _task_split_axis(cells)
+    start_axis, start_ids = _start_split_axis(cells)
+    if len(task_ids) < 2:
+        raise ValueError(
+            "Claim split requires at least two disjoint task groups (task specs or families)."
+        )
+    if len(start_ids) < 2:
+        raise ValueError(
+            "Claim split requires at least two disjoint start groups (clips or regions)."
+        )
+    holdout_task_count = _holdout_count(len(task_ids), train_split)
+    holdout_start_count = _holdout_count(len(start_ids), train_split)
+
+    heldout_task_ids = set(task_ids[-holdout_task_count:]) if holdout_task_count else set()
+    heldout_start_ids = set(start_ids[-holdout_start_count:]) if holdout_start_count else set()
 
     train_cells: List[Dict[str, object]] = []
     eval_cells: List[Dict[str, object]] = []
     unused_cells: List[Dict[str, object]] = []
     for cell in cells:
-        task_holdout = str(cell["task_spec_id"]) in heldout_task_spec_ids
-        start_holdout = str(cell["start_clip_id"]) in heldout_start_clip_ids
+        task_holdout = str(cell.get(task_axis, "")) in heldout_task_ids
+        start_holdout = str(cell.get(start_axis, "")) in heldout_start_ids
         if task_holdout and start_holdout:
             eval_cells.append(cell)
         elif not task_holdout and not start_holdout:
@@ -176,19 +200,38 @@ def build_claim_split_payload(
         else:
             unused_cells.append(cell)
 
-    if not eval_cells and cells:
-        eval_cells = [cells[-1]]
-        used_id = str(cells[-1]["eval_cell_id"])
-        train_cells = [c for c in train_cells if str(c["eval_cell_id"]) != used_id]
-        unused_cells = [c for c in unused_cells if str(c["eval_cell_id"]) != used_id]
-        heldout_task_spec_ids.add(str(cells[-1]["task_spec_id"]))
-        heldout_start_clip_ids.add(str(cells[-1]["start_clip_id"]))
-        heldout_start_region_ids.add(str(cells[-1]["start_region_id"]))
-    if not train_cells and len(cells) > 1:
-        train_cells = [cells[0]]
-        train_id = str(cells[0]["eval_cell_id"])
-        eval_cells = [c for c in eval_cells if str(c["eval_cell_id"]) != train_id]
-        unused_cells = [c for c in unused_cells if str(c["eval_cell_id"]) != train_id]
+    if not eval_cells or not train_cells:
+        raise ValueError(
+            "Claim split could not produce non-empty disjoint train/eval cells under "
+            "split_strategy=disjoint_tasks_and_starts."
+        )
+
+    if not {
+        str(cell.get("task_spec_id", ""))
+        for cell in eval_cells
+    }.isdisjoint({str(cell.get("task_spec_id", "")) for cell in train_cells}):
+        raise ValueError("Claim split leaked task specs between train and eval cells.")
+    if not {
+        str(cell.get(start_axis, ""))
+        for cell in eval_cells
+    }.isdisjoint({str(cell.get(start_axis, "")) for cell in train_cells}):
+        raise ValueError("Claim split leaked start groups between train and eval cells.")
+
+    heldout_task_spec_ids = {
+        str(cell["task_spec_id"])
+        for cell in eval_cells
+        if str(cell.get("task_spec_id", "")).strip()
+    }
+    heldout_start_clip_ids = {
+        str(cell["start_clip_id"])
+        for cell in eval_cells
+        if str(cell.get("start_clip_id", "")).strip()
+    }
+    heldout_start_region_ids = {
+        str(cell["start_region_id"])
+        for cell in eval_cells
+        if str(cell.get("start_region_id", "")).strip()
+    }
 
     heldout_task_families = sorted(
         {
@@ -208,6 +251,8 @@ def build_claim_split_payload(
         "heldout_task_families": heldout_task_families,
         "heldout_start_clip_ids": sorted(heldout_start_clip_ids),
         "heldout_start_region_ids": sorted(heldout_start_region_ids),
+        "task_split_axis": task_axis,
+        "start_split_axis": start_axis,
     }
 
 
@@ -324,6 +369,8 @@ def _goal_region_id_for_task(
 
 
 def _success_predicate_for_family(
+    *,
+    prompt: str,
     family: str,
     target: Dict[str, object] | None,
     goal_region_id: str,
@@ -343,6 +390,7 @@ def _success_predicate_for_family(
             "joint_key": "joint_position",
             "open_threshold": 0.8,
             "close_threshold": 0.2,
+            "sequence": _articulation_sequence(prompt),
         }
     if family == "manipulation":
         return {
@@ -393,3 +441,56 @@ def _stable_protocol_id(prefix: str, payload: object) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     digest = hashlib.sha1(encoded.encode("utf-8")).hexdigest()[:12]
     return f"{prefix}_{digest}"
+
+
+def _task_split_axis(cells: List[Dict[str, object]]) -> Tuple[str, List[str]]:
+    family_ids = sorted(
+        {
+            str(cell.get("task_family", "")).strip()
+            for cell in cells
+            if str(cell.get("task_family", "")).strip()
+        }
+    )
+    if len(family_ids) >= 2:
+        return "task_family", family_ids
+    task_spec_ids = sorted(
+        {
+            str(cell.get("task_spec_id", "")).strip()
+            for cell in cells
+            if str(cell.get("task_spec_id", "")).strip()
+        }
+    )
+    return "task_spec_id", task_spec_ids
+
+
+def _start_split_axis(cells: List[Dict[str, object]]) -> Tuple[str, List[str]]:
+    start_clip_ids = sorted(
+        {
+            str(cell.get("start_clip_id", "")).strip()
+            for cell in cells
+            if str(cell.get("start_clip_id", "")).strip()
+        }
+    )
+    if len(start_clip_ids) >= 2:
+        return "start_clip_id", start_clip_ids
+    start_region_ids = sorted(
+        {
+            str(cell.get("start_region_id", "")).strip()
+            for cell in cells
+            if str(cell.get("start_region_id", "")).strip()
+        }
+    )
+    return "start_region_id", start_region_ids
+
+
+def _articulation_sequence(prompt: str) -> List[str]:
+    lowered = prompt.lower()
+    if "close and open" in lowered or "turn off and on" in lowered:
+        return ["close", "open"]
+    if "open and close" in lowered or "turn on and off" in lowered:
+        return ["open", "close"]
+    if "turn off" in lowered or re.search(r"\bclose\b", lowered):
+        return ["close"]
+    if "turn on" in lowered or re.search(r"\bopen\b", lowered):
+        return ["open"]
+    return ["open", "close"]
