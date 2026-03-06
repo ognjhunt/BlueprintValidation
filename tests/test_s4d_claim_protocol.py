@@ -23,13 +23,17 @@ def _prepare_claim_eval_workspace(
     from blueprint_validation.common import write_json
     from blueprint_validation.evaluation.claim_protocol import checkpoint_content_hash
 
-    training_seeds = training_seeds or [0, 1, 2, 3, 4]
+    training_seeds = training_seeds or [0, 1, 2, 3, 4, 5]
     sample_config.eval_policy.claim_protocol = "fixed_same_facility_uplift"
     sample_config.eval_policy.primary_endpoint = "task_success"
     sample_config.eval_policy.freeze_world_snapshot = True
     sample_config.eval_policy.min_practical_success_lift_pp = 0.0
     sample_config.eval_policy.split_strategy = "disjoint_tasks_and_starts"
     sample_config.eval_policy.claim_replication.training_seeds = training_seeds
+    sample_config.eval_policy.claim_strictness.min_eval_task_specs = 1
+    sample_config.eval_policy.claim_strictness.min_eval_start_clips = 1
+    sample_config.eval_policy.claim_strictness.min_common_eval_cells = 1
+    sample_config.eval_policy.claim_strictness.min_positive_training_seeds = 1
     sample_config.policy_compare.enabled = True
     sample_config.policy_compare.control_arms = [
         "frozen_baseline",
@@ -70,7 +74,9 @@ def _prepare_claim_eval_workspace(
             "eval_cell_id": f"eval_cell_{idx + 1:03d}",
             "task_spec_id": "task_spec_pick",
             "task_prompt": "Pick up bowl_101 and place it in the target zone",
+            "start_clip_id": f"clip_{idx:03d}",
             "start_region_id": f"manipulation:{100 + idx}",
+            "start_frame_hash": f"frame_hash_{idx:03d}",
             "world_snapshot_hash": world_hash,
         }
         for idx in range(num_eval_cells)
@@ -100,7 +106,9 @@ def _prepare_claim_eval_workspace(
             "task": "Pick up bowl_101 and place it in the target zone",
             "eval_cell_id": cell["eval_cell_id"],
             "task_spec_id": "task_spec_pick",
+            "start_clip_id": cell["start_clip_id"],
             "start_region_id": cell["start_region_id"],
+            "start_frame_hash": cell["start_frame_hash"],
             "world_snapshot_hash": world_hash,
             "steps": [
                 {
@@ -264,6 +272,7 @@ def test_s4d_claim_protocol_emits_claim_report(sample_config, tmp_path, monkeypa
     result = PolicyPairEvalStage().run(sample_config, fac, work_dir, {})
     assert result.status == "success"
     assert result.metrics["claim_protocol"] == "fixed_same_facility_uplift"
+    assert result.metrics["claim_outcome"] == "PASS"
     assert result.metrics["claim_passed"] is True
     assert Path(result.outputs["claim_report_path"]).exists()
 
@@ -334,3 +343,121 @@ def test_s4d_claim_protocol_fails_when_generic_control_seed_is_missing(
     assert result.status == "failed"
     assert "generic_control" in result.detail
     assert "seeds" in result.detail
+
+
+def test_s4d_claim_protocol_marks_low_sample_claim_inconclusive(sample_config, tmp_path, monkeypatch):
+    from blueprint_validation.stages.s4d_policy_pair_eval import PolicyPairEvalStage
+
+    work_dir, _adapted_ckpt = _prepare_claim_eval_workspace(
+        sample_config,
+        tmp_path,
+        num_eval_cells=2,
+    )
+    sample_config.eval_policy.claim_strictness.min_eval_task_specs = 3
+    sample_config.eval_policy.claim_strictness.min_eval_start_clips = 3
+    sample_config.eval_policy.claim_strictness.min_common_eval_cells = 30
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4d_policy_pair_eval.get_policy_adapter",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            base_model_ref=lambda _eval_policy: ("fake_model", None),
+            load_policy=lambda **_kwargs: {"checkpoint": "ok"},
+        ),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4d_policy_pair_eval.load_dreamdojo_world_model",
+        lambda **_kwargs: object(),
+    )
+
+    fac = sample_config.facilities["test_facility"]
+    result = PolicyPairEvalStage().run(sample_config, fac, work_dir, {})
+    assert result.status == "failed"
+    assert result.metrics["claim_outcome"] == "INCONCLUSIVE"
+    assert result.metrics["claim_passed"] is False
+
+
+def test_s4d_claim_protocol_marks_site_vs_generic_tie_inconclusive(
+    sample_config, tmp_path, monkeypatch
+):
+    from blueprint_validation.stages.s4d_policy_pair_eval import PolicyPairEvalStage
+
+    work_dir, _adapted_ckpt = _prepare_claim_eval_workspace(sample_config, tmp_path)
+
+    class _FakeAdapter:
+        def base_model_ref(self, _eval_policy):
+            return "fake_model", None
+
+        def load_policy(self, *, model_name, checkpoint_path, device):
+            return {"checkpoint": str(checkpoint_path or ""), "model_name": model_name}
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4d_policy_pair_eval.get_policy_adapter",
+        lambda *_args, **_kwargs: _FakeAdapter(),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4d_policy_pair_eval.load_dreamdojo_world_model",
+        lambda **_kwargs: object(),
+    )
+
+    def _fake_run_rollout_with_adapter(**kwargs):
+        clip_name = kwargs["clip_name"]
+        video_path = kwargs["output_dir"] / f"{clip_name}.mp4"
+        video_path.parent.mkdir(parents=True, exist_ok=True)
+        video_path.write_bytes(b"x")
+        if "frozen_baseline" in clip_name:
+            state_trace = [
+                {"grasp_acquired": False},
+                {"lifted_clear": False},
+                {"placed_in_target": False},
+                {"stable_after_place": False},
+            ]
+        else:
+            state_trace = [
+                {"grasp_acquired": True},
+                {"lifted_clear": True},
+                {"placed_in_target": True},
+                {"stable_after_place": True},
+            ]
+        return SimpleNamespace(
+            video_path=video_path,
+            action_sequence=[[0.0] * 7 for _ in range(2)],
+            num_steps=2,
+            state_trace=state_trace,
+        )
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4d_policy_pair_eval.run_rollout_with_adapter",
+        _fake_run_rollout_with_adapter,
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4d_policy_pair_eval._read_rgb_image",
+        lambda _path: np.zeros((16, 16, 3), dtype=np.uint8),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4d_policy_pair_eval.score_rollout_manipulation",
+        lambda **_kwargs: SimpleNamespace(
+            task_score=8.0,
+            visual_score=8.0,
+            spatial_score=8.0,
+            grasp_acquired=True,
+            lifted_clear=True,
+            placed_in_target=True,
+            stable_after_place=True,
+            reasoning="ok",
+        ),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4d_policy_pair_eval.score_rollout",
+        lambda **_kwargs: SimpleNamespace(
+            task_score=8.0,
+            visual_score=8.0,
+            spatial_score=8.0,
+            reasoning="ok",
+        ),
+    )
+
+    fac = sample_config.facilities["test_facility"]
+    result = PolicyPairEvalStage().run(sample_config, fac, work_dir, {})
+    assert result.status == "success"
+    assert result.metrics["claim_outcome"] == "INCONCLUSIVE"
+    assert result.metrics["claim_passed"] is False

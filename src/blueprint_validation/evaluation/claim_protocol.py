@@ -133,6 +133,7 @@ def build_claim_split_payload(
                 "start_clip_id": start_clip_id,
                 "start_region_id": start_region_id,
                 "start_clip_index": int(assignment.get("clip_index", -1)),
+                "start_frame_hash": str(assignment.get("start_frame_hash", "")).strip(),
                 "target_instance_id": target_instance_id,
                 "target_label": spec.get("target_label"),
                 "world_snapshot_hash": world_snapshot_hash,
@@ -171,16 +172,26 @@ def build_claim_split_payload(
             "start_split_axis": "start_clip_id",
         }
 
-    task_axis, task_ids = _task_split_axis(cells)
-    start_axis, start_ids = _start_split_axis(cells)
+    task_axis = "task_spec_id"
+    task_ids = sorted(
+        {
+            str(cell.get("task_spec_id", "")).strip()
+            for cell in cells
+            if str(cell.get("task_spec_id", "")).strip()
+        }
+    )
+    start_axis = "start_clip_id"
+    start_ids = sorted(
+        {
+            str(cell.get("start_clip_id", "")).strip()
+            for cell in cells
+            if str(cell.get("start_clip_id", "")).strip()
+        }
+    )
     if len(task_ids) < 2:
-        raise ValueError(
-            "Claim split requires at least two disjoint task groups (task specs or families)."
-        )
+        raise ValueError("Claim split requires at least two disjoint task specs.")
     if len(start_ids) < 2:
-        raise ValueError(
-            "Claim split requires at least two disjoint start groups (clips or regions)."
-        )
+        raise ValueError("Claim split requires at least two disjoint start clips.")
     holdout_task_count = _holdout_count(len(task_ids), train_split)
     holdout_start_count = _holdout_count(len(start_ids), train_split)
 
@@ -278,6 +289,21 @@ def claim_manifest_payload(
         "split_manifest_path": str(split_manifest_path),
         "training_seeds": [int(v) for v in list(config.eval_policy.claim_replication.training_seeds)],
         "control_arms": [str(v) for v in list(config.policy_compare.control_arms)],
+        "claim_strictness": {
+            "min_eval_task_specs": int(config.eval_policy.claim_strictness.min_eval_task_specs),
+            "min_eval_start_clips": int(config.eval_policy.claim_strictness.min_eval_start_clips),
+            "min_common_eval_cells": int(config.eval_policy.claim_strictness.min_common_eval_cells),
+            "min_positive_training_seeds": int(
+                config.eval_policy.claim_strictness.min_positive_training_seeds
+            ),
+            "p_value_threshold": float(config.eval_policy.claim_strictness.p_value_threshold),
+            "require_site_specific_advantage": bool(
+                config.eval_policy.claim_strictness.require_site_specific_advantage
+            ),
+            "site_vs_generic_min_lift_pp": float(
+                config.eval_policy.claim_strictness.site_vs_generic_min_lift_pp
+            ),
+        },
         "config_hash": _stable_protocol_id("config", config.eval_policy.__dict__),
     }
 
@@ -294,6 +320,70 @@ def group_rows_by_eval_cell(rows: Iterable[Dict[str, object]]) -> Dict[str, List
     for row in rows:
         grouped.setdefault(paired_eval_key(row), []).append(row)
     return grouped
+
+
+def deterministic_claim_task_failures(task_specs: List[Dict[str, object]]) -> List[str]:
+    failures: List[str] = []
+    for spec in task_specs:
+        predicate = dict(spec.get("success_predicate", {}) or {})
+        predicate_type = str(predicate.get("type", "")).strip().lower()
+        if predicate_type in {
+            "navigation_reach_and_hold",
+            "articulation_open_close_sequence",
+            "manipulation_pick_place_stable",
+        }:
+            continue
+        failures.append(
+            f"Task '{spec.get('task_prompt', '')}' lacks a deterministic claim endpoint "
+            f"(predicate={predicate_type or 'missing'})."
+        )
+    return failures
+
+
+def validate_claim_split_payload(
+    *,
+    payload: Dict[str, object],
+    config: ValidationConfig,
+) -> List[str]:
+    strictness = config.eval_policy.claim_strictness
+    eval_cells = [
+        dict(cell)
+        for cell in list(payload.get("cells", []) or [])
+        if str(cell.get("eval_cell_id", "")).strip()
+        and str(cell.get("eval_cell_id", "")).strip()
+        in {
+            str(v).strip()
+            for v in list(payload.get("eval_eval_cell_ids", []) or [])
+            if str(v).strip()
+        }
+    ]
+    failures: List[str] = []
+    heldout_task_specs = {
+        str(cell.get("task_spec_id", "")).strip()
+        for cell in eval_cells
+        if str(cell.get("task_spec_id", "")).strip()
+    }
+    heldout_start_clips = {
+        str(cell.get("start_clip_id", "")).strip()
+        for cell in eval_cells
+        if str(cell.get("start_clip_id", "")).strip()
+    }
+    if len(heldout_task_specs) < int(strictness.min_eval_task_specs):
+        failures.append(
+            "Claim split does not contain enough heldout task specs: "
+            f"{len(heldout_task_specs)} < {int(strictness.min_eval_task_specs)}."
+        )
+    if len(heldout_start_clips) < int(strictness.min_eval_start_clips):
+        failures.append(
+            "Claim split does not contain enough heldout start clips: "
+            f"{len(heldout_start_clips)} < {int(strictness.min_eval_start_clips)}."
+        )
+    if len(eval_cells) < int(strictness.min_common_eval_cells):
+        failures.append(
+            "Claim split does not contain enough heldout eval cells: "
+            f"{len(eval_cells)} < {int(strictness.min_common_eval_cells)}."
+        )
+    return failures
 
 
 def _task_family(prompt: str) -> str:
@@ -441,46 +531,6 @@ def _stable_protocol_id(prefix: str, payload: object) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     digest = hashlib.sha1(encoded.encode("utf-8")).hexdigest()[:12]
     return f"{prefix}_{digest}"
-
-
-def _task_split_axis(cells: List[Dict[str, object]]) -> Tuple[str, List[str]]:
-    family_ids = sorted(
-        {
-            str(cell.get("task_family", "")).strip()
-            for cell in cells
-            if str(cell.get("task_family", "")).strip()
-        }
-    )
-    if len(family_ids) >= 2:
-        return "task_family", family_ids
-    task_spec_ids = sorted(
-        {
-            str(cell.get("task_spec_id", "")).strip()
-            for cell in cells
-            if str(cell.get("task_spec_id", "")).strip()
-        }
-    )
-    return "task_spec_id", task_spec_ids
-
-
-def _start_split_axis(cells: List[Dict[str, object]]) -> Tuple[str, List[str]]:
-    start_clip_ids = sorted(
-        {
-            str(cell.get("start_clip_id", "")).strip()
-            for cell in cells
-            if str(cell.get("start_clip_id", "")).strip()
-        }
-    )
-    if len(start_clip_ids) >= 2:
-        return "start_clip_id", start_clip_ids
-    start_region_ids = sorted(
-        {
-            str(cell.get("start_region_id", "")).strip()
-            for cell in cells
-            if str(cell.get("start_region_id", "")).strip()
-        }
-    )
-    return "start_region_id", start_region_ids
 
 
 def _articulation_sequence(prompt: str) -> List[str]:

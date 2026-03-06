@@ -16,7 +16,7 @@ Current repo outputs are world-model-only. Any IRL numbers below are planning pr
 
 Canonical question this repo can answer today:
 
-- Can same-facility policy training beat the frozen baseline inside the exact facility's site-adapted world model?
+- Within one fixed site-adapted world model of the target facility, can site-specific policy training beat the frozen baseline on disjoint starts/tasks in that same facility?
 
 Future same-facility deployment follow-up, not answered here:
 
@@ -48,7 +48,7 @@ Expected immediate impact from these already-applied changes:
 - world-model metrics in this repo: **+6 to +12 absolute points**
 - future same-facility IRL planning prior once matched robot runs exist: **+2 to +6 absolute points**
 
-These are priors, not guarantees. Validate the current repo claim per-location with Stage 4/4e and held-out tasks inside the adapted world model.
+These are priors, not guarantees. Validate the current repo claim per-location with the fixed-world Stage 4d claim path and held-out tasks inside the adapted world model.
 
 ## Decision Matrix (No-New-Real-Data Compatible)
 

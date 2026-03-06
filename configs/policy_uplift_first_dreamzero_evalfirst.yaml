@@ -7,11 +7,15 @@ facilities:
     ply_path: ./data/facilities/facility_a/splat.ply
     description: Primary deployment site
 
-# Use wm_uplift for the canonical same-facility WM-only headline.
+# Use the fixed-world claim protocol for the canonical same-facility headline.
 # This mode is for deployment-site world-model uplift only and does not answer IRL transfer.
 eval_policy:
   mode: research
   headline_scope: wm_uplift
+  claim_protocol: fixed_same_facility_uplift
+  primary_endpoint: task_success
+  freeze_world_snapshot: true
+  split_strategy: disjoint_tasks_and_starts
   num_rollouts: 24
   min_absolute_difference: 1.0
 

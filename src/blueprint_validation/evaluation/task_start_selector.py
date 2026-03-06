@@ -135,6 +135,7 @@ def load_initial_frames_for_assignments(
         frame = _load_first_frame(oriented_path)
         if frame is None:
             continue
+        item["start_frame_hash"] = _frame_hash(frame)
         frames[clip_index] = frame
     return frames
 
@@ -495,3 +496,11 @@ def _clip_metric_float(clip: dict, key: str, *, default: float = 0.0) -> float:
 def _stable_payload_hash(payload: object) -> str:
     normalized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.md5(normalized.encode("utf-8")).hexdigest()
+
+
+def _frame_hash(frame: np.ndarray) -> str:
+    digest = hashlib.sha1()
+    digest.update(str(frame.shape).encode("utf-8"))
+    digest.update(str(frame.dtype).encode("utf-8"))
+    digest.update(frame.tobytes())
+    return digest.hexdigest()

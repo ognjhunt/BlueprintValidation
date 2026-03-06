@@ -4,13 +4,13 @@ Gaussian splat to robot world model validation pipeline for same-facility world-
 
 Current canonical executable question:
 
-> Can we train a robot policy for the exact facility we plan to deploy to, using a physics-grounded site-adapted world model of that facility, and achieve measurably better performance than the frozen baseline inside that same adapted world model?
+> Within a fixed site-adapted world model of the exact facility we plan to deploy to, can site-specific policy training produce a statistically significant uplift over the frozen baseline on disjoint starts/tasks in that same facility?
 
 Future same-facility deployment follow-up, not answered by the current repo:
 
 > If that same-facility uplift appears in the adapted world model, does it also carry over IRL in the exact same facility?
 
-This repo is intentionally scoped to same-facility world-model evidence. Novel-facility generalization is out of scope for the canonical headline, and IRL transfer to the same facility remains unmeasured until matched real-robot runs are added in the target facility. Until then, keep the headline WM-only.
+This repo is intentionally scoped to same-facility world-model evidence. Novel-facility generalization is out of scope for the canonical headline, and IRL transfer to the same facility remains unmeasured until matched real-robot runs are added in the target facility. Until then, keep the headline fixed-world and WM-only.
 
 ## Pipeline
 
@@ -40,7 +40,7 @@ PLY file (from BlueprintCapturePipeline)
 
 Note: Stage 3d (`wm_refresh_loop.enabled`) is now enabled by default and runs in WM-only scope.
 
-For the canonical same-facility WM-only question, use `eval_policy.headline_scope=wm_uplift`. In that mode, Stage 4e (`s4e_trained_eval`) is the sole primary gate for the report headline; Stage 4 and Stage 4d are supporting world-model evidence only.
+For the canonical same-facility WM-only question, use `eval_policy.claim_protocol=fixed_same_facility_uplift` together with `eval_policy.primary_endpoint=task_success`, `eval_policy.freeze_world_snapshot=true`, and `eval_policy.split_strategy=disjoint_tasks_and_starts`. In that mode, Stage 4d (`s4d_policy_pair_eval`) is the sole primary gate for the report headline; Stage 4 and Stage 4e are supporting or exploratory world-model evidence only.
 
 ## Scene-Memory Mapping (Stage 1/2/3)
 
@@ -80,7 +80,7 @@ The pipeline supports a default-on full mixed-data path (scan-only, no new real 
    - Stage 2 base clips
    - selected-success rollouts
    - near-miss / hard-negative rollouts
-6. Stage 4e enforces strict disjoint evaluation (eval starts/tasks not used for policy training).
+6. Stage 4d is the canonical fixed-world claim stage and enforces disjoint evaluation on heldout starts/tasks.
 
 Key controls:
 - `action_boost.*` for runtime orchestration (`wm_only` auto-switch to `wm_uplift`, full-path enforcement).

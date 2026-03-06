@@ -23,7 +23,9 @@ from ..evaluation.claim_protocol import (
     checkpoint_content_hash,
     claim_manifest_payload,
     claim_protocol_enabled,
+    deterministic_claim_task_failures,
     paired_eval_key,
+    validate_claim_split_payload,
 )
 from ..evaluation.task_hints import (
     balance_eval_tasks,
@@ -278,6 +280,20 @@ class PolicyEvalStage(PipelineStage):
                 facility=facility,
                 tasks=tasks,
             )
+            deterministic_failures = deterministic_claim_task_failures(task_specs)
+            if deterministic_failures:
+                return StageResult(
+                    stage_name=self.name,
+                    status="failed",
+                    elapsed_seconds=0,
+                    metrics={
+                        "claim_protocol": "fixed_same_facility_uplift",
+                        "claim_outcome": "INCONCLUSIVE",
+                        "headline_eligible": False,
+                        "claim_failure_reasons": deterministic_failures,
+                    },
+                    detail=deterministic_failures[0],
+                )
             task_specs_by_prompt = {str(spec["task_prompt"]): spec for spec in task_specs}
             try:
                 claim_split_payload = build_claim_split_payload(
@@ -292,7 +308,30 @@ class PolicyEvalStage(PipelineStage):
                     stage_name=self.name,
                     status="failed",
                     elapsed_seconds=0,
+                    metrics={
+                        "claim_protocol": "fixed_same_facility_uplift",
+                        "claim_outcome": "INCONCLUSIVE",
+                        "headline_eligible": False,
+                        "claim_failure_reasons": [str(exc)],
+                    },
                     detail=f"Failed building fixed-world claim split: {exc}",
+                )
+            split_failures = validate_claim_split_payload(
+                payload=claim_split_payload,
+                config=config,
+            )
+            if split_failures:
+                return StageResult(
+                    stage_name=self.name,
+                    status="failed",
+                    elapsed_seconds=0,
+                    metrics={
+                        "claim_protocol": "fixed_same_facility_uplift",
+                        "claim_outcome": "INCONCLUSIVE",
+                        "headline_eligible": False,
+                        "claim_failure_reasons": split_failures,
+                    },
+                    detail=split_failures[0],
                 )
             write_json(task_specs, task_specs_path)
             write_json(claim_split_payload, claim_split_manifest_path)
@@ -319,6 +358,7 @@ class PolicyEvalStage(PipelineStage):
                     continue
                 assignment["eval_cell_id"] = claim_cell.get("eval_cell_id")
                 assignment["task_spec_id"] = claim_cell.get("task_spec_id")
+                assignment["start_clip_id"] = claim_cell.get("start_clip_id")
                 assignment["start_region_id"] = claim_cell.get("start_region_id")
                 assignment["world_snapshot_hash"] = world_snapshot_hash
 
@@ -412,12 +452,6 @@ class PolicyEvalStage(PipelineStage):
 
         policy_adapter = get_policy_adapter(config.policy_adapter)
         base_model_name, base_checkpoint = policy_adapter.base_model_ref(config.eval_policy)
-        adapted_policy_checkpoint = _resolve_adapted_policy_checkpoint(
-            previous_results=previous_results,
-            work_dir=work_dir,
-            policy_adapter=policy_adapter,
-        )
-
         all_scores: List[Dict] = []
         scoring_failures: List[str] = []
         short_rollout_failures: List[str] = []
@@ -436,12 +470,9 @@ class PolicyEvalStage(PipelineStage):
             condition_dir.mkdir(exist_ok=True)
 
             # Load policy checkpoint for this condition.
-            policy_checkpoint = base_checkpoint
-            if condition == "adapted" and adapted_policy_checkpoint is not None:
-                policy_checkpoint = adapted_policy_checkpoint
             policy_handle = policy_adapter.load_policy(
                 model_name=base_model_name,
-                checkpoint_path=policy_checkpoint,
+                checkpoint_path=base_checkpoint,
                 device=device,
             )
 
@@ -824,10 +855,8 @@ class PolicyEvalStage(PipelineStage):
             "min_observed_rollout_steps": (
                 int(min_observed_rollout_steps) if min_observed_rollout_steps is not None else None
             ),
-            "used_adapted_policy_checkpoint": adapted_policy_checkpoint is not None,
-            "adapted_policy_checkpoint": (
-                str(adapted_policy_checkpoint) if adapted_policy_checkpoint else None
-            ),
+            "used_adapted_policy_checkpoint": False,
+            "adapted_policy_checkpoint": None,
             "requested_rollouts_per_condition": requested_rollouts,
             "planned_rollouts_per_condition": planned_rollouts,
             "executed_rollouts_per_condition": num_rollouts,
@@ -850,6 +879,7 @@ class PolicyEvalStage(PipelineStage):
             "claim_mode": claim_mode,
             "claim_passed": claim_passed,
             "claim_failure_reasons": claim_failure_reasons,
+            "headline_eligible": False,
             "deferred_claims": [],
             "confidence_intervals": _build_confidence_intervals(baseline_scores, adapted_scores),
             "heldout_manifest_hash": _manifest_hash(shared_manifest_path),
@@ -1437,6 +1467,7 @@ def _run_world_model_only_eval(
         "claim_mode": claim_mode,
         "claim_passed": claim_passed,
         "claim_failure_reasons": claim_failure_reasons,
+        "headline_eligible": False,
         "deferred_claims": [
             {
                 "name": "openvla_in_loop",
@@ -1683,7 +1714,9 @@ def _attach_claim_row_metadata(
     row = dict(base_row)
     row["eval_cell_id"] = assignment.get("eval_cell_id")
     row["task_spec_id"] = assignment.get("task_spec_id")
+    row["start_clip_id"] = assignment.get("start_clip_id") or assignment.get("clip_name")
     row["start_region_id"] = assignment.get("start_region_id")
+    row["start_frame_hash"] = assignment.get("start_frame_hash")
     row["world_snapshot_hash"] = assignment.get("world_snapshot_hash")
     row["state_trace"] = list(getattr(rollout, "state_trace", []) or [])
     if not fixed_claim_protocol:

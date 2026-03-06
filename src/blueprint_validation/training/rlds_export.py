@@ -124,7 +124,11 @@ def export_rollouts_to_rlds_jsonl(
                 "rollout_index": int(entry["rollout_index"]),
                 "eval_cell_id": str(entry.get("eval_cell_id", "") or ""),
                 "task_spec_id": str(entry.get("task_spec_id", "") or ""),
+                "start_clip_id": str(
+                    entry.get("start_clip_id", "") or entry.get("start_clip_name", "") or ""
+                ),
                 "start_region_id": str(entry.get("start_region_id", "") or ""),
+                "start_frame_hash": str(entry.get("start_frame_hash", "") or ""),
                 "world_snapshot_hash": str(entry.get("world_snapshot_hash", "") or ""),
                 "task_score": float(entry.get("task_score", 0.0)),
                 "success": success,

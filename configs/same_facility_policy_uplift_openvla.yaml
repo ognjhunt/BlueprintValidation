@@ -8,10 +8,14 @@ facilities:
     description: Target deployment facility world model
 
 eval_policy:
-  # Canonical executable headline: same-facility WM uplift only.
+  # Canonical executable headline: fixed-world same-facility claim only.
   # This is for the deployment site's adapted world model, not novel-site or IRL generalization.
   mode: research
   headline_scope: wm_uplift
+  claim_protocol: fixed_same_facility_uplift
+  primary_endpoint: task_success
+  freeze_world_snapshot: true
+  split_strategy: disjoint_tasks_and_starts
   num_rollouts: 24
   min_absolute_difference: 1.0
   min_manip_success_delta_pp: 15.0

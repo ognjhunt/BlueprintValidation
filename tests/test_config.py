@@ -1519,7 +1519,73 @@ def test_same_facility_policy_uplift_configs_load():
         cfg = load_config(Path(relpath))
         assert len(cfg.facilities) == 1
         assert cfg.eval_policy.headline_scope == "wm_uplift"
+        assert cfg.eval_policy.claim_protocol == "fixed_same_facility_uplift"
+        assert cfg.eval_policy.primary_endpoint == "task_success"
+        assert cfg.eval_policy.freeze_world_snapshot is True
+        assert cfg.eval_policy.split_strategy == "disjoint_tasks_and_starts"
         assert cfg.policy_finetune.enabled is True
         assert cfg.rollout_dataset.enabled is True
         assert cfg.policy_compare.enabled is True
         assert cfg.policy_adapter.name == adapter_name
+
+
+def test_config_rejects_claim_strictness_with_zero_min_eval_cells(tmp_path):
+    import yaml
+
+    from blueprint_validation.config import load_config
+
+    config_path = tmp_path / "bad_claim_strictness_zero.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Claim Strictness",
+                "facilities": {"a": {"name": "A", "ply_path": str(tmp_path / "a.ply")}},
+                "eval_policy": {
+                    "claim_protocol": "fixed_same_facility_uplift",
+                    "primary_endpoint": "task_success",
+                    "freeze_world_snapshot": True,
+                    "split_strategy": "disjoint_tasks_and_starts",
+                    "replication": {"training_seeds": [0, 1, 2, 3, 4]},
+                    "claim_strictness": {"min_common_eval_cells": 0},
+                },
+                "policy_compare": {
+                    "enabled": True,
+                    "control_arms": ["frozen_baseline", "site_trained", "generic_control"],
+                },
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="min_common_eval_cells"):
+        load_config(config_path)
+
+
+def test_config_rejects_claim_strictness_positive_seed_requirement_above_seed_count(tmp_path):
+    import yaml
+
+    from blueprint_validation.config import load_config
+
+    config_path = tmp_path / "bad_claim_positive_seed_requirement.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Claim Positive Seed Requirement",
+                "facilities": {"a": {"name": "A", "ply_path": str(tmp_path / "a.ply")}},
+                "eval_policy": {
+                    "claim_protocol": "fixed_same_facility_uplift",
+                    "primary_endpoint": "task_success",
+                    "freeze_world_snapshot": True,
+                    "split_strategy": "disjoint_tasks_and_starts",
+                    "replication": {"training_seeds": [0, 1, 2, 3, 4]},
+                    "claim_strictness": {"min_positive_training_seeds": 6},
+                },
+                "policy_compare": {
+                    "enabled": True,
+                    "control_arms": ["frozen_baseline", "site_trained", "generic_control"],
+                },
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="min_positive_training_seeds"):
+        load_config(config_path)

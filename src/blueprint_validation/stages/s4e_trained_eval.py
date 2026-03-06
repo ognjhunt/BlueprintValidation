@@ -526,6 +526,7 @@ class TrainedPolicyEvalStage(PipelineStage):
         metrics["claim_mode"] = claim_mode
         metrics["claim_passed"] = claim_passed
         metrics["claim_failure_reasons"] = claim_failure_reasons
+        metrics["headline_eligible"] = False
         metrics["claim_comparison_key"] = claim_pair_key
         metrics["claim_comparison_world_fixed"] = claim_world_fixed
         metrics["claim_comparison_other_condition"] = comparator_condition

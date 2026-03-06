@@ -100,16 +100,6 @@ def _collect_results(config: ValidationConfig, work_dir: Path) -> Dict[str, Any]
     return results
 
 
-def _headline_scope(config: ValidationConfig | None) -> str:
-    if config is None:
-        return "wm_only"
-    return (getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only").strip().lower()
-
-
-def _is_same_facility_wm_uplift(config: ValidationConfig | None) -> bool:
-    return bool(config is not None and len(config.facilities) == 1 and _headline_scope(config) == "wm_uplift")
-
-
 def _is_fixed_world_claim_protocol(config: ValidationConfig | None) -> bool:
     if config is None or len(config.facilities) != 1:
         return False
@@ -132,7 +122,7 @@ def _append_s4_policy_eval_section(lines: list[str], fac_data: Dict[str, Any], *
     if supporting:
         lines.append(
             "*Supporting world-model evidence only. This section does not determine the top-line "
-            "`wm_uplift` result.*\n"
+            "single-facility claim result.*\n"
         )
     lines.append("| Metric | Value |")
     lines.append("|--------|-------|")
@@ -195,13 +185,18 @@ def _append_s4e_trained_eval_section(lines: list[str], fac_data: Dict[str, Any],
     lines.append(
         "### Primary Headline: Same-Facility WM Policy Uplift (S4e)\n"
         if primary
-        else "### Trained Policy Evaluation (S4e)\n"
+        else "### Exploratory Trained Policy Eval (S4e)\n"
     )
     if primary:
         lines.append(
             "*This is the sole primary gate for `headline_scope=wm_uplift`. It is same-facility "
             "world-model evidence only and does not answer whether the uplift carries over IRL in "
             "that exact same facility.*\n"
+        )
+    else:
+        lines.append(
+            "*Exploratory only. This section never determines the canonical single-facility "
+            "headline; use the fixed-world S4d claim protocol for that answer.*\n"
         )
     lines.append("| Metric | Value |")
     lines.append("|--------|-------|")
@@ -258,7 +253,7 @@ def _append_s4d_policy_pair_eval_section(lines: list[str], fac_data: Dict[str, A
     if supporting:
         lines.append(
             "*Supporting attribution/control evidence only. This section does not determine the "
-            "top-line `wm_uplift` result.*\n"
+            "top-line single-facility claim result.*\n"
         )
     lines.append("| Metric | Value |")
     lines.append("|--------|-------|")
@@ -292,6 +287,9 @@ def _append_claim_eval_section(lines: list[str], fac_data: Dict[str, Any]) -> No
     if str(metrics.get("claim_protocol", "")).strip().lower() != "fixed_same_facility_uplift":
         return
     bootstrap = metrics.get("bootstrap_site_vs_frozen", {})
+    generic_bootstrap = metrics.get("bootstrap_generic_vs_frozen", {})
+    attribution = metrics.get("site_vs_generic_attribution", {})
+    claim_outcome = _claim_outcome(metrics)
     lines.append("### Primary Headline: Fixed-World Same-Facility Claim (S4d)\n")
     lines.append(
         "*This is the sole primary gate for the fixed-world claim protocol. It is same-facility "
@@ -304,12 +302,24 @@ def _append_claim_eval_section(lines: list[str], fac_data: Dict[str, Any]) -> No
     lines.append(f"| Mean uplift (pp) | {bootstrap.get('mean_lift_pp', 'N/A')} |")
     lines.append(f"| 95% CI low (pp) | {bootstrap.get('ci_low_pp', 'N/A')} |")
     lines.append(f"| 95% CI high (pp) | {bootstrap.get('ci_high_pp', 'N/A')} |")
+    lines.append(f"| Two-sided p-value | {bootstrap.get('p_value_two_sided', 'N/A')} |")
     lines.append(
         f"| Positive seeds | {bootstrap.get('positive_seed_count', 'N/A')} / "
         f"{len((metrics.get('arm_summary', {}).get('site_trained', {}) or {}).get('per_seed_success_rate', {}))} |"
     )
-    lines.append(f"| Claim passed | {metrics.get('claim_passed', 'N/A')} |")
+    lines.append(f"| Claim outcome | {claim_outcome} |")
+    lines.append(f"| generic_control mean uplift (pp) | {generic_bootstrap.get('mean_lift_pp', 'N/A')} |")
+    lines.append(
+        f"| site minus generic uplift (pp) | {attribution.get('mean_lift_delta_pp', 'N/A')} |"
+    )
     lines.append("")
+
+
+def _claim_outcome(metrics: Dict[str, Any]) -> str:
+    outcome = str(metrics.get("claim_outcome", "") or "").strip().upper()
+    if outcome in {"PASS", "FAIL", "INCONCLUSIVE", "INELIGIBLE"}:
+        return outcome
+    return "PASS" if bool(metrics.get("claim_passed", False)) else "FAIL"
 
 
 def _policy_eval_matrix_axis_rows(matrix_mode: str) -> list[tuple[str, str]]:
@@ -340,7 +350,6 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
     lines = []
     lines.append(f"# Validation Report: {data.get('project_name', 'BlueprintValidation')}")
     lines.append(f"*Generated: {data.get('generated_at', '')}*\n")
-    same_facility_wm_uplift = _is_same_facility_wm_uplift(config)
     fixed_world_claim = _is_fixed_world_claim_protocol(config)
     if fixed_world_claim:
         lines.append(
@@ -348,17 +357,11 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
             "No matched real-robot evidence is included, so this report does not answer whether "
             "the observed uplift carries over IRL in the exact same facility.*\n"
         )
-    elif same_facility_wm_uplift:
-        lines.append(
-            "*Scope: same-facility policy uplift in the adapted world model only. "
-            "No matched real-robot evidence is included, so this report does not answer whether "
-            "that uplift carries over IRL in the exact same facility.*\n"
-        )
     elif len(config.facilities) == 1:
         lines.append(
-            "*Scope: same-facility world-model evaluation only. No matched real-robot evidence is "
-            "included, so this report does not answer whether the observed world-model gain "
-            "carries over IRL in the exact same facility.*\n"
+            "*Scope: exploratory same-facility world-model evidence only. The canonical "
+            "fixed-world claim protocol is not enabled, so this report does not provide the "
+            "official single-facility yes/no answer. No matched real-robot evidence is included.*\n"
         )
 
     # Executive Summary
@@ -374,10 +377,10 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
         if fixed_world_claim:
             _append_claim_eval_section(lines, fac_data)
             _append_s4_policy_eval_section(lines, fac_data, supporting=True)
-            _append_s4d_policy_pair_eval_section(lines, fac_data, supporting=True)
-        elif same_facility_wm_uplift:
-            _append_s4e_trained_eval_section(lines, fac_data, primary=True)
+            _append_s4e_trained_eval_section(lines, fac_data, primary=False)
+        elif len(config.facilities) == 1:
             _append_s4_policy_eval_section(lines, fac_data, supporting=True)
+            _append_s4e_trained_eval_section(lines, fac_data, primary=False)
             _append_s4d_policy_pair_eval_section(lines, fac_data, supporting=True)
         else:
             _append_s4_policy_eval_section(lines, fac_data, supporting=False)
@@ -558,8 +561,8 @@ def _add_executive_summary(lines: list, data: dict, config: ValidationConfig = N
     min_abs_diff = 0.5
     if config is not None:
         min_abs_diff = config.eval_policy.min_absolute_difference
-    same_facility_wm_uplift = _is_same_facility_wm_uplift(config)
     fixed_world_claim = _is_fixed_world_claim_protocol(config)
+    single_facility = bool(config is not None and len(config.facilities) == 1)
     cross_site_applicable = bool(
         (config is not None and len(config.facilities) > 1) or data.get("cross_site")
     )
@@ -572,22 +575,34 @@ def _add_executive_summary(lines: list, data: dict, config: ValidationConfig = N
             if str(metrics.get("claim_protocol", "")).strip().lower() == "fixed_same_facility_uplift":
                 claim_metrics = metrics
                 break
-        claim_passed = bool(claim_metrics and claim_metrics.get("claim_passed", False))
+        claim_outcome = _claim_outcome(claim_metrics or {})
         bootstrap = (claim_metrics or {}).get("bootstrap_site_vs_frozen", {})
         lines.append("| Test | Result |")
         lines.append("|------|--------|")
         lines.append(
             "| Primary Headline: Fixed-World Same-Facility Claim | "
-            f"{'PASS' if claim_passed else 'PENDING/FAIL'} |"
+            f"{claim_outcome} |"
         )
         lines.append("")
-        if claim_passed:
+        if claim_outcome == "PASS":
             lines.append(
                 "**Canonical executable answer: yes in fixed-world simulation.** "
                 "Site-trained policies beat the frozen baseline on disjoint same-facility eval "
                 "cells inside one frozen adapted world snapshot, using task success as the primary "
                 f"endpoint (mean uplift {bootstrap.get('mean_lift_pp', 'N/A')}pp, 95% CI lower "
                 f"bound {bootstrap.get('ci_low_pp', 'N/A')}pp).\n"
+            )
+        elif claim_outcome == "INCONCLUSIVE":
+            lines.append(
+                "**Canonical executable answer: inconclusive in fixed-world simulation.** "
+                "The fixed-world claim protocol ran, but the evidence bar for a site-specific "
+                "same-facility uplift was not met or could not be resolved cleanly.\n"
+            )
+        elif claim_outcome == "INELIGIBLE":
+            lines.append(
+                "**Canonical executable answer: ineligible.** "
+                "The fixed-world claim protocol is configured, but the run did not satisfy the "
+                "minimum headline-eligibility requirements needed to answer the question.\n"
             )
         else:
             lines.append(
@@ -632,14 +647,17 @@ def _add_executive_summary(lines: list, data: dict, config: ValidationConfig = N
 
     lines.append("| Test | Result |")
     lines.append("|------|--------|")
-    if same_facility_wm_uplift:
+    if single_facility:
         lines.append(
-            "| Primary Headline: Same-Facility WM Policy Uplift | "
-            f"{'PASS' if trained_passed else 'PENDING/FAIL'} |"
+            "| Canonical Headline: Fixed-World Same-Facility Claim | INELIGIBLE |"
         )
         lines.append(
-            "| Supporting WM Evidence: Frozen Baseline vs Adapted World Model | "
+            "| Supporting Evidence: Frozen Baseline vs Adapted World Model | "
             f"{'PASS' if primary_passed else 'PENDING/FAIL'} |"
+        )
+        lines.append(
+            "| Exploratory Evidence: Trained Policy Eval | "
+            f"{'PASS' if trained_passed else 'PENDING/FAIL'} |"
         )
     else:
         lines.append(f"| Frozen Policy Performance | {'PASS' if primary_passed else 'PENDING/FAIL'} |")
@@ -650,27 +668,17 @@ def _add_executive_summary(lines: list, data: dict, config: ValidationConfig = N
         )
     lines.append("")
 
-    if same_facility_wm_uplift and trained_passed:
+    if single_facility:
         lines.append(
-            f"**Canonical executable answer: yes in the adapted world model.** The fine-tuned "
-            f"policy outperformed the frozen baseline in the exact facility's site-adapted world "
-            f"model (absolute difference >= {min_abs_diff}, p < 0.05). This is same-facility "
-            "world-model evidence only and does not establish whether the gain carries over IRL in "
-            "that exact same facility because no matched real-robot runs were performed.\n"
+            "**Canonical single-facility answer is unavailable in this configuration.** "
+            "This run did not enable the fixed-world S4d claim protocol, so S4 and S4e are "
+            "supporting or exploratory world-model evidence only.\n"
         )
-    elif same_facility_wm_uplift:
-        lines.append(
-            "**Canonical executable answer: not yet established.** The report does not yet show "
-            "a passing world-fixed trained-vs-frozen uplift in the exact facility's adapted world "
-            "model. Any frozen-policy or policy-pair results below are supporting same-facility "
-            "world-model evidence only and do not answer whether the gain carries over IRL in that "
-            "exact same facility.\n"
-        )
-        if primary_passed:
+        if primary_passed or trained_passed:
             lines.append(
-                f"Supporting evidence: the site-adapted world model improved frozen-policy scores "
-                f"relative to baseline (absolute difference >= {min_abs_diff}, p < 0.05), but that "
-                "does not satisfy the `wm_uplift` headline without a passing S4e world-fixed uplift.\n"
+                f"Observed evidence can still be useful for debugging and prioritization "
+                f"(for example, absolute differences above {min_abs_diff} with p < 0.05), but it "
+                "must not be treated as the canonical answer to the same-facility uplift question.\n"
             )
     elif primary_passed:
         lines.append(
@@ -679,7 +687,7 @@ def _add_executive_summary(lines: list, data: dict, config: ValidationConfig = N
             "that the site-adapted world model is a stronger evaluation environment for robot "
             "policies than the generic baseline.\n"
         )
-    if trained_passed and not same_facility_wm_uplift:
+    if trained_passed and not single_facility:
         lines.append(
             "**Policies fine-tuned on site-adapted rollout data outperform frozen baselines in the "
             "evaluated world model.** This remains simulator/world-model evidence unless matched "

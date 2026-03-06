@@ -243,6 +243,22 @@ class RLDSExportStage(PipelineStage):
                     **filter_counts,
                 },
             )
+        leakage_error = _claim_split_leakage_error(train_rollouts, eval_rollouts)
+        if leakage_error is not None:
+            return StageResult(
+                stage_name=self.name,
+                status="failed",
+                elapsed_seconds=0,
+                detail=leakage_error,
+                outputs={
+                    "split_manifest_path": str(split_manifest_path),
+                    "curriculum_manifest_path": str(curriculum_manifest_path),
+                },
+                metrics={
+                    "total_adapted_rollouts": len(adapted_rollouts_all),
+                    **filter_counts,
+                },
+            )
 
         # Export train split to JSONL
         train_dir = stage_dir / "train"
@@ -345,3 +361,24 @@ class RLDSExportStage(PipelineStage):
                 **filter_counts,
             },
         )
+
+
+def _claim_split_leakage_error(train_rollouts: List[Dict], eval_rollouts: List[Dict]) -> str | None:
+    for field_name in ("eval_cell_id", "start_clip_id", "start_frame_hash"):
+        train_values = {
+            str(row.get(field_name, "")).strip()
+            for row in train_rollouts
+            if str(row.get(field_name, "")).strip()
+        }
+        eval_values = {
+            str(row.get(field_name, "")).strip()
+            for row in eval_rollouts
+            if str(row.get(field_name, "")).strip()
+        }
+        overlap = sorted(train_values & eval_values)
+        if overlap:
+            return (
+                f"Claim split leakage detected on {field_name}: "
+                f"{', '.join(overlap[:5])}"
+            )
+    return None

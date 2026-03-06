@@ -67,7 +67,7 @@ def test_report_builder_markdown(tmp_path, sample_config):
     assert result.exists()
     content = result.read_text()
     assert "Validation Report" in content
-    assert "Policy Performance" in content
+    assert "Supporting Evidence: Frozen Policy Baseline vs Adapted World Model" in content
     assert "RoboSplat Augmentation" in content
     assert "Policy RL Loop" in content
     assert "61.9%" in content
@@ -106,7 +106,8 @@ def test_executive_summary_uses_s4e_only_when_world_fixed(sample_config):
     }
     _add_executive_summary(lines, data, sample_config)
     rendered = "\n".join(lines)
-    assert "| Trained Policy Improvement | PENDING/FAIL |" in rendered
+    assert "| Canonical Headline: Fixed-World Same-Facility Claim | INELIGIBLE |" in rendered
+    assert "| Exploratory Evidence: Trained Policy Eval | PENDING/FAIL |" in rendered
 
 
 def test_executive_summary_accepts_world_fixed_s4e_fallback(sample_config):
@@ -136,10 +137,10 @@ def test_executive_summary_accepts_world_fixed_s4e_fallback(sample_config):
     }
     _add_executive_summary(lines, data, sample_config)
     rendered = "\n".join(lines)
-    assert "| Primary Headline: Same-Facility WM Policy Uplift | PASS |" in rendered
-    assert "| Supporting WM Evidence: Frozen Baseline vs Adapted World Model | PASS |" in rendered
-    assert "same-facility world-model evidence only" in rendered
-    assert "does not establish whether the gain carries over IRL in that exact same facility" in rendered
+    assert "| Canonical Headline: Fixed-World Same-Facility Claim | INELIGIBLE |" in rendered
+    assert "| Supporting Evidence: Frozen Baseline vs Adapted World Model | PASS |" in rendered
+    assert "| Exploratory Evidence: Trained Policy Eval | PASS |" in rendered
+    assert "Canonical single-facility answer is unavailable in this configuration" in rendered
     assert "Cross-Site Discrimination" not in rendered
 
 
@@ -169,7 +170,8 @@ def test_executive_summary_does_not_let_s4d_satisfy_trained_headline(sample_conf
     }
     _add_executive_summary(lines, data, sample_config)
     rendered = "\n".join(lines)
-    assert "| Trained Policy Improvement | PENDING/FAIL |" in rendered
+    assert "| Canonical Headline: Fixed-World Same-Facility Claim | INELIGIBLE |" in rendered
+    assert "| Exploratory Evidence: Trained Policy Eval | PENDING/FAIL |" in rendered
 
 
 def test_executive_summary_wm_uplift_does_not_let_s4_only_satisfy_primary_headline(sample_config):
@@ -191,9 +193,9 @@ def test_executive_summary_wm_uplift_does_not_let_s4_only_satisfy_primary_headli
     }
     _add_executive_summary(lines, data, sample_config)
     rendered = "\n".join(lines)
-    assert "| Primary Headline: Same-Facility WM Policy Uplift | PENDING/FAIL |" in rendered
-    assert "| Supporting WM Evidence: Frozen Baseline vs Adapted World Model | PASS |" in rendered
-    assert "does not satisfy the `wm_uplift` headline" in rendered
+    assert "| Canonical Headline: Fixed-World Same-Facility Claim | INELIGIBLE |" in rendered
+    assert "| Supporting Evidence: Frozen Baseline vs Adapted World Model | PASS |" in rendered
+    assert "must not be treated as the canonical answer" in rendered
 
 
 def test_executive_summary_does_not_let_s4d_satisfy_frozen_policy_headline(sample_config):
@@ -214,7 +216,7 @@ def test_executive_summary_does_not_let_s4d_satisfy_frozen_policy_headline(sampl
     }
     _add_executive_summary(lines, data, sample_config)
     rendered = "\n".join(lines)
-    assert "| Frozen Policy Performance | PENDING/FAIL |" in rendered
+    assert "| Supporting Evidence: Frozen Baseline vs Adapted World Model | PENDING/FAIL |" in rendered
 
 
 def test_report_builder_renders_single_facility_policy_matrix_without_forgetting_ratio(
@@ -323,15 +325,15 @@ def test_report_builder_wm_uplift_reorders_sections_and_marks_supporting_evidenc
     output_path = tmp_path / "report.md"
     result = build_report(sample_config, work_dir, fmt="markdown", output_path=output_path)
     content = result.read_text()
-    assert "same-facility policy uplift in the adapted world model only" in content
-    assert "does not answer whether that uplift carries over IRL in the exact same facility" in content
-    assert "### Primary Headline: Same-Facility WM Policy Uplift (S4e)" in content
+    assert "exploratory same-facility world-model evidence only" in content
+    assert "canonical fixed-world claim protocol is not enabled" in content
+    assert "### Exploratory Trained Policy Eval (S4e)" in content
     assert "### Supporting Evidence: Frozen Policy Baseline vs Adapted World Model (S4)" in content
     assert "### Supporting Evidence: Policy Training Attribution Control (S4d)" in content
-    assert content.index("### Primary Headline: Same-Facility WM Policy Uplift (S4e)") < content.index(
-        "### Supporting Evidence: Frozen Policy Baseline vs Adapted World Model (S4)"
-    )
     assert content.index("### Supporting Evidence: Frozen Policy Baseline vs Adapted World Model (S4)") < content.index(
+        "### Exploratory Trained Policy Eval (S4e)"
+    )
+    assert content.index("### Exploratory Trained Policy Eval (S4e)") < content.index(
         "### Supporting Evidence: Policy Training Attribution Control (S4d)"
     )
 
@@ -356,11 +358,13 @@ def test_report_builder_fixed_world_claim_uses_s4d_as_primary_headline(tmp_path,
                 "claim_protocol": "fixed_same_facility_uplift",
                 "primary_endpoint": "task_success",
                 "num_eval_cells": 12,
+                "claim_outcome": "PASS",
                 "claim_passed": True,
                 "bootstrap_site_vs_frozen": {
                     "mean_lift_pp": 12.0,
                     "ci_low_pp": 4.0,
                     "ci_high_pp": 18.0,
+                    "p_value_two_sided": 0.01,
                     "positive_seed_count": 4,
                 },
                 "arm_summary": {

@@ -374,6 +374,17 @@ class ClaimReplicationConfig:
 
 
 @dataclass
+class ClaimStrictnessConfig:
+    min_eval_task_specs: int = 3
+    min_eval_start_clips: int = 3
+    min_common_eval_cells: int = 30
+    min_positive_training_seeds: int = 4
+    p_value_threshold: float = 0.05
+    require_site_specific_advantage: bool = True
+    site_vs_generic_min_lift_pp: float = 0.0
+
+
+@dataclass
 class PolicyEvalConfig:
     model_name: str = "openvla/openvla-7b"
     checkpoint_path: Path = Path("./data/checkpoints/openvla-7b/")
@@ -400,6 +411,7 @@ class PolicyEvalConfig:
     split_strategy: str = "legacy"  # legacy|disjoint_tasks_and_starts
     min_practical_success_lift_pp: float = 5.0
     claim_replication: ClaimReplicationConfig = field(default_factory=ClaimReplicationConfig)
+    claim_strictness: ClaimStrictnessConfig = field(default_factory=ClaimStrictnessConfig)
     reliability: PolicyEvalReliabilityConfig = field(default_factory=PolicyEvalReliabilityConfig)
     vlm_judge: VLMJudgeConfig = field(default_factory=VLMJudgeConfig)
 
@@ -1338,6 +1350,33 @@ def load_config(path: Path) -> ValidationConfig:
                     for v in (ep.get("replication", {}) or {}).get("training_seeds", [0, 1, 2, 3, 4])
                 ]
             ),
+            claim_strictness=ClaimStrictnessConfig(
+                min_eval_task_specs=int(
+                    (ep.get("claim_strictness", {}) or {}).get("min_eval_task_specs", 3)
+                ),
+                min_eval_start_clips=int(
+                    (ep.get("claim_strictness", {}) or {}).get("min_eval_start_clips", 3)
+                ),
+                min_common_eval_cells=int(
+                    (ep.get("claim_strictness", {}) or {}).get("min_common_eval_cells", 30)
+                ),
+                min_positive_training_seeds=int(
+                    (ep.get("claim_strictness", {}) or {}).get("min_positive_training_seeds", 4)
+                ),
+                p_value_threshold=float(
+                    (ep.get("claim_strictness", {}) or {}).get("p_value_threshold", 0.05)
+                ),
+                require_site_specific_advantage=bool(
+                    (ep.get("claim_strictness", {}) or {}).get(
+                        "require_site_specific_advantage", True
+                    )
+                ),
+                site_vs_generic_min_lift_pp=float(
+                    (ep.get("claim_strictness", {}) or {}).get(
+                        "site_vs_generic_min_lift_pp", 0.0
+                    )
+                ),
+            ),
             reliability=PolicyEvalReliabilityConfig(
                 max_horizon_steps=int(
                     (ep.get("reliability", {}) or {}).get("max_horizon_steps", 12)
@@ -1951,9 +1990,25 @@ def load_config(path: Path) -> ValidationConfig:
         )
     if float(config.eval_policy.min_practical_success_lift_pp) < 0.0:
         raise ValueError("eval_policy.min_practical_success_lift_pp must be >= 0")
+    strictness = config.eval_policy.claim_strictness
+    if int(strictness.min_eval_task_specs) < 1:
+        raise ValueError("eval_policy.claim_strictness.min_eval_task_specs must be >= 1")
+    if int(strictness.min_eval_start_clips) < 1:
+        raise ValueError("eval_policy.claim_strictness.min_eval_start_clips must be >= 1")
+    if int(strictness.min_common_eval_cells) < 1:
+        raise ValueError("eval_policy.claim_strictness.min_common_eval_cells must be >= 1")
+    if int(strictness.min_positive_training_seeds) < 1:
+        raise ValueError("eval_policy.claim_strictness.min_positive_training_seeds must be >= 1")
+    if float(strictness.p_value_threshold) <= 0.0 or float(strictness.p_value_threshold) >= 1.0:
+        raise ValueError("eval_policy.claim_strictness.p_value_threshold must be in (0, 1)")
     if not list(config.policy_compare.control_arms or []):
         raise ValueError("policy_compare.control_arms must contain at least one arm")
     if str(config.eval_policy.claim_protocol).strip().lower() == "fixed_same_facility_uplift":
+        if int(strictness.min_positive_training_seeds) > len(training_seeds):
+            raise ValueError(
+                "eval_policy.claim_strictness.min_positive_training_seeds cannot exceed the "
+                "configured number of training seeds"
+            )
         configured_arms = {
             str(v).strip()
             for v in list(config.policy_compare.control_arms or [])

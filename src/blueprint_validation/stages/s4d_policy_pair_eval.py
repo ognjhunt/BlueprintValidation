@@ -11,7 +11,11 @@ import numpy as np
 from ..common import StageResult, get_logger, read_json, write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..evaluation.claim_protocol import checkpoint_content_hash, claim_protocol_enabled
-from ..evaluation.claim_stats import bootstrap_site_vs_baseline, success_rate
+from ..evaluation.claim_stats import (
+    bootstrap_site_vs_baseline,
+    compare_seeded_lifts,
+    success_rate,
+)
 from ..evaluation.openvla_runner import load_dreamdojo_world_model
 from ..evaluation.rollout_utils import run_rollout_with_adapter
 from ..evaluation.task_success import evaluate_task_success
@@ -271,6 +275,7 @@ class PolicyPairEvalStage(PipelineStage):
         metrics["claim_mode"] = claim_mode
         metrics["claim_passed"] = claim_passed
         metrics["claim_failure_reasons"] = claim_failure_reasons
+        metrics["headline_eligible"] = False
         metrics["manipulation_success_delta_pp"] = (
             round(float(manip_delta_pp), 6) if manip_delta_pp is not None else None
         )
@@ -420,6 +425,11 @@ def _run_fixed_world_claim_eval(
     if config.policy_compare.heldout_tasks:
         allow = {t.strip() for t in config.policy_compare.heldout_tasks if t.strip()}
         episodes = [ep for ep in episodes if ep["task"] in allow]
+        eval_ids = {
+            str(ep.get("eval_cell_id", "")).strip()
+            for ep in episodes
+            if str(ep.get("eval_cell_id", "")).strip()
+        }
     if not episodes:
         return StageResult(
             stage_name="s4d_policy_pair_eval",
@@ -459,6 +469,22 @@ def _run_fixed_world_claim_eval(
             status="failed",
             elapsed_seconds=0,
             detail=episode_validation_error,
+        )
+    coverage_failures = _claim_coverage_failures(episodes=episodes, config=config)
+    if coverage_failures:
+        return StageResult(
+            stage_name="s4d_policy_pair_eval",
+            status="failed",
+            elapsed_seconds=0,
+            metrics={
+                "claim_protocol": "fixed_same_facility_uplift",
+                "primary_endpoint": "task_success",
+                "claim_outcome": "INCONCLUSIVE",
+                "headline_eligible": True,
+                "claim_passed": False,
+                "claim_failure_reasons": coverage_failures,
+            },
+            detail=coverage_failures[0],
         )
 
     device = "cuda" if _has_cuda() else "cpu"
@@ -557,7 +583,9 @@ def _run_fixed_world_claim_eval(
                 "episode_id": ep["episode_id"],
                 "eval_cell_id": ep.get("eval_cell_id"),
                 "task_spec_id": ep.get("task_spec_id"),
+                "start_clip_id": ep.get("start_clip_id"),
                 "start_region_id": ep.get("start_region_id"),
+                "start_frame_hash": ep.get("start_frame_hash"),
                 "world_snapshot_hash": world_snapshot_hash,
                 "policy": policy_label,
                 "arm": arm,
@@ -600,40 +628,106 @@ def _run_fixed_world_claim_eval(
 
     baseline_rows = [row for row in score_rows if row["arm"] == "frozen_baseline"]
     site_rows_by_seed = {
-        int(seed): [row for row in score_rows if row["arm"] == "site_trained" and int(row.get("seed", -1)) == int(seed)]
+        int(seed): [
+            row
+            for row in score_rows
+            if row["arm"] == "site_trained" and int(row.get("seed", -1)) == int(seed)
+        ]
         for seed in [int(v) for v in list(config.eval_policy.claim_replication.training_seeds)]
     }
     generic_rows_by_seed = {
-        int(seed): [row for row in score_rows if row["arm"] == "generic_control" and int(row.get("seed", -1)) == int(seed)]
+        int(seed): [
+            row
+            for row in score_rows
+            if row["arm"] == "generic_control" and int(row.get("seed", -1)) == int(seed)
+        ]
         for seed in [int(v) for v in list(config.eval_policy.claim_replication.training_seeds)]
     }
+    strictness = config.eval_policy.claim_strictness
     bootstrap = bootstrap_site_vs_baseline(
         baseline_rows=baseline_rows,
         site_rows_by_seed=site_rows_by_seed,
         bootstrap_seed=int(config.policy_compare.heldout_seed),
     )
-    required_positive = max(1, len(list(config.eval_policy.claim_replication.training_seeds)) - 1)
-    claim_failure_reasons: List[str] = []
+    generic_bootstrap = bootstrap_site_vs_baseline(
+        baseline_rows=baseline_rows,
+        site_rows_by_seed=generic_rows_by_seed,
+        bootstrap_seed=int(config.policy_compare.heldout_seed),
+    )
+    attribution = compare_seeded_lifts(
+        baseline_rows=baseline_rows,
+        left_rows_by_seed=site_rows_by_seed,
+        right_rows_by_seed=generic_rows_by_seed,
+        bootstrap_seed=int(config.policy_compare.heldout_seed),
+    )
+    required_positive = int(strictness.min_positive_training_seeds)
+    inconclusive_reasons: List[str] = []
     if state_failures:
-        claim_failure_reasons.append(
+        inconclusive_reasons.append(
             f"Deterministic primary endpoint unavailable for {len(state_failures)} scored rows."
         )
-    if bootstrap.get("num_common_eval_cells", 0) <= 0:
-        claim_failure_reasons.append("No common eval cells across frozen baseline and site-trained seeds.")
-    if bootstrap.get("ci_low_pp") is None or float(bootstrap["ci_low_pp"]) <= 0.0:
-        claim_failure_reasons.append("Lower 95% CI bound for site-trained uplift is not > 0.")
-    if bootstrap.get("mean_lift_pp") is None or float(bootstrap["mean_lift_pp"]) < float(
-        config.eval_policy.min_practical_success_lift_pp
+    if int(bootstrap.get("num_common_eval_cells", 0) or 0) < int(
+        strictness.min_common_eval_cells
     ):
-        claim_failure_reasons.append(
+        inconclusive_reasons.append(
+            "Too few common eval cells for claim statistics: "
+            f"{bootstrap.get('num_common_eval_cells', 0)} < {int(strictness.min_common_eval_cells)}."
+        )
+
+    fail_reasons: List[str] = []
+    if bootstrap.get("mean_lift_pp") is None:
+        inconclusive_reasons.append("Mean success-rate uplift could not be estimated.")
+    elif float(bootstrap["mean_lift_pp"]) < float(config.eval_policy.min_practical_success_lift_pp):
+        fail_reasons.append(
             "Mean success-rate uplift below practical threshold: "
             f"{bootstrap.get('mean_lift_pp')}pp < {config.eval_policy.min_practical_success_lift_pp}pp"
         )
+    if bootstrap.get("ci_low_pp") is None:
+        inconclusive_reasons.append("Hierarchical CI for site-trained uplift is unavailable.")
+    elif float(bootstrap["ci_low_pp"]) <= 0.0:
+        fail_reasons.append("Lower 95% CI bound for site-trained uplift is not > 0.")
+    if bootstrap.get("p_value_two_sided") is None:
+        inconclusive_reasons.append("Two-sided paired p-value for site-trained uplift is unavailable.")
+    elif float(bootstrap["p_value_two_sided"]) >= float(strictness.p_value_threshold):
+        fail_reasons.append(
+            "Two-sided paired p-value did not meet threshold: "
+            f"{bootstrap.get('p_value_two_sided')} >= {float(strictness.p_value_threshold)}"
+        )
     if int(bootstrap.get("positive_seed_count", 0)) < int(required_positive):
-        claim_failure_reasons.append(
+        fail_reasons.append(
             f"Positive uplift direction not observed in enough seeds: "
             f"{bootstrap.get('positive_seed_count', 0)} < {required_positive}."
         )
+
+    site_passes = not fail_reasons and not inconclusive_reasons
+    generic_passes = _bootstrap_meets_claim_bar(
+        bootstrap=generic_bootstrap,
+        config=config,
+    )
+    if site_passes and bool(strictness.require_site_specific_advantage):
+        site_minus_generic = attribution.get("mean_lift_delta_pp")
+        if site_minus_generic is None:
+            inconclusive_reasons.append(
+                "Could not estimate site-trained advantage over generic_control."
+            )
+        elif float(site_minus_generic) < float(strictness.site_vs_generic_min_lift_pp):
+            inconclusive_reasons.append(
+                "Site-trained policy does not outperform generic_control by the required lift: "
+                f"{site_minus_generic}pp < {float(strictness.site_vs_generic_min_lift_pp)}pp"
+            )
+        if generic_passes:
+            inconclusive_reasons.append(
+                "generic_control also satisfies the headline uplift bar; site-specific attribution is unresolved."
+            )
+
+    claim_outcome = "PASS"
+    claim_failure_reasons: List[str] = []
+    if fail_reasons:
+        claim_outcome = "FAIL"
+        claim_failure_reasons = fail_reasons
+    if inconclusive_reasons:
+        claim_outcome = "INCONCLUSIVE"
+        claim_failure_reasons = inconclusive_reasons + fail_reasons
 
     arm_summary = {
         "frozen_baseline": {
@@ -663,15 +757,19 @@ def _run_fixed_world_claim_eval(
         "configured_training_seed_count": len(training_seeds),
         "min_practical_success_lift_pp": float(config.eval_policy.min_practical_success_lift_pp),
         "bootstrap_site_vs_frozen": bootstrap,
+        "bootstrap_generic_vs_frozen": generic_bootstrap,
+        "site_vs_generic_attribution": attribution,
         "arm_summary": arm_summary,
-        "claim_passed": len(claim_failure_reasons) == 0,
+        "claim_outcome": claim_outcome,
+        "headline_eligible": True,
+        "claim_passed": claim_outcome == "PASS",
         "claim_failure_reasons": claim_failure_reasons,
         "num_state_failures": len(state_failures),
     }
     write_json(claim_metrics, eval_dir / "claim_eval_report.json")
     return StageResult(
         stage_name="s4d_policy_pair_eval",
-        status="success" if score_rows and not claim_failure_reasons else "failed",
+        status="success" if score_rows else "failed",
         elapsed_seconds=0,
         outputs={
             "pair_eval_dir": str(eval_dir),
@@ -701,7 +799,9 @@ def _load_heldout_episodes(path: Path) -> List[dict]:
                 "init_frame_path": init_path,
                 "eval_cell_id": payload.get("eval_cell_id", ""),
                 "task_spec_id": payload.get("task_spec_id", ""),
+                "start_clip_id": payload.get("start_clip_id", ""),
                 "start_region_id": payload.get("start_region_id", ""),
+                "start_frame_hash": payload.get("start_frame_hash", ""),
                 "world_snapshot_hash": payload.get("world_snapshot_hash", ""),
             }
         )
@@ -788,10 +888,18 @@ def _validate_claim_episodes(
             )
         if str(episode.get("task_spec_id", "")).strip() != str(expected.get("task_spec_id", "")).strip():
             return f"Heldout claim episode '{eval_cell_id}' does not match the registered task_spec_id."
+        if str(episode.get("start_clip_id", "")).strip() != str(
+            expected.get("start_clip_id", "")
+        ).strip():
+            return f"Heldout claim episode '{eval_cell_id}' does not match the registered start_clip_id."
         if str(episode.get("start_region_id", "")).strip() != str(
             expected.get("start_region_id", "")
         ).strip():
             return f"Heldout claim episode '{eval_cell_id}' does not match the registered start_region_id."
+        if str(episode.get("start_frame_hash", "")).strip() != str(
+            expected.get("start_frame_hash", "")
+        ).strip():
+            return f"Heldout claim episode '{eval_cell_id}' does not match the registered start_frame_hash."
     if duplicate_ids:
         return (
             "Heldout claim dataset contains duplicate eval cells: "
@@ -998,6 +1106,55 @@ def _compute_pair_metrics(rows: List[dict]) -> dict:
         if site_manip_rate is not None
         else None,
     }
+
+
+def _claim_coverage_failures(*, episodes: List[dict], config: ValidationConfig) -> List[str]:
+    strictness = config.eval_policy.claim_strictness
+    task_specs = {
+        str(ep.get("task_spec_id", "")).strip()
+        for ep in episodes
+        if str(ep.get("task_spec_id", "")).strip()
+    }
+    start_clips = {
+        str(ep.get("start_clip_id", "")).strip()
+        for ep in episodes
+        if str(ep.get("start_clip_id", "")).strip()
+    }
+    failures: List[str] = []
+    if len(task_specs) < int(strictness.min_eval_task_specs):
+        failures.append(
+            "Heldout claim dataset does not contain enough task specs: "
+            f"{len(task_specs)} < {int(strictness.min_eval_task_specs)}."
+        )
+    if len(start_clips) < int(strictness.min_eval_start_clips):
+        failures.append(
+            "Heldout claim dataset does not contain enough start clips: "
+            f"{len(start_clips)} < {int(strictness.min_eval_start_clips)}."
+        )
+    if len(episodes) < int(strictness.min_common_eval_cells):
+        failures.append(
+            "Heldout claim dataset does not contain enough eval cells: "
+            f"{len(episodes)} < {int(strictness.min_common_eval_cells)}."
+        )
+    return failures
+
+
+def _bootstrap_meets_claim_bar(*, bootstrap: Dict[str, object], config: ValidationConfig) -> bool:
+    strictness = config.eval_policy.claim_strictness
+    mean_lift = bootstrap.get("mean_lift_pp")
+    ci_low = bootstrap.get("ci_low_pp")
+    p_value = bootstrap.get("p_value_two_sided")
+    positive_seed_count = int(bootstrap.get("positive_seed_count", 0) or 0)
+    num_common_eval_cells = int(bootstrap.get("num_common_eval_cells", 0) or 0)
+    if mean_lift is None or ci_low is None or p_value is None:
+        return False
+    return bool(
+        num_common_eval_cells >= int(strictness.min_common_eval_cells)
+        and float(mean_lift) >= float(config.eval_policy.min_practical_success_lift_pp)
+        and float(ci_low) > 0.0
+        and float(p_value) < float(strictness.p_value_threshold)
+        and positive_seed_count >= int(strictness.min_positive_training_seeds)
+    )
 
 
 def _has_cuda() -> bool:

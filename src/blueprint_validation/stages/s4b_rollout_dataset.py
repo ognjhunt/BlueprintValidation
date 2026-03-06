@@ -159,6 +159,17 @@ class RolloutDatasetStage(PipelineStage):
             baseline, split_train_ids, split_heldout_ids
         )
         adapted_train, adapted_heldout = _split_by_ids(adapted, split_train_ids, split_heldout_ids)
+        leakage_error = _claim_split_leakage_error(
+            train_rollouts=baseline_train + adapted_train,
+            heldout_rollouts=baseline_heldout + adapted_heldout,
+        )
+        if leakage_error is not None:
+            return StageResult(
+                stage_name=self.name,
+                status="failed",
+                elapsed_seconds=0,
+                detail=leakage_error,
+            )
 
         dataset_root = config.rollout_dataset.export_dir / work_dir.name
         baseline_root = dataset_root / "baseline"
@@ -337,3 +348,28 @@ def _action_contract_hash(action_contract: dict) -> str:
     except Exception:
         payload = "{}"
     return hashlib.md5(payload.encode("utf-8")).hexdigest()
+
+
+def _claim_split_leakage_error(
+    *,
+    train_rollouts: List[dict],
+    heldout_rollouts: List[dict],
+) -> str | None:
+    for field_name in ("eval_cell_id", "start_clip_id", "start_frame_hash"):
+        train_values = {
+            str(row.get(field_name, "")).strip()
+            for row in train_rollouts
+            if str(row.get(field_name, "")).strip()
+        }
+        heldout_values = {
+            str(row.get(field_name, "")).strip()
+            for row in heldout_rollouts
+            if str(row.get(field_name, "")).strip()
+        }
+        overlap = sorted(train_values & heldout_values)
+        if overlap:
+            return (
+                f"Claim split leakage detected on {field_name}: "
+                f"{', '.join(overlap[:5])}"
+            )
+    return None

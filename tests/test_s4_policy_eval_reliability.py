@@ -387,6 +387,9 @@ def test_s4_fixed_claim_protocol_does_not_fail_on_supporting_task_score_threshol
     sample_config.eval_policy.primary_endpoint = "task_success"
     sample_config.eval_policy.freeze_world_snapshot = True
     sample_config.eval_policy.split_strategy = "disjoint_tasks_and_starts"
+    sample_config.eval_policy.claim_strictness.min_eval_task_specs = 1
+    sample_config.eval_policy.claim_strictness.min_eval_start_clips = 1
+    sample_config.eval_policy.claim_strictness.min_common_eval_cells = 1
     sample_config.eval_policy.mode = "claim"
     sample_config.eval_policy.headline_scope = "wm_only"
     sample_config.eval_policy.num_rollouts = 4
@@ -569,3 +572,142 @@ def test_s4_fixed_claim_protocol_does_not_fail_on_supporting_task_score_threshol
     assert result.status == "success"
     assert result.metrics["absolute_difference"] == 0.0
     assert result.metrics["manipulation_success_delta_pp"] == 0.0
+
+
+def test_s4_frozen_policy_eval_ignores_adapted_policy_checkpoints(
+    sample_config, tmp_path, monkeypatch
+):
+    from blueprint_validation.common import StageResult
+    from blueprint_validation.stages.s4_policy_eval import PolicyEvalStage
+
+    sample_config.eval_policy.mode = "research"
+    sample_config.eval_policy.headline_scope = "dual"
+    sample_config.eval_policy.num_rollouts = 1
+    sample_config.eval_policy.tasks = ["Pick up bowl_101 and place it in the target zone"]
+    sample_config.eval_policy.rollout_driver = "scripted"
+    sample_config.eval_policy.reliability.max_scoring_failure_rate = 1.0
+    sample_config.eval_policy.reliability.min_replay_pass_rate = 0.0
+    sample_config.eval_policy.reliability.min_controllability_pass_rate = 0.0
+    sample_config.finetune.eval_world_experiment = (
+        "cosmos_predict2p5_2B_reason_embeddings_action_conditioned_rectified_flow_bridge_13frame_256x320"
+    )
+
+    fac = sample_config.facilities["test_facility"]
+    work_dir = tmp_path / "outputs" / "test_facility"
+    adapted_ckpt = work_dir / "finetune" / "adapted_checkpoint"
+    adapted_ckpt.mkdir(parents=True, exist_ok=True)
+    (adapted_ckpt / "weights.bin").write_bytes(b"world")
+    trained_policy_ckpt = tmp_path / "trained_policy_ckpt"
+    trained_policy_ckpt.mkdir(parents=True, exist_ok=True)
+
+    render_dir = work_dir / "renders"
+    render_dir.mkdir(parents=True, exist_ok=True)
+    (render_dir / "render_manifest.json").write_text('{"clips":[]}')
+
+    frame = np.zeros((16, 16, 3), dtype=np.uint8)
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4_policy_eval.build_task_start_assignments",
+        lambda **kwargs: [
+            {
+                "rollout_index": 0,
+                "task": sample_config.eval_policy.tasks[0],
+                "clip_index": 0,
+                "clip_name": "clip_000",
+                "path_type": "manipulation",
+                "target_label": "bowl",
+                "target_instance_id": "101",
+                "target_grounded": True,
+                "assignment_quality_score": 1.0,
+                "assignment_reject_reason": None,
+                "video_orientation_fix": "none",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4_policy_eval.load_initial_frames_for_assignments",
+        lambda assignments: {0: frame},
+    )
+
+    class FakeWorldModel:
+        expected_action_dim = 7
+
+        def predict_next_frame(self, current_frame, action):
+            return current_frame
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4_policy_eval.load_dreamdojo_world_model",
+        lambda *args, **kwargs: FakeWorldModel(),
+    )
+    loaded_checkpoints = []
+
+    class FakeAdapter:
+        def base_model_ref(self, _eval_policy):
+            return "fake_model", None
+
+        def load_policy(self, *, model_name, checkpoint_path, device):
+            loaded_checkpoints.append(checkpoint_path)
+            return {"checkpoint_path": checkpoint_path}
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4_policy_eval.get_policy_adapter",
+        lambda *_args, **_kwargs: FakeAdapter(),
+    )
+
+    def _fake_run_rollout(**kwargs):
+        video_path = kwargs["output_dir"] / f"{kwargs['clip_name']}.mp4"
+        video_path.parent.mkdir(parents=True, exist_ok=True)
+        video_path.write_bytes(b"x")
+        return SimpleNamespace(
+            video_path=video_path,
+            action_sequence=[[0.02] * 7 for _ in range(4)],
+            num_steps=4,
+            action_contract={
+                "policy_dim": 7,
+                "world_dim": 7,
+                "dataset_dim": 7,
+                "compliant": True,
+                "reason": "",
+            },
+        )
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4_policy_eval.run_rollout_with_adapter",
+        _fake_run_rollout,
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4_policy_eval.score_rollout_manipulation",
+        lambda **_kwargs: ManipulationJudgeScore(
+            task_score=8.0,
+            visual_score=8.0,
+            spatial_score=8.0,
+            grasp_acquired=True,
+            lifted_clear=True,
+            placed_in_target=True,
+            stable_after_place=True,
+            reasoning="ok",
+            raw_response="{}",
+        ),
+    )
+
+    result = PolicyEvalStage().execute(
+        sample_config,
+        fac,
+        work_dir,
+        {
+            "s3_finetune": StageResult(
+                stage_name="s3_finetune",
+                status="success",
+                elapsed_seconds=0.0,
+                outputs={"adapted_checkpoint_path": str(adapted_ckpt)},
+            ),
+            "s3b_policy_finetune": StageResult(
+                stage_name="s3b_policy_finetune",
+                status="success",
+                elapsed_seconds=0.0,
+                outputs={"adapted_policy_checkpoint": str(trained_policy_ckpt)},
+            ),
+        },
+    )
+    assert result.status == "success"
+    assert result.metrics["used_adapted_policy_checkpoint"] is False
+    assert loaded_checkpoints == [None, None]
