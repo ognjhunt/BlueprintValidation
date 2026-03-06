@@ -19,6 +19,20 @@ def test_write_json_atomic_overwrite_and_tmp_cleanup(tmp_path: Path) -> None:
     assert leftovers == []
 
 
+def test_write_text_atomic_overwrite_and_tmp_cleanup(tmp_path: Path) -> None:
+    from blueprint_validation.common import write_text_atomic
+
+    out = tmp_path / "artifact.txt"
+    write_text_atomic(out, "first")
+    assert out.read_text() == "first"
+
+    write_text_atomic(out, "second")
+    assert out.read_text() == "second"
+
+    leftovers = list(tmp_path.glob(f".{out.name}.*.tmp"))
+    assert leftovers == []
+
+
 def test_sanitize_filename_component_with_hash_avoids_collisions() -> None:
     from blueprint_validation.common import (
         sanitize_filename_component,

@@ -22,6 +22,7 @@ from ..evaluation.rollout_reliability import (
     build_reliability_gate,
     single_or_none,
 )
+from ..evaluation.stats_utils import paired_ttest_p_value
 from ..evaluation.rollout_utils import run_rollout_with_adapter
 from ..evaluation.task_success import evaluate_task_success
 from ..evaluation.video_orientation import (
@@ -52,11 +53,8 @@ class PolicyPairEvalStage(PipelineStage):
         previous_results: Dict[str, StageResult],
     ) -> StageResult:
         if (
-            (getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only")
-            .strip()
-            .lower()
-            == "wm_only"
-        ):
+            getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only"
+        ).strip().lower() == "wm_only":
             return StageResult(
                 stage_name=self.name,
                 status="skipped",
@@ -232,7 +230,9 @@ class PolicyPairEvalStage(PipelineStage):
                             config=config.eval_policy.vlm_judge,
                             facility_description=facility.description,
                         )
-                        success = score.task_score >= config.policy_compare.task_score_success_threshold
+                        success = (
+                            score.task_score >= config.policy_compare.task_score_success_threshold
+                        )
                         manip_success = None
                 finally:
                     if _oriented_4d_path is not None and _oriented_4d_path.exists():
@@ -289,11 +289,7 @@ class PolicyPairEvalStage(PipelineStage):
 
         return StageResult(
             stage_name=self.name,
-            status=(
-                "success"
-                if score_rows and (not claim_mode or claim_passed)
-                else "failed"
-            ),
+            status=("success" if score_rows and (not claim_mode or claim_passed) else "failed"),
             elapsed_seconds=0,
             outputs={
                 "pair_eval_dir": str(eval_dir),
@@ -332,7 +328,11 @@ def _run_fixed_world_claim_eval(
     claim_manifest_path = policy_eval_dir / "claim_manifest.json"
     claim_split_path = policy_eval_dir / "claim_split_manifest.json"
     task_specs_path = policy_eval_dir / "task_specs.json"
-    if not claim_manifest_path.exists() or not claim_split_path.exists() or not task_specs_path.exists():
+    if (
+        not claim_manifest_path.exists()
+        or not claim_split_path.exists()
+        or not task_specs_path.exists()
+    ):
         return StageResult(
             stage_name="s4d_policy_pair_eval",
             status="failed",
@@ -347,21 +347,29 @@ def _run_fixed_world_claim_eval(
     task_specs = read_json(task_specs_path)
     task_specs_by_id = {str(spec.get("task_spec_id", "")): spec for spec in task_specs}
     task_specs_by_prompt = {str(spec.get("task_prompt", "")): spec for spec in task_specs}
-    if str(claim_manifest.get("claim_protocol", "")).strip().lower() != "fixed_same_facility_uplift":
+    if (
+        str(claim_manifest.get("claim_protocol", "")).strip().lower()
+        != "fixed_same_facility_uplift"
+    ):
         return StageResult(
             stage_name="s4d_policy_pair_eval",
             status="failed",
             elapsed_seconds=0,
             detail="Claim manifest does not describe the fixed-world same-facility protocol.",
         )
-    if str(claim_manifest.get("primary_endpoint", "task_success")).strip().lower() != "task_success":
+    if (
+        str(claim_manifest.get("primary_endpoint", "task_success")).strip().lower()
+        != "task_success"
+    ):
         return StageResult(
             stage_name="s4d_policy_pair_eval",
             status="failed",
             elapsed_seconds=0,
             detail="Claim manifest primary endpoint must be task_success.",
         )
-    training_seeds = [int(v) for v in list(config.eval_policy.claim_replication.training_seeds or [])]
+    training_seeds = [
+        int(v) for v in list(config.eval_policy.claim_replication.training_seeds or [])
+    ]
     min_claim_seed_count = _min_sign_flip_seed_count(
         float(config.eval_policy.claim_strictness.p_value_threshold)
     )
@@ -389,9 +397,7 @@ def _run_fixed_world_claim_eval(
             detail=dataset_lineage_error,
         )
     configured_arms = {
-        str(v).strip()
-        for v in list(config.policy_compare.control_arms or [])
-        if str(v).strip()
+        str(v).strip() for v in list(config.policy_compare.control_arms or []) if str(v).strip()
     }
     required_arms = {"frozen_baseline", "site_trained", "generic_control"}
     missing_required_arms = sorted(required_arms - configured_arms)
@@ -543,7 +549,9 @@ def _run_fixed_world_claim_eval(
         base_checkpoint=base_checkpoint,
         expected_arms=expected_arms,
     )
-    missing_arms = [arm for arm in expected_arms if arm not in {entry["arm"] for entry in arm_entries}]
+    missing_arms = [
+        arm for arm in expected_arms if arm not in {entry["arm"] for entry in arm_entries}
+    ]
     if missing_arms:
         return StageResult(
             stage_name="s4d_policy_pair_eval",
@@ -579,7 +587,9 @@ def _run_fixed_world_claim_eval(
     for i, ep in enumerate(episodes):
         init_frame = _read_rgb_image(Path(ep["init_frame_path"]))
         task = ep["task"]
-        task_spec = task_specs_by_id.get(str(ep.get("task_spec_id", ""))) or task_specs_by_prompt.get(task)
+        task_spec = task_specs_by_id.get(
+            str(ep.get("task_spec_id", ""))
+        ) or task_specs_by_prompt.get(task)
         if task_spec is None:
             return StageResult(
                 stage_name="s4d_policy_pair_eval",
@@ -820,9 +830,7 @@ def _run_fixed_world_claim_eval(
         inconclusive_reasons.append(
             f"Deterministic primary endpoint unavailable for {len(state_failures)} scored rows."
         )
-    if int(bootstrap.get("num_common_eval_cells", 0) or 0) < int(
-        strictness.min_common_eval_cells
-    ):
+    if int(bootstrap.get("num_common_eval_cells", 0) or 0) < int(strictness.min_common_eval_cells):
         inconclusive_reasons.append(
             "Too few common eval cells for claim statistics: "
             f"{bootstrap.get('num_common_eval_cells', 0)} < {int(strictness.min_common_eval_cells)}."
@@ -841,7 +849,9 @@ def _run_fixed_world_claim_eval(
     elif float(bootstrap["ci_low_pp"]) <= 0.0:
         fail_reasons.append("Lower 95% CI bound for site-trained uplift is not > 0.")
     if bootstrap.get("p_value_two_sided") is None:
-        inconclusive_reasons.append("Two-sided paired p-value for site-trained uplift is unavailable.")
+        inconclusive_reasons.append(
+            "Two-sided paired p-value for site-trained uplift is unavailable."
+        )
     elif float(bootstrap["p_value_two_sided"]) >= float(strictness.p_value_threshold):
         fail_reasons.append(
             "Two-sided paired p-value did not meet threshold: "
@@ -898,7 +908,8 @@ def _run_fixed_world_claim_eval(
         },
         "generic_control": {
             "per_seed_success_rate": {
-                int(seed): round(success_rate(rows), 6) for seed, rows in generic_rows_by_seed.items()
+                int(seed): round(success_rate(rows), 6)
+                for seed, rows in generic_rows_by_seed.items()
             },
         },
         "site_trained": {
@@ -925,7 +936,9 @@ def _run_fixed_world_claim_eval(
         "claim_manifest_path": str(claim_manifest_path),
         "claim_split_manifest_path": str(claim_split_path),
         "task_specs_path": str(task_specs_path),
-        "num_eval_cells": len(eval_ids) if eval_ids else len({str(ep.get("eval_cell_id", "")) for ep in episodes}),
+        "num_eval_cells": len(eval_ids)
+        if eval_ids
+        else len({str(ep.get("eval_cell_id", "")) for ep in episodes}),
         "required_positive_seed_count": int(required_positive),
         "configured_training_seed_count": len(training_seeds),
         "min_practical_success_lift_pp": float(config.eval_policy.min_practical_success_lift_pp),
@@ -1036,7 +1049,9 @@ def _claim_arm_entries(
                 "arm": "frozen_baseline",
                 "seed": None,
                 "policy_label": "frozen_baseline",
-                "checkpoint_path": base_checkpoint if base_checkpoint and base_checkpoint.exists() else None,
+                "checkpoint_path": base_checkpoint
+                if base_checkpoint and base_checkpoint.exists()
+                else None,
             }
         )
 
@@ -1101,19 +1116,25 @@ def _validate_claim_episodes(
                 "Heldout claim episodes were exported from a different world snapshot than the "
                 "frozen claim manifest."
             )
-        if str(episode.get("task_spec_id", "")).strip() != str(expected.get("task_spec_id", "")).strip():
+        if (
+            str(episode.get("task_spec_id", "")).strip()
+            != str(expected.get("task_spec_id", "")).strip()
+        ):
             return f"Heldout claim episode '{eval_cell_id}' does not match the registered task_spec_id."
-        if str(episode.get("start_clip_id", "")).strip() != str(
-            expected.get("start_clip_id", "")
-        ).strip():
+        if (
+            str(episode.get("start_clip_id", "")).strip()
+            != str(expected.get("start_clip_id", "")).strip()
+        ):
             return f"Heldout claim episode '{eval_cell_id}' does not match the registered start_clip_id."
-        if str(episode.get("start_region_id", "")).strip() != str(
-            expected.get("start_region_id", "")
-        ).strip():
+        if (
+            str(episode.get("start_region_id", "")).strip()
+            != str(expected.get("start_region_id", "")).strip()
+        ):
             return f"Heldout claim episode '{eval_cell_id}' does not match the registered start_region_id."
-        if str(episode.get("start_frame_hash", "")).strip() != str(
-            expected.get("start_frame_hash", "")
-        ).strip():
+        if (
+            str(episode.get("start_frame_hash", "")).strip()
+            != str(expected.get("start_frame_hash", "")).strip()
+        ):
             return f"Heldout claim episode '{eval_cell_id}' does not match the registered start_frame_hash."
     if duplicate_ids:
         return (
@@ -1161,7 +1182,9 @@ def _score_rollout_video(
     video_path: Path,
     task: str,
 ):
-    orient_mode = normalize_video_orientation_fix(str(getattr(facility, "video_orientation_fix", "none")))
+    orient_mode = normalize_video_orientation_fix(
+        str(getattr(facility, "video_orientation_fix", "none"))
+    )
     oriented_path = None
     try:
         path_for_scoring = video_path
@@ -1278,13 +1301,7 @@ def _compute_pair_metrics(rows: List[dict]) -> dict:
 
     p_value = None
     if len(base_scores) >= 2:
-        try:
-            from scipy import stats
-
-            _, p_value = stats.ttest_rel(base_scores, site_scores)
-            p_value = float(p_value)
-        except Exception:
-            p_value = None
+        p_value = paired_ttest_p_value(base_scores, site_scores)
 
     base_manip = [
         p[0]["manipulation_success"] for p in paired if p[0]["manipulation_success"] is not None
@@ -1428,13 +1445,15 @@ def _claim_dataset_lineage_error(
     expected_world_hash = str(claim_manifest.get("world_snapshot_hash", "") or "").strip()
     if expected_world_hash != str(dataset_lineage.get("world_snapshot_hash", "") or "").strip():
         return "Policy pair dataset lineage world snapshot hash does not match the current claim manifest."
-    if _json_manifest_hash(claim_manifest_path) != str(
-        dataset_lineage.get("claim_manifest_hash", "") or ""
-    ).strip():
+    if (
+        _json_manifest_hash(claim_manifest_path)
+        != str(dataset_lineage.get("claim_manifest_hash", "") or "").strip()
+    ):
         return "Policy pair dataset lineage claim manifest hash does not match the current claim manifest."
-    if _json_manifest_hash(claim_split_path) != str(
-        dataset_lineage.get("claim_split_manifest_hash", "") or ""
-    ).strip():
+    if (
+        _json_manifest_hash(claim_split_path)
+        != str(dataset_lineage.get("claim_split_manifest_hash", "") or "").strip()
+    ):
         return "Policy pair dataset lineage split manifest hash does not match the current claim split."
     return None
 

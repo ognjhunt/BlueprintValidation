@@ -26,6 +26,7 @@ from ..evaluation.task_start_selector import (
     save_shared_task_start_manifest,
     shared_manifest_is_compatible,
 )
+from ..evaluation.stats_utils import paired_ttest_p_value
 from ..evaluation.video_orientation import (
     normalize_video_orientation_fix,
     transform_video_orientation,
@@ -108,11 +109,8 @@ class TrainedPolicyEvalStage(PipelineStage):
         previous_results: Dict[str, StageResult],
     ) -> StageResult:
         if (
-            (getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only")
-            .strip()
-            .lower()
-            == "wm_only"
-        ):
+            getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only"
+        ).strip().lower() == "wm_only":
             return StageResult(
                 stage_name=self.name,
                 status="skipped",
@@ -552,7 +550,9 @@ class TrainedPolicyEvalStage(PipelineStage):
             stage_name=self.name,
             status=(
                 "success"
-                if trained_scores and not structural_failure_reasons and (not claim_mode or claim_passed)
+                if trained_scores
+                and not structural_failure_reasons
+                and (not claim_mode or claim_passed)
                 else "failed"
             ),
             elapsed_seconds=0,
@@ -747,9 +747,7 @@ def _build_pairwise_metrics(all_scores: List[Dict]) -> Dict:
                         continue
                     grouped.setdefault(paired_eval_key(row), {})[condition] = row
                 pairs = [
-                    (rows[c1], rows[c2])
-                    for rows in grouped.values()
-                    if c1 in rows and c2 in rows
+                    (rows[c1], rows[c2]) for rows in grouped.values() if c1 in rows and c2 in rows
                 ]
                 if not pairs:
                     continue
@@ -773,15 +771,9 @@ def _build_pairwise_metrics(all_scores: List[Dict]) -> Dict:
 
             p_value = None
             if len(pairs) >= 2:
-                try:
-                    from scipy import stats
-
-                    v1 = [left["task_score"] for left, _ in pairs]
-                    v2 = [right["task_score"] for _, right in pairs]
-                    _, p_value = stats.ttest_rel(v1, v2)
-                    p_value = float(p_value)
-                except ImportError:
-                    pass
+                v1 = [left["task_score"] for left, _ in pairs]
+                v2 = [right["task_score"] for _, right in pairs]
+                p_value = paired_ttest_p_value(v1, v2)
 
             pairwise[f"{c1}_vs_{c2}"] = {
                 f"{c1}_mean": round(mean1, 3),
@@ -894,13 +886,7 @@ def _condition_pair_metrics(
     wins = sum(1 for left, right in zip(left_scores, right_scores) if right > left)
     p_value = None
     if len(left_scores) >= 2:
-        try:
-            from scipy import stats
-
-            _, p_value = stats.ttest_rel(left_scores, right_scores)
-            p_value = float(p_value)
-        except Exception:
-            p_value = None
+        p_value = paired_ttest_p_value(left_scores, right_scores)
     return {
         "num_pairs": len(paired),
         "frozen_condition": left_condition,
@@ -934,7 +920,11 @@ def _pair_condition_rows(
             continue
         if exclude_tasks is not None and task in exclude_tasks:
             continue
-        pair_id = paired_eval_key(row) if has_explicit_pairing else f"{int(row.get('rollout_index', 0))}::{task}"
+        pair_id = (
+            paired_eval_key(row)
+            if has_explicit_pairing
+            else f"{int(row.get('rollout_index', 0))}::{task}"
+        )
         grouped.setdefault(pair_id, {})[condition] = row
 
     pairs: List[tuple[Dict, Dict]] = []

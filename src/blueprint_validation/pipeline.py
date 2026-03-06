@@ -82,19 +82,14 @@ class ValidationPipeline:
         dry_run = os.environ.get("BLUEPRINT_DRY_RUN", "0") == "1"
         action_boost = self._apply_action_boost_runtime_overrides()
         wm_only_scope = (
-            (getattr(self.config.eval_policy, "headline_scope", "wm_only") or "wm_only")
-            .strip()
-            .lower()
-            == "wm_only"
-        )
+            getattr(self.config.eval_policy, "headline_scope", "wm_only") or "wm_only"
+        ).strip().lower() == "wm_only"
 
-        strict_fresh_guard = (
-            not resume_from_results
-            and bool(getattr(self.config.eval_policy.reliability, "enforce_stage_success", False))
+        strict_fresh_guard = not resume_from_results and bool(
+            getattr(self.config.eval_policy.reliability, "enforce_stage_success", False)
         )
-        if (
-            resume_from_results
-            and bool(getattr(self.config.eval_policy.reliability, "enforce_stage_success", False))
+        if resume_from_results and bool(
+            getattr(self.config.eval_policy.reliability, "enforce_stage_success", False)
         ):
             detail = (
                 "Strict reliability mode forbids resume runs for canonical metrics. "
@@ -225,7 +220,26 @@ class ValidationPipeline:
                     continue
 
                 if resume_from_results:
-                    existing = self._load_existing_stage_result(result_path)
+                    try:
+                        existing = self._load_existing_stage_result(result_path)
+                    except ValueError as exc:
+                        detail = str(exc)
+                        logger.error(detail)
+                        failed_result = StageResult(
+                            stage_name=stage.name,
+                            status="failed",
+                            elapsed_seconds=0,
+                            detail=detail,
+                        )
+                        facility_results[stage.name] = failed_result
+                        all_results[stage_key] = failed_result
+                        stage_provenance[stage_key] = {
+                            "source": "resume_corrupt",
+                            "result_path": str(result_path),
+                        }
+                        failed_stage_keys.append(stage_key)
+                        aborted_early = True
+                        break
                     if existing is not None and existing.status in {"success", "skipped"}:
                         logger.info(
                             "Resume mode: reusing %s result from %s (status=%s)",
@@ -483,7 +497,9 @@ class ValidationPipeline:
         if len(self.config.facilities) < int(self.config.claim_portfolio.min_facilities):
             return False
         if (
-            str(getattr(self.config.eval_policy, "claim_protocol", "none") or "none").strip().lower()
+            str(getattr(self.config.eval_policy, "claim_protocol", "none") or "none")
+            .strip()
+            .lower()
             != "fixed_same_facility_uplift"
         ):
             return False
@@ -542,7 +558,11 @@ class ValidationPipeline:
             return state
 
         if bool(getattr(cfg, "auto_switch_headline_scope_to_dual", True)):
-            scope = (getattr(self.config.eval_policy, "headline_scope", "wm_only") or "wm_only").strip().lower()
+            scope = (
+                (getattr(self.config.eval_policy, "headline_scope", "wm_only") or "wm_only")
+                .strip()
+                .lower()
+            )
             if scope == "wm_only":
                 logger.warning(
                     "ActionBoost enabled: overriding eval_policy.headline_scope from wm_only to wm_uplift."
@@ -613,9 +633,10 @@ class ValidationPipeline:
             return None
         try:
             payload = read_json(result_path)
-        except Exception:
-            logger.warning("Failed reading existing stage result: %s", result_path, exc_info=True)
-            return None
+        except Exception as exc:
+            raise ValueError(
+                f"Corrupt resume artifact at {result_path}: failed to parse JSON ({exc})."
+            ) from exc
 
         try:
             return StageResult(
@@ -629,9 +650,10 @@ class ValidationPipeline:
                 detail=str(payload.get("detail") or ""),
                 timestamp=str(payload.get("timestamp") or datetime.now(timezone.utc).isoformat()),
             )
-        except Exception:
-            logger.warning("Malformed stage result payload at %s", result_path, exc_info=True)
-            return None
+        except Exception as exc:
+            raise ValueError(
+                f"Corrupt resume artifact at {result_path}: malformed stage result payload ({exc})."
+            ) from exc
 
     def _maybe_run_post_stage_sync_hook(
         self,

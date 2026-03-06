@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
 
-from ..common import get_logger, read_json
+from ..common import get_logger, read_json, write_json, write_text_atomic
 from ..config import ValidationConfig
 
 logger = get_logger("reporting.report_builder")
@@ -32,11 +31,11 @@ def build_report(
 
     if fmt == "json":
         output_path = output_path.with_suffix(".json")
-        output_path.write_text(json.dumps(report_data, indent=2, default=str))
+        write_json(report_data, output_path)
     else:
         output_path = output_path.with_suffix(".md")
         md = _render_markdown(report_data, config)
-        output_path.write_text(md)
+        write_text_atomic(output_path, md)
 
     logger.info("Report written to %s", output_path)
     return output_path
@@ -113,7 +112,9 @@ def _is_fixed_world_claim_protocol(config: ValidationConfig | None) -> bool:
     )
 
 
-def _append_s4_policy_eval_section(lines: list[str], fac_data: Dict[str, Any], *, supporting: bool) -> None:
+def _append_s4_policy_eval_section(
+    lines: list[str], fac_data: Dict[str, Any], *, supporting: bool
+) -> None:
     if "s4_policy_eval" not in fac_data:
         return
     pe = fac_data["s4_policy_eval"]
@@ -130,12 +131,8 @@ def _append_s4_policy_eval_section(lines: list[str], fac_data: Dict[str, Any], *
         )
     lines.append("| Metric | Value |")
     lines.append("|--------|-------|")
-    lines.append(
-        f"| Baseline mean task score | {metrics.get('baseline_mean_task_score', 'N/A')} |"
-    )
-    lines.append(
-        f"| Adapted mean task score | {metrics.get('adapted_mean_task_score', 'N/A')} |"
-    )
+    lines.append(f"| Baseline mean task score | {metrics.get('baseline_mean_task_score', 'N/A')} |")
+    lines.append(f"| Adapted mean task score | {metrics.get('adapted_mean_task_score', 'N/A')} |")
     lines.append(f"| Absolute difference | {metrics.get('absolute_difference', 'N/A')} |")
     lines.append(f"| Improvement | {metrics.get('improvement_pct', 'N/A')}% |")
     lines.append(f"| Win rate | {metrics.get('win_rate', 'N/A')} |")
@@ -181,7 +178,9 @@ def _append_s4_policy_eval_section(lines: list[str], fac_data: Dict[str, Any], *
         lines.append("")
 
 
-def _append_s4e_trained_eval_section(lines: list[str], fac_data: Dict[str, Any], *, primary: bool) -> None:
+def _append_s4e_trained_eval_section(
+    lines: list[str], fac_data: Dict[str, Any], *, primary: bool
+) -> None:
     if "s4e_trained_eval" not in fac_data:
         return
     te = fac_data["s4e_trained_eval"]
@@ -244,7 +243,9 @@ def _append_s4e_trained_eval_section(lines: list[str], fac_data: Dict[str, Any],
         lines.append("")
 
 
-def _append_s4d_policy_pair_eval_section(lines: list[str], fac_data: Dict[str, Any], *, supporting: bool) -> None:
+def _append_s4d_policy_pair_eval_section(
+    lines: list[str], fac_data: Dict[str, Any], *, supporting: bool
+) -> None:
     if "s4d_policy_pair_eval" not in fac_data:
         return
     pe2 = fac_data["s4d_policy_pair_eval"]
@@ -271,15 +272,9 @@ def _append_s4d_policy_pair_eval_section(lines: list[str], fac_data: Dict[str, A
         f"| Absolute difference | {metrics.get('task_score_absolute_difference', 'N/A')} |"
     )
     lines.append(f"| Improvement | {metrics.get('task_score_improvement_pct', 'N/A')}% |")
-    lines.append(
-        f"| Policy base success rate | {metrics.get('policy_base_success_rate', 'N/A')} |"
-    )
-    lines.append(
-        f"| Policy site success rate | {metrics.get('policy_site_success_rate', 'N/A')} |"
-    )
-    lines.append(
-        f"| Win rate (site over base) | {metrics.get('win_rate_site_over_base', 'N/A')} |"
-    )
+    lines.append(f"| Policy base success rate | {metrics.get('policy_base_success_rate', 'N/A')} |")
+    lines.append(f"| Policy site success rate | {metrics.get('policy_site_success_rate', 'N/A')} |")
+    lines.append(f"| Win rate (site over base) | {metrics.get('win_rate_site_over_base', 'N/A')} |")
     lines.append(f"| p-value (task score) | {metrics.get('p_value_task_score', 'N/A')} |")
     lines.append("")
 
@@ -312,7 +307,9 @@ def _append_claim_eval_section(lines: list[str], fac_data: Dict[str, Any]) -> No
         f"{len((metrics.get('arm_summary', {}).get('site_trained', {}) or {}).get('per_seed_success_rate', {}))} |"
     )
     lines.append(f"| Claim outcome | {claim_outcome} |")
-    lines.append(f"| generic_control mean uplift (pp) | {generic_bootstrap.get('mean_lift_pp', 'N/A')} |")
+    lines.append(
+        f"| generic_control mean uplift (pp) | {generic_bootstrap.get('mean_lift_pp', 'N/A')} |"
+    )
     lines.append(
         f"| site minus generic uplift (pp) | {attribution.get('mean_lift_delta_pp', 'N/A')} |"
     )
@@ -331,10 +328,18 @@ def _append_claim_portfolio_section(lines: list[str], data: Dict[str, Any]) -> N
     lines.append("|--------|-------|")
     lines.append(f"| Eligible facilities | {portfolio.get('eligible_facility_count', 'N/A')} |")
     lines.append(f"| Go-to-robot gate | {'PASS' if bool(gate.get('passed', False)) else 'FAIL'} |")
-    lines.append(f"| Pooled site vs frozen mean uplift (pp) | {pooled_frozen.get('mean_lift_pp', 'N/A')} |")
-    lines.append(f"| Pooled site vs frozen 95% CI low (pp) | {pooled_frozen.get('ci_low_pp', 'N/A')} |")
-    lines.append(f"| Pooled site vs generic mean uplift (pp) | {pooled_generic.get('mean_lift_pp', 'N/A')} |")
-    lines.append(f"| Pooled site vs generic 95% CI low (pp) | {pooled_generic.get('ci_low_pp', 'N/A')} |")
+    lines.append(
+        f"| Pooled site vs frozen mean uplift (pp) | {pooled_frozen.get('mean_lift_pp', 'N/A')} |"
+    )
+    lines.append(
+        f"| Pooled site vs frozen 95% CI low (pp) | {pooled_frozen.get('ci_low_pp', 'N/A')} |"
+    )
+    lines.append(
+        f"| Pooled site vs generic mean uplift (pp) | {pooled_generic.get('mean_lift_pp', 'N/A')} |"
+    )
+    lines.append(
+        f"| Pooled site vs generic 95% CI low (pp) | {pooled_generic.get('ci_low_pp', 'N/A')} |"
+    )
     lines.append("")
     failures = list(gate.get("failures", []) or [])
     if failures:
@@ -344,8 +349,12 @@ def _append_claim_portfolio_section(lines: list[str], data: Dict[str, Any]) -> N
         lines.append("")
     facility_claims = list(portfolio.get("facility_claims", []) or [])
     if facility_claims:
-        lines.append("| Facility | Eligible | Site-Frozen (pp) | Site-Generic (pp) | Generic Control |")
-        lines.append("|----------|----------|------------------|-------------------|-----------------|")
+        lines.append(
+            "| Facility | Eligible | Site-Frozen (pp) | Site-Generic (pp) | Generic Control |"
+        )
+        lines.append(
+            "|----------|----------|------------------|-------------------|-----------------|"
+        )
         for claim in facility_claims:
             lines.append(
                 f"| {claim.get('facility_id', 'N/A')} "
@@ -644,17 +653,17 @@ def _add_executive_summary(lines: list, data: dict, config: ValidationConfig = N
         for _, fac_data in data.get("facilities", {}).items():
             s4d = fac_data.get("s4d_policy_pair_eval", {})
             metrics = s4d.get("metrics", {})
-            if str(metrics.get("claim_protocol", "")).strip().lower() == "fixed_same_facility_uplift":
+            if (
+                str(metrics.get("claim_protocol", "")).strip().lower()
+                == "fixed_same_facility_uplift"
+            ):
                 claim_metrics = metrics
                 break
         claim_outcome = _claim_outcome(claim_metrics or {})
         bootstrap = (claim_metrics or {}).get("bootstrap_site_vs_frozen", {})
         lines.append("| Test | Result |")
         lines.append("|------|--------|")
-        lines.append(
-            "| Primary Headline: Fixed-World Same-Facility Claim | "
-            f"{claim_outcome} |"
-        )
+        lines.append(f"| Primary Headline: Fixed-World Same-Facility Claim | {claim_outcome} |")
         lines.append("")
         if claim_outcome == "PASS":
             lines.append(
@@ -703,7 +712,10 @@ def _add_executive_summary(lines: list, data: dict, config: ValidationConfig = N
         te_metrics = fac_data["s4e_trained_eval"].get("metrics", {})
         if not bool(te_metrics.get("claim_comparison_world_fixed", False)):
             continue
-        if te_metrics.get("claim_comparison_key") not in {"adapted_vs_trained", "trained_vs_adapted"}:
+        if te_metrics.get("claim_comparison_key") not in {
+            "adapted_vs_trained",
+            "trained_vs_adapted",
+        }:
             continue
         abs_d = te_metrics.get("claim_comparison_absolute_difference", 0)
         pv = te_metrics.get("claim_comparison_p_value")
@@ -720,9 +732,7 @@ def _add_executive_summary(lines: list, data: dict, config: ValidationConfig = N
     lines.append("| Test | Result |")
     lines.append("|------|--------|")
     if single_facility:
-        lines.append(
-            "| Canonical Headline: Fixed-World Same-Facility Claim | INELIGIBLE |"
-        )
+        lines.append("| Canonical Headline: Fixed-World Same-Facility Claim | INELIGIBLE |")
         lines.append(
             "| Supporting Evidence: Frozen Baseline vs Adapted World Model | "
             f"{'PASS' if primary_passed else 'PENDING/FAIL'} |"
@@ -732,8 +742,12 @@ def _add_executive_summary(lines: list, data: dict, config: ValidationConfig = N
             f"{'PASS' if trained_passed else 'PENDING/FAIL'} |"
         )
     else:
-        lines.append(f"| Frozen Policy Performance | {'PASS' if primary_passed else 'PENDING/FAIL'} |")
-        lines.append(f"| Trained Policy Improvement | {'PASS' if trained_passed else 'PENDING/FAIL'} |")
+        lines.append(
+            f"| Frozen Policy Performance | {'PASS' if primary_passed else 'PENDING/FAIL'} |"
+        )
+        lines.append(
+            f"| Trained Policy Improvement | {'PASS' if trained_passed else 'PENDING/FAIL'} |"
+        )
     if cross_site_applicable:
         lines.append(
             f"| Cross-Site Discrimination | {'PASS' if cross_site_passed else 'PENDING/FAIL'} |"

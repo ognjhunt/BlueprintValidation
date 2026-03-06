@@ -17,6 +17,8 @@ RUN_SECRET_SCAN="${RUN_SECRET_SCAN:-true}"          # true|false|auto
 RUN_TARGETED_PYTEST="${RUN_TARGETED_PYTEST:-true}"  # true|false|auto
 RUN_LINT="${RUN_LINT:-true}"                        # true|false|auto
 RUN_FORMAT_CHECK="${RUN_FORMAT_CHECK:-false}"       # true|false|auto
+AUDIT_SCOPE="${AUDIT_SCOPE:-full}"                  # quick|full
+AUTO_INSTALL_AUDIT_TOOLS="${AUTO_INSTALL_AUDIT_TOOLS:-false}"  # true|false
 
 PYTEST_TARGETS=(
   tests/test_preflight.py
@@ -54,8 +56,21 @@ ensure_python_module_cli() {
   if "$PYTHON_BIN" -m "$module" --version >/dev/null 2>&1; then
     return 0
   fi
-  echo "Installing missing audit dependency: $package"
-  install_python_package "$package"
+  case "$AUTO_INSTALL_AUDIT_TOOLS" in
+    true|1|yes|on)
+      echo "Installing missing audit dependency: $package"
+      install_python_package "$package"
+      ;;
+    false|0|no|off)
+      echo "Missing required audit dependency: $package" >&2
+      echo "Install it first or set AUTO_INSTALL_AUDIT_TOOLS=true." >&2
+      return 1
+      ;;
+    *)
+      echo "Invalid AUTO_INSTALL_AUDIT_TOOLS='$AUTO_INSTALL_AUDIT_TOOLS' (expected true|false)" >&2
+      return 1
+      ;;
+  esac
 }
 
 run_step() {
@@ -177,12 +192,12 @@ maybe_run_cloud_preflight() {
   esac
 
   if [[ "$should_run" -eq 0 ]]; then
-    SUMMARY_LINES+=("SKIP|Cloud preflight (--audit-mode)")
+    SUMMARY_LINES+=("SKIP|Cloud preflight (--profile audit)")
     return 0
   fi
 
-  run_step "Cloud preflight (--audit-mode)" \
-    "${CLI_CMD[@]}" --config "$CLOUD_CONFIG" --work-dir "$WORK_DIR" preflight --audit-mode
+  run_step "Cloud preflight (--profile audit)" \
+    "${CLI_CMD[@]}" --config "$CLOUD_CONFIG" --work-dir "$WORK_DIR" preflight --profile audit
 }
 
 maybe_run_local_preflight() {
@@ -197,12 +212,49 @@ maybe_run_local_preflight() {
   esac
 
   if [[ "$should_run" -eq 0 ]]; then
-    SUMMARY_LINES+=("SKIP|Local preflight (--audit-mode)")
+    SUMMARY_LINES+=("SKIP|Local preflight (--profile audit)")
     return 0
   fi
 
-  run_step "Local preflight (--audit-mode)" \
-    "${CLI_CMD[@]}" --config "$LOCAL_CONFIG" --work-dir "$WORK_DIR" preflight --audit-mode
+  run_step "Local preflight (--profile audit)" \
+    "${CLI_CMD[@]}" --config "$LOCAL_CONFIG" --work-dir "$WORK_DIR" preflight --profile audit
+}
+
+run_pytest_scope() {
+  ensure_python_module_cli pytest pytest || return 1
+
+  case "$AUDIT_SCOPE" in
+    quick)
+      env \
+        -u BLUEPRINT_GPU_HOURLY_RATE_USD \
+        -u BLUEPRINT_AUTO_SHUTDOWN_CMD \
+        -u BLUEPRINT_POST_STAGE_SYNC_CMD \
+        -u BLUEPRINT_POST_STAGE_SYNC_STRICT \
+        "$PYTHON_BIN" -m pytest "${PYTEST_TARGETS[@]}" -q
+      ;;
+    full)
+      env \
+        -u BLUEPRINT_GPU_HOURLY_RATE_USD \
+        -u BLUEPRINT_AUTO_SHUTDOWN_CMD \
+        -u BLUEPRINT_POST_STAGE_SYNC_CMD \
+        -u BLUEPRINT_POST_STAGE_SYNC_STRICT \
+        "$PYTHON_BIN" -m pytest -m "not gpu" -q
+      ;;
+    *)
+      echo "Invalid AUDIT_SCOPE='$AUDIT_SCOPE' (expected quick|full)" >&2
+      return 1
+      ;;
+  esac
+}
+
+run_lint_check() {
+  ensure_python_module_cli ruff ruff || return 1
+  "$PYTHON_BIN" -m ruff check src tests scripts
+}
+
+run_format_check() {
+  ensure_python_module_cli ruff ruff || return 1
+  "$PYTHON_BIN" -m ruff format --check src tests scripts
 }
 
 echo "== Pre-GPU Audit =="
@@ -214,9 +266,11 @@ echo "Work dir: $WORK_DIR"
 echo "Run local preflight: $RUN_LOCAL_PREFLIGHT"
 echo "Run cloud preflight: $RUN_CLOUD_PREFLIGHT"
 echo "Run secret scan: $RUN_SECRET_SCAN"
-echo "Run targeted pytest: $RUN_TARGETED_PYTEST"
+echo "Run pytest: $RUN_TARGETED_PYTEST"
 echo "Run lint: $RUN_LINT"
 echo "Run format check: $RUN_FORMAT_CHECK"
+echo "Audit scope: $AUDIT_SCOPE"
+echo "Auto-install audit tools: $AUTO_INSTALL_AUDIT_TOOLS"
 
 cd "$ROOT_DIR"
 
@@ -234,24 +288,13 @@ else
   exit 1
 fi
 
-ensure_python_module_cli pytest pytest
-ensure_python_module_cli ruff ruff
-
 run_optional_step "$RUN_SECRET_SCAN" "Secret scan" secret_scan
 
-run_optional_step "$RUN_TARGETED_PYTEST" "Targeted pytest" \
-  env \
-    -u BLUEPRINT_GPU_HOURLY_RATE_USD \
-    -u BLUEPRINT_AUTO_SHUTDOWN_CMD \
-    -u BLUEPRINT_POST_STAGE_SYNC_CMD \
-    -u BLUEPRINT_POST_STAGE_SYNC_STRICT \
-    "$PYTHON_BIN" -m pytest "${PYTEST_TARGETS[@]}" -q
+run_optional_step "$RUN_TARGETED_PYTEST" "Pytest ($AUDIT_SCOPE)" run_pytest_scope
 
-run_optional_step "$RUN_LINT" "Lint (ruff check)" \
-  "$PYTHON_BIN" -m ruff check src tests scripts
+run_optional_step "$RUN_LINT" "Lint (ruff check)" run_lint_check
 
-run_optional_step "$RUN_FORMAT_CHECK" "Format check (ruff format --check)" \
-  "$PYTHON_BIN" -m ruff format --check src tests scripts
+run_optional_step "$RUN_FORMAT_CHECK" "Format check (ruff format --check)" run_format_check
 
 maybe_run_local_preflight || HAS_FAILURE=1
 

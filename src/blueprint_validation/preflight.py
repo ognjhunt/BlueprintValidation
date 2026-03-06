@@ -11,7 +11,7 @@ import subprocess
 import sys
 from importlib import import_module
 from pathlib import Path
-from typing import List
+from typing import Callable, List, Literal, cast
 
 from .common import PreflightCheck, get_logger
 from .config import ValidationConfig
@@ -20,12 +20,11 @@ from .evaluation.claim_benchmark import (
     claim_benchmark_strictness_failures,
     load_pinned_claim_benchmark,
 )
-from .enrichment.cosmos_runner import build_controlnet_spec
-from .training.dreamdojo_finetune import resolve_dreamdojo_experiment_name
-from .warmup import load_ply_means_and_colors_numpy
 from .validation import ManifestValidationError, load_and_validate_manifest
 
 logger = get_logger("preflight")
+
+PreflightProfile = Literal["audit", "runtime_local", "runtime_cloud"]
 
 _PI05_REQUIRED_TRAIN_FLAGS = {
     "--exp_name",
@@ -47,10 +46,67 @@ _PI05_REQUIRED_NORM_STATS_FLAGS = {
 _COSMOS_PREDICT_REPO = "nvidia/Cosmos-Predict2.5-2B"
 _COSMOS_PREDICT_REVISION = "6787e176dce74a101d922174a95dba29fa5f0c55"
 _COSMOS_PREDICT_TOKENIZER_FILENAME = "tokenizer.pth"
+_PROFILE_ALIASES = {
+    "audit": "audit",
+    "runtime_local": "runtime_local",
+    "runtime-local": "runtime_local",
+    "runtime_cloud": "runtime_cloud",
+    "runtime-cloud": "runtime_cloud",
+}
 
 
 def _env_truthy(name: str) -> bool:
     return (os.environ.get(name, "") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def normalize_preflight_profile(profile: str | None) -> PreflightProfile:
+    token = str(profile or "runtime_local").strip().lower()
+    normalized = _PROFILE_ALIASES.get(token)
+    if normalized is None:
+        allowed = ", ".join(sorted(_PROFILE_ALIASES))
+        raise ValueError(f"Unsupported preflight profile '{profile}'. Expected one of: {allowed}")
+    return cast(PreflightProfile, normalized)
+
+
+def _advisory_check(name: str, detail: str) -> PreflightCheck:
+    return PreflightCheck(name=name, passed=True, detail=detail)
+
+
+def _advisory_detail(profile: PreflightProfile, detail: str) -> str:
+    label = "Audit profile" if profile == "audit" else "runtime-local profile"
+    return f"{label}: {detail}"
+
+
+def _append_profiled_check(
+    checks: list[PreflightCheck],
+    *,
+    enforce: bool,
+    advisory_name: str,
+    advisory_detail: str,
+    factory: Callable[[], PreflightCheck],
+) -> None:
+    if enforce:
+        checks.append(factory())
+        return
+    checks.append(_advisory_check(advisory_name, advisory_detail))
+
+
+def _load_build_controlnet_spec():
+    from .enrichment.cosmos_runner import build_controlnet_spec
+
+    return build_controlnet_spec
+
+
+def _load_resolve_dreamdojo_experiment_name():
+    from .training.dreamdojo_finetune import resolve_dreamdojo_experiment_name
+
+    return resolve_dreamdojo_experiment_name
+
+
+def _load_ply_means_and_colors_numpy():
+    from .warmup import load_ply_means_and_colors_numpy
+
+    return load_ply_means_and_colors_numpy
 
 
 def check_gpu() -> PreflightCheck:
@@ -167,10 +223,15 @@ def _effective_policy_finetune_enabled(config: ValidationConfig) -> bool:
 
 def _resolve_eval_world_action_dim(config: ValidationConfig) -> int | None:
     """Resolve expected DreamDojo world-model action dim from configured experiment hints."""
-    token = (config.finetune.eval_world_experiment or config.finetune.experiment_config or "").strip()
+    token = (
+        config.finetune.eval_world_experiment or config.finetune.experiment_config or ""
+    ).strip()
     if not token:
         try:
-            token = resolve_dreamdojo_experiment_name(config.finetune.dreamdojo_repo, None)
+            token = _load_resolve_dreamdojo_experiment_name()(
+                config.finetune.dreamdojo_repo,
+                None,
+            )
         except Exception:
             return None
 
@@ -187,7 +248,9 @@ def _resolve_eval_world_action_dim(config: ValidationConfig) -> int | None:
     maybe = Path(token)
     candidate: Path
     if maybe.is_absolute() or "/" in token or token.endswith(".yaml"):
-        candidate = maybe if maybe.is_absolute() else (config.finetune.dreamdojo_repo / "configs" / maybe)
+        candidate = (
+            maybe if maybe.is_absolute() else (config.finetune.dreamdojo_repo / "configs" / maybe)
+        )
         if candidate.suffix != ".yaml":
             yaml_candidate = candidate.with_suffix(".yaml")
             if yaml_candidate.exists():
@@ -218,7 +281,11 @@ def _claim_mode_checks(
 ) -> list[PreflightCheck]:
     checks: list[PreflightCheck] = []
     mode = (config.eval_policy.mode or "").strip().lower()
-    scope = str(scope_override or getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only").strip().lower()
+    scope = (
+        str(scope_override or getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only")
+        .strip()
+        .lower()
+    )
     checks.append(
         PreflightCheck(
             name="eval_policy:mode",
@@ -237,7 +304,9 @@ def _claim_mode_checks(
         return checks
 
     if scope == "wm_only":
-        rollout_driver = (getattr(config.eval_policy, "rollout_driver", "scripted") or "").strip().lower()
+        rollout_driver = (
+            (getattr(config.eval_policy, "rollout_driver", "scripted") or "").strip().lower()
+        )
         checks.append(
             PreflightCheck(
                 name="wm_only:rollout_driver",
@@ -555,9 +624,7 @@ def check_cosmos_predict_tokenizer_access(cosmos_checkpoint_path: Path) -> Prefl
     return PreflightCheck(
         name=name,
         passed=True,
-        detail=(
-            f"HF access verified: {_COSMOS_PREDICT_REPO}/{_COSMOS_PREDICT_TOKENIZER_FILENAME}"
-        ),
+        detail=(f"HF access verified: {_COSMOS_PREDICT_REPO}/{_COSMOS_PREDICT_TOKENIZER_FILENAME}"),
     )
 
 
@@ -714,7 +781,8 @@ def check_dreamzero_runtime_contract(
             keyword_names = {
                 p.name
                 for p in params
-                if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+                if p.kind
+                in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
             }
             supports_constructor = has_var_kw or bool(
                 {"model_path", "checkpoint_path", "model_name"} & keyword_names
@@ -724,7 +792,8 @@ def check_dreamzero_runtime_contract(
             supports_constructor = False
 
         supports_inference = any(
-            callable(getattr(runtime_cls, m, None)) for m in ("predict_action", "infer_action", "infer", "generate")
+            callable(getattr(runtime_cls, m, None))
+            for m in ("predict_action", "infer_action", "infer", "generate")
         )
         if not supports_inference:
             # Only accept __call__ when explicitly implemented on the runtime class.
@@ -783,7 +852,12 @@ def check_facility_ply(facility_id: str, ply_path: Path) -> PreflightCheck:
     )
 
 
-def check_task_hints_bootstrap_readiness(facility_id: str, facility) -> PreflightCheck:
+def check_task_hints_bootstrap_readiness(
+    facility_id: str,
+    facility,
+    *,
+    deep_scan: bool = True,
+) -> PreflightCheck:
     """Validate that Stage 0 can synthesize task hints when no hints file is provided."""
     name = f"task_hints_bootstrap:{facility_id}"
     if facility.task_hints_path is not None and facility.task_hints_path.exists():
@@ -808,8 +882,15 @@ def check_task_hints_bootstrap_readiness(facility_id: str, facility) -> Prefligh
             detail=f"PLY not found for Stage 0 bootstrap: {facility.ply_path}",
         )
 
+    if not deep_scan:
+        return PreflightCheck(
+            name=name,
+            passed=True,
+            detail="Audit profile: full PLY bootstrap decode skipped; runtime preflight validates it.",
+        )
+
     try:
-        means, colors = load_ply_means_and_colors_numpy(facility.ply_path)
+        means, colors = _load_ply_means_and_colors_numpy()(facility.ply_path)
     except Exception as exc:
         return PreflightCheck(
             name=name,
@@ -844,13 +925,25 @@ def check_openvla_local_checkpoint_requirement(
     scope_override: str | None = None,
 ) -> PreflightCheck:
     name = "policy:local_checkpoint_requirement"
-    scope = str(scope_override or getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only").strip().lower()
+    scope = (
+        str(scope_override or getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only")
+        .strip()
+        .lower()
+    )
     if adapter_name != "openvla_oft":
-        return PreflightCheck(name=name, passed=True, detail=f"{adapter_name} does not use OpenVLA checkpoints")
+        return PreflightCheck(
+            name=name, passed=True, detail=f"{adapter_name} does not use OpenVLA checkpoints"
+        )
     if scope == "wm_only":
-        return PreflightCheck(name=name, passed=True, detail="Deferred because eval_policy.headline_scope=wm_only")
+        return PreflightCheck(
+            name=name, passed=True, detail="Deferred because eval_policy.headline_scope=wm_only"
+        )
     if str(config.eval_policy.mode or "claim").strip().lower() != "claim":
-        return PreflightCheck(name=name, passed=True, detail="Local OpenVLA checkpoint not required outside claim mode")
+        return PreflightCheck(
+            name=name,
+            passed=True,
+            detail="Local OpenVLA checkpoint not required outside claim mode",
+        )
     if _env_truthy("BLUEPRINT_ALLOW_REMOTE_OPENVLA_MODEL"):
         return PreflightCheck(
             name=name,
@@ -888,7 +981,9 @@ def check_claim_benchmark_readiness(
         str(getattr(config.eval_policy, "claim_protocol", "none") or "none").strip().lower()
         != "fixed_same_facility_uplift"
     ):
-        return PreflightCheck(name=name, passed=True, detail="Claim benchmark not required for this protocol")
+        return PreflightCheck(
+            name=name, passed=True, detail="Claim benchmark not required for this protocol"
+        )
 
     benchmark_path = facility.claim_benchmark_path
     if benchmark_path is None:
@@ -1247,7 +1342,7 @@ def check_cosmos_wrapper_contract(cosmos_repo: Path) -> PreflightCheck:
             detail=f"Failed to parse inference fields from {config_path}",
         )
 
-    spec = build_controlnet_spec(
+    spec = _load_build_controlnet_spec()(
         video_path=Path("/tmp/input.mp4"),
         depth_path=Path("/tmp/depth.mp4"),
         prompt="contract-check",
@@ -1280,7 +1375,10 @@ def check_dreamdojo_contract(
             detail=f"DreamDojo train entrypoint missing: {train_script}",
         )
     try:
-        experiment = resolve_dreamdojo_experiment_name(dreamdojo_repo, configured_experiment)
+        experiment = _load_resolve_dreamdojo_experiment_name()(
+            dreamdojo_repo,
+            configured_experiment,
+        )
     except Exception as exc:
         return PreflightCheck(
             name="finetune:dreamdojo_contract",
@@ -1342,11 +1440,21 @@ def check_cloud_shutdown_enforcement(config: ValidationConfig) -> PreflightCheck
     )
 
 
-def run_preflight(config: ValidationConfig, work_dir: Path | None = None) -> List[PreflightCheck]:
-    """Run all preflight checks and return results."""
+def run_preflight(
+    config: ValidationConfig,
+    work_dir: Path | None = None,
+    profile: str = "runtime_local",
+) -> List[PreflightCheck]:
+    """Run preflight checks for the requested profile and return results."""
+    normalized_profile = normalize_preflight_profile(profile)
+    enforce_runtime_requirements = normalized_profile != "audit"
+    enforce_cloud_requirements = normalized_profile == "runtime_cloud"
+
     checks: List[PreflightCheck] = []
     adapter_name = _canonical_policy_adapter_name(config.policy_adapter.name)
-    configured_scope = (getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only").strip().lower()
+    configured_scope = (
+        (getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only").strip().lower()
+    )
     effective_scope = _effective_headline_scope(config)
     wm_only_scope = effective_scope == "wm_only"
     effective_policy_finetune_enabled = _effective_policy_finetune_enabled(config)
@@ -1371,10 +1479,17 @@ def run_preflight(config: ValidationConfig, work_dir: Path | None = None) -> Lis
             )
         )
 
-    # GPU
-    checks.append(check_gpu())
+    _append_profiled_check(
+        checks,
+        enforce=enforce_runtime_requirements,
+        advisory_name="gpu",
+        advisory_detail=_advisory_detail(
+            normalized_profile,
+            "GPU availability is only enforced for runtime execution.",
+        ),
+        factory=check_gpu,
+    )
 
-    # Core dependencies
     for mod, pkg in [
         ("gsplat", "gsplat"),
         ("torch", "pytorch"),
@@ -1387,25 +1502,44 @@ def run_preflight(config: ValidationConfig, work_dir: Path | None = None) -> Lis
     ]:
         checks.append(check_dependency(mod, pkg))
 
-    # External tools
     checks.append(check_external_tool("ffmpeg"))
     checks.append(check_external_tool("ffprobe"))
 
-    # Facility PLY files
     for fid, fconf in config.facilities.items():
         checks.append(check_facility_ply(fid, fconf.ply_path))
         if fconf.task_hints_path is not None:
-            checks.append(
-                check_path_exists(
-                    fconf.task_hints_path,
-                    f"task_hints:{fid}",
-                )
+            checks.append(check_path_exists(fconf.task_hints_path, f"task_hints:{fid}"))
+        checks.append(
+            check_task_hints_bootstrap_readiness(
+                fid,
+                fconf,
+                deep_scan=enforce_runtime_requirements,
             )
-        checks.append(check_task_hints_bootstrap_readiness(fid, fconf))
+        )
 
-    # Model weights
-    checks.append(check_model_weights(config.finetune.dreamdojo_checkpoint, "DreamDojo"))
-    checks.append(check_model_weights(config.enrich.cosmos_checkpoint, "Cosmos-Transfer-2.5"))
+    _append_profiled_check(
+        checks,
+        enforce=enforce_runtime_requirements,
+        advisory_name="weights:DreamDojo",
+        advisory_detail=_advisory_detail(
+            normalized_profile,
+            "Local DreamDojo weights are not required for CPU audit runs.",
+        ),
+        factory=lambda: check_model_weights(config.finetune.dreamdojo_checkpoint, "DreamDojo"),
+    )
+    _append_profiled_check(
+        checks,
+        enforce=enforce_runtime_requirements,
+        advisory_name="weights:Cosmos-Transfer-2.5",
+        advisory_detail=_advisory_detail(
+            normalized_profile,
+            "Local Cosmos Transfer weights are not required for CPU audit runs.",
+        ),
+        factory=lambda: check_model_weights(
+            config.enrich.cosmos_checkpoint,
+            "Cosmos-Transfer-2.5",
+        ),
+    )
     if wm_only_scope:
         checks.append(
             PreflightCheck(
@@ -1426,15 +1560,40 @@ def run_preflight(config: ValidationConfig, work_dir: Path | None = None) -> Lis
                 checkpoint_path=checkpoint_path,
             )
         )
-        checks.append(
-            check_openvla_local_checkpoint_requirement(
+        _append_profiled_check(
+            checks,
+            enforce=enforce_runtime_requirements,
+            advisory_name="policy:local_checkpoint_requirement",
+            advisory_detail=_advisory_detail(
+                normalized_profile,
+                "Local policy checkpoints are enforced only for runtime execution.",
+            ),
+            factory=lambda: check_openvla_local_checkpoint_requirement(
                 config,
                 adapter_name,
                 scope_override=effective_scope,
-            )
+            ),
         )
-    checks.append(check_hf_auth())
-    checks.append(check_cosmos_predict_tokenizer_access(config.enrich.cosmos_checkpoint))
+    _append_profiled_check(
+        checks,
+        enforce=enforce_runtime_requirements,
+        advisory_name="hf_auth",
+        advisory_detail=_advisory_detail(
+            normalized_profile,
+            "HF authentication is only enforced for runtime asset resolution.",
+        ),
+        factory=check_hf_auth,
+    )
+    _append_profiled_check(
+        checks,
+        enforce=enforce_runtime_requirements,
+        advisory_name="enrich:cosmos_predict_tokenizer",
+        advisory_detail=_advisory_detail(
+            normalized_profile,
+            "Remote/local Cosmos tokenizer access is only enforced for Stage 2 runtime.",
+        ),
+        factory=lambda: check_cosmos_predict_tokenizer_access(config.enrich.cosmos_checkpoint),
+    )
     for fid, facility in config.facilities.items():
         checks.append(
             check_claim_benchmark_readiness(
@@ -1445,7 +1604,6 @@ def run_preflight(config: ValidationConfig, work_dir: Path | None = None) -> Lis
             )
         )
 
-    # Runtime repos and scripts required by Stage 2+.
     checks.append(check_path_exists(config.enrich.cosmos_repo, "repo:cosmos_transfer"))
     checks.append(
         check_path_exists_under(
@@ -1455,8 +1613,6 @@ def run_preflight(config: ValidationConfig, work_dir: Path | None = None) -> Lis
         )
     )
     checks.append(check_cosmos_wrapper_contract(config.enrich.cosmos_repo))
-    # Cosmos Transfer inference imports SAM2 helpers and natsort at module import time.
-    # Require both up-front so Stage 2 cannot fail mid-run on missing dependency.
     checks.append(check_dependency("sam2", "sam2"))
     checks.append(check_dependency("natsort", "natsort"))
     checks.append(check_dependency("lightning", "lightning"))
@@ -1475,15 +1631,22 @@ def run_preflight(config: ValidationConfig, work_dir: Path | None = None) -> Lis
             "repo:dreamdojo:configs",
         )
     )
-    checks.append(
-        check_python_import_from_path(
+    _append_profiled_check(
+        checks,
+        enforce=enforce_runtime_requirements,
+        advisory_name="import:cosmos_predict2",
+        advisory_detail=_advisory_detail(
+            normalized_profile,
+            "CUDA-only DreamDojo/Cosmos runtime imports are not required for CPU audit runs.",
+        ),
+        factory=lambda: check_python_import_from_path(
             (
                 "cosmos_predict2.action_conditioned.inference",
                 "cosmos_predict2.action_conditioned",
             ),
             config.finetune.dreamdojo_repo,
             "import:cosmos_predict2",
-        )
+        ),
     )
     checks.append(
         check_dreamdojo_contract(
@@ -1492,11 +1655,36 @@ def run_preflight(config: ValidationConfig, work_dir: Path | None = None) -> Lis
         )
     )
 
-    # API keys
-    checks.append(check_api_key(config.eval_policy.vlm_judge.api_key_env))
-    checks.append(check_api_key_for_scope(config.eval_policy.vlm_judge.api_key_env, "eval_spatial"))
-    checks.append(
-        check_api_key_for_scope(config.eval_policy.vlm_judge.api_key_env, "eval_crosssite")
+    judge_api_env = config.eval_policy.vlm_judge.api_key_env
+    _append_profiled_check(
+        checks,
+        enforce=enforce_runtime_requirements,
+        advisory_name=f"api_key:{judge_api_env}",
+        advisory_detail=_advisory_detail(
+            normalized_profile,
+            f"{judge_api_env} is only enforced for remote judge runtime calls.",
+        ),
+        factory=lambda: check_api_key(judge_api_env),
+    )
+    _append_profiled_check(
+        checks,
+        enforce=enforce_runtime_requirements,
+        advisory_name="api_key:eval_spatial",
+        advisory_detail=_advisory_detail(
+            normalized_profile,
+            "Spatial-eval API credentials are only enforced for runtime evaluation.",
+        ),
+        factory=lambda: check_api_key_for_scope(judge_api_env, "eval_spatial"),
+    )
+    _append_profiled_check(
+        checks,
+        enforce=enforce_runtime_requirements,
+        advisory_name="api_key:eval_crosssite",
+        advisory_detail=_advisory_detail(
+            normalized_profile,
+            "Cross-site VLM credentials are only enforced for runtime evaluation.",
+        ),
+        factory=lambda: check_api_key_for_scope(judge_api_env, "eval_crosssite"),
     )
 
     if config.robot_composite.enabled:
@@ -1514,7 +1702,16 @@ def run_preflight(config: ValidationConfig, work_dir: Path | None = None) -> Lis
             )
 
     if config.gemini_polish.enabled:
-        checks.append(check_api_key(config.gemini_polish.api_key_env))
+        _append_profiled_check(
+            checks,
+            enforce=enforce_runtime_requirements,
+            advisory_name=f"api_key:{config.gemini_polish.api_key_env}",
+            advisory_detail=_advisory_detail(
+                normalized_profile,
+                f"{config.gemini_polish.api_key_env} is only enforced for Gemini runtime calls.",
+            ),
+            factory=lambda: check_api_key(config.gemini_polish.api_key_env),
+        )
 
     if config.robosplat.enabled:
         valid_backend = config.robosplat.backend in {"auto", "vendor", "native", "legacy_scan"}
@@ -1684,9 +1881,7 @@ def run_preflight(config: ValidationConfig, work_dir: Path | None = None) -> Lis
             )
         )
 
-    if wm_only_scope:
-        pass
-    elif effective_policy_finetune_enabled:
+    if not wm_only_scope and effective_policy_finetune_enabled:
         if adapter_name == "openvla_oft":
             openvla_backend = config.policy_adapter.openvla
             checks.append(check_external_tool("torchrun"))
@@ -1716,7 +1911,6 @@ def run_preflight(config: ValidationConfig, work_dir: Path | None = None) -> Lis
                     dataset_names,
                 )
             )
-            # When rollout_dataset is enabled, pair-training stages generate datasets later in-pipeline.
             if config.rollout_dataset.enabled:
                 checks.append(check_dependency("tensorflow", "tensorflow"))
                 checks.append(check_dependency("tensorflow_datasets", "tensorflow-datasets"))
@@ -1752,12 +1946,7 @@ def run_preflight(config: ValidationConfig, work_dir: Path | None = None) -> Lis
                 dataset_dir = (
                     config.policy_finetune.data_root_dir / config.policy_finetune.dataset_name
                 )
-                checks.append(
-                    check_path_exists(
-                        dataset_dir,
-                        "policy_finetune:dataset_dir",
-                    )
-                )
+                checks.append(check_path_exists(dataset_dir, "policy_finetune:dataset_dir"))
         elif adapter_name == "pi05":
             pi05 = config.policy_adapter.pi05
             checks.append(
@@ -1831,12 +2020,7 @@ def run_preflight(config: ValidationConfig, work_dir: Path | None = None) -> Lis
                 dataset_dir = (
                     config.policy_finetune.data_root_dir / config.policy_finetune.dataset_name
                 )
-                checks.append(
-                    check_path_exists(
-                        dataset_dir,
-                        "policy_finetune:dataset_dir",
-                    )
-                )
+                checks.append(check_path_exists(dataset_dir, "policy_finetune:dataset_dir"))
         elif adapter_name == "dreamzero":
             dz = config.policy_adapter.dreamzero
             if bool(dz.allow_training):
@@ -1879,12 +2063,7 @@ def run_preflight(config: ValidationConfig, work_dir: Path | None = None) -> Lis
                     dataset_dir = (
                         config.policy_finetune.data_root_dir / config.policy_finetune.dataset_name
                     )
-                    checks.append(
-                        check_path_exists(
-                            dataset_dir,
-                            "policy_finetune:dataset_dir",
-                        )
-                    )
+                    checks.append(check_path_exists(dataset_dir, "policy_finetune:dataset_dir"))
         else:
             checks.append(
                 PreflightCheck(
@@ -1897,8 +2076,26 @@ def run_preflight(config: ValidationConfig, work_dir: Path | None = None) -> Lis
                 )
             )
 
-    checks.append(check_cloud_budget_enforcement(config))
-    checks.append(check_cloud_shutdown_enforcement(config))
+    _append_profiled_check(
+        checks,
+        enforce=enforce_cloud_requirements,
+        advisory_name="cloud:budget_enforcement",
+        advisory_detail=_advisory_detail(
+            normalized_profile,
+            "Cloud budget enforcement is only required for runtime-cloud preflight.",
+        ),
+        factory=lambda: check_cloud_budget_enforcement(config),
+    )
+    _append_profiled_check(
+        checks,
+        enforce=enforce_cloud_requirements,
+        advisory_name="cloud:auto_shutdown_enforcement",
+        advisory_detail=_advisory_detail(
+            normalized_profile,
+            "Auto-shutdown enforcement is only required for runtime-cloud preflight.",
+        ),
+        factory=lambda: check_cloud_shutdown_enforcement(config),
+    )
 
     if config.policy_rl_loop.enabled:
         checks.append(
@@ -1932,10 +2129,10 @@ def run_preflight(config: ValidationConfig, work_dir: Path | None = None) -> Lis
             )
         )
 
-    # Log summary
     passed = sum(1 for c in checks if c.passed)
     total = len(checks)
-    logger.info("Preflight: %d/%d checks passed", passed, total)
+    profile_label = normalized_profile.replace("_", "-")
+    logger.info("Preflight (%s): %d/%d checks passed", profile_label, passed, total)
     for c in checks:
         status = "PASS" if c.passed else "FAIL"
         logger.info("  [%s] %s %s", status, c.name, f"— {c.detail}" if c.detail else "")

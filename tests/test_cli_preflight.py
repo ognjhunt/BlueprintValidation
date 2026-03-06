@@ -1,4 +1,4 @@
-"""Tests for CLI preflight audit-mode behavior."""
+"""Tests for CLI preflight profile handling."""
 
 from __future__ import annotations
 
@@ -8,21 +8,24 @@ pytest.importorskip("click")
 from click.testing import CliRunner
 
 
-def test_preflight_audit_mode_ignores_gpu_failure(monkeypatch, tmp_path):
+def test_preflight_audit_mode_maps_to_audit_profile(monkeypatch, tmp_path):
     import blueprint_validation.cli as cli_module
     import blueprint_validation.preflight as preflight_module
-    from blueprint_validation.common import PreflightCheck
 
     config_path = tmp_path / "config.yaml"
     config_path.write_text("schema_version: v1\n")
+    seen = {}
 
     monkeypatch.setattr(cli_module, "load_config", lambda _path: object())
+
+    def _run_preflight(_cfg, **kwargs):
+        seen["profile"] = kwargs.get("profile")
+        return []
+
     monkeypatch.setattr(
         preflight_module,
         "run_preflight",
-        lambda _cfg, **_kwargs: [
-            PreflightCheck(name="gpu", passed=False, detail="No CUDA GPU detected"),
-        ],
+        _run_preflight,
     )
 
     result = CliRunner().invoke(
@@ -30,10 +33,11 @@ def test_preflight_audit_mode_ignores_gpu_failure(monkeypatch, tmp_path):
         ["--config", str(config_path), "preflight", "--audit-mode"],
     )
     assert result.exit_code == 0
-    assert "Audit mode: ignoring GPU preflight failure." in result.output
+    assert seen["profile"] == "audit"
+    assert "deprecated; using --profile audit" in result.output
 
 
-def test_preflight_audit_mode_keeps_non_gpu_failures_fatal(monkeypatch, tmp_path):
+def test_preflight_profile_keeps_failures_fatal(monkeypatch, tmp_path):
     import blueprint_validation.cli as cli_module
     import blueprint_validation.preflight as preflight_module
     from blueprint_validation.common import PreflightCheck
@@ -46,14 +50,13 @@ def test_preflight_audit_mode_keeps_non_gpu_failures_fatal(monkeypatch, tmp_path
         preflight_module,
         "run_preflight",
         lambda _cfg, **_kwargs: [
-            PreflightCheck(name="gpu", passed=False, detail="No CUDA GPU detected"),
             PreflightCheck(name="dep:pytorch", passed=False, detail="Cannot import torch"),
         ],
     )
 
     result = CliRunner().invoke(
         cli_module.cli,
-        ["--config", str(config_path), "preflight", "--audit-mode"],
+        ["--config", str(config_path), "preflight", "--profile", "audit"],
     )
     assert result.exit_code == 1
     assert "FAIL: dep:pytorch" in result.output

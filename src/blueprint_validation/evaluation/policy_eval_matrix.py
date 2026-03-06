@@ -26,6 +26,7 @@ import numpy as np
 
 from ..common import get_logger, read_json, write_json
 from ..config import ValidationConfig
+from .stats_utils import paired_ttest_p_value
 
 logger = get_logger("evaluation.policy_eval_matrix")
 
@@ -128,7 +129,9 @@ def _build_multi_facility_policy_eval_matrix(
     novel = _load_pair_eval_payload(work_dir / novel_facility) if novel_facility else None
 
     seen_axis = _axis_from_stage_metrics(primary["metrics"])
-    unseen_tasks = [str(t).strip() for t in (config.policy_compare.heldout_tasks or []) if str(t).strip()]
+    unseen_tasks = [
+        str(t).strip() for t in (config.policy_compare.heldout_tasks or []) if str(t).strip()
+    ]
     unseen_axis = _axis_from_filtered_tasks(primary["rows"], unseen_tasks)
     novel_axis = _axis_seen_task_novel_env(
         primary_rows=primary["rows"],
@@ -169,7 +172,11 @@ def _load_trained_eval_payload(facility_dir: Path | None) -> Dict | None:
     stage_payload = read_json(stage_path)
     outputs = stage_payload.get("outputs", {}) if isinstance(stage_payload, dict) else {}
     score_path_raw = outputs.get("scores_path")
-    score_path = Path(str(score_path_raw)) if score_path_raw else facility_dir / "trained_eval" / "vlm_scores_combined.json"
+    score_path = (
+        Path(str(score_path_raw))
+        if score_path_raw
+        else facility_dir / "trained_eval" / "vlm_scores_combined.json"
+    )
     if not score_path.exists():
         return None
     score_payload = read_json(score_path)
@@ -238,7 +245,10 @@ def _axis_from_condition_pairs(
         exclude_tasks=exclude_tasks,
     )
     if not paired:
-        return {"available": False, "detail": "No paired rows matched the requested condition/task filter."}
+        return {
+            "available": False,
+            "detail": "No paired rows matched the requested condition/task filter.",
+        }
 
     left_scores = [float(left.get("task_score", 0.0)) for left, _ in paired]
     right_scores = [float(right.get("task_score", 0.0)) for _, right in paired]
@@ -350,7 +360,9 @@ def _pair_metrics_from_pairs(pairs: List[Tuple[Dict, Dict]]) -> Dict:
         "num_pairs": len(pairs),
         "policy_base_mean_task_score": round(float(np.mean(base_scores)), 3),
         "policy_site_mean_task_score": round(float(np.mean(site_scores)), 3),
-        "task_score_absolute_difference": round(float(np.mean(site_scores)) - float(np.mean(base_scores)), 3),
+        "task_score_absolute_difference": round(
+            float(np.mean(site_scores)) - float(np.mean(base_scores)), 3
+        ),
         "p_value_task_score": round(p_value, 6) if p_value is not None else None,
         "win_rate_site_over_base": round(wins / max(len(pairs), 1), 3),
     }
@@ -375,15 +387,7 @@ def _site_task_scores(rows: List[Dict], task_set: set[str]) -> List[float]:
 
 
 def _paired_ttest_p_value(a: List[float], b: List[float]) -> float | None:
-    if len(a) < 2 or len(a) != len(b):
-        return None
-    try:
-        from scipy import stats
-
-        _, p_value = stats.ttest_rel(a, b)
-        return float(p_value)
-    except Exception:
-        return None
+    return paired_ttest_p_value(a, b)
 
 
 def _independent_ttest_p_value(a: List[float], b: List[float]) -> float | None:

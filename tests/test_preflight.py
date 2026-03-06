@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import sys
 import types
 from pathlib import Path
@@ -196,7 +197,9 @@ def _patch_preflight_fast(monkeypatch, preflight):
     monkeypatch.setattr(preflight, "check_dreamdojo_contract", lambda *a, **k: _ok("dreamdojo"))
     monkeypatch.setattr(preflight, "check_python_import_from_path", lambda *a, **k: _ok("import"))
     monkeypatch.setattr(
-        preflight, "check_external_interaction_manifest", lambda *a, **k: _ok("external_interaction")
+        preflight,
+        "check_external_interaction_manifest",
+        lambda *a, **k: _ok("external_interaction"),
     )
     monkeypatch.setattr(
         preflight, "check_dreamzero_runtime_contract", lambda *a, **k: _ok("dreamzero_runtime")
@@ -513,9 +516,7 @@ def test_preflight_wm_only_defers_policy_pipeline(sample_config, monkeypatch):
     sample_config.eval_policy.mode = "claim"
     sample_config.eval_policy.headline_scope = "wm_only"
     sample_config.eval_policy.rollout_driver = "scripted"
-    sample_config.finetune.eval_world_experiment = (
-        "cosmos_predict2p5_2B_reason_embeddings_action_conditioned_rectified_flow_bridge_13frame_256x320"
-    )
+    sample_config.finetune.eval_world_experiment = "cosmos_predict2p5_2B_reason_embeddings_action_conditioned_rectified_flow_bridge_13frame_256x320"
     sample_config.policy_finetune.enabled = True
 
     checks = preflight.run_preflight(sample_config)
@@ -534,9 +535,7 @@ def test_preflight_claim_dual_keeps_action_contract_checks(sample_config, monkey
     sample_config.eval_policy.headline_scope = "dual"
     sample_config.eval_policy.required_action_dim = 7
     sample_config.policy_adapter.openvla.policy_action_dim = 7
-    sample_config.finetune.eval_world_experiment = (
-        "cosmos_predict2p5_2B_reason_embeddings_action_conditioned_rectified_flow_bridge_13frame_256x320"
-    )
+    sample_config.finetune.eval_world_experiment = "cosmos_predict2p5_2B_reason_embeddings_action_conditioned_rectified_flow_bridge_13frame_256x320"
 
     checks = preflight.run_preflight(sample_config)
     by_name = {c.name: c for c in checks}
@@ -579,9 +578,7 @@ def test_preflight_dreamzero_checks_inference_import(sample_config, monkeypatch)
     assert by_name["policy_adapter:dreamzero:inference_import"].passed is False
 
 
-def test_preflight_dreamzero_runtime_checks_run_without_policy_finetune(
-    sample_config, monkeypatch
-):
+def test_preflight_dreamzero_runtime_checks_run_without_policy_finetune(sample_config, monkeypatch):
     import blueprint_validation.preflight as preflight
     from blueprint_validation.common import PreflightCheck
 
@@ -650,7 +647,10 @@ def test_preflight_dreamzero_training_required_when_effective_policy_finetune_en
     checks = preflight.run_preflight(sample_config)
     by_name = {c.name: c for c in checks}
     assert by_name["policy_adapter:dreamzero:allow_training"].passed is False
-    assert "requires policy training" in by_name["policy_adapter:dreamzero:allow_training"].detail.lower()
+    assert (
+        "requires policy training"
+        in by_name["policy_adapter:dreamzero:allow_training"].detail.lower()
+    )
 
 
 def test_preflight_dreamzero_training_required_when_action_boost_auto_enables_policy_finetune(
@@ -718,3 +718,111 @@ class Runtime:
     )
     assert result.passed is False
     assert "missing inference entrypoints" in result.detail.lower()
+
+
+def test_run_preflight_audit_profile_marks_runtime_requirements_advisory(
+    sample_config, monkeypatch
+):
+    import blueprint_validation.preflight as preflight
+    from blueprint_validation.common import PreflightCheck
+
+    _patch_preflight_fast(monkeypatch, preflight)
+    observed = {}
+
+    def _task_hints(_facility_id, _facility, *, deep_scan=True):
+        observed["deep_scan"] = deep_scan
+        return PreflightCheck(name="task_hints_bootstrap", passed=True, detail="ok")
+
+    monkeypatch.setattr(preflight, "check_task_hints_bootstrap_readiness", _task_hints)
+    for attr in [
+        "check_gpu",
+        "check_model_weights",
+        "check_hf_auth",
+        "check_cosmos_predict_tokenizer_access",
+        "check_openvla_local_checkpoint_requirement",
+        "check_api_key",
+        "check_api_key_for_scope",
+        "check_python_import_from_path",
+    ]:
+        monkeypatch.setattr(
+            preflight,
+            attr,
+            lambda *a, _attr=attr, **k: (_ for _ in ()).throw(
+                AssertionError(f"{_attr} should be skipped in audit profile")
+            ),
+        )
+
+    checks = preflight.run_preflight(sample_config, profile="audit")
+    by_name = {c.name: c for c in checks}
+    assert observed["deep_scan"] is False
+    assert by_name["gpu"].passed is True
+    assert "Audit profile" in by_name["gpu"].detail
+    assert by_name["weights:DreamDojo"].passed is True
+    assert by_name["policy:local_checkpoint_requirement"].passed is True
+    assert by_name["hf_auth"].passed is True
+    assert by_name["import:cosmos_predict2"].passed is True
+    assert by_name["api_key:eval_spatial"].passed is True
+
+
+def test_run_preflight_runtime_local_marks_cloud_guards_advisory(sample_config, monkeypatch):
+    import blueprint_validation.preflight as preflight
+
+    _patch_preflight_fast(monkeypatch, preflight)
+    monkeypatch.setattr(
+        preflight,
+        "check_cloud_budget_enforcement",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("cloud budget enforcement should be advisory in runtime-local")
+        ),
+    )
+    monkeypatch.setattr(
+        preflight,
+        "check_cloud_shutdown_enforcement",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("cloud shutdown enforcement should be advisory in runtime-local")
+        ),
+    )
+
+    checks = preflight.run_preflight(sample_config, profile="runtime-local")
+    by_name = {c.name: c for c in checks}
+    assert by_name["cloud:budget_enforcement"].passed is True
+    assert "runtime-local profile" in by_name["cloud:budget_enforcement"].detail
+    assert by_name["cloud:auto_shutdown_enforcement"].passed is True
+
+
+def test_preflight_module_import_is_lazy_for_heavy_helpers(monkeypatch):
+    for name in [
+        "blueprint_validation.preflight",
+        "blueprint_validation.warmup",
+        "blueprint_validation.enrichment.cosmos_runner",
+        "blueprint_validation.training.dreamdojo_finetune",
+    ]:
+        sys.modules.pop(name, None)
+
+    def _blocking_module(module_name: str) -> types.ModuleType:
+        module = types.ModuleType(module_name)
+
+        def __getattr__(attr):
+            raise AssertionError(f"{module_name} accessed during preflight import via {attr}")
+
+        module.__getattr__ = __getattr__  # type: ignore[attr-defined]
+        return module
+
+    monkeypatch.setitem(
+        sys.modules,
+        "blueprint_validation.warmup",
+        _blocking_module("blueprint_validation.warmup"),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "blueprint_validation.enrichment.cosmos_runner",
+        _blocking_module("blueprint_validation.enrichment.cosmos_runner"),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "blueprint_validation.training.dreamdojo_finetune",
+        _blocking_module("blueprint_validation.training.dreamdojo_finetune"),
+    )
+
+    module = importlib.import_module("blueprint_validation.preflight")
+    assert hasattr(module, "run_preflight")

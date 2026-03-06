@@ -77,24 +77,22 @@ class StageResult:
         }
 
     def save(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self.to_dict(), indent=2))
+        write_json(self.to_dict(), path)
 
 
-def write_json(data: Any, path: Path) -> None:
+def write_text_atomic(path: Path, text: str, *, encoding: str = "utf-8") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(data, indent=2, default=str)
     tmp_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
             mode="w",
-            encoding="utf-8",
+            encoding=encoding,
             dir=path.parent,
             prefix=f".{path.name}.",
             suffix=".tmp",
             delete=False,
         ) as tmp:
-            tmp.write(payload)
+            tmp.write(text)
             tmp.flush()
             os.fsync(tmp.fileno())
             tmp_path = Path(tmp.name)
@@ -102,6 +100,11 @@ def write_json(data: Any, path: Path) -> None:
     finally:
         if tmp_path is not None and tmp_path.exists():
             tmp_path.unlink(missing_ok=True)
+
+
+def write_json(data: Any, path: Path) -> None:
+    payload = json.dumps(data, indent=2, default=str)
+    write_text_atomic(path, payload)
 
 
 def read_json(path: Path) -> Any:

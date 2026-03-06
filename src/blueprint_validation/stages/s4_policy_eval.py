@@ -60,6 +60,7 @@ from ..evaluation.scripted_rollout_driver import (
     build_scripted_trace_manifest,
     run_scripted_rollout,
 )
+from ..evaluation.stats_utils import paired_ttest_p_value
 from ..evaluation.rollout_utils import run_rollout_with_adapter
 from ..evaluation.task_success import evaluate_task_success
 from ..policy_adapters import get_policy_adapter
@@ -163,7 +164,9 @@ class PolicyEvalStage(PipelineStage):
             ),
         }
         claim_benchmark_path = (
-            Path(facility.claim_benchmark_path) if facility.claim_benchmark_path is not None else None
+            Path(facility.claim_benchmark_path)
+            if facility.claim_benchmark_path is not None
+            else None
         )
         claim_benchmark_manifest_hash = ""
         task_specs: List[Dict[str, object]] = []
@@ -219,7 +222,9 @@ class PolicyEvalStage(PipelineStage):
                 benchmark=claim_benchmark,
                 min_eval_task_specs=int(config.eval_policy.claim_strictness.min_eval_task_specs),
                 min_eval_start_clips=int(config.eval_policy.claim_strictness.min_eval_start_clips),
-                min_common_eval_cells=int(config.eval_policy.claim_strictness.min_common_eval_cells),
+                min_common_eval_cells=int(
+                    config.eval_policy.claim_strictness.min_common_eval_cells
+                ),
             )
             if strictness_failures:
                 return StageResult(
@@ -254,7 +259,9 @@ class PolicyEvalStage(PipelineStage):
                 rollout_assignments = list(shared_manifest.get("assignments", []))
                 reused_shared_manifest = bool(rollout_assignments)
             if not rollout_assignments:
-                rollout_assignments = [dict(assignment) for assignment in claim_benchmark.assignments]
+                rollout_assignments = [
+                    dict(assignment) for assignment in claim_benchmark.assignments
+                ]
                 save_shared_task_start_manifest(
                     path=shared_manifest_path,
                     facility_name=facility.name,
@@ -312,7 +319,9 @@ class PolicyEvalStage(PipelineStage):
                     num_rollouts=planned_rollouts,
                     render_manifest=render_manifest,
                     task_hints_path=facility.task_hints_path,
-                    min_assignment_quality_score=float(config.eval_policy.min_assignment_quality_score),
+                    min_assignment_quality_score=float(
+                        config.eval_policy.min_assignment_quality_score
+                    ),
                     require_object_grounded_manip_tasks=bool(
                         config.eval_policy.require_object_grounded_manip_tasks
                     ),
@@ -409,9 +418,15 @@ class PolicyEvalStage(PipelineStage):
                     world_snapshot_hash=world_snapshot_hash,
                     train_split=float(config.rollout_dataset.train_split),
                     split_strategy=str(config.eval_policy.split_strategy),
-                    min_eval_task_specs=int(config.eval_policy.claim_strictness.min_eval_task_specs),
-                    min_eval_start_clips=int(config.eval_policy.claim_strictness.min_eval_start_clips),
-                    min_common_eval_cells=int(config.eval_policy.claim_strictness.min_common_eval_cells),
+                    min_eval_task_specs=int(
+                        config.eval_policy.claim_strictness.min_eval_task_specs
+                    ),
+                    min_eval_start_clips=int(
+                        config.eval_policy.claim_strictness.min_eval_start_clips
+                    ),
+                    min_common_eval_cells=int(
+                        config.eval_policy.claim_strictness.min_common_eval_cells
+                    ),
                 )
             except ValueError as exc:
                 return StageResult(
@@ -464,7 +479,10 @@ class PolicyEvalStage(PipelineStage):
             }
             for assignment in rollout_assignments:
                 claim_cell = claim_cell_lookup.get(
-                    (int(assignment.get("rollout_index", -1)), str(assignment.get("task", "")).strip())
+                    (
+                        int(assignment.get("rollout_index", -1)),
+                        str(assignment.get("task", "")).strip(),
+                    )
                 )
                 if not claim_cell:
                     continue
@@ -876,15 +894,9 @@ class PolicyEvalStage(PipelineStage):
 
         p_value = None
         if min_len >= 2:
-            try:
-                from scipy import stats
-
-                b_vals = [s["task_score"] for s in baseline_scores[:min_len]]
-                a_vals = [s["task_score"] for s in adapted_scores[:min_len]]
-                _, p_value = stats.ttest_rel(b_vals, a_vals)
-                p_value = float(p_value)
-            except ImportError:
-                logger.warning("scipy not available; skipping p-value computation")
+            b_vals = [s["task_score"] for s in baseline_scores[:min_len]]
+            a_vals = [s["task_score"] for s in adapted_scores[:min_len]]
+            p_value = paired_ttest_p_value(b_vals, a_vals)
 
         policy_dim = _single_or_none(observed_policy_dims)
         world_dim = _single_or_none(observed_world_dims)
@@ -947,9 +959,7 @@ class PolicyEvalStage(PipelineStage):
 
         metrics = {
             "headline_scope": headline_scope,
-            "claim_protocol": (
-                "fixed_same_facility_uplift" if fixed_claim_protocol else "none"
-            ),
+            "claim_protocol": ("fixed_same_facility_uplift" if fixed_claim_protocol else "none"),
             "primary_endpoint": str(config.eval_policy.primary_endpoint),
             "baseline_mean_task_score": round(float(baseline_mean), 3),
             "adapted_mean_task_score": round(float(adapted_mean), 3),
@@ -969,7 +979,9 @@ class PolicyEvalStage(PipelineStage):
             "min_rollout_steps_required": int(min_rollout_steps),
             "fail_on_short_rollout": bool(fail_on_short_rollout),
             "min_observed_rollout_frames": (
-                int(min_observed_rollout_frames) if min_observed_rollout_frames is not None else None
+                int(min_observed_rollout_frames)
+                if min_observed_rollout_frames is not None
+                else None
             ),
             "min_observed_rollout_steps": (
                 int(min_observed_rollout_steps) if min_observed_rollout_steps is not None else None
@@ -1023,11 +1035,12 @@ class PolicyEvalStage(PipelineStage):
                 f"Claim protocol missing deterministic task-state evidence for "
                 f"{len(claim_state_failures)} rollouts."
             )
-        if (
-            bool(config.eval_policy.reliability.enforce_stage_success)
-            and not bool(reliability_gate.get("passed", False))
+        if bool(config.eval_policy.reliability.enforce_stage_success) and not bool(
+            reliability_gate.get("passed", False)
         ):
-            detail_lines.append(f"Reliability gate failed: {reliability_gate.get('reason', '')}".strip())
+            detail_lines.append(
+                f"Reliability gate failed: {reliability_gate.get('reason', '')}".strip()
+            )
         if fail_on_short_rollout and short_rollout_failures:
             detail_lines.append(
                 f"Short rollout guard failed for {len(short_rollout_failures)} rollouts "
@@ -1148,7 +1161,9 @@ def _run_world_model_only_eval(
                             except Exception:
                                 pass
                 text_encoder = getattr(inner, "text_encoder", None)
-                text_model = getattr(text_encoder, "model", None) if text_encoder is not None else None
+                text_model = (
+                    getattr(text_encoder, "model", None) if text_encoder is not None else None
+                )
                 if text_model is not None and hasattr(text_model, "to"):
                     try:
                         text_model.to("cpu")
@@ -1317,9 +1332,7 @@ def _run_world_model_only_eval(
                 if _is_manipulation_task(task):
                     if str(config.eval_policy.manip_eval_mode).strip().lower() == "overlay_marker":
                         overlay_mode = "overlay_marker"
-                        overlay_video_path = (
-                            condition_dir / "overlay" / f"{clip_name}_overlay.mp4"
-                        )
+                        overlay_video_path = condition_dir / "overlay" / f"{clip_name}_overlay.mp4"
                         scored_video_path = overlay_scripted_trace_on_video(
                             input_video_path=rollout.video_path,
                             output_video_path=overlay_video_path,
@@ -1433,7 +1446,9 @@ def _run_world_model_only_eval(
                             else None
                         ),
                         "action_contract": action_contract,
-                        "overlay_video_path": str(overlay_video_path) if overlay_video_path else None,
+                        "overlay_video_path": str(overlay_video_path)
+                        if overlay_video_path
+                        else None,
                         "overlay_mode": overlay_mode,
                     },
                     assignment=assignment,
@@ -1478,15 +1493,9 @@ def _run_world_model_only_eval(
 
     p_value = None
     if min_len >= 2:
-        try:
-            from scipy import stats
-
-            b_vals = [s["task_score"] for s in baseline_scores[:min_len]]
-            a_vals = [s["task_score"] for s in adapted_scores[:min_len]]
-            _, p_value = stats.ttest_rel(b_vals, a_vals)
-            p_value = float(p_value)
-        except ImportError:
-            logger.warning("scipy not available; skipping p-value computation")
+        b_vals = [s["task_score"] for s in baseline_scores[:min_len]]
+        a_vals = [s["task_score"] for s in adapted_scores[:min_len]]
+        p_value = paired_ttest_p_value(b_vals, a_vals)
 
     dataset_dim = _single_or_none(observed_action_dims)
     world_dim = _single_or_none(observed_world_dims)
@@ -1495,9 +1504,7 @@ def _run_world_model_only_eval(
         "world_dim": world_dim,
         "dataset_dim": dataset_dim,
         "compliant": (
-            world_dim is not None
-            and dataset_dim is not None
-            and int(world_dim) == int(dataset_dim)
+            world_dim is not None and dataset_dim is not None and int(world_dim) == int(dataset_dim)
         ),
         "reason": "",
     }
@@ -1519,9 +1526,7 @@ def _run_world_model_only_eval(
     claim_failure_reasons: List[str] = []
     if claim_mode:
         if not action_contract["compliant"]:
-            claim_failure_reasons.append(
-                f"Action contract failed: {action_contract.get('reason')}"
-            )
+            claim_failure_reasons.append(f"Action contract failed: {action_contract.get('reason')}")
         if not reliability_gate["passed"]:
             claim_failure_reasons.append(
                 "Reliability gate failed: "
@@ -1626,11 +1631,12 @@ def _run_world_model_only_eval(
             f"Claim protocol missing deterministic task-state evidence for "
             f"{len(claim_state_failures)} rollouts."
         )
-    if (
-        bool(config.eval_policy.reliability.enforce_stage_success)
-        and not bool(reliability_gate.get("passed", False))
+    if bool(config.eval_policy.reliability.enforce_stage_success) and not bool(
+        reliability_gate.get("passed", False)
     ):
-        detail_lines.append(f"Reliability gate failed: {reliability_gate.get('reason', '')}".strip())
+        detail_lines.append(
+            f"Reliability gate failed: {reliability_gate.get('reason', '')}".strip()
+        )
     if fail_on_short_rollout and short_rollout_failures:
         detail_lines.append(
             f"Short rollout guard failed for {len(short_rollout_failures)} rollouts "
@@ -1893,9 +1899,7 @@ def _build_pairwise_metrics(all_scores: List[Dict], conditions: List[str]) -> Di
                         continue
                     grouped.setdefault(paired_eval_key(row), {})[condition] = row
                 pairs = [
-                    (rows[c1], rows[c2])
-                    for rows in grouped.values()
-                    if c1 in rows and c2 in rows
+                    (rows[c1], rows[c2]) for rows in grouped.values() if c1 in rows and c2 in rows
                 ]
                 if not pairs:
                     continue
@@ -1912,21 +1916,13 @@ def _build_pairwise_metrics(all_scores: List[Dict], conditions: List[str]) -> Di
             mean2 = float(np.mean([s["task_score"] for s in right_rows]))
             improvement = ((mean2 - mean1) / max(mean1, 1e-8)) * 100
             abs_diff = mean2 - mean1
-            wins = sum(
-                1 for a, b in pairs if float(b["task_score"]) > float(a["task_score"])
-            )
+            wins = sum(1 for a, b in pairs if float(b["task_score"]) > float(a["task_score"]))
             win_rate = wins / max(len(pairs), 1)
             p_value = None
             if len(pairs) >= 2:
-                try:
-                    from scipy import stats
-
-                    v1 = [left["task_score"] for left, _ in pairs]
-                    v2 = [right["task_score"] for _, right in pairs]
-                    _, p_value = stats.ttest_rel(v1, v2)
-                    p_value = float(p_value)
-                except ImportError:
-                    pass
+                v1 = [left["task_score"] for left, _ in pairs]
+                v2 = [right["task_score"] for _, right in pairs]
+                p_value = paired_ttest_p_value(v1, v2)
             pairwise[f"{c1}_vs_{c2}"] = {
                 f"{c1}_mean": round(mean1, 3),
                 f"{c2}_mean": round(mean2, 3),
@@ -1945,9 +1941,7 @@ def _headline_scope(config: ValidationConfig) -> str:
 
 def _resolve_world_action_dim_from_config(config: ValidationConfig) -> int | None:
     token = (
-        config.finetune.eval_world_experiment
-        or config.finetune.experiment_config
-        or ""
+        config.finetune.eval_world_experiment or config.finetune.experiment_config or ""
     ).strip()
     if not token:
         return None
@@ -1960,7 +1954,9 @@ def _resolve_world_action_dim_from_config(config: ValidationConfig) -> int | Non
         return mapping.get(token)
     maybe = Path(token)
     if maybe.is_absolute() or "/" in token or token.endswith(".yaml"):
-        candidate = maybe if maybe.is_absolute() else (config.finetune.dreamdojo_repo / "configs" / maybe)
+        candidate = (
+            maybe if maybe.is_absolute() else (config.finetune.dreamdojo_repo / "configs" / maybe)
+        )
         if candidate.suffix != ".yaml":
             yaml_candidate = candidate.with_suffix(".yaml")
             if yaml_candidate.exists():
@@ -2078,9 +2074,13 @@ def _build_low_score_breakdown(scores: List[Dict]) -> Dict:
             )
         ):
             categories["off_target_or_not_visible"] += 1
-        if any(tok in reasoning for tok in ("blur", "blurry", "indiscernible", "abstract", "unclear")):
+        if any(
+            tok in reasoning for tok in ("blur", "blurry", "indiscernible", "abstract", "unclear")
+        ):
             categories["blur_or_indiscernible"] += 1
-        if any(tok in reasoning for tok in ("no robot", "target zone", "target object", "no visible")):
+        if any(
+            tok in reasoning for tok in ("no robot", "target zone", "target object", "no visible")
+        ):
             categories["missing_robot_or_target_object"] += 1
         if len(examples) < 8:
             examples.append(

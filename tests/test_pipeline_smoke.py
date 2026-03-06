@@ -234,6 +234,28 @@ def test_pipeline_resume_reruns_failed_result(sample_config, tmp_path, monkeypat
     assert call_counts.get("s1_render", 0) == 0
 
 
+def test_pipeline_resume_fails_fast_on_corrupt_stage_result(sample_config, tmp_path, monkeypatch):
+    call_counts = {}
+    pipeline_mod = _patch_pipeline_stages_with_dummies(monkeypatch, call_counts)
+    sample_config.cloud.max_cost_usd = 0
+    work_dir = tmp_path / "outputs"
+    pipeline = pipeline_mod.ValidationPipeline(sample_config, work_dir)
+    pipeline.run_all(resume_from_results=False)
+
+    corrupt_path = work_dir / "test_facility" / "s1_render_result.json"
+    corrupt_path.write_text("{not valid json")
+
+    call_counts.clear()
+    results = pipeline.run_all(resume_from_results=True)
+    assert results["test_facility/s1_render"].status == "failed"
+    assert "Corrupt resume artifact" in results["test_facility/s1_render"].detail
+
+    summary = json.loads((work_dir / "pipeline_summary.json").read_text())
+    provenance = summary["stages"]["test_facility/s1_render"]["provenance"]
+    assert provenance["source"] == "resume_corrupt"
+    assert call_counts.get("s1_render", 0) == 0
+
+
 def test_pipeline_post_stage_sync_hook(sample_config, tmp_path, monkeypatch):
     call_counts = {}
     pipeline_mod = _patch_pipeline_stages_with_dummies(monkeypatch, call_counts)
@@ -286,7 +308,9 @@ def test_pipeline_wm_only_skips_openvla_stages(sample_config, tmp_path, monkeypa
         assert call_counts.get(stage_name, 0) == 0
 
 
-def test_pipeline_action_boost_auto_switches_wm_only_to_wm_uplift(sample_config, tmp_path, monkeypatch):
+def test_pipeline_action_boost_auto_switches_wm_only_to_wm_uplift(
+    sample_config, tmp_path, monkeypatch
+):
     call_counts = {}
     pipeline_mod = _patch_pipeline_stages_with_dummies(monkeypatch, call_counts)
     sample_config.cloud.max_cost_usd = 0
@@ -298,7 +322,12 @@ def test_pipeline_action_boost_auto_switches_wm_only_to_wm_uplift(sample_config,
 
     results = pipeline.run_all(resume_from_results=False)
     assert sample_config.eval_policy.headline_scope == "wm_uplift"
-    for stage_name in ("s4a_rlds_export", "s3b_policy_finetune", "s3c_policy_rl_loop", "s4e_trained_eval"):
+    for stage_name in (
+        "s4a_rlds_export",
+        "s3b_policy_finetune",
+        "s3c_policy_rl_loop",
+        "s4e_trained_eval",
+    ):
         key = f"test_facility/{stage_name}"
         assert results[key].status == "success"
         assert call_counts.get(stage_name, 0) == 1
@@ -333,12 +362,20 @@ def test_pipeline_action_boost_require_full_converts_skipped_to_failed(
                 detail="simulated",
             )
 
-    monkeypatch.setattr(pipeline_mod, "TaskHintsBootstrapStage", lambda: DummyStage("s0_task_hints_bootstrap"))
+    monkeypatch.setattr(
+        pipeline_mod, "TaskHintsBootstrapStage", lambda: DummyStage("s0_task_hints_bootstrap")
+    )
     monkeypatch.setattr(pipeline_mod, "RenderStage", lambda: DummyStage("s1_render"))
-    monkeypatch.setattr(pipeline_mod, "RobotCompositeStage", lambda: DummyStage("s1b_robot_composite"))
+    monkeypatch.setattr(
+        pipeline_mod, "RobotCompositeStage", lambda: DummyStage("s1b_robot_composite")
+    )
     monkeypatch.setattr(pipeline_mod, "GeminiPolishStage", lambda: DummyStage("s1c_gemini_polish"))
-    monkeypatch.setattr(pipeline_mod, "GaussianAugmentStage", lambda: DummyStage("s1d_gaussian_augment"))
-    monkeypatch.setattr(pipeline_mod, "SplatSimInteractionStage", lambda: DummyStage("s1e_splatsim_interaction"))
+    monkeypatch.setattr(
+        pipeline_mod, "GaussianAugmentStage", lambda: DummyStage("s1d_gaussian_augment")
+    )
+    monkeypatch.setattr(
+        pipeline_mod, "SplatSimInteractionStage", lambda: DummyStage("s1e_splatsim_interaction")
+    )
     monkeypatch.setattr(
         pipeline_mod,
         "ExternalInteractionIngestStage",
@@ -350,15 +387,31 @@ def test_pipeline_action_boost_require_full_converts_skipped_to_failed(
     monkeypatch.setattr(
         pipeline_mod, "WorldModelRefreshLoopStage", lambda: DummyStage("s3d_wm_refresh_loop")
     )
-    monkeypatch.setattr(pipeline_mod, "RLDSExportStage", lambda: DummyStage("s4a_rlds_export", status="skipped"))
-    monkeypatch.setattr(pipeline_mod, "PolicyFinetuneStage", lambda: DummyStage("s3b_policy_finetune"))
+    monkeypatch.setattr(
+        pipeline_mod, "RLDSExportStage", lambda: DummyStage("s4a_rlds_export", status="skipped")
+    )
+    monkeypatch.setattr(
+        pipeline_mod, "PolicyFinetuneStage", lambda: DummyStage("s3b_policy_finetune")
+    )
     monkeypatch.setattr(pipeline_mod, "PolicyRLLoopStage", lambda: DummyStage("s3c_policy_rl_loop"))
-    monkeypatch.setattr(pipeline_mod, "TrainedPolicyEvalStage", lambda: DummyStage("s4e_trained_eval"))
-    monkeypatch.setattr(pipeline_mod, "RolloutDatasetStage", lambda: DummyStage("s4b_rollout_dataset"))
-    monkeypatch.setattr(pipeline_mod, "PolicyPairTrainStage", lambda: DummyStage("s4c_policy_pair_train"))
-    monkeypatch.setattr(pipeline_mod, "PolicyPairEvalStage", lambda: DummyStage("s4d_policy_pair_eval"))
-    monkeypatch.setattr(pipeline_mod, "VisualFidelityStage", lambda: DummyStage("s5_visual_fidelity"))
-    monkeypatch.setattr(pipeline_mod, "SpatialAccuracyStage", lambda: DummyStage("s6_spatial_accuracy"))
+    monkeypatch.setattr(
+        pipeline_mod, "TrainedPolicyEvalStage", lambda: DummyStage("s4e_trained_eval")
+    )
+    monkeypatch.setattr(
+        pipeline_mod, "RolloutDatasetStage", lambda: DummyStage("s4b_rollout_dataset")
+    )
+    monkeypatch.setattr(
+        pipeline_mod, "PolicyPairTrainStage", lambda: DummyStage("s4c_policy_pair_train")
+    )
+    monkeypatch.setattr(
+        pipeline_mod, "PolicyPairEvalStage", lambda: DummyStage("s4d_policy_pair_eval")
+    )
+    monkeypatch.setattr(
+        pipeline_mod, "VisualFidelityStage", lambda: DummyStage("s5_visual_fidelity")
+    )
+    monkeypatch.setattr(
+        pipeline_mod, "SpatialAccuracyStage", lambda: DummyStage("s6_spatial_accuracy")
+    )
     monkeypatch.setattr(pipeline_mod, "CrossSiteStage", lambda: DummyStage("s7_cross_site"))
 
     sample_config.cloud.max_cost_usd = 0
@@ -412,7 +465,9 @@ def test_pipeline_summary_marks_resumed_stage_provenance(sample_config, tmp_path
     )
 
 
-def test_pipeline_strict_fresh_guard_blocks_stale_stage_results(sample_config, tmp_path, monkeypatch):
+def test_pipeline_strict_fresh_guard_blocks_stale_stage_results(
+    sample_config, tmp_path, monkeypatch
+):
     call_counts = {}
     pipeline_mod = _patch_pipeline_stages_with_dummies(monkeypatch, call_counts)
     sample_config.cloud.max_cost_usd = 0

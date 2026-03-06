@@ -37,10 +37,7 @@ jobs:
           LOCAL_CONFIG: ${{ github.workspace }}/.ci/audit_fixture/config.yaml
           CLOUD_CONFIG: ${{ github.workspace }}/.ci/audit_fixture/config.yaml
           WORK_DIR: ${{ github.workspace }}/.ci/audit_fixture/work
-          RUN_LOCAL_PREFLIGHT: "false"
           RUN_CLOUD_PREFLIGHT: "false"
-          RUN_LINT: "false"
-          RUN_FORMAT_CHECK: "false"
         run: |
           uv run bash scripts/pre_gpu_audit.sh
 
@@ -63,20 +60,6 @@ jobs:
             --facility ci_facility \
             --vlm-rescore-first 0
 
-      - name: Data-Quality Regression Tests
+      - name: Run Non-GPU Test Suite
         run: |
-          uv run pytest \
-            tests/test_dataset_builder_strict_video.py \
-            tests/test_dataset_builder_quality.py \
-            tests/test_manifest_validation.py \
-            tests/test_provenance.py \
-            tests/test_s2_enrich.py \
-            tests/test_s5_visual_fidelity.py \
-            -v -k "not gpu and not slow"
-
-      - name: Run Unit Tests
-        run: |
-          uv run pytest tests/ -v \
-            --ignore=tests/integration \
-            --ignore=tests/test_s0_task_hints_bootstrap.py \
-            -k "not gpu and not slow"
+          uv run pytest -m "not gpu and not slow" -q

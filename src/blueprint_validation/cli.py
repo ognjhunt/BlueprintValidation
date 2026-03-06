@@ -165,24 +165,33 @@ def cli(ctx: click.Context, config_path: str, work_dir: str, verbose: bool, dry_
 
 @cli.command()
 @click.option(
+    "--profile",
+    type=click.Choice(["audit", "runtime-local", "runtime-cloud"]),
+    default="runtime-local",
+    show_default=True,
+    help="Preflight profile to run.",
+)
+@click.option(
     "--audit-mode",
     is_flag=True,
     default=False,
-    help="Treat missing GPU as expected (for pre-GPU readiness audits).",
+    help="Deprecated alias for --profile audit.",
 )
 @click.pass_context
-def preflight(ctx: click.Context, audit_mode: bool) -> None:
-    """Run preflight checks for GPU, dependencies, and model weights."""
-    from .preflight import run_preflight
+def preflight(ctx: click.Context, profile: str, audit_mode: bool) -> None:
+    """Run preflight checks for the selected execution profile."""
+    from .preflight import normalize_preflight_profile, run_preflight
 
     config = ctx.obj["config"]
-    checks = run_preflight(config, work_dir=ctx.obj["work_dir"])
-    failed = [c for c in checks if not c.passed]
     if audit_mode:
-        gpu_failed = any(c.name == "gpu" for c in failed)
-        failed = [c for c in failed if c.name != "gpu"]
-        if gpu_failed:
-            click.echo("Audit mode: ignoring GPU preflight failure.")
+        click.echo("Warning: --audit-mode is deprecated; using --profile audit.")
+        profile = "audit"
+    checks = run_preflight(
+        config,
+        work_dir=ctx.obj["work_dir"],
+        profile=normalize_preflight_profile(profile),
+    )
+    failed = [c for c in checks if not c.passed]
     if failed:
         click.echo(f"\n{len(failed)} preflight check(s) failed:", err=True)
         for c in failed:
@@ -447,8 +456,7 @@ def ingest_external_interaction(ctx: click.Context, facility: str) -> None:
     result = stage.execute(config, fac, work_dir, {})
     result.save(work_dir / "s1f_external_interaction_ingest_result.json")
     click.echo(
-        "External interaction ingest complete: "
-        f"{result.status} ({result.elapsed_seconds:.1f}s)"
+        f"External interaction ingest complete: {result.status} ({result.elapsed_seconds:.1f}s)"
     )
 
 
@@ -788,7 +796,7 @@ def run_all(
     work_dir = ctx.obj["work_dir"]
 
     if not skip_preflight:
-        checks = run_preflight(config, work_dir=work_dir)
+        checks = run_preflight(config, work_dir=work_dir, profile="runtime_local")
         failed = [c for c in checks if not c.passed]
         if failed:
             click.echo(

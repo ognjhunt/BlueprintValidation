@@ -109,7 +109,7 @@ cp /path/to/facility_a_task_targets.synthetic.json data/outputs/same_facility_fi
 # Run preflight checks
 blueprint-validate --config configs/same_facility_policy_uplift_openvla.yaml preflight
 # For pre-GPU audits (no CUDA yet):
-blueprint-validate --config configs/same_facility_policy_uplift_openvla.yaml preflight --audit-mode
+blueprint-validate --config configs/same_facility_policy_uplift_openvla.yaml preflight --profile audit
 
 # Optional: source runtime secrets from a local untracked file
 # cp scripts/runtime_env.example scripts/runtime_env.local
@@ -211,6 +211,9 @@ Run the non-GPU readiness gate before paying for GPU time:
 
 ```bash
 bash scripts/pre_gpu_audit.sh
+
+# Optional: keep the old targeted subset instead of the full CPU suite
+AUDIT_SCOPE=quick bash scripts/pre_gpu_audit.sh
 ```
 
 Secret scan command used by the audit script:

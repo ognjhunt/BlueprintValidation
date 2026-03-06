@@ -217,6 +217,6 @@ PRE_CMD=(
   preflight
 )
 if [[ "$PREFLIGHT_AUDIT_MODE" == "true" ]]; then
-  PRE_CMD+=(--audit-mode)
+  PRE_CMD+=(--profile audit)
 fi
 MPLCONFIGDIR="$MPLCONFIGDIR" "${PRE_CMD[@]}"
