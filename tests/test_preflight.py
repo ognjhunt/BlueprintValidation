@@ -247,6 +247,32 @@ def test_preflight_requires_stage2_runtime_dependencies(sample_config, monkeypat
 
     assert ("sam2", "sam2") in seen_dependencies
     assert ("natsort", "natsort") in seen_dependencies
+    assert ("lightning", "lightning") in seen_dependencies
+
+
+def test_preflight_claim_uses_auto_selected_dreamdojo_experiment_for_action_dim(
+    sample_config, monkeypatch, tmp_path
+):
+    import blueprint_validation.preflight as preflight
+
+    _patch_preflight_fast(monkeypatch, preflight)
+
+    dreamdojo_repo = tmp_path / "DreamDojo"
+    configs_dir = dreamdojo_repo / "configs"
+    configs_dir.mkdir(parents=True, exist_ok=True)
+    (configs_dir / "2b_480_640_gr1.yaml").write_text("action_dim: 7\n")
+
+    sample_config.eval_policy.mode = "claim"
+    sample_config.eval_policy.headline_scope = "dual"
+    sample_config.eval_policy.required_action_dim = 7
+    sample_config.policy_adapter.openvla.policy_action_dim = 7
+    sample_config.finetune.dreamdojo_repo = dreamdojo_repo
+    sample_config.finetune.eval_world_experiment = None
+    sample_config.finetune.experiment_config = None
+
+    checks = preflight.run_preflight(sample_config)
+    by_name = {c.name: c for c in checks}
+    assert by_name["claim:world_model_action_dim"].passed is True
 
 
 def test_preflight_pi05_base_reference_fails_when_openvla_like(

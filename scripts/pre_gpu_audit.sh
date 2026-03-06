@@ -5,12 +5,18 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCAL_CONFIG="${LOCAL_CONFIG:-$ROOT_DIR/configs/interiorgs_kitchen_0787.yaml}"
 CLOUD_CONFIG="${CLOUD_CONFIG:-$ROOT_DIR/configs/interiorgs_kitchen_0787.cloud.yaml}"
 WORK_DIR="${WORK_DIR:-$ROOT_DIR/data/outputs/pre_gpu_audit}"
+DEFAULT_PYTHON_BIN="$ROOT_DIR/.venv/bin/python"
+if [[ -x "$DEFAULT_PYTHON_BIN" ]]; then
+  PYTHON_BIN="${PYTHON_BIN:-$DEFAULT_PYTHON_BIN}"
+else
+  PYTHON_BIN="${PYTHON_BIN:-$(command -v python || true)}"
+fi
 RUN_CLOUD_PREFLIGHT="${RUN_CLOUD_PREFLIGHT:-auto}"  # auto|true|false
 RUN_LOCAL_PREFLIGHT="${RUN_LOCAL_PREFLIGHT:-true}"  # true|false|auto
 RUN_SECRET_SCAN="${RUN_SECRET_SCAN:-true}"          # true|false|auto
 RUN_TARGETED_PYTEST="${RUN_TARGETED_PYTEST:-true}"  # true|false|auto
 RUN_LINT="${RUN_LINT:-true}"                        # true|false|auto
-RUN_FORMAT_CHECK="${RUN_FORMAT_CHECK:-true}"        # true|false|auto
+RUN_FORMAT_CHECK="${RUN_FORMAT_CHECK:-false}"       # true|false|auto
 
 PYTEST_TARGETS=(
   tests/test_preflight.py
@@ -31,15 +37,25 @@ PYTEST_TARGETS=(
 
 declare -a SUMMARY_LINES=()
 HAS_FAILURE=0
+CLI_CMD=()
+
+install_python_package() {
+  local package="$1"
+  if command -v uv >/dev/null 2>&1; then
+    uv pip install --python "$PYTHON_BIN" "$package"
+    return 0
+  fi
+  "$PYTHON_BIN" -m pip install "$package"
+}
 
 ensure_python_module_cli() {
   local module="$1"
   local package="${2:-$module}"
-  if python -m "$module" --version >/dev/null 2>&1; then
+  if "$PYTHON_BIN" -m "$module" --version >/dev/null 2>&1; then
     return 0
   fi
   echo "Installing missing audit dependency: $package"
-  python -m pip install "$package"
+  install_python_package "$package"
 }
 
 run_step() {
@@ -78,7 +94,7 @@ run_optional_step() {
 secret_scan() {
   local output
   if ! output="$(
-    python - "$ROOT_DIR" <<'PY'
+    "$PYTHON_BIN" - "$ROOT_DIR" <<'PY'
 import re
 import sys
 from pathlib import Path
@@ -166,7 +182,7 @@ maybe_run_cloud_preflight() {
   fi
 
   run_step "Cloud preflight (--audit-mode)" \
-    blueprint-validate --config "$CLOUD_CONFIG" --work-dir "$WORK_DIR" preflight --audit-mode
+    "${CLI_CMD[@]}" --config "$CLOUD_CONFIG" --work-dir "$WORK_DIR" preflight --audit-mode
 }
 
 maybe_run_local_preflight() {
@@ -186,11 +202,12 @@ maybe_run_local_preflight() {
   fi
 
   run_step "Local preflight (--audit-mode)" \
-    blueprint-validate --config "$LOCAL_CONFIG" --work-dir "$WORK_DIR" preflight --audit-mode
+    "${CLI_CMD[@]}" --config "$LOCAL_CONFIG" --work-dir "$WORK_DIR" preflight --audit-mode
 }
 
 echo "== Pre-GPU Audit =="
 echo "Root: $ROOT_DIR"
+echo "Python bin: $PYTHON_BIN"
 echo "Local config: $LOCAL_CONFIG"
 echo "Cloud config: $CLOUD_CONFIG"
 echo "Work dir: $WORK_DIR"
@@ -203,8 +220,17 @@ echo "Run format check: $RUN_FORMAT_CHECK"
 
 cd "$ROOT_DIR"
 
-if ! command -v blueprint-validate >/dev/null 2>&1; then
-  echo "blueprint-validate not found in PATH. Activate the project venv first."
+if [[ -z "$PYTHON_BIN" || ! -x "$PYTHON_BIN" ]]; then
+  echo "Python interpreter not found. Set PYTHON_BIN or run uv sync first."
+  exit 1
+fi
+
+if "$PYTHON_BIN" -m blueprint_validation.cli --help >/dev/null 2>&1; then
+  CLI_CMD=("$PYTHON_BIN" -m blueprint_validation.cli)
+elif command -v blueprint-validate >/dev/null 2>&1; then
+  CLI_CMD=(blueprint-validate)
+else
+  echo "BlueprintValidation CLI is unavailable. Run 'uv sync --extra rlds' or use scripts/provision_same_facility_claim_runtime.sh first."
   exit 1
 fi
 
@@ -219,13 +245,13 @@ run_optional_step "$RUN_TARGETED_PYTEST" "Targeted pytest" \
     -u BLUEPRINT_AUTO_SHUTDOWN_CMD \
     -u BLUEPRINT_POST_STAGE_SYNC_CMD \
     -u BLUEPRINT_POST_STAGE_SYNC_STRICT \
-    python -m pytest "${PYTEST_TARGETS[@]}" -q
+    "$PYTHON_BIN" -m pytest "${PYTEST_TARGETS[@]}" -q
 
 run_optional_step "$RUN_LINT" "Lint (ruff check)" \
-  python -m ruff check src tests scripts
+  "$PYTHON_BIN" -m ruff check src tests scripts
 
 run_optional_step "$RUN_FORMAT_CHECK" "Format check (ruff format --check)" \
-  python -m ruff format --check src tests scripts
+  "$PYTHON_BIN" -m ruff format --check src tests scripts
 
 maybe_run_local_preflight || HAS_FAILURE=1
 

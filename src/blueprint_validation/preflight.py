@@ -159,7 +159,10 @@ def _resolve_eval_world_action_dim(config: ValidationConfig) -> int | None:
     """Resolve expected DreamDojo world-model action dim from configured experiment hints."""
     token = (config.finetune.eval_world_experiment or config.finetune.experiment_config or "").strip()
     if not token:
-        return None
+        try:
+            token = resolve_dreamdojo_experiment_name(config.finetune.dreamdojo_repo, None)
+        except Exception:
+            return None
 
     # Explicit experiment names (current supported set in openvla_runner mappings).
     if token.lower().startswith("cosmos_predict2"):
@@ -1234,6 +1237,7 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
     # Require both up-front so Stage 2 cannot fail mid-run on missing dependency.
     checks.append(check_dependency("sam2", "sam2"))
     checks.append(check_dependency("natsort", "natsort"))
+    checks.append(check_dependency("lightning", "lightning"))
     checks.append(check_path_exists(config.finetune.dreamdojo_repo, "repo:dreamdojo"))
     checks.append(
         check_path_exists_under(

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 
 def test_report_builder_renders_claim_portfolio_section(sample_config, tmp_path):
     from blueprint_validation.common import write_json
@@ -40,4 +38,3 @@ def test_report_builder_renders_claim_portfolio_section(sample_config, tmp_path)
     content = result.read_text()
     assert "Investor-Grade Multi-Facility Claim | PASS" in content
     assert "## Claim Portfolio" in content
-

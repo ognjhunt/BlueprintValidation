@@ -18,8 +18,8 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from blueprint_validation.config import VLMJudgeConfig
-from blueprint_validation.evaluation.vlm_judge import score_rollout
+from blueprint_validation.config import VLMJudgeConfig  # noqa: E402
+from blueprint_validation.evaluation.vlm_judge import score_rollout  # noqa: E402
 
 DEFAULT_SCORING_PROMPT = (
     "You are evaluating a Stage-1 camera clip.\n"

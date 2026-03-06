@@ -129,6 +129,7 @@ enrich:
 finetune:
   dreamdojo_repo: /app/data/vendor/DreamDojo
   dreamdojo_checkpoint: /models/checkpoints/DreamDojo/2B_pretrain/
+  eval_world_experiment: cosmos_predict2p5_2B_reason_embeddings_action_conditioned_rectified_flow_bridge_13frame_256x320
   video_dataset_backend: opencv
   probe_dataloader_sample: true
   model_size: 2B
