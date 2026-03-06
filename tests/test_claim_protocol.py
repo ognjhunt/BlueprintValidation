@@ -102,7 +102,7 @@ def test_build_claim_split_payload_rejects_non_disjoint_protocol_split(sample_co
             "target_instance_id": "201",
         },
     ]
-    with pytest.raises(ValueError, match="two disjoint task groups"):
+    with pytest.raises(ValueError, match="two disjoint task specs"):
         build_claim_split_payload(
             task_specs=task_specs,
             assignments=assignments,
@@ -110,3 +110,46 @@ def test_build_claim_split_payload_rejects_non_disjoint_protocol_split(sample_co
             train_split=0.5,
             split_strategy="disjoint_tasks_and_starts",
         )
+
+
+def test_build_claim_split_payload_expands_holdouts_to_meet_eval_cell_floor():
+    task_specs = [
+        {
+            "task_spec_id": f"task_spec_{idx:02d}",
+            "task_prompt": f"Navigate to region {idx:02d}",
+            "task_family": "navigation",
+        }
+        for idx in range(12)
+    ]
+    assignments = []
+    rollout_index = 0
+    for task_idx, spec in enumerate(task_specs):
+        for start_idx in range(12):
+            assignments.append(
+                {
+                    "rollout_index": rollout_index,
+                    "task": spec["task_prompt"],
+                    "clip_index": start_idx,
+                    "clip_name": f"clip_{start_idx:03d}",
+                    "path_type": "navigation",
+                    "target_instance_id": f"{200 + task_idx}",
+                }
+            )
+            rollout_index += 1
+
+    split = build_claim_split_payload(
+        task_specs=task_specs,
+        assignments=assignments,
+        world_snapshot_hash="world_hash",
+        train_split=0.8,
+        split_strategy="disjoint_tasks_and_starts",
+        min_eval_task_specs=3,
+        min_eval_start_clips=3,
+        min_common_eval_cells=30,
+    )
+
+    eval_ids = set(split["eval_eval_cell_ids"])
+    eval_cells = [cell for cell in split["cells"] if cell["eval_cell_id"] in eval_ids]
+    assert len(eval_cells) >= 30
+    assert len({cell["task_spec_id"] for cell in eval_cells}) >= 3
+    assert len({cell["start_clip_id"] for cell in eval_cells}) >= 3

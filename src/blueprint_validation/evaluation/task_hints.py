@@ -40,6 +40,17 @@ _TASK_PROFILE_SPECS: Dict[str, Dict[str, int]] = {
         "nav_quota": 6,
         "max_per_family": 2,
     },
+    # Fixed-world same-facility claim:
+    # broaden the task inventory so disjoint task/start heldout matrices
+    # can satisfy the minimum eval-cell budget without collapsing coverage.
+    "claim": {
+        "unique_min": 24,
+        "unique_max": 36,
+        "manip_quota": 16,
+        "artic_quota": 12,
+        "nav_quota": 8,
+        "max_per_family": 3,
+    },
 }
 
 
@@ -184,6 +195,10 @@ def recommended_rollouts_per_condition(
         repeats_target = 4
         min_per_condition = 80  # 2 conditions -> 160 total (strong range starts at 150)
         max_per_condition = 125  # 2 conditions -> 250 total (strong range upper bound)
+    elif profile_key == "claim":
+        repeats_target = 5
+        min_per_condition = 160
+        max_per_condition = 320
     else:
         repeats_target = 4
         min_per_condition = 80  # adapted + trained -> 160 total minimum

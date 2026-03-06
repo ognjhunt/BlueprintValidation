@@ -10,14 +10,19 @@ facilities:
 # Use the fixed-world claim protocol for the canonical same-facility headline.
 # This mode is for deployment-site world-model uplift only and does not answer IRL transfer.
 eval_policy:
-  mode: research
+  mode: claim
   headline_scope: wm_uplift
   claim_protocol: fixed_same_facility_uplift
   primary_endpoint: task_success
   freeze_world_snapshot: true
   split_strategy: disjoint_tasks_and_starts
-  num_rollouts: 24
+  num_rollouts: 160
   min_absolute_difference: 1.0
+  replication:
+    training_seeds: [0, 1, 2, 3, 4, 5, 6, 7]
+  reliability:
+    enforce_stage_success: true
+    fail_on_short_rollout: true
 
 # Heldout policy A/B is a secondary attribution/control check, not the primary headline.
 policy_compare:

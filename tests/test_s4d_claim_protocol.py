@@ -22,6 +22,7 @@ def _prepare_claim_eval_workspace(
 ) -> tuple[Path, Path]:
     from blueprint_validation.common import write_json
     from blueprint_validation.evaluation.claim_protocol import checkpoint_content_hash
+    from blueprint_validation.stages.s4b_rollout_dataset import _json_manifest_hash
 
     training_seeds = training_seeds or [0, 1, 2, 3, 4, 5]
     sample_config.eval_policy.claim_protocol = "fixed_same_facility_uplift"
@@ -159,6 +160,15 @@ def _prepare_claim_eval_workspace(
         {
             "policy_base": generic_runs[0],
             "policy_site": site_runs[0],
+            "dataset_lineage": {
+                "world_snapshot_hash": world_hash,
+                "claim_manifest_hash": _json_manifest_hash(policy_eval_dir / "claim_manifest.json"),
+                "claim_split_manifest_hash": _json_manifest_hash(
+                    policy_eval_dir / "claim_split_manifest.json"
+                ),
+                "train_eval_cell_ids_hash": "",
+                "heldout_eval_cell_ids_hash": "",
+            },
             "replicates": {
                 "generic_control": generic_runs,
                 "site_trained": site_runs,
@@ -186,7 +196,7 @@ def test_s4d_claim_protocol_fails_on_world_hash_drift(sample_config, tmp_path):
     fac = sample_config.facilities["test_facility"]
     result = PolicyPairEvalStage().run(sample_config, fac, work_dir, {})
     assert result.status == "failed"
-    assert "World snapshot hash drift" in result.detail
+    assert "world snapshot hash" in result.detail.lower()
 
 
 def test_s4d_claim_protocol_emits_claim_report(sample_config, tmp_path, monkeypatch):

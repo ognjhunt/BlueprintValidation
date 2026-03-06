@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Dict, List
@@ -181,6 +182,7 @@ class PolicyPairEvalStage(PipelineStage):
                     output_dir=video_dir,
                     clip_name=f"heldout_{i:03d}",
                     device=device,
+                    rollout_context=dict(ep),
                 )
                 rollout_video = rollout_result.video_path
                 actions = rollout_result.action_sequence
@@ -355,12 +357,31 @@ def _run_fixed_world_claim_eval(
             detail="Claim manifest primary endpoint must be task_success.",
         )
     training_seeds = [int(v) for v in list(config.eval_policy.claim_replication.training_seeds or [])]
-    if len(training_seeds) < 5:
+    min_claim_seed_count = _min_sign_flip_seed_count(
+        float(config.eval_policy.claim_strictness.p_value_threshold)
+    )
+    if len(training_seeds) < min_claim_seed_count:
         return StageResult(
             stage_name="s4d_policy_pair_eval",
             status="failed",
             elapsed_seconds=0,
-            detail="Fixed-world claim protocol requires at least 5 training seeds.",
+            detail=(
+                "Fixed-world claim protocol requires at least "
+                f"{min_claim_seed_count} training seeds for the configured paired sign-flip "
+                "p-value threshold."
+            ),
+        )
+    dataset_lineage_error = _claim_dataset_lineage_error(
+        pair_summary=pair_summary,
+        claim_manifest_path=claim_manifest_path,
+        claim_split_path=claim_split_path,
+    )
+    if dataset_lineage_error is not None:
+        return StageResult(
+            stage_name="s4d_policy_pair_eval",
+            status="failed",
+            elapsed_seconds=0,
+            detail=dataset_lineage_error,
         )
     configured_arms = {
         str(v).strip()
@@ -572,6 +593,8 @@ def _run_fixed_world_claim_eval(
                     else f"{policy_label}_{i:03d}"
                 ),
                 device=device,
+                rollout_context=dict(ep),
+                task_spec=dict(task_spec),
             )
             score = _score_rollout_video(
                 facility=facility,
@@ -803,6 +826,10 @@ def _load_heldout_episodes(path: Path) -> List[dict]:
                 "start_region_id": payload.get("start_region_id", ""),
                 "start_frame_hash": payload.get("start_frame_hash", ""),
                 "world_snapshot_hash": payload.get("world_snapshot_hash", ""),
+                "target_instance_id": payload.get("target_instance_id", ""),
+                "target_label": payload.get("target_label", ""),
+                "initial_camera": payload.get("initial_camera", {}) or {},
+                "path_context": payload.get("path_context", {}) or {},
             }
         )
     return episodes
@@ -1155,6 +1182,48 @@ def _bootstrap_meets_claim_bar(*, bootstrap: Dict[str, object], config: Validati
         and float(p_value) < float(strictness.p_value_threshold)
         and positive_seed_count >= int(strictness.min_positive_training_seeds)
     )
+
+
+def _claim_dataset_lineage_error(
+    *,
+    pair_summary: dict,
+    claim_manifest_path: Path,
+    claim_split_path: Path,
+) -> str | None:
+    dataset_lineage = dict(pair_summary.get("dataset_lineage", {}) or {})
+    if not dataset_lineage:
+        return "Policy pair training summary is missing dataset_lineage metadata."
+
+    claim_manifest = read_json(claim_manifest_path)
+    expected_world_hash = str(claim_manifest.get("world_snapshot_hash", "") or "").strip()
+    if expected_world_hash != str(dataset_lineage.get("world_snapshot_hash", "") or "").strip():
+        return "Policy pair dataset lineage world snapshot hash does not match the current claim manifest."
+    if _json_manifest_hash(claim_manifest_path) != str(
+        dataset_lineage.get("claim_manifest_hash", "") or ""
+    ).strip():
+        return "Policy pair dataset lineage claim manifest hash does not match the current claim manifest."
+    if _json_manifest_hash(claim_split_path) != str(
+        dataset_lineage.get("claim_split_manifest_hash", "") or ""
+    ).strip():
+        return "Policy pair dataset lineage split manifest hash does not match the current claim split."
+    return None
+
+
+def _json_manifest_hash(path: Path) -> str:
+    try:
+        payload = json.dumps(read_json(path), sort_keys=True, separators=(",", ":"))
+    except Exception:
+        payload = str(path)
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def _min_sign_flip_seed_count(p_value_threshold: float) -> int:
+    threshold = float(p_value_threshold)
+    for seed_count in range(1, 65):
+        min_p = 3.0 / ((2**seed_count) + 1.0)
+        if min_p < threshold:
+            return seed_count
+    return 65
 
 
 def _has_cuda() -> bool:

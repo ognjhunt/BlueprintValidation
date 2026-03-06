@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from itertools import combinations
 from pathlib import Path
 import re
 from typing import Dict, Iterable, List, Tuple
@@ -59,13 +60,34 @@ def build_task_specs(
         prompt = str(task).strip()
         family = _task_family(prompt)
         target = _resolve_task_target(prompt, target_index)
+        goal_target = _resolve_goal_target(
+            prompt=prompt,
+            family=family,
+            target=target,
+            target_index=target_index,
+            facility=facility,
+        )
         target_label = target.get("label") if isinstance(target, dict) else None
         target_instance_id = target.get("instance_id") if isinstance(target, dict) else None
+        target_center_xyz = _center_xyz(target)
+        goal_target_label = goal_target.get("label") if isinstance(goal_target, dict) else None
+        goal_target_instance_id = (
+            goal_target.get("instance_id") if isinstance(goal_target, dict) else None
+        )
+        goal_point_xyz = _goal_point_xyz(
+            family=family,
+            prompt=prompt,
+            target=target,
+            goal_target=goal_target,
+            facility=facility,
+        )
         goal_region_id = _goal_region_id_for_task(prompt, family, target)
         predicate = _success_predicate_for_family(
             prompt=prompt,
             family=family,
             target=target,
+            target_center_xyz=target_center_xyz,
+            goal_point_xyz=goal_point_xyz,
             goal_region_id=goal_region_id,
         )
         task_spec_id = _stable_protocol_id(
@@ -75,6 +97,10 @@ def build_task_specs(
                 "family": family,
                 "target_label": target_label,
                 "target_instance_id": target_instance_id,
+                "target_center_xyz": target_center_xyz,
+                "goal_target_label": goal_target_label,
+                "goal_target_instance_id": goal_target_instance_id,
+                "goal_point_xyz": goal_point_xyz,
                 "goal_region_id": goal_region_id,
                 "predicate": predicate,
             },
@@ -86,6 +112,10 @@ def build_task_specs(
                 "task_family": family,
                 "target_label": target_label,
                 "target_instance_id": target_instance_id,
+                "target_center_xyz": target_center_xyz,
+                "goal_target_label": goal_target_label,
+                "goal_target_instance_id": goal_target_instance_id,
+                "goal_point_xyz": goal_point_xyz,
                 "goal_region_id": goal_region_id,
                 "forbidden_events": _forbidden_events_for_family(family),
                 "success_predicate": predicate,
@@ -102,6 +132,9 @@ def build_claim_split_payload(
     world_snapshot_hash: str,
     train_split: float,
     split_strategy: str,
+    min_eval_task_specs: int | None = None,
+    min_eval_start_clips: int | None = None,
+    min_common_eval_cells: int | None = None,
 ) -> Dict[str, object]:
     specs_by_prompt = {str(spec["task_prompt"]): spec for spec in task_specs}
     cells: List[Dict[str, object]] = []
@@ -192,11 +225,24 @@ def build_claim_split_payload(
         raise ValueError("Claim split requires at least two disjoint task specs.")
     if len(start_ids) < 2:
         raise ValueError("Claim split requires at least two disjoint start clips.")
-    holdout_task_count = _holdout_count(len(task_ids), train_split)
-    holdout_start_count = _holdout_count(len(start_ids), train_split)
+    holdout_task_count = max(
+        _holdout_count(len(task_ids), train_split),
+        max(1, int(min_eval_task_specs or 1)),
+    )
+    holdout_start_count = max(
+        _holdout_count(len(start_ids), train_split),
+        max(1, int(min_eval_start_clips or 1)),
+    )
+    target_eval_cell_count = max(1, int(min_common_eval_cells or 1))
 
-    heldout_task_ids = set(task_ids[-holdout_task_count:]) if holdout_task_count else set()
-    heldout_start_ids = set(start_ids[-holdout_start_count:]) if holdout_start_count else set()
+    heldout_task_ids, heldout_start_ids = _plan_disjoint_holdouts(
+        cells=cells,
+        task_axis=task_axis,
+        start_axis=start_axis,
+        required_task_count=holdout_task_count,
+        required_start_count=holdout_start_count,
+        target_eval_cell_count=target_eval_cell_count,
+    )
 
     train_cells: List[Dict[str, object]] = []
     eval_cells: List[Dict[str, object]] = []
@@ -265,6 +311,98 @@ def build_claim_split_payload(
         "task_split_axis": task_axis,
         "start_split_axis": start_axis,
     }
+
+
+def _plan_disjoint_holdouts(
+    *,
+    cells: List[Dict[str, object]],
+    task_axis: str,
+    start_axis: str,
+    required_task_count: int,
+    required_start_count: int,
+    target_eval_cell_count: int,
+) -> Tuple[set[str], set[str]]:
+    task_ids = sorted(
+        {
+            str(cell.get(task_axis, "")).strip()
+            for cell in cells
+            if str(cell.get(task_axis, "")).strip()
+        }
+    )
+    start_ids = sorted(
+        {
+            str(cell.get(start_axis, "")).strip()
+            for cell in cells
+            if str(cell.get(start_axis, "")).strip()
+        }
+    )
+    required_task_count = min(max(1, int(required_task_count)), max(1, len(task_ids) - 1))
+    required_start_count = min(max(1, int(required_start_count)), max(1, len(start_ids) - 1))
+    target_eval_cell_count = max(1, int(target_eval_cell_count))
+
+    cells_by_task: Dict[str, List[Dict[str, object]]] = {}
+    cells_by_start: Dict[str, List[Dict[str, object]]] = {}
+    for cell in cells:
+        task_id = str(cell.get(task_axis, "")).strip()
+        start_id = str(cell.get(start_axis, "")).strip()
+        if task_id:
+            cells_by_task.setdefault(task_id, []).append(cell)
+        if start_id:
+            cells_by_start.setdefault(start_id, []).append(cell)
+
+    ranked_tasks = sorted(task_ids, key=lambda task_id: (-len(cells_by_task.get(task_id, [])), task_id))
+    task_pool_limit = min(len(ranked_tasks), max(required_task_count + 8, 14))
+    task_pool = ranked_tasks[:task_pool_limit]
+    max_task_count = min(len(task_pool), max(required_task_count, required_task_count + 8))
+    max_start_count = min(len(start_ids) - 1, max(required_start_count, required_start_count + 12))
+
+    best: Tuple[Tuple[int, int, int, int, int, int], set[str], set[str]] | None = None
+
+    for task_count in range(required_task_count, max_task_count + 1):
+        for task_subset_tuple in combinations(task_pool, task_count):
+            task_subset = set(task_subset_tuple)
+            start_counts: Dict[str, int] = {}
+            for cell in cells:
+                task_id = str(cell.get(task_axis, "")).strip()
+                start_id = str(cell.get(start_axis, "")).strip()
+                if task_id in task_subset and start_id:
+                    start_counts[start_id] = start_counts.get(start_id, 0) + 1
+            ordered_starts = sorted(
+                start_ids,
+                key=lambda start_id: (-start_counts.get(start_id, 0), -len(cells_by_start.get(start_id, [])), start_id),
+            )
+            for start_count in range(required_start_count, max_start_count + 1):
+                start_subset = set(ordered_starts[:start_count])
+                eval_count = 0
+                train_count = 0
+                for cell in cells:
+                    task_id = str(cell.get(task_axis, "")).strip()
+                    start_id = str(cell.get(start_axis, "")).strip()
+                    task_holdout = task_id in task_subset
+                    start_holdout = start_id in start_subset
+                    if task_holdout and start_holdout:
+                        eval_count += 1
+                    elif not task_holdout and not start_holdout:
+                        train_count += 1
+                if eval_count <= 0 or train_count <= 0:
+                    continue
+                score = (
+                    1 if eval_count >= target_eval_cell_count else 0,
+                    min(eval_count, target_eval_cell_count),
+                    eval_count,
+                    train_count,
+                    -len(task_subset),
+                    -len(start_subset),
+                )
+                if best is None or score > best[0]:
+                    best = (score, set(task_subset), set(start_subset))
+                if eval_count >= target_eval_cell_count and train_count >= target_eval_cell_count:
+                    break
+
+    if best is not None:
+        return best[1], best[2]
+
+    return (set(task_ids[-required_task_count:]), set(start_ids[-required_start_count:]))
 
 
 def claim_manifest_payload(
@@ -412,9 +550,11 @@ def _load_target_index(task_hints_path: Path | None) -> Dict[str, Dict[str, obje
                 continue
             label = str(entry.get("label", "")).strip()
             instance_id = str(entry.get("instance_id", "")).strip()
+            center_xyz = _entry_center_xyz(entry)
             item = {
                 "label": label,
                 "instance_id": instance_id,
+                "center_xyz": center_xyz,
             }
             if instance_id:
                 index["by_instance"][instance_id] = item
@@ -425,23 +565,148 @@ def _load_target_index(task_hints_path: Path | None) -> Dict[str, Dict[str, obje
 
 
 def _resolve_task_target(prompt: str, target_index: Dict[str, Dict[str, object]]) -> Dict[str, object] | None:
+    family = _task_family(prompt)
+    token = _extract_primary_task_token(prompt, family)
+    if not token:
+        return None
+    return _resolve_token(token, target_index)
+
+
+def _normalize_label(label: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(label).lower()).strip("_")
+
+
+def _entry_center_xyz(entry: Dict[str, object]) -> List[float] | None:
+    bbox = entry.get("boundingBox") or entry.get("obb")
+    if not isinstance(bbox, dict):
+        return None
+    center = bbox.get("center")
+    if not isinstance(center, (list, tuple)) or len(center) < 3:
+        return None
+    try:
+        values = [float(center[0]), float(center[1]), float(center[2])]
+    except Exception:
+        return None
+    return values if all((value == value) and abs(value) < 1.0e9 for value in values) else None
+
+
+def _center_xyz(target: Dict[str, object] | None) -> List[float] | None:
+    if not isinstance(target, dict):
+        return None
+    center = target.get("center_xyz")
+    if not isinstance(center, (list, tuple)) or len(center) < 3:
+        return None
+    try:
+        return [float(center[0]), float(center[1]), float(center[2])]
+    except Exception:
+        return None
+
+
+def _extract_primary_task_token(prompt: str, family: str) -> str:
     lowered = prompt.lower().strip()
-    token_match = re.search(r"(?:pick up|open and close|navigate to|approach(?: the)?)\s+([a-z0-9_ ]+)", lowered)
-    if token_match:
-        token = token_match.group(1).strip()
-        if "_" in token:
-            maybe_instance = token.split("_")[-1]
-            item = target_index["by_instance"].get(maybe_instance)
-            if item is not None:
-                return item
-        options = target_index["by_label"].get(_normalize_label(token), [])
+    if family == "manipulation":
+        patterns = (
+            r"(?:pick up|grasp|lift)\s+(?:the\s+)?([a-z0-9_ ]+?)(?:\s+from\b|\s+and\b|\s+into\b|\s+in\b|\s+on\b|\s+to\b|$)",
+        )
+    elif family == "articulation":
+        patterns = (
+            r"(?:open and close|close and open|open|close|turn on|turn off)\s+(?:the\s+)?([a-z0-9_ ]+?)(?:\s+and\b|$)",
+        )
+    elif family == "navigation":
+        patterns = (
+            r"(?:navigate to|approach|go to|move toward)\s+(?:the\s+)?([a-z0-9_ ]+?)(?:$)",
+        )
+    else:
+        patterns = tuple()
+    for pattern in patterns:
+        match = re.search(pattern, lowered)
+        if not match:
+            continue
+        token = str(match.group(1) or "").strip()
+        if token:
+            return token
+    return ""
+
+
+def _resolve_token(token: str, target_index: Dict[str, Dict[str, object]]) -> Dict[str, object] | None:
+    cleaned = str(token or "").strip().lower()
+    if not cleaned:
+        return None
+    if "_" in cleaned:
+        maybe_instance = cleaned.split("_")[-1]
+        item = target_index["by_instance"].get(maybe_instance)
+        if item is not None:
+            return item
+    options = target_index["by_label"].get(_normalize_label(cleaned), [])
+    if options:
+        return options[0]
+    # Fall back to progressively shorter label prefixes.
+    words = [word for word in re.split(r"[^a-z0-9]+", cleaned) if word]
+    for cutoff in range(len(words), 0, -1):
+        options = target_index["by_label"].get(_normalize_label(" ".join(words[:cutoff])), [])
         if options:
             return options[0]
     return None
 
 
-def _normalize_label(label: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "_", str(label).lower()).strip("_")
+def _resolve_goal_target(
+    *,
+    prompt: str,
+    family: str,
+    target: Dict[str, object] | None,
+    target_index: Dict[str, Dict[str, object]],
+    facility: FacilityConfig,
+) -> Dict[str, object] | None:
+    if family in {"navigation", "articulation"}:
+        return target
+    if family != "manipulation":
+        return None
+    lowered = prompt.lower().strip()
+    match = re.search(
+        r"(?:place|put|drop)\s+(?:it|the [a-z0-9_ ]+|[a-z0-9_ ]+?)\s+(?:in|into|on|onto|to)\s+(?:the\s+)?([a-z0-9_ ]+?)(?:$)",
+        lowered,
+    )
+    if match:
+        goal_token = str(match.group(1) or "").strip()
+        if "target zone" not in goal_token:
+            resolved = _resolve_token(goal_token, target_index)
+            if resolved is not None:
+                return resolved
+    if facility.manipulation_zones:
+        zone = facility.manipulation_zones[0]
+        return {
+            "label": zone.name,
+            "instance_id": f"zone::{_normalize_label(zone.name)}",
+            "center_xyz": [float(v) for v in list(zone.target_point[:3])],
+        }
+    return None
+
+
+def _goal_point_xyz(
+    *,
+    family: str,
+    prompt: str,
+    target: Dict[str, object] | None,
+    goal_target: Dict[str, object] | None,
+    facility: FacilityConfig,
+) -> List[float] | None:
+    if family == "navigation":
+        return _center_xyz(target)
+    if family == "articulation":
+        return _center_xyz(target)
+    if family != "manipulation":
+        return None
+    goal_center = _center_xyz(goal_target)
+    if goal_center is not None:
+        return goal_center
+    if facility.manipulation_zones:
+        zone = facility.manipulation_zones[0]
+        return [float(v) for v in list(zone.target_point[:3])]
+    target_center = _center_xyz(target)
+    if target_center is None:
+        return None
+    # Stable deterministic fallback when no explicit placement zone exists.
+    return [target_center[0] + 0.35, target_center[1], target_center[2] + 0.10]
 
 
 def _goal_region_id_for_task(
@@ -463,6 +728,8 @@ def _success_predicate_for_family(
     prompt: str,
     family: str,
     target: Dict[str, object] | None,
+    target_center_xyz: List[float] | None,
+    goal_point_xyz: List[float] | None,
     goal_region_id: str,
 ) -> Dict[str, object]:
     target_instance_id = str(target.get("instance_id") if target else "").strip() or None
@@ -470,6 +737,8 @@ def _success_predicate_for_family(
         return {
             "type": "navigation_reach_and_hold",
             "goal_region_id": goal_region_id,
+            "goal_point_xyz": goal_point_xyz,
+            "goal_radius_m": 0.75,
             "hold_steps": 2,
             "collision_key": "invalid_collision",
         }
@@ -477,6 +746,7 @@ def _success_predicate_for_family(
         return {
             "type": "articulation_open_close_sequence",
             "target_instance_id": target_instance_id,
+            "target_center_xyz": target_center_xyz,
             "joint_key": "joint_position",
             "open_threshold": 0.8,
             "close_threshold": 0.2,
@@ -486,7 +756,12 @@ def _success_predicate_for_family(
         return {
             "type": "manipulation_pick_place_stable",
             "target_instance_id": target_instance_id,
+            "target_center_xyz": target_center_xyz,
+            "goal_point_xyz": goal_point_xyz,
             "goal_region_id": goal_region_id,
+            "grasp_radius_m": 0.22,
+            "goal_radius_m": 0.30,
+            "lift_height_m": 0.14,
             "require_stable_after_place": True,
         }
     return {

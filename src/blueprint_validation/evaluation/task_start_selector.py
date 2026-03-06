@@ -72,6 +72,8 @@ def build_task_start_assignments(
                 "clip_name": str(clip.get("clip_name", f"clip_{clip_index:03d}")),
                 "path_type": str(clip.get("path_type", "unknown")),
                 "video_path": str(clip.get("video_path", "")),
+                "initial_camera": dict(clip.get("initial_camera", {}) or {}),
+                "path_context": dict(clip.get("path_context", {}) or {}),
                 "target_instance_id": target.instance_id if target else None,
                 "target_label": target.label if target else None,
                 "target_grounded": bool(target_grounded),

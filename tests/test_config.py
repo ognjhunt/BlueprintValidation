@@ -1432,7 +1432,7 @@ def test_config_rejects_fixed_claim_protocol_without_disjoint_split_strategy(tmp
                     "claim_protocol": "fixed_same_facility_uplift",
                     "primary_endpoint": "task_success",
                     "freeze_world_snapshot": True,
-                    "replication": {"training_seeds": [0, 1, 2, 3, 4]},
+                    "replication": {"training_seeds": [0, 1, 2, 3, 4, 5]},
                     "split_strategy": "legacy",
                 },
                 "policy_compare": {
@@ -1463,7 +1463,7 @@ def test_config_rejects_fixed_claim_protocol_without_required_control_arms(tmp_p
                     "primary_endpoint": "task_success",
                     "freeze_world_snapshot": True,
                     "split_strategy": "disjoint_tasks_and_starts",
-                    "replication": {"training_seeds": [0, 1, 2, 3, 4]},
+                    "replication": {"training_seeds": [0, 1, 2, 3, 4, 5]},
                 },
                 "policy_compare": {
                     "enabled": True,
@@ -1503,7 +1503,7 @@ def test_config_rejects_fixed_claim_protocol_with_too_few_training_seeds(tmp_pat
         )
     )
 
-    with pytest.raises(ValueError, match="at least 5 seeds"):
+    with pytest.raises(ValueError, match="at least 6 seeds"):
         load_config(config_path)
 
 
@@ -1518,11 +1518,13 @@ def test_same_facility_policy_uplift_configs_load():
     ):
         cfg = load_config(Path(relpath))
         assert len(cfg.facilities) == 1
+        assert cfg.eval_policy.mode == "claim"
         assert cfg.eval_policy.headline_scope == "wm_uplift"
         assert cfg.eval_policy.claim_protocol == "fixed_same_facility_uplift"
         assert cfg.eval_policy.primary_endpoint == "task_success"
         assert cfg.eval_policy.freeze_world_snapshot is True
         assert cfg.eval_policy.split_strategy == "disjoint_tasks_and_starts"
+        assert len(cfg.eval_policy.claim_replication.training_seeds) >= 6
         assert cfg.policy_finetune.enabled is True
         assert cfg.rollout_dataset.enabled is True
         assert cfg.policy_compare.enabled is True
@@ -1545,7 +1547,7 @@ def test_config_rejects_claim_strictness_with_zero_min_eval_cells(tmp_path):
                     "primary_endpoint": "task_success",
                     "freeze_world_snapshot": True,
                     "split_strategy": "disjoint_tasks_and_starts",
-                    "replication": {"training_seeds": [0, 1, 2, 3, 4]},
+                    "replication": {"training_seeds": [0, 1, 2, 3, 4, 5]},
                     "claim_strictness": {"min_common_eval_cells": 0},
                 },
                 "policy_compare": {
@@ -1576,8 +1578,8 @@ def test_config_rejects_claim_strictness_positive_seed_requirement_above_seed_co
                     "primary_endpoint": "task_success",
                     "freeze_world_snapshot": True,
                     "split_strategy": "disjoint_tasks_and_starts",
-                    "replication": {"training_seeds": [0, 1, 2, 3, 4]},
-                    "claim_strictness": {"min_positive_training_seeds": 6},
+                    "replication": {"training_seeds": [0, 1, 2, 3, 4, 5]},
+                    "claim_strictness": {"min_positive_training_seeds": 7},
                 },
                 "policy_compare": {
                     "enabled": True,

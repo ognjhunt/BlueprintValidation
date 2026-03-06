@@ -171,10 +171,11 @@ class PolicyEvalStage(PipelineStage):
                 ]
 
         requested_rollouts = int(config.eval_policy.num_rollouts)
+        task_profile = "claim" if fixed_claim_protocol else "dreamdojo"
         planned_rollouts = recommended_rollouts_per_condition(
             num_unique_tasks=len(tasks),
             requested=requested_rollouts,
-            profile="dreamdojo",
+            profile=task_profile,
         )
 
         shared_manifest_path = eval_dir / "shared_task_start_manifest.json"
@@ -302,6 +303,9 @@ class PolicyEvalStage(PipelineStage):
                     world_snapshot_hash=world_snapshot_hash,
                     train_split=float(config.rollout_dataset.train_split),
                     split_strategy=str(config.eval_policy.split_strategy),
+                    min_eval_task_specs=int(config.eval_policy.claim_strictness.min_eval_task_specs),
+                    min_eval_start_clips=int(config.eval_policy.claim_strictness.min_eval_start_clips),
+                    min_common_eval_cells=int(config.eval_policy.claim_strictness.min_common_eval_cells),
                 )
             except ValueError as exc:
                 return StageResult(
@@ -547,6 +551,8 @@ class PolicyEvalStage(PipelineStage):
                         if claim_mode
                         else None
                     ),
+                    rollout_context=dict(assignment),
+                    task_spec=task_specs_by_prompt.get(task),
                 )
                 action_contract = getattr(rollout, "action_contract", {}) or {}
                 action_dim = action_contract.get("dataset_dim")
@@ -681,6 +687,8 @@ class PolicyEvalStage(PipelineStage):
                             "start_path_type": str(assignment.get("path_type", "unknown")),
                             "target_instance_id": assignment.get("target_instance_id"),
                             "target_label": assignment.get("target_label"),
+                            "initial_camera": dict(assignment.get("initial_camera", {}) or {}),
+                            "path_context": dict(assignment.get("path_context", {}) or {}),
                             "target_grounded": bool(assignment.get("target_grounded", False)),
                             "assignment_quality_score": assignment.get("assignment_quality_score"),
                             "assignment_reject_reason": assignment.get("assignment_reject_reason"),
@@ -1137,6 +1145,9 @@ def _run_world_model_only_eval(
                 clip_name=clip_name,
                 trace_id=str(trace["trace_id"]),
                 reanchor_every=int(config.eval_policy.reliability.keyframe_reanchor_every),
+                rollout_context=dict(assignment),
+                task_prompt=task,
+                task_spec=task_specs_by_prompt.get(task),
             )
             action_contract = getattr(rollout, "action_contract", {}) or {}
             action_dim_row = action_contract.get("dataset_dim")
@@ -1276,6 +1287,8 @@ def _run_world_model_only_eval(
                         "start_path_type": str(assignment.get("path_type", "unknown")),
                         "target_instance_id": assignment.get("target_instance_id"),
                         "target_label": assignment.get("target_label"),
+                        "initial_camera": dict(assignment.get("initial_camera", {}) or {}),
+                        "path_context": dict(assignment.get("path_context", {}) or {}),
                         "target_grounded": bool(assignment.get("target_grounded", False)),
                         "assignment_quality_score": assignment.get("assignment_quality_score"),
                         "assignment_reject_reason": assignment.get("assignment_reject_reason"),
@@ -1578,6 +1591,7 @@ def _extract_initial_frames(render_manifest: dict) -> List[np.ndarray]:
 
 
 def _build_task_list(config: ValidationConfig, facility: FacilityConfig) -> tuple[List[str], int]:
+    task_profile = "claim" if claim_protocol_enabled(config) else "dreamdojo"
     tasks = list(config.eval_policy.tasks or [])
     for task in config.eval_policy.manipulation_tasks:
         if task not in tasks:
@@ -1588,7 +1602,7 @@ def _build_task_list(config: ValidationConfig, facility: FacilityConfig) -> tupl
         try:
             hint_tasks = tasks_from_task_hints(
                 facility.task_hints_path,
-                profile="dreamdojo",
+                profile=task_profile,
             )
         except Exception as exc:
             logger.warning("Failed loading task hints from %s: %s", facility.task_hints_path, exc)
@@ -1602,7 +1616,7 @@ def _build_task_list(config: ValidationConfig, facility: FacilityConfig) -> tupl
             "Turn left at the intersection",
             "Approach the nearest obstacle",
         ]
-    return balance_eval_tasks(tasks, profile="dreamdojo"), len(hint_tasks)
+    return balance_eval_tasks(tasks, profile=task_profile), len(hint_tasks)
 
 
 def _has_cuda() -> bool:

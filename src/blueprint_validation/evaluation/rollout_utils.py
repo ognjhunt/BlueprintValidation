@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 
+from .rollout_state_proxy import DeterministicRolloutStateProxy
 from ..video_io import ensure_h264_video, open_mp4_writer
 
 
@@ -24,6 +25,8 @@ def run_rollout_with_adapter(
     device: str,
     expected_action_dim: Optional[int] = None,
     reanchor_every: Optional[int] = None,
+    rollout_context: Optional[Dict[str, object]] = None,
+    task_spec: Optional[Dict[str, object]] = None,
 ) -> SimpleNamespace:
     """Run a policy rollout in a world model using a generic policy adapter.
 
@@ -36,6 +39,11 @@ def run_rollout_with_adapter(
     frames = [initial_frame.copy()]
     actions: List[list] = []
     state_trace: List[dict] = []
+    state_proxy = DeterministicRolloutStateProxy.from_context(
+        task_prompt=task_prompt,
+        task_spec=task_spec,
+        rollout_context=rollout_context,
+    )
     current = initial_frame
     initial_state = _capture_task_state(
         world_model=world_model,
@@ -44,6 +52,7 @@ def run_rollout_with_adapter(
         step_idx=0,
         phase="initial",
         task_prompt=task_prompt,
+        fallback_proxy=state_proxy,
     )
     if initial_state is not None:
         state_trace.append(initial_state)
@@ -72,6 +81,7 @@ def run_rollout_with_adapter(
             step_idx=step_idx + 1,
             phase="post_step",
             task_prompt=task_prompt,
+            fallback_proxy=state_proxy,
         )
         if captured is not None:
             state_trace.append(captured)
@@ -132,6 +142,7 @@ def _capture_task_state(
     step_idx: int,
     phase: str,
     task_prompt: str,
+    fallback_proxy: DeterministicRolloutStateProxy | None = None,
 ) -> dict | None:
     capture = getattr(world_model, "capture_rollout_state", None)
     if callable(capture):
@@ -151,9 +162,9 @@ def _capture_task_state(
                 if isinstance(payload, dict):
                     return payload
             except Exception:
-                return None
+                pass
         except Exception:
-            return None
+            pass
     extract = getattr(world_model, "extract_task_state", None)
     if callable(extract):
         try:
@@ -172,7 +183,12 @@ def _capture_task_state(
                 if isinstance(payload, dict):
                     return payload
             except Exception:
-                return None
+                pass
+        except Exception:
+            pass
+    if fallback_proxy is not None:
+        try:
+            return fallback_proxy.capture(action=action, step_idx=step_idx, phase=phase)
         except Exception:
             return None
     return None

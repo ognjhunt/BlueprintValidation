@@ -5,12 +5,13 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 
 from ..common import get_logger
 from ..video_io import ensure_h264_video, open_mp4_writer
+from .rollout_state_proxy import DeterministicRolloutStateProxy
 
 logger = get_logger("evaluation.scripted_rollout_driver")
 
@@ -113,12 +114,20 @@ def run_scripted_rollout(
     clip_name: str,
     trace_id: str,
     reanchor_every: int | None = None,
+    rollout_context: Optional[Dict[str, object]] = None,
+    task_prompt: str = "",
+    task_spec: Optional[Dict[str, object]] = None,
 ) -> SimpleNamespace:
     """Execute scripted action sequence in world model and write rollout video."""
     import cv2
 
     frames = [initial_frame.copy()]
     state_trace: List[dict] = []
+    state_proxy = DeterministicRolloutStateProxy.from_context(
+        task_prompt=task_prompt,
+        task_spec=task_spec,
+        rollout_context=rollout_context,
+    )
     current = initial_frame
     initial_state = _capture_task_state(
         world_model=world_model,
@@ -126,6 +135,7 @@ def run_scripted_rollout(
         action=None,
         step_idx=0,
         phase="initial",
+        fallback_proxy=state_proxy,
     )
     if initial_state is not None:
         state_trace.append(initial_state)
@@ -138,6 +148,7 @@ def run_scripted_rollout(
             action=action,
             step_idx=step_idx + 1,
             phase="post_step",
+            fallback_proxy=state_proxy,
         )
         if captured is not None:
             state_trace.append(captured)
@@ -196,6 +207,7 @@ def _capture_task_state(
     action,
     step_idx: int,
     phase: str,
+    fallback_proxy: DeterministicRolloutStateProxy | None = None,
 ) -> dict | None:
     capture = getattr(world_model, "capture_rollout_state", None)
     if callable(capture):
@@ -209,9 +221,9 @@ def _capture_task_state(
                 if isinstance(payload, dict):
                     return payload
             except Exception:
-                return None
+                pass
         except Exception:
-            return None
+            pass
     extract = getattr(world_model, "extract_task_state", None)
     if callable(extract):
         try:
@@ -224,7 +236,12 @@ def _capture_task_state(
                 if isinstance(payload, dict):
                     return payload
             except Exception:
-                return None
+                pass
+        except Exception:
+            pass
+    if fallback_proxy is not None:
+        try:
+            return fallback_proxy.capture(action=action, step_idx=step_idx, phase=phase)
         except Exception:
             return None
     return None

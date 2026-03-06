@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
+import json
 from pathlib import Path
 from typing import Dict
 
@@ -65,6 +67,7 @@ class PolicyPairTrainStage(PipelineStage):
                 detail="Dataset export summary missing. Run Stage 4b first.",
             )
         summary_payload = read_json(summary_path)
+        dataset_lineage = dict(summary_payload.get("dataset_lineage", {}) or {})
         if bool(summary_payload.get("claim_mode", False)):
             action_contract = summary_payload.get("action_contract", {})
             reliability_gate = summary_payload.get("reliability_gate", {})
@@ -81,6 +84,18 @@ class PolicyPairTrainStage(PipelineStage):
                     status="failed",
                     elapsed_seconds=0,
                     detail=f"Claim mode reliability gate failed: {reliability_gate}",
+                )
+        if claim_protocol_enabled(config):
+            lineage_error = _claim_dataset_lineage_error(
+                summary_payload=summary_payload,
+                work_dir=work_dir,
+            )
+            if lineage_error is not None:
+                return StageResult(
+                    stage_name=self.name,
+                    status="failed",
+                    elapsed_seconds=0,
+                    detail=lineage_error,
                 )
         adapter = get_policy_adapter(config.policy_adapter)
 
@@ -154,6 +169,7 @@ class PolicyPairTrainStage(PipelineStage):
                 "claim_protocol": "fixed_same_facility_uplift",
                 "policy_base": primary_base,
                 "policy_site": primary_site,
+                "dataset_lineage": dataset_lineage,
                 "replicates": {
                     "generic_control": base_runs,
                     "site_trained": site_runs,
@@ -212,6 +228,7 @@ class PolicyPairTrainStage(PipelineStage):
                     "elapsed_seconds": site_result.elapsed_seconds,
                     "detail": site_result.detail,
                 },
+                "dataset_lineage": dataset_lineage,
             }
             metrics = {
                 "policy_base_status": base_result.status,
@@ -235,3 +252,36 @@ class PolicyPairTrainStage(PipelineStage):
             metrics=metrics,
             detail=detail,
         )
+
+
+def _claim_dataset_lineage_error(*, summary_payload: dict, work_dir: Path) -> str | None:
+    dataset_lineage = dict(summary_payload.get("dataset_lineage", {}) or {})
+    if not dataset_lineage:
+        return "Claim protocol dataset export is missing dataset_lineage metadata."
+
+    claim_manifest_path = work_dir / "policy_eval" / "claim_manifest.json"
+    claim_split_path = work_dir / "policy_eval" / "claim_split_manifest.json"
+    if not claim_manifest_path.exists() or not claim_split_path.exists():
+        return "Current claim manifest or split manifest is missing for lineage validation."
+
+    claim_manifest = read_json(claim_manifest_path)
+    expected_world_hash = str(claim_manifest.get("world_snapshot_hash", "") or "").strip()
+    if expected_world_hash != str(dataset_lineage.get("world_snapshot_hash", "") or "").strip():
+        return "Dataset lineage world snapshot hash does not match the current claim manifest."
+    if _json_manifest_hash(claim_manifest_path) != str(
+        dataset_lineage.get("claim_manifest_hash", "") or ""
+    ).strip():
+        return "Dataset lineage claim manifest hash does not match the current claim manifest."
+    if _json_manifest_hash(claim_split_path) != str(
+        dataset_lineage.get("claim_split_manifest_hash", "") or ""
+    ).strip():
+        return "Dataset lineage split manifest hash does not match the current claim split."
+    return None
+
+
+def _json_manifest_hash(path: Path) -> str:
+    try:
+        payload = json.dumps(read_json(path), sort_keys=True, separators=(",", ":"))
+    except Exception:
+        payload = str(path)
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()

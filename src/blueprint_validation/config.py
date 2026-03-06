@@ -370,7 +370,7 @@ class PolicyEvalReliabilityConfig:
 
 @dataclass
 class ClaimReplicationConfig:
-    training_seeds: List[int] = field(default_factory=lambda: [0, 1, 2, 3, 4])
+    training_seeds: List[int] = field(default_factory=lambda: list(range(8)))
 
 
 @dataclass
@@ -892,6 +892,16 @@ def _parse_wm_refresh_source_condition(raw_value: Any) -> str:
     return value
 
 
+def _min_sign_flip_seed_count(p_value_threshold: float) -> int:
+    """Return the minimum seed count needed for an exact two-sided sign-flip test."""
+    threshold = float(p_value_threshold)
+    for seed_count in range(1, 65):
+        min_p = 3.0 / ((2**seed_count) + 1.0)
+        if min_p < threshold:
+            return seed_count
+    return 65
+
+
 def _parse_facility(raw: Dict[str, Any], base_dir: Path) -> FacilityConfig:
     task_hints_value = raw.get("task_hints_path")
     return FacilityConfig(
@@ -1347,7 +1357,9 @@ def load_config(path: Path) -> ValidationConfig:
             claim_replication=ClaimReplicationConfig(
                 training_seeds=[
                     int(v)
-                    for v in (ep.get("replication", {}) or {}).get("training_seeds", [0, 1, 2, 3, 4])
+                    for v in (ep.get("replication", {}) or {}).get(
+                        "training_seeds", list(range(8))
+                    )
                 ]
             ),
             claim_strictness=ClaimStrictnessConfig(
@@ -1980,14 +1992,17 @@ def load_config(path: Path) -> ValidationConfig:
             "policy_compare.enabled must be true when "
             "claim_protocol=fixed_same_facility_uplift"
         )
-    if (
-        str(config.eval_policy.claim_protocol).strip().lower() == "fixed_same_facility_uplift"
-        and len(training_seeds) < 5
-    ):
-        raise ValueError(
-            "eval_policy.replication.training_seeds must contain at least 5 seeds when "
-            "claim_protocol=fixed_same_facility_uplift"
+    if str(config.eval_policy.claim_protocol).strip().lower() == "fixed_same_facility_uplift":
+        min_claim_seeds = max(
+            6,
+            _min_sign_flip_seed_count(float(config.eval_policy.claim_strictness.p_value_threshold)),
         )
+        if len(training_seeds) < min_claim_seeds:
+            raise ValueError(
+                "eval_policy.replication.training_seeds must contain at least "
+                f"{min_claim_seeds} seeds when claim_protocol=fixed_same_facility_uplift "
+                "(required for the configured paired sign-flip p-value threshold)."
+            )
     if float(config.eval_policy.min_practical_success_lift_pp) < 0.0:
         raise ValueError("eval_policy.min_practical_success_lift_pp must be >= 0")
     strictness = config.eval_policy.claim_strictness

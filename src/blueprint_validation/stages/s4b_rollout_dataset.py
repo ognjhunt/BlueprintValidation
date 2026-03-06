@@ -136,6 +136,8 @@ class RolloutDatasetStage(PipelineStage):
             if str(entry.get("task", "")).strip() in eval_only_tasks
         }
         claim_split_path = work_dir / "policy_eval" / "claim_split_manifest.json"
+        claim_manifest_path = work_dir / "policy_eval" / "claim_manifest.json"
+        claim_manifest = read_json(claim_manifest_path) if claim_manifest_path.exists() else {}
         if claim_protocol_enabled(config):
             if not claim_split_path.exists():
                 return StageResult(
@@ -226,6 +228,18 @@ class RolloutDatasetStage(PipelineStage):
             "num_forced_heldout_pairs": len(forced_heldout_ids),
             "claim_protocol": claim_protocol_enabled(config),
             "claim_split_manifest_path": str(claim_split_path) if claim_split_path.exists() else "",
+            "claim_manifest_path": str(claim_manifest_path) if claim_manifest_path.exists() else "",
+            "dataset_lineage": {
+                "world_snapshot_hash": str(
+                    claim_manifest.get("world_snapshot_hash", "")
+                    or eval_report.get("world_snapshot_hash", "")
+                    or ""
+                ),
+                "claim_manifest_hash": _json_manifest_hash(claim_manifest_path),
+                "claim_split_manifest_hash": _json_manifest_hash(claim_split_path),
+                "train_eval_cell_ids_hash": _sorted_token_hash(split_train_ids),
+                "heldout_eval_cell_ids_hash": _sorted_token_hash(split_heldout_ids),
+            },
         }
         write_json(summary, dataset_root / "dataset_export_summary.json")
 
@@ -348,6 +362,21 @@ def _action_contract_hash(action_contract: dict) -> str:
     except Exception:
         payload = "{}"
     return hashlib.md5(payload.encode("utf-8")).hexdigest()
+
+
+def _json_manifest_hash(path: Path) -> str:
+    if not path.exists():
+        return ""
+    try:
+        payload = json.dumps(read_json(path), sort_keys=True, separators=(",", ":"))
+    except Exception:
+        payload = str(path)
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def _sorted_token_hash(values: set[str]) -> str:
+    payload = json.dumps(sorted(str(value) for value in values), separators=(",", ":"))
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
 
 def _claim_split_leakage_error(
