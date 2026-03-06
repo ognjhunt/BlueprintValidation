@@ -21,8 +21,10 @@ from ..evaluation.camera_quality import (
     evaluate_clip_quality,
     project_target_to_poses,
 )
+from ..evaluation.expected_focus import build_expected_focus_text as _build_expected_focus_text
 from ..evaluation.task_hints import tasks_from_task_hints
 from ..evaluation.vlm_judge import Stage1ProbeScore, score_stage1_probe
+from ..enrichment.stage2_quality import evaluate_stage1_coverage_gate
 from ..rendering.camera_paths import CameraPose, _look_at, generate_path_from_spec, save_path_to_json
 from ..rendering.camera_quality_planner import (
     plan_best_camera_spec,  # noqa: F401
@@ -1283,12 +1285,10 @@ class RenderStage(PipelineStage):
         coverage_summary: Dict[str, object] = {}
         coverage_error: Optional[str] = None
         try:
-            from .s2_enrich import _evaluate_stage1_coverage_gate
-
             original_gate_enabled = bool(config.render.stage1_coverage_gate_enabled)
             config.render.stage1_coverage_gate_enabled = True
             try:
-                coverage_result = _evaluate_stage1_coverage_gate(render_manifest, config)
+                coverage_result = evaluate_stage1_coverage_gate(render_manifest, config)
             finally:
                 config.render.stage1_coverage_gate_enabled = original_gate_enabled
 
@@ -3213,78 +3213,6 @@ def _is_target_grounded_path_context(path_context: dict | None) -> bool:
         if value is not None and str(value).strip():
             return True
     return _path_context_target_xyz(path_context) is not None
-
-
-def _target_focus_label(path_context: dict | None) -> str | None:
-    if not isinstance(path_context, dict):
-        return None
-    for key in ("target_label", "target_instance_id", "target_category"):
-        value = path_context.get(key)
-        text = str(value).strip() if value is not None else ""
-        if text:
-            return text
-    return None
-
-
-def _build_expected_focus_text(*, path_type: str, path_context: dict | None) -> str:
-    """Return a deterministic, human/VLM-readable description of clip intent."""
-    path_key = str(path_type or "").strip().lower()
-    role = ""
-    if isinstance(path_context, dict):
-        role = str(path_context.get("target_role", "")).strip().lower()
-    target_label = _target_focus_label(path_context)
-
-    if role == "targets":
-        if target_label:
-            return (
-                f"Primary target focus: keep {target_label} centered and clearly visible "
-                "for most of the clip."
-            )
-        return "Primary target focus: keep the task target centered and clearly visible."
-    if role == "context":
-        if target_label:
-            return (
-                f"Context focus: keep {target_label} visible alongside nearby objects and "
-                "interaction affordances."
-            )
-        return (
-            "Context focus: keep the task region visible alongside nearby objects and "
-            "interaction affordances."
-        )
-    if role == "overview":
-        return (
-            "Overview focus: capture broad scene layout and navigation anchors while preserving "
-            "task-relevant context."
-        )
-    if role == "fallback":
-        return (
-            "Fallback focus: capture clear, stable scene coverage when explicit task-target "
-            "mapping is unavailable."
-        )
-
-    if target_label and path_key in {"orbit", "sweep"}:
-        return (
-            f"Target focus: keep {target_label} centered and clearly visible for most of the clip "
-            "while preserving stable scene context."
-        )
-
-    if path_key == "manipulation":
-        if target_label:
-            return (
-                f"Manipulation focus: keep {target_label} and its interaction zone in frame with "
-                "a stable close-range viewpoint."
-            )
-        return (
-            "Manipulation focus: keep the task object and interaction zone in frame with a stable "
-            "close-range viewpoint."
-        )
-    if path_key == "orbit":
-        return "Orbit focus: provide stable global scene coverage for spatial orientation."
-    if path_key == "sweep":
-        return "Sweep focus: scan across the scene to expose spatial relationships and task regions."
-    if path_key == "file":
-        return "Path-file focus: follow the predefined camera path with stable, clear framing."
-    return "General focus: produce clear, stable scene coverage useful for downstream evaluation."
 
 
 def _build_task_prompt_pool(

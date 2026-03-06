@@ -13,7 +13,8 @@ def paired_ttest_p_value(a: Sequence[float], b: Sequence[float]) -> float | None
     """Return a robust paired t-test p-value or ``None`` when unavailable.
 
     Degenerate paired samples are normalized explicitly to avoid noisy SciPy
-    warnings and inconsistent NaN handling.
+    warnings and inconsistent NaN handling. Equal vectors normalize to ``1.0``.
+    Constant non-zero offsets normalize to ``0.0``.
     """
     if len(a) < 2 or len(a) != len(b):
         return None

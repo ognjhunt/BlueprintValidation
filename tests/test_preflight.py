@@ -764,6 +764,38 @@ def test_run_preflight_audit_profile_marks_runtime_requirements_advisory(
     assert by_name["api_key:eval_spatial"].passed is True
 
 
+def test_run_preflight_audit_profile_skips_runtime_repo_and_policy_contracts(
+    sample_config, monkeypatch
+):
+    import blueprint_validation.preflight as preflight
+
+    _patch_preflight_fast(monkeypatch, preflight)
+
+    for attr in [
+        "check_path_exists",
+        "check_path_exists_under",
+        "check_cosmos_wrapper_contract",
+        "check_dreamdojo_contract",
+        "check_openvla_finetune_contract",
+        "check_openvla_dataset_registry",
+    ]:
+        monkeypatch.setattr(
+            preflight,
+            attr,
+            lambda *a, _attr=attr, **k: (_ for _ in ()).throw(
+                AssertionError(f"{_attr} should be skipped in audit profile")
+            ),
+        )
+
+    checks = preflight.run_preflight(sample_config, profile="audit")
+    by_name = {c.name: c for c in checks}
+    assert by_name["repo:cosmos_transfer"].passed is True
+    assert by_name["repo:dreamdojo"].passed is True
+    assert by_name["finetune:dreamdojo_contract"].passed is True
+    assert by_name["policy_finetune:openvla_repo"].passed is True
+    assert by_name["policy_finetune:dataset_registry"].passed is True
+
+
 def test_run_preflight_runtime_local_marks_cloud_guards_advisory(sample_config, monkeypatch):
     import blueprint_validation.preflight as preflight
 

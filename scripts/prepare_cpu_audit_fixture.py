@@ -101,6 +101,13 @@ def _write_fixture_config(path: Path, *, facility_id: str, scene_ply: Path) -> N
             "resolution": [64, 64],
             "stage1_active_perception_enabled": False,
         },
+        "eval_policy": {
+            "mode": "research",
+            "headline_scope": "wm_only",
+        },
+        "policy_finetune": {"enabled": False},
+        "action_boost": {"enabled": False},
+        "rollout_dataset": {"enabled": False},
         "robot_composite": {"enabled": False},
         "gemini_polish": {"enabled": False},
         "robosplat": {"enabled": False},

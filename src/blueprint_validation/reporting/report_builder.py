@@ -8,6 +8,7 @@ from typing import Any, Dict
 
 from ..common import get_logger, read_json, write_json, write_text_atomic
 from ..config import ValidationConfig
+from .stage_catalog import FACILITY_STAGE_RESULT_NAMES
 
 logger = get_logger("reporting.report_builder")
 
@@ -52,32 +53,10 @@ def _collect_results(config: ValidationConfig, work_dir: Path) -> Dict[str, Any]
         "claim_portfolio": None,
     }
 
-    stages = [
-        "s0_task_hints_bootstrap",
-        "s1_render",
-        "s1b_robot_composite",
-        "s1c_gemini_polish",
-        "s1d_gaussian_augment",
-        "s1e_splatsim_interaction",
-        "s1f_external_interaction_ingest",
-        "s2_enrich",
-        "s3_finetune",
-        "s4_policy_eval",
-        "s4a_rlds_export",
-        "s3b_policy_finetune",
-        "s3c_policy_rl_loop",
-        "s4e_trained_eval",
-        "s4b_rollout_dataset",
-        "s4c_policy_pair_train",
-        "s4d_policy_pair_eval",
-        "s5_visual_fidelity",
-        "s6_spatial_accuracy",
-    ]
-
     for fid in config.facilities:
         fac_dir = work_dir / fid
         fac_results = {}
-        for stage in stages:
+        for stage in FACILITY_STAGE_RESULT_NAMES:
             result_file = fac_dir / f"{stage}_result.json"
             if result_file.exists():
                 fac_results[stage] = read_json(result_file)
@@ -532,6 +511,20 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
             lines.append(f"- Iterations completed: {metrics.get('iterations_completed', 'N/A')}")
             lines.append(f"- Reward mode: {metrics.get('reward_mode', 'N/A')}")
             lines.append(f"- RL checkpoint: {rl_checkpoint}")
+            lines.append("")
+
+        if "s3d_wm_refresh_loop" in fac_data:
+            wm = fac_data["s3d_wm_refresh_loop"]
+            metrics = wm.get("metrics", {})
+            outputs = wm.get("outputs", {})
+            lines.append("### World Model Refresh Loop (S3d)\n")
+            lines.append(f"- Status: {wm.get('status', 'N/A')}")
+            lines.append(f"- Iterations completed: {metrics.get('iterations_completed', 'N/A')}")
+            lines.append(f"- Source condition: {metrics.get('source_condition', 'N/A')}")
+            lines.append(
+                f"- Final adapted checkpoint: "
+                f"{outputs.get('final_adapted_checkpoint_path', 'N/A')}"
+            )
             lines.append("")
 
     # Cross-Site Discrimination

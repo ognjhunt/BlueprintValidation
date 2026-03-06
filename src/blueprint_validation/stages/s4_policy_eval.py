@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-import re
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -28,12 +27,20 @@ from ..evaluation.claim_protocol import (
     claim_manifest_payload,
     claim_protocol_enabled,
     deterministic_claim_task_failures,
-    paired_eval_key,
     validate_claim_split_payload,
 )
 from ..evaluation.rollout_reliability import (
     build_reliability_gate as shared_build_reliability_gate,
     single_or_none as shared_single_or_none,
+)
+from ..evaluation.policy_eval_metrics import (
+    attach_claim_row_metadata as _attach_claim_row_metadata,
+    build_confidence_intervals as _build_confidence_intervals,
+    build_low_score_breakdown as _build_low_score_breakdown,
+    build_pairwise_metrics as _build_pairwise_metrics,
+    is_manipulation_task as _is_manipulation_task,
+    is_object_grounded_manip_task as _is_object_grounded_manip_task,
+    manipulation_success_rate as _manipulation_success_rate,
 )
 from ..evaluation.task_hints import (
     balance_eval_tasks,
@@ -62,7 +69,6 @@ from ..evaluation.scripted_rollout_driver import (
 )
 from ..evaluation.stats_utils import paired_ttest_p_value
 from ..evaluation.rollout_utils import run_rollout_with_adapter
-from ..evaluation.task_success import evaluate_task_success
 from ..policy_adapters import get_policy_adapter
 from .base import PipelineStage
 
@@ -1761,179 +1767,6 @@ def _build_rollout_plan(tasks: List[str], num_rollouts: int) -> List[str]:
     return [tasks[i % len(tasks)] for i in range(num_rollouts)]
 
 
-def _is_manipulation_task(task: str) -> bool:
-    lowered = task.lower()
-    keywords = ["pick", "grasp", "lift", "place", "stack", "regrasp", "tote", "bin"]
-    return any(k in lowered for k in keywords)
-
-
-def _is_object_grounded_manip_task(task: str) -> bool:
-    if not _is_manipulation_task(task):
-        return True
-    lowered = str(task or "").lower()
-    # Grounded object token patterns: bowl_101, trash_can_157, etc.
-    return bool(re.search(r"\b[a-z0-9_]+_[0-9]{2,}\b", lowered))
-
-
-def _manipulation_success_rate(scores: List[Dict]) -> float:
-    if not scores:
-        return 0.0
-    successes = 0
-    for s in scores:
-        has_flags = s.get("grasp_acquired") is not None
-        if has_flags:
-            if (
-                bool(s.get("grasp_acquired"))
-                and bool(s.get("lifted_clear"))
-                and bool(s.get("placed_in_target"))
-            ):
-                successes += 1
-        elif float(s.get("task_score", 0.0)) >= 7.0:
-            successes += 1
-    return round(successes / len(scores), 3)
-
-
-def _resolve_adapted_policy_checkpoint(
-    previous_results: Dict[str, StageResult],
-    work_dir: Path,
-    policy_adapter=None,
-) -> Path | None:
-    if policy_adapter is None:
-        from ..training.openvla_finetune import resolve_latest_openvla_checkpoint
-
-        class _LegacyResolver:
-            def resolve_latest_checkpoint(self, run_root: Path):
-                return resolve_latest_openvla_checkpoint(run_root)
-
-        policy_adapter = _LegacyResolver()
-
-    prev_rl = previous_results.get("s3c_policy_rl_loop")
-    if prev_rl:
-        candidate = prev_rl.outputs.get("adapted_policy_checkpoint_rl") or prev_rl.outputs.get(
-            "adapted_openvla_checkpoint_rl"
-        )
-        if candidate:
-            path = Path(candidate)
-            if path.exists():
-                return path
-
-    prev = previous_results.get("s3b_policy_finetune")
-    if prev:
-        candidate = prev.outputs.get("adapted_policy_checkpoint") or prev.outputs.get(
-            "adapted_openvla_checkpoint"
-        )
-        if candidate:
-            path = Path(candidate)
-            if path.exists():
-                return path
-    rl_root = work_dir / "policy_rl_loop"
-    if rl_root.exists():
-        for iter_dir in sorted(rl_root.glob("iter_*"), reverse=True):
-            candidate = policy_adapter.resolve_latest_checkpoint(
-                iter_dir / "policy_refine" / "runs"
-            )
-            if candidate is not None:
-                return candidate
-    fallback = policy_adapter.resolve_latest_checkpoint(work_dir / "policy_finetune" / "runs")
-    if fallback is not None:
-        return fallback
-    return None
-
-
-def _attach_claim_row_metadata(
-    *,
-    base_row: Dict[str, object],
-    assignment: dict,
-    rollout,
-    task_specs_by_prompt: Dict[str, Dict[str, object]],
-    fixed_claim_protocol: bool,
-    claim_state_failures: List[str],
-) -> Dict[str, object]:
-    row = dict(base_row)
-    row["eval_cell_id"] = assignment.get("eval_cell_id")
-    row["task_spec_id"] = assignment.get("task_spec_id")
-    row["start_clip_id"] = assignment.get("start_clip_id") or assignment.get("clip_name")
-    row["start_region_id"] = assignment.get("start_region_id")
-    row["start_frame_hash"] = assignment.get("start_frame_hash")
-    row["world_snapshot_hash"] = assignment.get("world_snapshot_hash")
-    row["state_trace"] = list(getattr(rollout, "state_trace", []) or [])
-    if not fixed_claim_protocol:
-        row["task_success"] = None
-        row["task_success_reason"] = ""
-        row["task_success_available"] = False
-        return row
-
-    task_spec = task_specs_by_prompt.get(str(row.get("task", "")).strip())
-    if not task_spec:
-        claim_state_failures.append(f"Missing task spec for task='{row.get('task', '')}'")
-        row["task_success"] = False
-        row["task_success_reason"] = "missing_task_spec"
-        row["task_success_available"] = False
-        return row
-
-    success_payload = evaluate_task_success(
-        task_spec=task_spec,
-        rollout_row=row,
-        state_trace=row.get("state_trace") or [],
-    )
-    row.update(success_payload)
-    if not bool(success_payload.get("task_success_available", False)):
-        claim_state_failures.append(
-            f"Unavailable task-success endpoint for {str(row.get('condition', ''))}:"
-            f"{str(row.get('task', ''))}"
-        )
-    return row
-
-
-def _build_pairwise_metrics(all_scores: List[Dict], conditions: List[str]) -> Dict:
-    """Compute improvement, win rate, and p-value for each pair of conditions."""
-    pairwise = {}
-    has_explicit_pairing = any(str(row.get("eval_cell_id", "")).strip() for row in all_scores)
-    for i, c1 in enumerate(conditions):
-        for c2 in conditions[i + 1 :]:
-            if has_explicit_pairing:
-                grouped: Dict[str, Dict[str, Dict]] = {}
-                for row in all_scores:
-                    condition = str(row.get("condition", "")).strip()
-                    if condition not in {c1, c2}:
-                        continue
-                    grouped.setdefault(paired_eval_key(row), {})[condition] = row
-                pairs = [
-                    (rows[c1], rows[c2]) for rows in grouped.values() if c1 in rows and c2 in rows
-                ]
-                if not pairs:
-                    continue
-                left_rows = [left for left, _ in pairs]
-                right_rows = [right for _, right in pairs]
-            else:
-                left_rows = [s for s in all_scores if s["condition"] == c1]
-                right_rows = [s for s in all_scores if s["condition"] == c2]
-                if not left_rows or not right_rows:
-                    continue
-                min_len = min(len(left_rows), len(right_rows))
-                pairs = list(zip(left_rows[:min_len], right_rows[:min_len]))
-            mean1 = float(np.mean([s["task_score"] for s in left_rows]))
-            mean2 = float(np.mean([s["task_score"] for s in right_rows]))
-            improvement = ((mean2 - mean1) / max(mean1, 1e-8)) * 100
-            abs_diff = mean2 - mean1
-            wins = sum(1 for a, b in pairs if float(b["task_score"]) > float(a["task_score"]))
-            win_rate = wins / max(len(pairs), 1)
-            p_value = None
-            if len(pairs) >= 2:
-                v1 = [left["task_score"] for left, _ in pairs]
-                v2 = [right["task_score"] for _, right in pairs]
-                p_value = paired_ttest_p_value(v1, v2)
-            pairwise[f"{c1}_vs_{c2}"] = {
-                f"{c1}_mean": round(mean1, 3),
-                f"{c2}_mean": round(mean2, 3),
-                "improvement_pct": round(improvement, 2),
-                "absolute_difference": round(abs_diff, 3),
-                "win_rate": round(win_rate, 3),
-                "p_value": round(p_value, 6) if p_value is not None else None,
-            }
-    return pairwise
-
-
 def _headline_scope(config: ValidationConfig) -> str:
     scope = (getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only").strip().lower()
     return scope if scope in {"wm_only", "wm_uplift", "dual"} else "wm_only"
@@ -2024,78 +1857,6 @@ def _build_reliability_gate(
             scoring_failure_rate=scoring_failure_rate,
         )
     )
-
-
-def _build_confidence_intervals(baseline_scores: List[Dict], adapted_scores: List[Dict]) -> Dict:
-    min_len = min(len(baseline_scores), len(adapted_scores))
-    if min_len < 2:
-        return {"paired_mean_delta": None, "paired_95ci_low": None, "paired_95ci_high": None}
-    b_vals = np.asarray([s["task_score"] for s in baseline_scores[:min_len]], dtype=np.float32)
-    a_vals = np.asarray([s["task_score"] for s in adapted_scores[:min_len]], dtype=np.float32)
-    diffs = a_vals - b_vals
-    mean = float(np.mean(diffs))
-    std = float(np.std(diffs, ddof=1))
-    sem = std / np.sqrt(float(min_len))
-    margin = 1.96 * sem
-    return {
-        "paired_mean_delta": round(mean, 6),
-        "paired_95ci_low": round(mean - margin, 6),
-        "paired_95ci_high": round(mean + margin, 6),
-    }
-
-
-def _build_low_score_breakdown(scores: List[Dict]) -> Dict:
-    low_rows = [
-        row
-        for row in scores
-        if float(row.get("task_score", 0.0)) <= 1.0
-        or float(row.get("visual_score", 0.0)) <= 1.0
-        or float(row.get("spatial_score", 0.0)) <= 1.0
-    ]
-    categories = {
-        "ceiling_or_upside_down": 0,
-        "off_target_or_not_visible": 0,
-        "blur_or_indiscernible": 0,
-        "missing_robot_or_target_object": 0,
-    }
-    examples: List[Dict] = []
-    for row in low_rows:
-        reasoning = str(row.get("reasoning", "")).lower()
-        if any(tok in reasoning for tok in ("ceiling", "upside down", "upside-down")):
-            categories["ceiling_or_upside_down"] += 1
-        if any(
-            tok in reasoning
-            for tok in (
-                "does not show",
-                "do not show",
-                "not visible",
-                "impossible to evaluate",
-                "cannot evaluate",
-            )
-        ):
-            categories["off_target_or_not_visible"] += 1
-        if any(
-            tok in reasoning for tok in ("blur", "blurry", "indiscernible", "abstract", "unclear")
-        ):
-            categories["blur_or_indiscernible"] += 1
-        if any(
-            tok in reasoning for tok in ("no robot", "target zone", "target object", "no visible")
-        ):
-            categories["missing_robot_or_target_object"] += 1
-        if len(examples) < 8:
-            examples.append(
-                {
-                    "condition": row.get("condition"),
-                    "task": row.get("task"),
-                    "start_clip_name": row.get("start_clip_name"),
-                    "reasoning_excerpt": str(row.get("reasoning", ""))[:240],
-                }
-            )
-    return {
-        "num_low_score_rows": len(low_rows),
-        "category_counts": categories,
-        "examples": examples,
-    }
 
 
 def _manifest_hash(path: Path) -> str:

@@ -16,6 +16,46 @@ def test_load_config_from_yaml(sample_config_yaml):
     assert config.render.fps == 5
 
 
+def test_load_config_rejects_unknown_top_level_key(tmp_path):
+    from blueprint_validation.config import load_config
+
+    config_path = tmp_path / "unknown_top_level.yaml"
+    config_path.write_text(
+        """
+project_name: Test
+facilities:
+  a:
+    name: A
+    ply_path: /tmp/a.ply
+totally_unknown: true
+""".strip()
+    )
+
+    with pytest.raises(ValueError, match="totally_unknown"):
+        load_config(config_path)
+
+
+def test_load_config_rejects_unknown_nested_key(tmp_path):
+    from blueprint_validation.config import load_config
+
+    config_path = tmp_path / "unknown_nested.yaml"
+    config_path.write_text(
+        """
+project_name: Test
+facilities:
+  a:
+    name: A
+    ply_path: /tmp/a.ply
+render:
+  resolution: [64, 64]
+  num_framez: 8
+""".strip()
+    )
+
+    with pytest.raises(ValueError, match=r"render\.num_framez"):
+        load_config(config_path)
+
+
 def test_config_defaults():
     from blueprint_validation.config import ValidationConfig
 

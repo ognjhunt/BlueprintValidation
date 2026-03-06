@@ -29,4 +29,4 @@ def test_paired_ttest_p_value_normalizes_nan(monkeypatch):
     scipy.stats = types.SimpleNamespace(ttest_rel=lambda *_a, **_k: (0.0, float("nan")))
     monkeypatch.setitem(sys.modules, "scipy", scipy)
 
-    assert paired_ttest_p_value([1.0, 2.0], [1.5, 2.5]) is None
+    assert paired_ttest_p_value([1.0, 2.0, 4.0], [1.5, 3.5, 4.5]) is None

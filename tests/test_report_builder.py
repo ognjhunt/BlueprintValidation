@@ -86,6 +86,37 @@ def test_report_builder_json(tmp_path, sample_config):
     assert data["project_name"] == "Test Project"
 
 
+def test_report_builder_collects_s3d_wm_refresh_loop(tmp_path, sample_config):
+    from blueprint_validation.common import write_json
+    from blueprint_validation.reporting.report_builder import build_report
+
+    work_dir = tmp_path / "outputs"
+    fac_dir = work_dir / "test_facility"
+    fac_dir.mkdir(parents=True)
+    write_json(
+        {
+            "stage_name": "s3d_wm_refresh_loop",
+            "status": "success",
+            "outputs": {"final_adapted_checkpoint_path": "/tmp/ckpt"},
+            "metrics": {
+                "iterations_completed": 1,
+                "source_condition": "adapted",
+            },
+        },
+        fac_dir / "s3d_wm_refresh_loop_result.json",
+    )
+
+    output_path = tmp_path / "report.json"
+    result = build_report(sample_config, work_dir, fmt="json", output_path=output_path)
+    data = json.loads(result.read_text())
+    assert data["facilities"]["test_facility"]["s3d_wm_refresh_loop"]["status"] == "success"
+
+    markdown_path = tmp_path / "report.md"
+    md_result = build_report(sample_config, work_dir, fmt="markdown", output_path=markdown_path)
+    content = md_result.read_text()
+    assert "World Model Refresh Loop (S3d)" in content
+
+
 def test_executive_summary_uses_s4e_only_when_world_fixed(sample_config):
     from blueprint_validation.reporting.report_builder import _add_executive_summary
 

@@ -91,6 +91,22 @@ def _append_profiled_check(
     checks.append(_advisory_check(advisory_name, advisory_detail))
 
 
+def _append_profiled_checks(
+    checks: list[PreflightCheck],
+    *,
+    enforce: bool,
+    specs: list[tuple[str, str, Callable[[], PreflightCheck]]],
+) -> None:
+    for advisory_name, advisory_detail, factory in specs:
+        _append_profiled_check(
+            checks,
+            enforce=enforce,
+            advisory_name=advisory_name,
+            advisory_detail=advisory_detail,
+            factory=factory,
+        )
+
+
 def _load_build_controlnet_spec():
     from .enrichment.cosmos_runner import build_controlnet_spec
 
@@ -271,6 +287,280 @@ def _resolve_eval_world_action_dim(config: ValidationConfig) -> int | None:
     if not match:
         return None
     return int(match.group(1))
+
+
+def _append_runtime_repo_contract_checks(
+    checks: list[PreflightCheck],
+    *,
+    config: ValidationConfig,
+    normalized_profile: PreflightProfile,
+    enforce_runtime_requirements: bool,
+) -> None:
+    detail = _advisory_detail(
+        normalized_profile,
+        "Local runtime repos and wrapper contracts are enforced only for runtime execution.",
+    )
+    _append_profiled_checks(
+        checks,
+        enforce=enforce_runtime_requirements,
+        specs=[
+            (
+                "repo:cosmos_transfer",
+                detail,
+                lambda: check_path_exists(config.enrich.cosmos_repo, "repo:cosmos_transfer"),
+            ),
+            (
+                "repo:cosmos_transfer:inference_script",
+                detail,
+                lambda: check_path_exists_under(
+                    config.enrich.cosmos_repo,
+                    "examples/inference.py",
+                    "repo:cosmos_transfer:inference_script",
+                ),
+            ),
+            (
+                "enrich:cosmos_wrapper_contract",
+                detail,
+                lambda: check_cosmos_wrapper_contract(config.enrich.cosmos_repo),
+            ),
+            (
+                "repo:dreamdojo",
+                detail,
+                lambda: check_path_exists(config.finetune.dreamdojo_repo, "repo:dreamdojo"),
+            ),
+            (
+                "repo:dreamdojo:train_entrypoint",
+                detail,
+                lambda: check_path_exists_under(
+                    config.finetune.dreamdojo_repo,
+                    "scripts/train.py",
+                    "repo:dreamdojo:train_entrypoint",
+                ),
+            ),
+            (
+                "repo:dreamdojo:configs",
+                detail,
+                lambda: check_path_exists_under(
+                    config.finetune.dreamdojo_repo,
+                    "configs",
+                    "repo:dreamdojo:configs",
+                ),
+            ),
+            (
+                "finetune:dreamdojo_contract",
+                detail,
+                lambda: check_dreamdojo_contract(
+                    config.finetune.dreamdojo_repo,
+                    config.finetune.experiment_config,
+                ),
+            ),
+        ],
+    )
+
+
+def _append_openvla_policy_runtime_checks(
+    checks: list[PreflightCheck],
+    *,
+    config: ValidationConfig,
+    normalized_profile: PreflightProfile,
+    enforce_runtime_requirements: bool,
+) -> None:
+    openvla_backend = config.policy_adapter.openvla
+    script_path = Path(openvla_backend.finetune_script)
+    if not script_path.is_absolute():
+        script_path = openvla_backend.openvla_repo / script_path
+    dataset_names = {config.policy_finetune.dataset_name}
+    if config.rollout_dataset.enabled:
+        dataset_names.add(config.rollout_dataset.baseline_dataset_name)
+        dataset_names.add(config.rollout_dataset.adapted_dataset_name)
+
+    detail = _advisory_detail(
+        normalized_profile,
+        "Policy-training runtime repos and scripts are enforced only for runtime execution.",
+    )
+    _append_profiled_checks(
+        checks,
+        enforce=enforce_runtime_requirements,
+        specs=[
+            ("tool:torchrun", detail, lambda: check_external_tool("torchrun")),
+            (
+                "policy_finetune:openvla_repo",
+                detail,
+                lambda: check_path_exists(
+                    openvla_backend.openvla_repo,
+                    "policy_finetune:openvla_repo",
+                ),
+            ),
+            (
+                "policy_finetune:finetune_script",
+                detail,
+                lambda: check_path_exists(script_path, "policy_finetune:finetune_script"),
+            ),
+            (
+                "policy_finetune:wrapper_contract",
+                detail,
+                lambda: check_openvla_finetune_contract(
+                    openvla_backend.openvla_repo,
+                    openvla_backend.finetune_script,
+                ),
+            ),
+            (
+                "policy_finetune:dataset_registry",
+                detail,
+                lambda: check_openvla_dataset_registry(
+                    openvla_backend.openvla_repo,
+                    dataset_names,
+                ),
+            ),
+        ],
+    )
+
+
+def _append_pi05_policy_runtime_checks(
+    checks: list[PreflightCheck],
+    *,
+    config: ValidationConfig,
+    normalized_profile: PreflightProfile,
+    enforce_runtime_requirements: bool,
+) -> None:
+    pi05 = config.policy_adapter.pi05
+    train_script = Path(pi05.train_script)
+    norm_script = Path(pi05.norm_stats_script)
+    if not train_script.is_absolute():
+        train_script = pi05.openpi_repo / train_script
+    if not norm_script.is_absolute():
+        norm_script = pi05.openpi_repo / norm_script
+    detail = _advisory_detail(
+        normalized_profile,
+        "Policy-training runtime repos and scripts are enforced only for runtime execution.",
+    )
+    _append_profiled_checks(
+        checks,
+        enforce=enforce_runtime_requirements,
+        specs=[
+            (
+                "policy_adapter:pi05:openpi_repo",
+                detail,
+                lambda: check_path_exists(
+                    pi05.openpi_repo,
+                    "policy_adapter:pi05:openpi_repo",
+                ),
+            ),
+            (
+                "policy_adapter:pi05:train_script",
+                detail,
+                lambda: check_path_exists(train_script, "policy_adapter:pi05:train_script"),
+            ),
+            (
+                "policy_adapter:pi05:norm_stats_script",
+                detail,
+                lambda: check_path_exists(norm_script, "policy_adapter:pi05:norm_stats_script"),
+            ),
+            (
+                "policy_adapter:pi05:train_contract",
+                detail,
+                lambda: check_pi05_train_contract(pi05.openpi_repo, pi05.train_script),
+            ),
+            (
+                "policy_adapter:pi05:norm_stats_contract",
+                detail,
+                lambda: check_pi05_norm_stats_contract(pi05.openpi_repo, pi05.norm_stats_script),
+            ),
+            (
+                "import:openpi",
+                detail,
+                lambda: check_python_import_from_path(
+                    "openpi",
+                    pi05.openpi_repo / "src",
+                    "import:openpi",
+                ),
+            ),
+        ],
+    )
+
+
+def _append_dreamzero_policy_runtime_checks(
+    checks: list[PreflightCheck],
+    *,
+    config: ValidationConfig,
+    normalized_profile: PreflightProfile,
+    enforce_runtime_requirements: bool,
+) -> None:
+    dz = config.policy_adapter.dreamzero
+    train_script = Path(dz.train_script)
+    if not train_script.is_absolute():
+        train_script = dz.repo_path / train_script
+    detail = _advisory_detail(
+        normalized_profile,
+        "Policy-training runtime repos and scripts are enforced only for runtime execution.",
+    )
+    _append_profiled_checks(
+        checks,
+        enforce=enforce_runtime_requirements,
+        specs=[
+            (
+                "policy_adapter:dreamzero:train_script",
+                detail,
+                lambda: check_path_exists(train_script, "policy_adapter:dreamzero:train_script"),
+            ),
+            (
+                "policy_adapter:dreamzero:train_contract",
+                detail,
+                lambda: check_dreamzero_train_contract(dz.repo_path, dz.train_script),
+            ),
+        ],
+    )
+
+
+def _append_dreamzero_adapter_runtime_checks(
+    checks: list[PreflightCheck],
+    *,
+    config: ValidationConfig,
+    normalized_profile: PreflightProfile,
+    enforce_runtime_requirements: bool,
+) -> None:
+    dz = config.policy_adapter.dreamzero
+    detail = _advisory_detail(
+        normalized_profile,
+        "Adapter runtime repos and imports are enforced only for runtime execution.",
+    )
+    _append_profiled_checks(
+        checks,
+        enforce=enforce_runtime_requirements,
+        specs=[
+            (
+                "policy_adapter:dreamzero:repo_path",
+                detail,
+                lambda: check_path_exists(dz.repo_path, "policy_adapter:dreamzero:repo_path"),
+            ),
+            (
+                "policy_adapter:dreamzero:checkpoint_path",
+                detail,
+                lambda: check_path_exists(
+                    dz.checkpoint_path,
+                    "policy_adapter:dreamzero:checkpoint_path",
+                ),
+            ),
+            (
+                "policy_adapter:dreamzero:inference_import",
+                detail,
+                lambda: check_python_import_from_path(
+                    dz.inference_module,
+                    dz.repo_path,
+                    "policy_adapter:dreamzero:inference_import",
+                ),
+            ),
+            (
+                "policy_adapter:dreamzero:runtime_contract",
+                detail,
+                lambda: check_dreamzero_runtime_contract(
+                    repo_path=dz.repo_path,
+                    inference_module=dz.inference_module,
+                    inference_class=dz.inference_class,
+                ),
+            ),
+        ],
+    )
 
 
 def _claim_mode_checks(
@@ -1604,33 +1894,15 @@ def run_preflight(
             )
         )
 
-    checks.append(check_path_exists(config.enrich.cosmos_repo, "repo:cosmos_transfer"))
-    checks.append(
-        check_path_exists_under(
-            config.enrich.cosmos_repo,
-            "examples/inference.py",
-            "repo:cosmos_transfer:inference_script",
-        )
+    _append_runtime_repo_contract_checks(
+        checks,
+        config=config,
+        normalized_profile=normalized_profile,
+        enforce_runtime_requirements=enforce_runtime_requirements,
     )
-    checks.append(check_cosmos_wrapper_contract(config.enrich.cosmos_repo))
     checks.append(check_dependency("sam2", "sam2"))
     checks.append(check_dependency("natsort", "natsort"))
     checks.append(check_dependency("lightning", "lightning"))
-    checks.append(check_path_exists(config.finetune.dreamdojo_repo, "repo:dreamdojo"))
-    checks.append(
-        check_path_exists_under(
-            config.finetune.dreamdojo_repo,
-            "scripts/train.py",
-            "repo:dreamdojo:train_entrypoint",
-        )
-    )
-    checks.append(
-        check_path_exists_under(
-            config.finetune.dreamdojo_repo,
-            "configs",
-            "repo:dreamdojo:configs",
-        )
-    )
     _append_profiled_check(
         checks,
         enforce=enforce_runtime_requirements,
@@ -1647,12 +1919,6 @@ def run_preflight(
             config.finetune.dreamdojo_repo,
             "import:cosmos_predict2",
         ),
-    )
-    checks.append(
-        check_dreamdojo_contract(
-            config.finetune.dreamdojo_repo,
-            config.finetune.experiment_config,
-        )
     )
 
     judge_api_env = config.eval_policy.vlm_judge.api_key_env
@@ -1832,32 +2098,17 @@ def run_preflight(
         )
     elif adapter_name == "dreamzero":
         dz = config.policy_adapter.dreamzero
-        checks.append(check_path_exists(dz.repo_path, "policy_adapter:dreamzero:repo_path"))
-        checks.append(
-            check_path_exists(
-                dz.checkpoint_path,
-                "policy_adapter:dreamzero:checkpoint_path",
-            )
+        _append_dreamzero_adapter_runtime_checks(
+            checks,
+            config=config,
+            normalized_profile=normalized_profile,
+            enforce_runtime_requirements=enforce_runtime_requirements,
         )
         checks.append(
             PreflightCheck(
                 name="policy_adapter:dreamzero:action_dim",
                 passed=int(dz.policy_action_dim) > 0,
                 detail=str(dz.policy_action_dim),
-            )
-        )
-        checks.append(
-            check_python_import_from_path(
-                dz.inference_module,
-                dz.repo_path,
-                "policy_adapter:dreamzero:inference_import",
-            )
-        )
-        checks.append(
-            check_dreamzero_runtime_contract(
-                repo_path=dz.repo_path,
-                inference_module=dz.inference_module,
-                inference_class=dz.inference_class,
             )
         )
         requires_policy_training = bool(effective_policy_finetune_enabled)
@@ -1883,33 +2134,11 @@ def run_preflight(
 
     if not wm_only_scope and effective_policy_finetune_enabled:
         if adapter_name == "openvla_oft":
-            openvla_backend = config.policy_adapter.openvla
-            checks.append(check_external_tool("torchrun"))
-            checks.append(
-                check_path_exists(
-                    openvla_backend.openvla_repo,
-                    "policy_finetune:openvla_repo",
-                )
-            )
-            script_path = Path(openvla_backend.finetune_script)
-            if not script_path.is_absolute():
-                script_path = openvla_backend.openvla_repo / script_path
-            checks.append(check_path_exists(script_path, "policy_finetune:finetune_script"))
-            checks.append(
-                check_openvla_finetune_contract(
-                    openvla_backend.openvla_repo,
-                    openvla_backend.finetune_script,
-                )
-            )
-            dataset_names = {config.policy_finetune.dataset_name}
-            if config.rollout_dataset.enabled:
-                dataset_names.add(config.rollout_dataset.baseline_dataset_name)
-                dataset_names.add(config.rollout_dataset.adapted_dataset_name)
-            checks.append(
-                check_openvla_dataset_registry(
-                    openvla_backend.openvla_repo,
-                    dataset_names,
-                )
+            _append_openvla_policy_runtime_checks(
+                checks,
+                config=config,
+                normalized_profile=normalized_profile,
+                enforce_runtime_requirements=enforce_runtime_requirements,
             )
             if config.rollout_dataset.enabled:
                 checks.append(check_dependency("tensorflow", "tensorflow"))
@@ -1970,28 +2199,11 @@ def run_preflight(
                     detail=pi05.train_backend,
                 )
             )
-            checks.append(
-                check_path_exists(
-                    pi05.openpi_repo,
-                    "policy_adapter:pi05:openpi_repo",
-                )
-            )
-            train_script = Path(pi05.train_script)
-            norm_script = Path(pi05.norm_stats_script)
-            if not train_script.is_absolute():
-                train_script = pi05.openpi_repo / train_script
-            if not norm_script.is_absolute():
-                norm_script = pi05.openpi_repo / norm_script
-            checks.append(check_path_exists(train_script, "policy_adapter:pi05:train_script"))
-            checks.append(check_path_exists(norm_script, "policy_adapter:pi05:norm_stats_script"))
-            checks.append(check_pi05_train_contract(pi05.openpi_repo, pi05.train_script))
-            checks.append(check_pi05_norm_stats_contract(pi05.openpi_repo, pi05.norm_stats_script))
-            checks.append(
-                check_python_import_from_path(
-                    "openpi",
-                    pi05.openpi_repo / "src",
-                    "import:openpi",
-                )
+            _append_pi05_policy_runtime_checks(
+                checks,
+                config=config,
+                normalized_profile=normalized_profile,
+                enforce_runtime_requirements=enforce_runtime_requirements,
             )
             checks.append(check_dependency("lerobot", "lerobot"))
             if config.rollout_dataset.enabled:
@@ -2024,16 +2236,12 @@ def run_preflight(
         elif adapter_name == "dreamzero":
             dz = config.policy_adapter.dreamzero
             if bool(dz.allow_training):
-                train_script = Path(dz.train_script)
-                if not train_script.is_absolute():
-                    train_script = dz.repo_path / train_script
-                checks.append(
-                    check_path_exists(
-                        train_script,
-                        "policy_adapter:dreamzero:train_script",
-                    )
+                _append_dreamzero_policy_runtime_checks(
+                    checks,
+                    config=config,
+                    normalized_profile=normalized_profile,
+                    enforce_runtime_requirements=enforce_runtime_requirements,
                 )
-                checks.append(check_dreamzero_train_contract(dz.repo_path, dz.train_script))
                 if config.rollout_dataset.enabled:
                     checks.append(
                         PreflightCheck(
