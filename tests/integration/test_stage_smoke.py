@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from blueprint_validation.common import write_json
+from blueprint_validation.rendering.vlm_scene_detector import SceneDetectionResult
 
 
 def test_stage3b_policy_finetune_skips_when_disabled(sample_config, tmp_path):
@@ -21,19 +22,31 @@ def test_stage3b_policy_finetune_skips_when_disabled(sample_config, tmp_path):
     assert result.status == "skipped"
 
 
-def test_stage0_strict_non_llm_requires_task_hints(sample_config, tmp_path):
+def test_stage0_bootstrap_ignores_render_vlm_fallback_gate(
+    sample_config, sample_ply, tmp_path, monkeypatch
+):
     from blueprint_validation.stages.s0_task_hints_bootstrap import TaskHintsBootstrapStage
 
     fac = sample_config.facilities["test_facility"]
+    fac.ply_path = sample_ply
     fac.task_hints_path = tmp_path / "missing_task_targets.synthetic.json"
     sample_config.render.vlm_fallback = False
     sample_config.render.stage1_strict_require_task_hints = True
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s0_task_hints_bootstrap.detect_and_generate_specs",
+        lambda **_kwargs: SceneDetectionResult(
+            specs=[],
+            detections=[],
+            suggested_tasks=[],
+            scene_type="test_lab",
+        ),
+    )
 
     work_dir = tmp_path / "outputs" / "test_facility"
     stage = TaskHintsBootstrapStage()
     result = stage.execute(sample_config, fac, work_dir, {})
     assert result.status == "failed"
-    assert "strict task hints are required" in (result.detail or "")
+    assert "manual analysis is required" in (result.detail or "").lower()
 
 
 def test_stage2_to_stage3_handoff(sample_config, tmp_path, monkeypatch):

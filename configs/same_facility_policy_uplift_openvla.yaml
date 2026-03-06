@@ -8,6 +8,26 @@ facilities:
     claim_benchmark_path: ./benchmarks/facility_a.fixed_claim.json
     description: Target deployment facility world model
 
+render:
+  resolution: [480, 640]
+  fps: 10
+  num_frames: 49
+  scene_aware: false
+  num_clips_per_path: 2
+  stage1_coverage_gate_enabled: false
+  stage1_quality_planner_enabled: false
+  stage1_quality_autoretry_enabled: false
+  stage1_active_perception_enabled: false
+  camera_paths:
+    - type: orbit
+      radius_m: 2.8
+    - type: sweep
+      length_m: 5.0
+    - type: orbit
+      radius_m: 1.8
+    - type: sweep
+      length_m: 3.5
+
 robot_composite:
   enabled: false
 
@@ -42,9 +62,11 @@ eval_policy:
   tasks:
     - Navigate to the prep counter
     - Approach the sink
+    - Move to the pantry shelf
   manipulation_tasks:
     - Pick up the bowl from the counter and place it in the sink
     - Pick up the bottle from the shelf and place it in the target zone
+    - Pick up the mug from the prep counter and place it on the drying rack
 
 policy_finetune:
   enabled: true
@@ -61,9 +83,6 @@ policy_compare:
   heldout_num_rollouts: 24
   heldout_seed: 123
   eval_world_model: adapted
-  # Heldout tasks feed the same-facility heldout-task matrix axes.
-  heldout_tasks:
-    - Pick up the bottle from the shelf and place it in the target zone
 
 policy_adapter:
   name: openvla_oft

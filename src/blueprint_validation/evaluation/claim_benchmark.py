@@ -28,6 +28,102 @@ def claim_benchmark_manifest_hash(path: Path) -> str:
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
 
+def claim_benchmark_alignment_failures(
+    *,
+    benchmark_path: Path,
+    render_manifest: dict,
+) -> List[str]:
+    if not benchmark_path.exists():
+        return [f"Claim benchmark manifest not found: {benchmark_path}"]
+
+    payload = read_json(benchmark_path)
+    if not isinstance(payload, dict):
+        return ["Claim benchmark manifest must be a JSON object."]
+
+    assignments = payload.get("assignments")
+    if not isinstance(assignments, list) or not assignments:
+        return ["Claim benchmark manifest must include non-empty assignments."]
+
+    render_clips = list(render_manifest.get("clips", []) or [])
+    clip_names = {
+        str(clip.get("clip_name", "")).strip()
+        for clip in render_clips
+        if str(clip.get("clip_name", "")).strip()
+    }
+    clip_indices = {
+        int(clip.get("clip_index", -1))
+        for clip in render_clips
+        if int(clip.get("clip_index", -1)) >= 0
+    }
+
+    missing_names: List[str] = []
+    missing_indices: List[int] = []
+    for assignment in assignments:
+        if not isinstance(assignment, dict):
+            continue
+        clip_name = str(assignment.get("clip_name", "")).strip()
+        if clip_name:
+            if clip_name not in clip_names:
+                missing_names.append(clip_name)
+            continue
+        if "clip_index" in assignment:
+            clip_index = int(assignment.get("clip_index", -1))
+            if clip_index not in clip_indices:
+                missing_indices.append(clip_index)
+
+    failures: List[str] = []
+    if missing_names:
+        deduped = sorted(set(missing_names))
+        failures.append(
+            "Claim benchmark clip_name values were not found in render_manifest: "
+            + ", ".join(deduped[:12])
+        )
+    if missing_indices:
+        deduped = sorted(set(missing_indices))
+        failures.append(
+            "Claim benchmark clip_index values were not found in render_manifest: "
+            + ", ".join(str(value) for value in deduped[:12])
+        )
+    return failures
+
+
+def claim_benchmark_strictness_failures(
+    *,
+    benchmark: ClaimBenchmark,
+    min_eval_task_specs: int,
+    min_eval_start_clips: int,
+    min_common_eval_cells: int,
+) -> List[str]:
+    unique_task_specs = {
+        str(item.get("task_spec_id", "")).strip()
+        for item in benchmark.assignments
+        if str(item.get("task_spec_id", "")).strip()
+    }
+    unique_start_clips = {
+        str(item.get("start_clip_id", "")).strip()
+        for item in benchmark.assignments
+        if str(item.get("start_clip_id", "")).strip()
+    }
+
+    failures: List[str] = []
+    if len(unique_task_specs) < int(min_eval_task_specs):
+        failures.append(
+            "Claim benchmark is undersized for strictness: "
+            f"unique_task_specs={len(unique_task_specs)} < min_eval_task_specs={int(min_eval_task_specs)}"
+        )
+    if len(unique_start_clips) < int(min_eval_start_clips):
+        failures.append(
+            "Claim benchmark is undersized for strictness: "
+            f"unique_start_clips={len(unique_start_clips)} < min_eval_start_clips={int(min_eval_start_clips)}"
+        )
+    if len(benchmark.assignments) < int(min_common_eval_cells):
+        failures.append(
+            "Claim benchmark is undersized for strictness: "
+            f"assignments={len(benchmark.assignments)} < min_common_eval_cells={int(min_common_eval_cells)}"
+        )
+    return failures
+
+
 def load_pinned_claim_benchmark(
     *,
     benchmark_path: Path,

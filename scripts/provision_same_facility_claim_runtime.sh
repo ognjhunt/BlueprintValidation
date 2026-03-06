@@ -43,11 +43,13 @@ fi
 echo
 echo "[2/5] Installing compatibility/runtime Python packages into the repo venv"
 uv pip install --python "$PYTHON_BIN" \
+  "numpy<2" \
   "transformers==4.51.3" \
   "peft==0.11.1" \
   "huggingface_hub==0.30.2" \
   "natsort>=8.4.0"
 uv pip install --python "$PYTHON_BIN" \
+  "numpy<2" \
   "sam2>=1.1.0" \
   "tensorflow==2.15.0" \
   "tensorflow-datasets==4.9.3"

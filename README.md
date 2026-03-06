@@ -96,7 +96,7 @@ IRL transfer to the exact same facility remains a future follow-up question unti
 # Install
 git clone https://github.com/ognjhunt/BlueprintValidation.git
 cd BlueprintValidation
-uv sync
+uv sync --extra rlds
 
 # Download model weights (~30GB)
 bash scripts/download_models.sh
@@ -161,6 +161,8 @@ docker build -f docker/runpod.Dockerfile -t blueprint-validation:latest .
 bash /app/scripts/cloud_launch.sh
 blueprint-validate --config /app/configs/example_validation.yaml run-all
 ```
+
+The repo pins `numpy<2` because the current TensorFlow 2.15 runtime used by rollout/RLDS export and local preflight is not NumPy-2 compatible.
 
 Notes:
 - `cloud_launch.sh` defaults to model storage at `/models/checkpoints`.

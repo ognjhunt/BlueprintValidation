@@ -18,7 +18,7 @@ keywords = [
 dependencies = [
     "click>=8.0",
     "pyyaml>=6.0",
-    "numpy>=1.24.0",
+    "numpy>=1.24.0,<2",
     "Pillow>=10.0.0",
     "torch>=2.2.0",
     "torchvision>=0.17.0",
@@ -42,8 +42,8 @@ manipulation = [
     "pybullet>=3.2.5",
 ]
 rlds = [
-    "tensorflow>=2.16.0",
-    "tensorflow-datasets>=4.9.0",
+    "tensorflow==2.15.0",
+    "tensorflow-datasets==4.9.3",
 ]
 pi05 = [
     "lerobot>=0.3.0",

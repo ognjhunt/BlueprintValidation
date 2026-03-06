@@ -17,7 +17,11 @@ from ..evaluation.openvla_runner import (
 )
 from ..evaluation.judge_audit import write_judge_audit_csv
 from ..evaluation.action_overlay import overlay_scripted_trace_on_video
-from ..evaluation.claim_benchmark import load_pinned_claim_benchmark
+from ..evaluation.claim_benchmark import (
+    claim_benchmark_alignment_failures,
+    claim_benchmark_strictness_failures,
+    load_pinned_claim_benchmark,
+)
 from ..evaluation.claim_protocol import (
     build_claim_split_payload,
     checkpoint_content_hash,
@@ -137,13 +141,6 @@ class PolicyEvalStage(PipelineStage):
                     break
         if adapted_dir is None:
             adapted_dir = work_dir / "finetune" / "adapted_checkpoint"
-        if not adapted_dir.exists():
-            return StageResult(
-                stage_name=self.name,
-                status="failed",
-                elapsed_seconds=0,
-                detail=f"Adapted checkpoint not found at {adapted_dir}. Run Stage 3 first.",
-            )
 
         # Load render manifest for initial frames
         render_manifest_path = work_dir / "renders" / "render_manifest.json"
@@ -188,6 +185,23 @@ class PolicyEvalStage(PipelineStage):
                         "point to a pinned benchmark manifest."
                     ),
                 )
+            benchmark_alignment_failures = claim_benchmark_alignment_failures(
+                benchmark_path=claim_benchmark_path,
+                render_manifest=render_manifest,
+            )
+            if benchmark_alignment_failures:
+                return StageResult(
+                    stage_name=self.name,
+                    status="failed",
+                    elapsed_seconds=0,
+                    metrics={
+                        "claim_protocol": "fixed_same_facility_uplift",
+                        "claim_outcome": "INCONCLUSIVE",
+                        "headline_eligible": False,
+                        "claim_failure_reasons": benchmark_alignment_failures,
+                    },
+                    detail=benchmark_alignment_failures[0],
+                )
             try:
                 claim_benchmark = load_pinned_claim_benchmark(
                     benchmark_path=claim_benchmark_path,
@@ -200,6 +214,25 @@ class PolicyEvalStage(PipelineStage):
                     status="failed",
                     elapsed_seconds=0,
                     detail=f"Invalid claim benchmark manifest: {exc}",
+                )
+            strictness_failures = claim_benchmark_strictness_failures(
+                benchmark=claim_benchmark,
+                min_eval_task_specs=int(config.eval_policy.claim_strictness.min_eval_task_specs),
+                min_eval_start_clips=int(config.eval_policy.claim_strictness.min_eval_start_clips),
+                min_common_eval_cells=int(config.eval_policy.claim_strictness.min_common_eval_cells),
+            )
+            if strictness_failures:
+                return StageResult(
+                    stage_name=self.name,
+                    status="failed",
+                    elapsed_seconds=0,
+                    metrics={
+                        "claim_protocol": "fixed_same_facility_uplift",
+                        "claim_outcome": "INCONCLUSIVE",
+                        "headline_eligible": False,
+                        "claim_failure_reasons": strictness_failures,
+                    },
+                    detail=strictness_failures[0],
                 )
             claim_benchmark_manifest_hash = claim_benchmark.manifest_hash
             task_specs = [dict(spec) for spec in claim_benchmark.task_specs]
@@ -338,6 +371,14 @@ class PolicyEvalStage(PipelineStage):
                 status="failed",
                 elapsed_seconds=0,
                 detail="Could not extract initial frames for rollout assignments.",
+            )
+
+        if not adapted_dir.exists():
+            return StageResult(
+                stage_name=self.name,
+                status="failed",
+                elapsed_seconds=0,
+                detail=f"Adapted checkpoint not found at {adapted_dir}. Run Stage 3 first.",
             )
 
         world_snapshot_hash = ""

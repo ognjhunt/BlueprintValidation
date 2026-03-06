@@ -754,3 +754,103 @@ def test_s4_frozen_policy_eval_ignores_adapted_policy_checkpoints(
     assert result.status == "success"
     assert result.metrics["used_adapted_policy_checkpoint"] is False
     assert loaded_checkpoints == [None, None]
+
+
+def test_s4_fixed_claim_protocol_fails_early_on_benchmark_render_mismatch(sample_config, tmp_path):
+    sample_config.eval_policy.claim_protocol = "fixed_same_facility_uplift"
+    sample_config.eval_policy.primary_endpoint = "task_success"
+    sample_config.eval_policy.freeze_world_snapshot = True
+    sample_config.eval_policy.split_strategy = "disjoint_tasks_and_starts"
+    sample_config.eval_policy.claim_strictness.min_eval_task_specs = 1
+    sample_config.eval_policy.claim_strictness.min_eval_start_clips = 1
+    sample_config.eval_policy.claim_strictness.min_common_eval_cells = 1
+    sample_config.eval_policy.mode = "claim"
+    sample_config.eval_policy.headline_scope = "wm_only"
+
+    fac = sample_config.facilities["test_facility"]
+    work_dir = tmp_path / "outputs" / "test_facility"
+    render_dir = work_dir / "renders"
+    render_dir.mkdir(parents=True, exist_ok=True)
+    (render_dir / "render_manifest.json").write_text(
+        json.dumps({"clips": [{"clip_index": 0, "clip_name": "clip_000"}]})
+    )
+    benchmark_path = tmp_path / "claim_benchmark.json"
+    benchmark_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "task_specs": [
+                    {
+                        "task_spec_id": "task_spec_a",
+                        "task_prompt": "Navigate to region A",
+                        "task_family": "navigation",
+                    }
+                ],
+                "assignments": [
+                    {
+                        "rollout_index": 0,
+                        "task_spec_id": "task_spec_a",
+                        "clip_name": "clip_999_missing",
+                        "start_clip_id": "clip_999_missing",
+                        "start_region_id": "region_start::a",
+                    }
+                ],
+            }
+        )
+    )
+    fac.claim_benchmark_path = benchmark_path
+
+    result = PolicyEvalStage().execute(sample_config, fac, work_dir, {})
+
+    assert result.status == "failed"
+    assert "clip_999_missing" in result.detail
+
+
+def test_s4_fixed_claim_protocol_fails_early_on_undersized_benchmark(sample_config, tmp_path):
+    sample_config.eval_policy.claim_protocol = "fixed_same_facility_uplift"
+    sample_config.eval_policy.primary_endpoint = "task_success"
+    sample_config.eval_policy.freeze_world_snapshot = True
+    sample_config.eval_policy.split_strategy = "disjoint_tasks_and_starts"
+    sample_config.eval_policy.claim_strictness.min_eval_task_specs = 2
+    sample_config.eval_policy.claim_strictness.min_eval_start_clips = 2
+    sample_config.eval_policy.claim_strictness.min_common_eval_cells = 4
+    sample_config.eval_policy.mode = "claim"
+    sample_config.eval_policy.headline_scope = "wm_only"
+
+    fac = sample_config.facilities["test_facility"]
+    work_dir = tmp_path / "outputs" / "test_facility"
+    render_dir = work_dir / "renders"
+    render_dir.mkdir(parents=True, exist_ok=True)
+    (render_dir / "render_manifest.json").write_text(
+        json.dumps({"clips": [{"clip_index": 0, "clip_name": "clip_000"}]})
+    )
+    benchmark_path = tmp_path / "claim_benchmark.json"
+    benchmark_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "task_specs": [
+                    {
+                        "task_spec_id": "task_spec_a",
+                        "task_prompt": "Navigate to region A",
+                        "task_family": "navigation",
+                    }
+                ],
+                "assignments": [
+                    {
+                        "rollout_index": 0,
+                        "task_spec_id": "task_spec_a",
+                        "clip_name": "clip_000",
+                        "start_clip_id": "clip_000",
+                        "start_region_id": "region_start::a",
+                    }
+                ],
+            }
+        )
+    )
+    fac.claim_benchmark_path = benchmark_path
+
+    result = PolicyEvalStage().execute(sample_config, fac, work_dir, {})
+
+    assert result.status == "failed"
+    assert "unique_task_specs=1 < min_eval_task_specs=2" in result.detail

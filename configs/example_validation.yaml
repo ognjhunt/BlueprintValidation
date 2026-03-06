@@ -342,10 +342,6 @@ policy_compare:
   heldout_seed: 123
   eval_world_model: adapted
   control_arms: [frozen_baseline, site_trained, generic_control]  # all three required by validator
-  # Optional explicit heldout-task set for pair evaluation.
-  heldout_tasks:
-    - "Pick up the tote from the shelf"
-    - "Place the tote onto the target shelf"
   task_score_success_threshold: 7.0
   manipulation_task_keywords: [pick, grasp, lift, place, stack, regrasp, tote, bin]
   require_grasp_for_manipulation: true

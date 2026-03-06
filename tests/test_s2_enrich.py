@@ -1149,7 +1149,9 @@ def test_s2_orientation_fix_sanitizes_malicious_clip_name(tmp_path):
         5,
         (w, h),
     )
-    writer_rgb.write(np.zeros((h, w, 3), dtype=np.uint8))
+    rgb_frame = np.zeros((h, w, 3), dtype=np.uint8)
+    rgb_frame[0:4, 0:4] = [0, 0, 255]
+    writer_rgb.write(rgb_frame)
     writer_rgb.release()
 
     facility = FacilityConfig(
@@ -1296,7 +1298,8 @@ def test_s2_max_input_frames_zero_does_not_pretrim(sample_config, tmp_path, monk
     facility = list(sample_config.facilities.values())[0]
     result = stage.run(sample_config, facility, work_dir, {})
     assert result.status == "success"
-    assert captured["video_path"] == source_video
+    assert captured["video_path"] != source_video
+    assert captured["video_path"].parent.name == "_h264_inputs"
     assert result.metrics["num_trimmed_inputs"] == 0
 
 

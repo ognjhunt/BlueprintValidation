@@ -1,5 +1,5 @@
 schema_version: v1
-project_name: Same-Facility Policy Uplift (DreamZero)
+project_name: Investor-Grade Policy Uplift (OpenVLA)
 
 facilities:
   facility_a:
@@ -7,6 +7,19 @@ facilities:
     ply_path: ../data/facilities/facility_a/splat.ply
     claim_benchmark_path: ./benchmarks/facility_a.fixed_claim.json
     description: Target deployment facility world model
+
+  facility_b:
+    name: Facility B
+    ply_path: ../data/facilities/facility_b/splat.ply
+    claim_benchmark_path: ./benchmarks/facility_b.fixed_claim.json
+    description: Secondary deployment facility world model
+
+  facility_c:
+    name: Facility C
+    ply_path: ../data/interiorgs/0787_841244/3dgs_compressed.ply
+    task_hints_path: ../data/interiorgs/0787_841244/task_targets.synthetic.json
+    claim_benchmark_path: ./benchmarks/facility_c.fixed_claim.json
+    description: InteriorGS kitchen facility used as the third investor-grade claim site
 
 render:
   resolution: [480, 640]
@@ -41,8 +54,6 @@ enrich:
   cosmos_checkpoint: ../data/checkpoints/cosmos-transfer-2.5-2b/
 
 eval_policy:
-  # Canonical executable headline: fixed-world same-facility claim only.
-  # This is for the deployment site's adapted world model, not novel-site or IRL generalization.
   mode: claim
   headline_scope: wm_uplift
   claim_protocol: fixed_same_facility_uplift
@@ -78,25 +89,18 @@ rollout_dataset:
   near_miss_max_task_score: 6.99
 
 policy_compare:
-  # Secondary attribution/control check in the same facility; not the primary headline.
   enabled: true
   heldout_num_rollouts: 24
   heldout_seed: 123
   eval_world_model: adapted
 
 policy_adapter:
-  name: dreamzero
-  dreamzero:
-    repo_path: /opt/dreamzero
-    base_model_name: dreamzero/base
-    checkpoint_path: ../data/checkpoints/dreamzero
-    inference_module: dreamzero.inference
-    inference_class: DreamZeroInference
-    policy_action_dim: 7
-    frame_history: 4
-    strict_action_contract: true
-    allow_training: true
-    train_script: scripts/train.py
+  name: openvla_oft
+  openvla:
+    openvla_repo: ../data/vendor/openvla-oft
+    finetune_script: vla-scripts/finetune.py
+    base_model_name: openvla/openvla-7b
+    base_checkpoint_path: ../data/checkpoints/openvla-7b
 
 splatsim:
   enabled: false
