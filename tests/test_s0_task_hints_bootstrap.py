@@ -116,6 +116,37 @@ def test_bootstrap_writes_synthetic_hints_from_vlm(sample_ply, tmp_path, monkeyp
     assert result2.status == "skipped"
 
 
+def test_bootstrap_supports_supersplat_compressed_ply(tmp_path, monkeypatch):
+    from tests.test_ply_loader import _write_supersplat_compressed_fixture
+
+    ply_path = tmp_path / "compressed.ply"
+    _write_supersplat_compressed_fixture(ply_path)
+
+    config = ValidationConfig()
+    fac = FacilityConfig(name="A", ply_path=ply_path)
+    stage = TaskHintsBootstrapStage()
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s0_task_hints_bootstrap.detect_and_generate_specs",
+        lambda **kwargs: SceneDetectionResult(
+            specs=[CameraPathSpec(type="manipulation", approach_point=[0.0, 0.0, 0.5])],
+            detections=[
+                DetectedRegion(
+                    label="bowl",
+                    center_3d=np.array([0.0, 0.0, 0.5], dtype=np.float32),
+                    extents_3d=np.array([0.2, 0.2, 0.2], dtype=np.float32),
+                    category="manipulation",
+                )
+            ],
+            scene_type="warehouse",
+        ),
+    )
+
+    result = stage.execute(config, fac, tmp_path / "outputs" / "a", {})
+    assert result.status == "success"
+    assert Path(result.outputs["task_hints_path"]).exists()
+
+
 def test_bootstrap_fails_when_vlm_empty_requires_manual_analysis(sample_ply, tmp_path, monkeypatch):
     config = ValidationConfig()
     fac = FacilityConfig(name="A", ply_path=sample_ply)

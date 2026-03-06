@@ -685,6 +685,14 @@ def test_eval_policy_legacy_aliases_map_to_generic_fields(tmp_path):
     assert str(config.eval_policy.checkpoint_path).endswith("checkpoints/custom")
 
 
+def test_same_facility_claim_config_uses_repo_output_root():
+    from blueprint_validation.config import load_config
+
+    config = load_config(Path("configs/same_facility_policy_uplift_openvla.yaml"))
+    assert str(config.rollout_dataset.export_dir).endswith("data/outputs/policy_datasets")
+    assert "/configs/data/outputs/" not in str(config.rollout_dataset.export_dir)
+
+
 def test_policy_adapter_pi05_block_parses(tmp_path):
     from blueprint_validation.config import load_config
     import yaml

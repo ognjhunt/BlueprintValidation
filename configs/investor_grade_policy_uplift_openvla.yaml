@@ -87,6 +87,7 @@ rollout_dataset:
   selection_mode: success_near_miss
   near_miss_min_task_score: 5.0
   near_miss_max_task_score: 6.99
+  export_dir: ../data/outputs/policy_datasets
 
 policy_compare:
   enabled: true

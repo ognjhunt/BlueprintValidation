@@ -93,6 +93,37 @@ def test_stage_execute_catches_errors():
     assert "Something broke" in result.detail
 
 
+def test_stage_execute_fails_on_stage_preflight():
+    from blueprint_validation.common import PreflightCheck
+    from blueprint_validation.stages.base import PipelineStage
+    from blueprint_validation.config import FacilityConfig, ValidationConfig
+
+    class PreflightFailingStage(PipelineStage):
+        @property
+        def name(self):
+            return "preflight_failing"
+
+        @property
+        def description(self):
+            return "A stage with failing preflight"
+
+        def preflight(self, config):
+            del config
+            return [PreflightCheck(name="fixture", passed=False, detail="blocked")]
+
+        def run(self, config, facility, work_dir, previous_results):
+            raise AssertionError("run() should not execute when stage preflight fails")
+
+    stage = PreflightFailingStage()
+    config = ValidationConfig()
+    fac = FacilityConfig(name="test", ply_path=Path("/tmp/test.ply"))
+
+    result = stage.execute(config, fac, Path("/tmp"), {})
+    assert result.status == "failed"
+    assert "Stage preflight failed" in result.detail
+    assert "fixture" in result.detail
+
+
 def test_rollout_plan_honors_exact_count():
     from blueprint_validation.stages.s4_policy_eval import _build_rollout_plan
 

@@ -4,13 +4,14 @@
 set -euo pipefail
 
 ROOT_DIR="${ROOT_DIR:-/app}"
-CONFIG_PATH="${CONFIG_PATH:-$ROOT_DIR/configs/interiorgs_kitchen_0787.cloud.yaml}"
+CONFIG_PATH="${CONFIG_PATH:-$ROOT_DIR/configs/same_facility_policy_uplift_openvla.cloud.yaml}"
 WORK_DIR="${WORK_DIR:-/models/outputs}"
 CHECKPOINT_DIR="${CHECKPOINT_DIR:-/models/checkpoints}"
 DATASET_DIR="${DATASET_DIR:-/models/openvla_datasets}"
 DOWNLOAD_MODELS="${DOWNLOAD_MODELS:-true}"
 INSTALL_DREAMDOJO_EXTRA="${INSTALL_DREAMDOJO_EXTRA:-true}"
 DREAMDOJO_EXTRA="${DREAMDOJO_EXTRA:-cu128}"
+PREP_SCRIPT="${PREP_SCRIPT:-$ROOT_DIR/scripts/cloud_prepare_same_facility_claim.sh}"
 
 echo "=== BlueprintValidation Cloud Launch Setup ==="
 echo "ROOT_DIR:        $ROOT_DIR"
@@ -21,6 +22,7 @@ echo "DATASET_DIR:     $DATASET_DIR"
 echo "DOWNLOAD_MODELS: $DOWNLOAD_MODELS"
 echo "INSTALL_DREAMDOJO_EXTRA: $INSTALL_DREAMDOJO_EXTRA"
 echo "DREAMDOJO_EXTRA: $DREAMDOJO_EXTRA"
+echo "PREP_SCRIPT: $PREP_SCRIPT"
 
 if [ ! -f "$ROOT_DIR/.venv/bin/activate" ]; then
   echo "Virtual environment missing: $ROOT_DIR/.venv/bin/activate"
@@ -67,7 +69,7 @@ DATASET_DIR="$DATASET_DIR" \
 DOWNLOAD_MODELS="$DOWNLOAD_MODELS" \
 INSTALL_DREAMDOJO_EXTRA="$INSTALL_DREAMDOJO_EXTRA" \
 DREAMDOJO_EXTRA="$DREAMDOJO_EXTRA" \
-bash "$ROOT_DIR/scripts/cloud_prepare_0787.sh"
+bash "$PREP_SCRIPT"
 
 echo ""
 echo "Setup complete. Run:"

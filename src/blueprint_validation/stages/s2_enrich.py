@@ -17,6 +17,11 @@ from ..config import FacilityConfig, ValidationConfig
 from ..enrichment.cosmos_runner import enrich_clip
 from ..enrichment.scene_index import build_scene_index, query_nearest_context_candidates
 from ..enrichment.variant_specs import get_variants
+from ..evaluation.claim_benchmark import (
+    claim_benchmark_alignment_failures,
+    claim_benchmark_strictness_failures,
+    load_pinned_claim_benchmark,
+)
 from ..evaluation.camera_quality import (
     analyze_target_visibility as _shared_analyze_target_visibility,
     estimate_clip_blur_score as _shared_estimate_clip_blur_score,
@@ -189,6 +194,48 @@ class EnrichStage(PipelineStage):
                 outputs=source.to_metadata(),
                 metrics=source.to_metadata(),
             )
+        if (
+            str(getattr(config.eval_policy, "claim_protocol", "none") or "none").strip().lower()
+            == "fixed_same_facility_uplift"
+            and facility.claim_benchmark_path is not None
+        ):
+            benchmark_alignment = claim_benchmark_alignment_failures(
+                benchmark_path=facility.claim_benchmark_path,
+                render_manifest=render_manifest,
+            )
+            if benchmark_alignment:
+                return _failed_result(
+                    detail=benchmark_alignment[0],
+                    error_code="s2_claim_benchmark_alignment_failed",
+                    outputs=source.to_metadata(),
+                    metrics=source.to_metadata(),
+                )
+            try:
+                claim_benchmark = load_pinned_claim_benchmark(
+                    benchmark_path=facility.claim_benchmark_path,
+                    render_manifest=render_manifest,
+                    video_orientation_fix=facility.video_orientation_fix,
+                )
+            except ValueError as exc:
+                return _failed_result(
+                    detail=f"Invalid claim benchmark manifest: {exc}",
+                    error_code="s2_claim_benchmark_invalid",
+                    outputs=source.to_metadata(),
+                    metrics=source.to_metadata(),
+                )
+            strictness_failures = claim_benchmark_strictness_failures(
+                benchmark=claim_benchmark,
+                min_eval_task_specs=int(config.eval_policy.claim_strictness.min_eval_task_specs),
+                min_eval_start_clips=int(config.eval_policy.claim_strictness.min_eval_start_clips),
+                min_common_eval_cells=int(config.eval_policy.claim_strictness.min_common_eval_cells),
+            )
+            if strictness_failures:
+                return _failed_result(
+                    detail=strictness_failures[0],
+                    error_code="s2_claim_benchmark_strictness_failed",
+                    outputs=source.to_metadata(),
+                    metrics=source.to_metadata(),
+                )
         sample_context_frame_index = None
         coverage_gate_result = _evaluate_stage1_coverage_gate(render_manifest, config)
         coverage_outputs: Dict[str, object] = {}

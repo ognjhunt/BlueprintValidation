@@ -97,6 +97,21 @@ def test_preflight_pi05_invalid_profile_runtime_backend(sample_config, monkeypat
     )
     monkeypatch.setattr(
         preflight,
+        "check_task_hints_bootstrap_readiness",
+        lambda *a, **k: _ok("task_hints_bootstrap"),
+    )
+    monkeypatch.setattr(
+        preflight,
+        "check_openvla_local_checkpoint_requirement",
+        lambda *a, **k: _ok("local_checkpoint"),
+    )
+    monkeypatch.setattr(
+        preflight,
+        "check_claim_benchmark_readiness",
+        lambda *a, **k: _ok("claim_benchmark"),
+    )
+    monkeypatch.setattr(
+        preflight,
         "check_external_interaction_manifest",
         lambda *a, **k: _ok("external_interaction"),
     )
@@ -194,6 +209,21 @@ def _patch_preflight_fast(monkeypatch, preflight):
     monkeypatch.setattr(preflight, "check_cloud_budget_enforcement", lambda *a, **k: _ok("budget"))
     monkeypatch.setattr(
         preflight, "check_cloud_shutdown_enforcement", lambda *a, **k: _ok("shutdown")
+    )
+    monkeypatch.setattr(
+        preflight,
+        "check_task_hints_bootstrap_readiness",
+        lambda *a, **k: _ok("task_hints_bootstrap"),
+    )
+    monkeypatch.setattr(
+        preflight,
+        "check_openvla_local_checkpoint_requirement",
+        lambda *a, **k: _ok("local_checkpoint"),
+    )
+    monkeypatch.setattr(
+        preflight,
+        "check_claim_benchmark_readiness",
+        lambda *a, **k: _ok("claim_benchmark"),
     )
 
 
@@ -446,6 +476,34 @@ def test_check_cosmos_predict_tokenizer_access_fails_without_token_or_file(tmp_p
     result = check_cosmos_predict_tokenizer_access(cosmos_transfer_dir)
     assert result.passed is False
     assert "HF_TOKEN is unset" in result.detail
+
+
+def test_check_openvla_local_checkpoint_requirement_fails_without_checkpoint(
+    sample_config, monkeypatch
+):
+    from blueprint_validation.preflight import check_openvla_local_checkpoint_requirement
+
+    monkeypatch.delenv("BLUEPRINT_ALLOW_REMOTE_OPENVLA_MODEL", raising=False)
+    sample_config.eval_policy.mode = "claim"
+    sample_config.eval_policy.headline_scope = "dual"
+
+    result = check_openvla_local_checkpoint_requirement(sample_config, "openvla_oft")
+    assert result.passed is False
+    assert "local checkpoint" in result.detail.lower()
+
+
+def test_check_openvla_local_checkpoint_requirement_allows_explicit_remote_override(
+    sample_config, monkeypatch
+):
+    from blueprint_validation.preflight import check_openvla_local_checkpoint_requirement
+
+    monkeypatch.setenv("BLUEPRINT_ALLOW_REMOTE_OPENVLA_MODEL", "1")
+    sample_config.eval_policy.mode = "claim"
+    sample_config.eval_policy.headline_scope = "dual"
+
+    result = check_openvla_local_checkpoint_requirement(sample_config, "openvla_oft")
+    assert result.passed is True
+    assert "explicitly allowed" in result.detail.lower()
 
 
 def test_preflight_wm_only_defers_policy_pipeline(sample_config, monkeypatch):

@@ -15,8 +15,14 @@ from typing import List
 
 from .common import PreflightCheck, get_logger
 from .config import ValidationConfig
+from .evaluation.claim_benchmark import (
+    claim_benchmark_alignment_failures,
+    claim_benchmark_strictness_failures,
+    load_pinned_claim_benchmark,
+)
 from .enrichment.cosmos_runner import build_controlnet_spec
 from .training.dreamdojo_finetune import resolve_dreamdojo_experiment_name
+from .warmup import load_ply_means_and_colors_numpy
 from .validation import ManifestValidationError, load_and_validate_manifest
 
 logger = get_logger("preflight")
@@ -41,6 +47,10 @@ _PI05_REQUIRED_NORM_STATS_FLAGS = {
 _COSMOS_PREDICT_REPO = "nvidia/Cosmos-Predict2.5-2B"
 _COSMOS_PREDICT_REVISION = "6787e176dce74a101d922174a95dba29fa5f0c55"
 _COSMOS_PREDICT_TOKENIZER_FILENAME = "tokenizer.pth"
+
+
+def _env_truthy(name: str) -> bool:
+    return (os.environ.get(name, "") or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def check_gpu() -> PreflightCheck:
@@ -773,6 +783,201 @@ def check_facility_ply(facility_id: str, ply_path: Path) -> PreflightCheck:
     )
 
 
+def check_task_hints_bootstrap_readiness(facility_id: str, facility) -> PreflightCheck:
+    """Validate that Stage 0 can synthesize task hints when no hints file is provided."""
+    name = f"task_hints_bootstrap:{facility_id}"
+    if facility.task_hints_path is not None and facility.task_hints_path.exists():
+        return PreflightCheck(
+            name=name,
+            passed=True,
+            detail=f"Existing task hints: {facility.task_hints_path}",
+        )
+
+    labels_path = facility.ply_path.parent / "labels.json"
+    if labels_path.exists():
+        return PreflightCheck(
+            name=name,
+            passed=True,
+            detail=f"InteriorGS metadata present: {labels_path}",
+        )
+
+    if not facility.ply_path.exists():
+        return PreflightCheck(
+            name=name,
+            passed=False,
+            detail=f"PLY not found for Stage 0 bootstrap: {facility.ply_path}",
+        )
+
+    try:
+        means, colors = load_ply_means_and_colors_numpy(facility.ply_path)
+    except Exception as exc:
+        return PreflightCheck(
+            name=name,
+            passed=False,
+            detail=(
+                "Stage 0 bootstrap cannot read the facility PLY without task hints or InteriorGS "
+                f"metadata: {exc}"
+            ),
+        )
+
+    if len(means) <= 0:
+        return PreflightCheck(
+            name=name,
+            passed=False,
+            detail="Stage 0 bootstrap loaded zero points from the facility PLY.",
+        )
+
+    return PreflightCheck(
+        name=name,
+        passed=True,
+        detail=(
+            f"PLY bootstrap path ready ({len(means)} points, colors="
+            f"{'yes' if colors is not None else 'no'})"
+        ),
+    )
+
+
+def check_openvla_local_checkpoint_requirement(
+    config: ValidationConfig,
+    adapter_name: str,
+    *,
+    scope_override: str | None = None,
+) -> PreflightCheck:
+    name = "policy:local_checkpoint_requirement"
+    scope = str(scope_override or getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only").strip().lower()
+    if adapter_name != "openvla_oft":
+        return PreflightCheck(name=name, passed=True, detail=f"{adapter_name} does not use OpenVLA checkpoints")
+    if scope == "wm_only":
+        return PreflightCheck(name=name, passed=True, detail="Deferred because eval_policy.headline_scope=wm_only")
+    if str(config.eval_policy.mode or "claim").strip().lower() != "claim":
+        return PreflightCheck(name=name, passed=True, detail="Local OpenVLA checkpoint not required outside claim mode")
+    if _env_truthy("BLUEPRINT_ALLOW_REMOTE_OPENVLA_MODEL"):
+        return PreflightCheck(
+            name=name,
+            passed=True,
+            detail="Remote OpenVLA model resolution explicitly allowed by BLUEPRINT_ALLOW_REMOTE_OPENVLA_MODEL",
+        )
+
+    _model_name, checkpoint_path = _resolve_policy_base_reference_for_adapter(config, adapter_name)
+    exists = checkpoint_path.exists() and (
+        checkpoint_path.is_file() or (checkpoint_path.is_dir() and any(checkpoint_path.iterdir()))
+    )
+    if exists:
+        return PreflightCheck(name=name, passed=True, detail=str(checkpoint_path))
+
+    return PreflightCheck(
+        name=name,
+        passed=False,
+        detail=(
+            "Claim-mode OpenVLA runs require a local checkpoint to avoid implicit remote/model-license "
+            f"resolution during execution. Missing checkpoint: {checkpoint_path}. "
+            "Download the weights locally or set BLUEPRINT_ALLOW_REMOTE_OPENVLA_MODEL=1 to override."
+        ),
+    )
+
+
+def check_claim_benchmark_readiness(
+    config: ValidationConfig,
+    facility_id: str,
+    facility,
+    *,
+    work_dir: Path | None = None,
+) -> PreflightCheck:
+    name = f"claim_benchmark:{facility_id}"
+    if (
+        str(getattr(config.eval_policy, "claim_protocol", "none") or "none").strip().lower()
+        != "fixed_same_facility_uplift"
+    ):
+        return PreflightCheck(name=name, passed=True, detail="Claim benchmark not required for this protocol")
+
+    benchmark_path = facility.claim_benchmark_path
+    if benchmark_path is None:
+        return PreflightCheck(
+            name=name,
+            passed=False,
+            detail="facility.claim_benchmark_path is required for fixed_same_facility_uplift",
+        )
+    if not benchmark_path.exists():
+        return PreflightCheck(
+            name=name,
+            passed=False,
+            detail=f"Claim benchmark manifest not found: {benchmark_path}",
+        )
+    if work_dir is None:
+        return PreflightCheck(
+            name=name,
+            passed=True,
+            detail="Benchmark manifest present. Re-run preflight with the pipeline work dir after Stage 1 for render-alignment validation.",
+        )
+
+    render_manifest_path = work_dir / facility_id / "renders" / "render_manifest.json"
+    if not render_manifest_path.exists():
+        return PreflightCheck(
+            name=name,
+            passed=True,
+            detail=f"Benchmark manifest present; render manifest not found yet at {render_manifest_path}",
+        )
+
+    try:
+        render_manifest = load_and_validate_manifest(
+            render_manifest_path,
+            manifest_type="stage1_source",
+            require_existing_paths=False,
+        )
+    except ManifestValidationError as exc:
+        return PreflightCheck(
+            name=name,
+            passed=False,
+            detail=f"Invalid render manifest for benchmark alignment: {exc}",
+        )
+
+    alignment_failures = claim_benchmark_alignment_failures(
+        benchmark_path=benchmark_path,
+        render_manifest=render_manifest,
+    )
+    if alignment_failures:
+        return PreflightCheck(
+            name=name,
+            passed=False,
+            detail=alignment_failures[0],
+        )
+
+    try:
+        benchmark = load_pinned_claim_benchmark(
+            benchmark_path=benchmark_path,
+            render_manifest=render_manifest,
+            video_orientation_fix=getattr(facility, "video_orientation_fix", "none"),
+        )
+    except ValueError as exc:
+        return PreflightCheck(
+            name=name,
+            passed=False,
+            detail=f"Invalid claim benchmark manifest: {exc}",
+        )
+
+    strictness_failures = claim_benchmark_strictness_failures(
+        benchmark=benchmark,
+        min_eval_task_specs=int(config.eval_policy.claim_strictness.min_eval_task_specs),
+        min_eval_start_clips=int(config.eval_policy.claim_strictness.min_eval_start_clips),
+        min_common_eval_cells=int(config.eval_policy.claim_strictness.min_common_eval_cells),
+    )
+    if strictness_failures:
+        return PreflightCheck(
+            name=name,
+            passed=False,
+            detail=strictness_failures[0],
+        )
+
+    return PreflightCheck(
+        name=name,
+        passed=True,
+        detail=(
+            f"Benchmark aligns with render manifest ({len(benchmark.task_specs)} task specs, "
+            f"{len(benchmark.assignments)} assignments)"
+        ),
+    )
+
+
 def _extract_class_fields(path: Path, class_name: str) -> set[str]:
     try:
         module = ast.parse(path.read_text(encoding="utf-8"))
@@ -1137,7 +1342,7 @@ def check_cloud_shutdown_enforcement(config: ValidationConfig) -> PreflightCheck
     )
 
 
-def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
+def run_preflight(config: ValidationConfig, work_dir: Path | None = None) -> List[PreflightCheck]:
     """Run all preflight checks and return results."""
     checks: List[PreflightCheck] = []
     adapter_name = _canonical_policy_adapter_name(config.policy_adapter.name)
@@ -1196,6 +1401,7 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
                     f"task_hints:{fid}",
                 )
             )
+        checks.append(check_task_hints_bootstrap_readiness(fid, fconf))
 
     # Model weights
     checks.append(check_model_weights(config.finetune.dreamdojo_checkpoint, "DreamDojo"))
@@ -1220,8 +1426,24 @@ def run_preflight(config: ValidationConfig) -> List[PreflightCheck]:
                 checkpoint_path=checkpoint_path,
             )
         )
+        checks.append(
+            check_openvla_local_checkpoint_requirement(
+                config,
+                adapter_name,
+                scope_override=effective_scope,
+            )
+        )
     checks.append(check_hf_auth())
     checks.append(check_cosmos_predict_tokenizer_access(config.enrich.cosmos_checkpoint))
+    for fid, facility in config.facilities.items():
+        checks.append(
+            check_claim_benchmark_readiness(
+                config,
+                fid,
+                facility,
+                work_dir=work_dir,
+            )
+        )
 
     # Runtime repos and scripts required by Stage 2+.
     checks.append(check_path_exists(config.enrich.cosmos_repo, "repo:cosmos_transfer"))

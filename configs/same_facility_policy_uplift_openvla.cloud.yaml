@@ -1,11 +1,11 @@
 schema_version: v1
-project_name: Same-Facility Policy Uplift (OpenVLA)
+project_name: Same-Facility Policy Uplift (OpenVLA, Cloud)
 
 facilities:
   facility_a:
     name: Facility A
-    ply_path: ../data/facilities/facility_a/splat.ply
-    claim_benchmark_path: ./benchmarks/facility_a.fixed_claim.json
+    ply_path: /app/data/facilities/facility_a/splat.ply
+    claim_benchmark_path: /app/configs/benchmarks/facility_a.fixed_claim.json
     description: Target deployment facility world model
 
 render:
@@ -32,17 +32,15 @@ robot_composite:
   enabled: false
 
 finetune:
-  dreamdojo_repo: ../data/vendor/DreamDojo
-  dreamdojo_checkpoint: ../data/checkpoints/DreamDojo/2B_pretrain/
+  dreamdojo_repo: /app/data/vendor/DreamDojo
+  dreamdojo_checkpoint: /models/checkpoints/DreamDojo/2B_pretrain/
   eval_world_experiment: cosmos_predict2p5_2B_reason_embeddings_action_conditioned_rectified_flow_bridge_13frame_256x320
 
 enrich:
-  cosmos_repo: ../data/vendor/cosmos-transfer
-  cosmos_checkpoint: ../data/checkpoints/cosmos-transfer-2.5-2b/
+  cosmos_repo: /app/data/vendor/cosmos-transfer
+  cosmos_checkpoint: /models/checkpoints/cosmos-transfer-2.5-2b/
 
 eval_policy:
-  # Canonical executable headline: fixed-world same-facility claim only.
-  # This is for the deployment site's adapted world model, not novel-site or IRL generalization.
   mode: claim
   headline_scope: wm_uplift
   claim_protocol: fixed_same_facility_uplift
@@ -76,10 +74,9 @@ rollout_dataset:
   selection_mode: success_near_miss
   near_miss_min_task_score: 5.0
   near_miss_max_task_score: 6.99
-  export_dir: ../data/outputs/policy_datasets
+  export_dir: /models/outputs/policy_datasets
 
 policy_compare:
-  # Secondary attribution/control check in the same facility; not the primary headline.
   enabled: true
   heldout_num_rollouts: 24
   heldout_seed: 123
@@ -88,10 +85,10 @@ policy_compare:
 policy_adapter:
   name: openvla_oft
   openvla:
-    openvla_repo: ../data/vendor/openvla-oft
+    openvla_repo: /app/data/vendor/openvla-oft
     finetune_script: vla-scripts/finetune.py
     base_model_name: openvla/openvla-7b
-    base_checkpoint_path: ../data/checkpoints/openvla-7b
+    base_checkpoint_path: /models/checkpoints/openvla-7b
 
 splatsim:
   enabled: false

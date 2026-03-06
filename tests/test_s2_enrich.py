@@ -1554,6 +1554,68 @@ def test_s2_explicit_selection_missing_name_blocks_stage(sample_config, tmp_path
     assert result.metrics["error_code"] == "s2_source_selection_explicit_fail_closed"
 
 
+def test_s2_claim_benchmark_alignment_fails_before_generation(sample_config, tmp_path):
+    from blueprint_validation.common import write_json
+    from blueprint_validation.stages.s2_enrich import EnrichStage
+
+    work_dir = tmp_path
+    render_dir = work_dir / "renders"
+    render_dir.mkdir(parents=True, exist_ok=True)
+    source_video = render_dir / "clip_000_orbit.mp4"
+    source_depth = render_dir / "clip_000_orbit_depth.mp4"
+    _write_dummy_video(source_video, frames=6)
+    _write_dummy_video(source_depth, frames=6)
+
+    write_json(
+        {
+            "facility": "Test Facility",
+            "clips": [
+                {
+                    "clip_name": "clip_000_orbit",
+                    "path_type": "orbit",
+                    "video_path": str(source_video),
+                    "depth_video_path": str(source_depth),
+                    "clip_index": 0,
+                }
+            ],
+        },
+        render_dir / "render_manifest.json",
+    )
+
+    benchmark_path = tmp_path / "claim_benchmark.json"
+    write_json(
+        {
+            "version": 1,
+            "task_specs": [
+                {
+                    "task_spec_id": "task_spec_001",
+                    "task_prompt": "Navigate to the counter",
+                    "task_family": "navigation",
+                }
+            ],
+            "assignments": [
+                {
+                    "rollout_index": 0,
+                    "task_spec_id": "task_spec_001",
+                    "clip_name": "missing_clip",
+                    "start_clip_id": "missing_clip",
+                    "start_region_id": "start_000",
+                }
+            ],
+        },
+        benchmark_path,
+    )
+
+    sample_config.eval_policy.claim_protocol = "fixed_same_facility_uplift"
+    facility = list(sample_config.facilities.values())[0]
+    facility.claim_benchmark_path = benchmark_path
+
+    result = EnrichStage().run(sample_config, facility, work_dir, {})
+    assert result.status == "failed"
+    assert result.metrics["error_code"] == "s2_claim_benchmark_alignment_failed"
+    assert "claim benchmark" in (result.detail or "").lower()
+
+
 def test_s2_explicit_selection_unknown_name_blocks_stage(sample_config, tmp_path):
     from blueprint_validation.common import write_json
     from blueprint_validation.stages.s2_enrich import EnrichStage

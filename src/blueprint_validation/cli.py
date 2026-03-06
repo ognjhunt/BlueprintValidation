@@ -176,7 +176,7 @@ def preflight(ctx: click.Context, audit_mode: bool) -> None:
     from .preflight import run_preflight
 
     config = ctx.obj["config"]
-    checks = run_preflight(config)
+    checks = run_preflight(config, work_dir=ctx.obj["work_dir"])
     failed = [c for c in checks if not c.passed]
     if audit_mode:
         gpu_failed = any(c.name == "gpu" for c in failed)
@@ -734,8 +734,11 @@ def bootstrap_task_hints(ctx: click.Context, facility: str | None) -> None:
             f"Bootstrap {facility}: {result.status} "
             f"(hints={result.outputs.get('task_hints_path', 'none')})"
         )
+        if result.status == "failed":
+            sys.exit(1)
         return
 
+    any_failed = False
     for fid, fac in config.facilities.items():
         fac_work_dir = work_dir / fid
         fac_work_dir.mkdir(parents=True, exist_ok=True)
@@ -745,6 +748,9 @@ def bootstrap_task_hints(ctx: click.Context, facility: str | None) -> None:
             f"Bootstrap {fid}: {result.status} "
             f"(hints={result.outputs.get('task_hints_path', 'none')})"
         )
+        any_failed = any_failed or result.status == "failed"
+    if any_failed:
+        sys.exit(1)
 
 
 @cli.command("run-all")
@@ -761,17 +767,37 @@ def bootstrap_task_hints(ctx: click.Context, facility: str | None) -> None:
     default=False,
     help="Reuse successful/skipped *_result.json files and continue from incomplete stages.",
 )
+@click.option(
+    "--skip-preflight",
+    is_flag=True,
+    default=False,
+    help="Skip the mandatory preflight gate before pipeline execution.",
+)
 @click.pass_context
 def run_all(
     ctx: click.Context,
     continue_on_failure: bool,
     resume_from_results: bool,
+    skip_preflight: bool,
 ) -> None:
     """Run the full validation pipeline, all stages sequentially."""
     from .pipeline import ValidationPipeline
+    from .preflight import run_preflight
 
     config = ctx.obj["config"]
     work_dir = ctx.obj["work_dir"]
+
+    if not skip_preflight:
+        checks = run_preflight(config, work_dir=work_dir)
+        failed = [c for c in checks if not c.passed]
+        if failed:
+            click.echo(
+                "\nrun-all preflight failed. Resolve these issues or rerun with --skip-preflight:",
+                err=True,
+            )
+            for check in failed:
+                click.echo(f"  FAIL: {check.name} — {check.detail}", err=True)
+            sys.exit(1)
 
     pipeline = ValidationPipeline(config, work_dir)
     summary = pipeline.run_all(

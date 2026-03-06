@@ -101,34 +101,31 @@ uv sync --extra rlds
 # Download model weights (~30GB)
 bash scripts/download_models.sh
 
-# Place PLY files
+# Place same-facility claim assets
 cp /path/to/facility_a.ply data/facilities/facility_a/splat.ply
-cp /path/to/facility_b.ply data/facilities/facility_b/splat.ply
-
-# Configure
-cp configs/example_validation.yaml validation.yaml
-# Edit validation.yaml with your facility details
+# Optional but recommended if you already have curated task hints:
+cp /path/to/facility_a_task_targets.synthetic.json data/outputs/same_facility_first/facility_a/bootstrap/task_targets.synthetic.json
 
 # Run preflight checks
-blueprint-validate preflight
+blueprint-validate --config configs/same_facility_policy_uplift_openvla.yaml preflight
 # For pre-GPU audits (no CUDA yet):
-blueprint-validate preflight --audit-mode
-
-# Auto-generate a fast pilot config from BlueprintCapturePipeline runs
-bash scripts/setup_first_data.sh
+blueprint-validate --config configs/same_facility_policy_uplift_openvla.yaml preflight --audit-mode
 
 # Optional: source runtime secrets from a local untracked file
 # cp scripts/runtime_env.example scripts/runtime_env.local
 # set -a && source scripts/runtime_env.local && set +a
 # (includes GOOGLE_GENAI_API_KEY, HF_TOKEN, BLUEPRINT_GPU_HOURLY_RATE_USD, BLUEPRINT_AUTO_SHUTDOWN_CMD)
 
+# Provision the same-facility claim runtime (downloads checkpoints and installs CUDA extras by default)
+bash scripts/provision_same_facility_claim_runtime.sh
+
 # Run full pipeline
-blueprint-validate run-all
+blueprint-validate --config configs/same_facility_policy_uplift_openvla.yaml --work-dir data/outputs/same_facility_first run-all
 # Resume mode: skip stages with successful/skipped *_result.json files
-blueprint-validate run-all --resume
+blueprint-validate --config configs/same_facility_policy_uplift_openvla.yaml --work-dir data/outputs/same_facility_first run-all --resume
 
 # Or run stages individually
-blueprint-validate render --facility facility_a
+blueprint-validate --config configs/same_facility_policy_uplift_openvla.yaml render --facility facility_a
 blueprint-validate compose-robot --facility facility_a    # optional
 blueprint-validate polish-gemini --facility facility_a    # optional
 blueprint-validate augment-gaussian --facility facility_a # optional Stage 1d (full RoboSplat default)
@@ -159,16 +156,20 @@ docker build -f docker/runpod.Dockerfile -t blueprint-validation:latest .
 
 # On any GPU provider: SSH in and run
 bash /app/scripts/cloud_launch.sh
-blueprint-validate --config /app/configs/example_validation.yaml run-all
+blueprint-validate --config /app/configs/same_facility_policy_uplift_openvla.cloud.yaml --work-dir /models/outputs/same_facility_first run-all
 ```
 
 The repo pins `numpy<2` because the current TensorFlow 2.15 runtime used by rollout/RLDS export and local preflight is not NumPy-2 compatible.
 
 Notes:
-- `cloud_launch.sh` defaults to model storage at `/models/checkpoints`.
+- `cloud_launch.sh` now defaults to the same-facility claim path via `configs/same_facility_policy_uplift_openvla.cloud.yaml`.
+- Stage facility assets explicitly before cloud prep:
+  - `FACILITY_A_SPLAT_SOURCE=/path/to/facility_a/splat.ply`
+  - optional: `FACILITY_A_TASK_HINTS_SOURCE=/path/to/task_targets.synthetic.json`
+- `run-all` now executes preflight by default; use `--skip-preflight` only if you are intentionally bypassing the gate.
 - You can skip checkpoint downloads if your volume is pre-seeded:
   - `DOWNLOAD_MODELS=false bash /app/scripts/cloud_launch.sh`
-- DreamDojo CUDA extra install defaults to `cu128`:
+- DreamDojo/Cosmos CUDA extra install defaults to `cu128`:
   - `DREAMDOJO_EXTRA=cu128 bash /app/scripts/cloud_launch.sh`
 
 ### Docker Snapshot

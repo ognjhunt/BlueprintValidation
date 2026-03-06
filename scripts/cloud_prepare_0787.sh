@@ -15,6 +15,10 @@ DREAMDOJO_EXTRA="${DREAMDOJO_EXTRA:-cu128}"
 INSTALL_OPENPI_DEPS="${INSTALL_OPENPI_DEPS:-true}"
 INSTALL_COSMOS_RUNTIME_DEPS="${INSTALL_COSMOS_RUNTIME_DEPS:-true}"
 FACILITY_ID="${FACILITY_ID:-}"
+DREAMDOJO_REF="${DREAMDOJO_REF:-7f3379bcb831147c0cc170e79ba08471ad186497}"
+COSMOS_REF="${COSMOS_REF:-c9ad44b7283613618d57c1e4c9991916907d4f4b}"
+OPENVLA_REF="${OPENVLA_REF:-e4287e94541f459edc4feabc4e181f537cd569a8}"
+OPENPI_REF="${OPENPI_REF:-}"
 
 if [ -f "$ROOT_DIR/scripts/runtime_env.local" ]; then
   # shellcheck disable=SC1091
@@ -129,6 +133,7 @@ ensure_repo() {
   local target="$1"
   local opt_src="$2"
   local url="$3"
+  local ref="$4"
   if [ -d "$target/.git" ] || [ -f "$target/pyproject.toml" ]; then
     return 0
   fi
@@ -138,13 +143,20 @@ ensure_repo() {
     return 0
   fi
   git clone --depth 1 "$url" "$target"
+  if [ -n "$ref" ]; then
+    git -C "$target" fetch --depth 1 origin "$ref"
+    git -C "$target" checkout "$ref"
+  fi
+  if [ -f "$target/.gitmodules" ]; then
+    git -C "$target" submodule update --init --recursive
+  fi
 }
 
 echo "Ensuring vendor repos..."
-ensure_repo "$ROOT_DIR/data/vendor/DreamDojo" "/opt/DreamDojo" "https://github.com/NVIDIA/DreamDojo.git"
-ensure_repo "$ROOT_DIR/data/vendor/cosmos-transfer" "/opt/cosmos-transfer" "https://github.com/nvidia-cosmos/cosmos-transfer2.5.git"
-ensure_repo "$ROOT_DIR/data/vendor/openvla-oft" "/opt/openvla-oft" "https://github.com/moojink/openvla-oft.git"
-ensure_repo "$ROOT_DIR/data/vendor/openpi" "/opt/openpi" "https://github.com/Physical-Intelligence/openpi.git"
+ensure_repo "$ROOT_DIR/data/vendor/DreamDojo" "/opt/DreamDojo" "https://github.com/NVIDIA/DreamDojo.git" "$DREAMDOJO_REF"
+ensure_repo "$ROOT_DIR/data/vendor/cosmos-transfer" "/opt/cosmos-transfer" "https://github.com/nvidia-cosmos/cosmos-transfer2.5.git" "$COSMOS_REF"
+ensure_repo "$ROOT_DIR/data/vendor/openvla-oft" "/opt/openvla-oft" "https://github.com/moojink/openvla-oft.git" "$OPENVLA_REF"
+ensure_repo "$ROOT_DIR/data/vendor/openpi" "/opt/openpi" "https://github.com/Physical-Intelligence/openpi.git" "$OPENPI_REF"
 
 if [ "$INSTALL_COSMOS_RUNTIME_DEPS" = "true" ]; then
   echo "Installing Cosmos runtime dependencies (sam2, natsort)..."
@@ -229,8 +241,9 @@ else
 fi
 
 if [ "$INSTALL_DREAMDOJO_EXTRA" = "true" ]; then
-  echo "Installing DreamDojo CUDA extra ($DREAMDOJO_EXTRA) into active environment..."
+  echo "Installing DreamDojo/Cosmos CUDA extras ($DREAMDOJO_EXTRA) into active environment..."
   pip_install -e "$ROOT_DIR/data/vendor/DreamDojo[$DREAMDOJO_EXTRA]"
+  pip_install -e "$ROOT_DIR/data/vendor/cosmos-transfer[$DREAMDOJO_EXTRA]"
   echo "Ensuring DreamDojo runtime dependency (lightning) is installed..."
   pip_install -U lightning
 

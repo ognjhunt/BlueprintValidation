@@ -237,6 +237,20 @@ def test_load_ply_means_and_colors_direct_rgb(sample_ply_with_rgb):
     assert colors.dtype == np.uint8
 
 
+def test_load_ply_means_and_colors_supports_supersplat_compressed(tmp_path):
+    from tests.test_ply_loader import _write_supersplat_compressed_fixture
+
+    ply_path = tmp_path / "compressed.ply"
+    expected = _write_supersplat_compressed_fixture(ply_path)
+
+    means, colors = load_ply_means_and_colors_numpy(ply_path)
+
+    assert means.shape == (4, 3)
+    assert colors is not None
+    assert colors.shape == (4, 3)
+    np.testing.assert_allclose(means, expected["means"], atol=2e-3)
+
+
 def test_warmup_auto_up_axis(sample_ply, tmp_path):
     """Warmup with up_axis='auto' should detect Z-up for the sample PLY (10x10x3 box)."""
     fac = FacilityConfig(

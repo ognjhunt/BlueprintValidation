@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LOCAL_CONFIG="${LOCAL_CONFIG:-$ROOT_DIR/configs/interiorgs_kitchen_0787.yaml}"
-CLOUD_CONFIG="${CLOUD_CONFIG:-$ROOT_DIR/configs/interiorgs_kitchen_0787.cloud.yaml}"
+LOCAL_CONFIG="${LOCAL_CONFIG:-$ROOT_DIR/configs/same_facility_policy_uplift_openvla.yaml}"
+CLOUD_CONFIG="${CLOUD_CONFIG:-$ROOT_DIR/configs/same_facility_policy_uplift_openvla.cloud.yaml}"
 WORK_DIR="${WORK_DIR:-$ROOT_DIR/data/outputs/pre_gpu_audit}"
 DEFAULT_PYTHON_BIN="$ROOT_DIR/.venv/bin/python"
 if [[ -x "$DEFAULT_PYTHON_BIN" ]]; then

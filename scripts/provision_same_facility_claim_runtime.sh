@@ -4,12 +4,25 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_PATH="${CONFIG_PATH:-$ROOT_DIR/configs/same_facility_policy_uplift_openvla.yaml}"
 WORK_DIR="${WORK_DIR:-$ROOT_DIR/data/outputs/claim_runtime_check}"
-DOWNLOAD_MODELS="${DOWNLOAD_MODELS:-false}"
-INSTALL_VENDOR_CUDA_EXTRAS="${INSTALL_VENDOR_CUDA_EXTRAS:-false}"
+CHECKPOINT_DIR="${CHECKPOINT_DIR:-$ROOT_DIR/data/checkpoints}"
+SHARED_OUTPUT_ROOT="${SHARED_OUTPUT_ROOT:-$ROOT_DIR/data/outputs}"
+OPENVLA_DATASET_ROOT="${OPENVLA_DATASET_ROOT:-$ROOT_DIR/data/openvla_datasets}"
+DOWNLOAD_MODELS="${DOWNLOAD_MODELS:-true}"
+INSTALL_VENDOR_CUDA_EXTRAS="${INSTALL_VENDOR_CUDA_EXTRAS:-true}"
 DREAMDOJO_EXTRA="${DREAMDOJO_EXTRA:-cu128}"
 SYNC_MANIPULATION_EXTRA="${SYNC_MANIPULATION_EXTRA:-false}"
+PREFLIGHT_AUDIT_MODE="${PREFLIGHT_AUDIT_MODE:-true}"
+FACILITY_A_SPLAT_SOURCE="${FACILITY_A_SPLAT_SOURCE:-}"
+FACILITY_A_TASK_HINTS_SOURCE="${FACILITY_A_TASK_HINTS_SOURCE:-}"
 PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
 MPLCONFIGDIR="${MPLCONFIGDIR:-$ROOT_DIR/data/.mplconfig}"
+
+DREAMDOJO_REPO_URL="${DREAMDOJO_REPO_URL:-https://github.com/NVIDIA/DreamDojo.git}"
+DREAMDOJO_REF="${DREAMDOJO_REF:-7f3379bcb831147c0cc170e79ba08471ad186497}"
+COSMOS_REPO_URL="${COSMOS_REPO_URL:-https://github.com/nvidia-cosmos/cosmos-transfer2.5.git}"
+COSMOS_REF="${COSMOS_REF:-c9ad44b7283613618d57c1e4c9991916907d4f4b}"
+OPENVLA_REPO_URL="${OPENVLA_REPO_URL:-https://github.com/moojink/openvla-oft.git}"
+OPENVLA_REF="${OPENVLA_REF:-e4287e94541f459edc4feabc4e181f537cd569a8}"
 
 pip_install() {
   uv pip install --python "$PYTHON_BIN" "$@"
@@ -45,14 +58,48 @@ except Exception:
 PY
 }
 
+ensure_repo() {
+  local target="$1"
+  local url="$2"
+  local ref="$3"
+
+  if [[ -d "$target/.git" ]]; then
+    return 0
+  fi
+  if [[ -f "$target/pyproject.toml" ]]; then
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$target")"
+  git clone "$url" "$target"
+  git -C "$target" checkout "$ref"
+  if [[ -f "$target/.gitmodules" ]]; then
+    git -C "$target" submodule update --init --recursive
+  fi
+}
+
+stage_optional_file() {
+  local src="$1"
+  local dest="$2"
+  if [[ -z "$src" ]]; then
+    return 0
+  fi
+  mkdir -p "$(dirname "$dest")"
+  cp "$src" "$dest"
+}
+
 echo "== Provision Same-Facility Claim Runtime =="
 echo "ROOT_DIR: $ROOT_DIR"
 echo "CONFIG_PATH: $CONFIG_PATH"
 echo "WORK_DIR: $WORK_DIR"
+echo "CHECKPOINT_DIR: $CHECKPOINT_DIR"
+echo "SHARED_OUTPUT_ROOT: $SHARED_OUTPUT_ROOT"
+echo "OPENVLA_DATASET_ROOT: $OPENVLA_DATASET_ROOT"
 echo "DOWNLOAD_MODELS: $DOWNLOAD_MODELS"
 echo "INSTALL_VENDOR_CUDA_EXTRAS: $INSTALL_VENDOR_CUDA_EXTRAS"
 echo "DREAMDOJO_EXTRA: $DREAMDOJO_EXTRA"
 echo "SYNC_MANIPULATION_EXTRA: $SYNC_MANIPULATION_EXTRA"
+echo "PREFLIGHT_AUDIT_MODE: $PREFLIGHT_AUDIT_MODE"
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "ERROR: uv is required but not found on PATH." >&2
@@ -60,6 +107,36 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 mkdir -p "$MPLCONFIGDIR"
+mkdir -p "$ROOT_DIR/data" "$ROOT_DIR/data/vendor" "$CHECKPOINT_DIR" "$SHARED_OUTPUT_ROOT" "$OPENVLA_DATASET_ROOT"
+
+if [[ ! -e "$ROOT_DIR/data/checkpoints" ]]; then
+  ln -s "$CHECKPOINT_DIR" "$ROOT_DIR/data/checkpoints"
+fi
+if [[ ! -e "$ROOT_DIR/data/outputs" ]]; then
+  ln -s "$SHARED_OUTPUT_ROOT" "$ROOT_DIR/data/outputs"
+fi
+if [[ ! -e "$ROOT_DIR/data/openvla_datasets" ]]; then
+  ln -s "$OPENVLA_DATASET_ROOT" "$ROOT_DIR/data/openvla_datasets"
+fi
+
+echo
+echo "[0/5] Ensuring pinned vendor repos and same-facility assets"
+ensure_repo "$ROOT_DIR/data/vendor/DreamDojo" "$DREAMDOJO_REPO_URL" "$DREAMDOJO_REF"
+ensure_repo "$ROOT_DIR/data/vendor/cosmos-transfer" "$COSMOS_REPO_URL" "$COSMOS_REF"
+ensure_repo "$ROOT_DIR/data/vendor/openvla-oft" "$OPENVLA_REPO_URL" "$OPENVLA_REF"
+
+stage_optional_file \
+  "$FACILITY_A_SPLAT_SOURCE" \
+  "$ROOT_DIR/data/facilities/facility_a/splat.ply"
+stage_optional_file \
+  "$FACILITY_A_TASK_HINTS_SOURCE" \
+  "$WORK_DIR/facility_a/bootstrap/task_targets.synthetic.json"
+
+if [[ "$CONFIG_PATH" == *"same_facility_policy_uplift_openvla"* ]] && [[ ! -f "$ROOT_DIR/data/facilities/facility_a/splat.ply" ]]; then
+  echo "ERROR: missing same-facility asset $ROOT_DIR/data/facilities/facility_a/splat.ply" >&2
+  echo "Set FACILITY_A_SPLAT_SOURCE=/path/to/facility_a/splat.ply or copy the asset into place before provisioning." >&2
+  exit 1
+fi
 
 echo
 echo "[1/5] Syncing repo-local environment"
@@ -124,16 +201,22 @@ fi
 if [[ "$DOWNLOAD_MODELS" == "true" ]]; then
   echo
   echo "[4/5] Downloading model checkpoints"
-  bash "$ROOT_DIR/scripts/download_models.sh" "$ROOT_DIR/data/checkpoints"
+  bash "$ROOT_DIR/scripts/download_models.sh" "$CHECKPOINT_DIR"
 else
   echo
   echo "[4/5] Skipping model downloads"
-  echo "       Set DOWNLOAD_MODELS=true to populate $ROOT_DIR/data/checkpoints"
+  echo "       Set DOWNLOAD_MODELS=true to populate $CHECKPOINT_DIR"
 fi
 
 echo
 echo "[5/5] Running repo-local preflight"
-MPLCONFIGDIR="$MPLCONFIGDIR" "$PYTHON_BIN" -m blueprint_validation.cli \
-  --config "$CONFIG_PATH" \
-  --work-dir "$WORK_DIR" \
-  preflight --audit-mode
+PRE_CMD=(
+  "$PYTHON_BIN" -m blueprint_validation.cli
+  --config "$CONFIG_PATH"
+  --work-dir "$WORK_DIR"
+  preflight
+)
+if [[ "$PREFLIGHT_AUDIT_MODE" == "true" ]]; then
+  PRE_CMD+=(--audit-mode)
+fi
+MPLCONFIGDIR="$MPLCONFIGDIR" "${PRE_CMD[@]}"

@@ -28,6 +28,7 @@ from .rendering.camera_paths import (
     generate_path_from_spec,
     save_path_to_json,
 )
+from .rendering.ply_loader import load_ply_means_and_colors as _load_ply_means_and_colors_plyfile
 from .rendering.scene_geometry import (
     OccupancyGrid,
     auto_populate_manipulation_zones,
@@ -162,14 +163,7 @@ def load_ply_means_numpy(ply_path: Path) -> np.ndarray:
     """Load only positions from PLY as numpy — no torch/GPU needed."""
     logger.info("Loading PLY (CPU-only): %s", ply_path)
     try:
-        from plyfile import PlyData
-
-        plydata = PlyData.read(str(ply_path))
-        vertex = plydata["vertex"]
-        x = np.array(vertex["x"], dtype=np.float32)
-        y = np.array(vertex["y"], dtype=np.float32)
-        z = np.array(vertex["z"], dtype=np.float32)
-        means = np.stack([x, y, z], axis=-1)
+        means, _colors = _load_ply_means_and_colors_plyfile(ply_path)
     except ModuleNotFoundError:
         logger.warning("plyfile is not installed; using fallback PLY parser for warmup")
         means = _load_ply_means_fallback(ply_path)
@@ -308,15 +302,7 @@ def load_ply_means_and_colors_numpy(
     """
     logger.info("Loading PLY with colors (CPU-only): %s", ply_path)
     try:
-        from plyfile import PlyData
-
-        plydata = PlyData.read(str(ply_path))
-        vertex = plydata["vertex"]
-        x = np.array(vertex["x"], dtype=np.float32)
-        y = np.array(vertex["y"], dtype=np.float32)
-        z = np.array(vertex["z"], dtype=np.float32)
-        means = np.stack([x, y, z], axis=-1)
-        colors = _extract_colors_plyfile(vertex)
+        means, colors = _load_ply_means_and_colors_plyfile(ply_path)
     except ModuleNotFoundError:
         logger.warning("plyfile is not installed; using fallback PLY parser")
         means, colors = _load_ply_means_and_colors_fallback(ply_path)

@@ -63,6 +63,19 @@ class PipelineStage(ABC):
         logger.info("Starting stage: %s — %s", self.name, self.description)
         start = time.monotonic()
         try:
+            preflight_checks = self.preflight(config)
+            failed_checks = [check for check in preflight_checks if not check.passed]
+            if failed_checks:
+                detail = "; ".join(
+                    f"{check.name}: {check.detail or 'failed'}" for check in failed_checks
+                )
+                logger.error("Stage %s preflight failed: %s", self.name, detail)
+                return StageResult(
+                    stage_name=self.name,
+                    status="failed",
+                    elapsed_seconds=time.monotonic() - start,
+                    detail=f"Stage preflight failed: {detail}",
+                )
             result = self.run(config, facility, work_dir, previous_results)
             elapsed = time.monotonic() - start
             logger.info(

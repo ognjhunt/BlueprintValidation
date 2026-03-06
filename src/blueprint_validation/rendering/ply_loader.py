@@ -57,6 +57,13 @@ def _sorted_sh_names(properties, prefix: str = "f_rest_") -> list[str]:
     )
 
 
+def _sh_dc_to_rgb(dc0: np.ndarray, dc1: np.ndarray, dc2: np.ndarray) -> np.ndarray:
+    """Convert SH DC coefficients into uint8 RGB."""
+    raw = np.stack([dc0, dc1, dc2], axis=-1).astype(np.float32)
+    rgb_float = 1.0 / (1.0 + np.exp(-raw))
+    return np.clip(rgb_float * 255.0, 0, 255).astype(np.uint8)
+
+
 def _is_supersplat_compressed_ply(plydata) -> bool:
     if "chunk" not in plydata or "vertex" not in plydata:
         return False
@@ -200,6 +207,60 @@ def _decode_supersplat_compressed(plydata) -> tuple[np.ndarray, ...]:
                 sh_coeffs = np.concatenate([sh_dc[:, None, :], sh_rest], axis=1).astype(np.float32)
 
     return means, scales, quats, opacities, sh_coeffs
+
+
+def load_ply_means_and_colors(ply_path: Path) -> tuple[np.ndarray, np.ndarray | None]:
+    """Load XYZ positions and best-effort RGB colors from standard or supersplat PLY."""
+    from plyfile import PlyData
+
+    logger.info("Loading PLY (numpy attributes): %s", ply_path)
+    plydata = PlyData.read(str(ply_path))
+    vertex = plydata["vertex"]
+    vertex_names = {p.name for p in vertex.properties}
+
+    if {"x", "y", "z"}.issubset(vertex_names):
+        means = np.stack(
+            [
+                np.array(vertex["x"], dtype=np.float32),
+                np.array(vertex["y"], dtype=np.float32),
+                np.array(vertex["z"], dtype=np.float32),
+            ],
+            axis=-1,
+        )
+        colors = None
+        if {"red", "green", "blue"}.issubset(vertex_names):
+            colors = np.stack(
+                [
+                    np.array(vertex["red"], dtype=np.uint8),
+                    np.array(vertex["green"], dtype=np.uint8),
+                    np.array(vertex["blue"], dtype=np.uint8),
+                ],
+                axis=-1,
+            )
+        elif {"f_dc_0", "f_dc_1", "f_dc_2"}.issubset(vertex_names):
+            colors = _sh_dc_to_rgb(
+                np.array(vertex["f_dc_0"], dtype=np.float32),
+                np.array(vertex["f_dc_1"], dtype=np.float32),
+                np.array(vertex["f_dc_2"], dtype=np.float32),
+            )
+        return means, colors
+
+    if _is_supersplat_compressed_ply(plydata):
+        logger.info("Detected supersplat compressed PLY format; decoding packed attributes")
+        means, _scales, _quats, _opacities, sh_coeffs = _decode_supersplat_compressed(plydata)
+        colors = None
+        if sh_coeffs.size > 0:
+            colors = _sh_dc_to_rgb(
+                sh_coeffs[:, 0, 0],
+                sh_coeffs[:, 0, 1],
+                sh_coeffs[:, 0, 2],
+            )
+        return means, colors
+
+    raise ValueError(
+        "Unsupported PLY schema: expected standard Gaussian fields "
+        "(x/y/z or SH/DC colors) or supersplat packed fields."
+    )
 
 
 def load_splat(ply_path: Path, device: str = "cpu") -> GaussianSplatData:

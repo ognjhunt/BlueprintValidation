@@ -82,6 +82,12 @@ class FinetuneStage(PipelineStage):
             or ""
         )
         lora_path = train_result.get("lora_weights_path", adapted_checkpoint)
+        detail = str(
+            train_result.get("stderr")
+            or train_result.get("detail")
+            or train_result.get("stdout")
+            or ""
+        ).strip()
 
         return StageResult(
             stage_name=self.name,
@@ -105,4 +111,5 @@ class FinetuneStage(PipelineStage):
                     else None
                 ),
             },
+            detail=detail,
         )
