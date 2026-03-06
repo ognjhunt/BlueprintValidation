@@ -50,6 +50,7 @@ def _collect_results(config: ValidationConfig, work_dir: Path) -> Dict[str, Any]
         "facilities": {},
         "cross_site": None,
         "policy_eval_matrix": None,
+        "claim_portfolio": None,
     }
 
     stages = [
@@ -96,6 +97,9 @@ def _collect_results(config: ValidationConfig, work_dir: Path) -> Dict[str, Any]
     matrix_file = work_dir / "policy_eval" / "matrix_report.json"
     if matrix_file.exists():
         results["policy_eval_matrix"] = read_json(matrix_file)
+    claim_portfolio_file = work_dir / "claim_portfolio_report.json"
+    if claim_portfolio_file.exists():
+        results["claim_portfolio"] = read_json(claim_portfolio_file)
 
     return results
 
@@ -315,6 +319,44 @@ def _append_claim_eval_section(lines: list[str], fac_data: Dict[str, Any]) -> No
     lines.append("")
 
 
+def _append_claim_portfolio_section(lines: list[str], data: Dict[str, Any]) -> None:
+    portfolio = data.get("claim_portfolio")
+    if not isinstance(portfolio, dict):
+        return
+    gate = portfolio.get("go_to_robot_gate", {}) or {}
+    pooled_frozen = portfolio.get("pooled_site_vs_frozen", {}) or {}
+    pooled_generic = portfolio.get("pooled_site_vs_generic", {}) or {}
+    lines.append("## Claim Portfolio\n")
+    lines.append("| Metric | Value |")
+    lines.append("|--------|-------|")
+    lines.append(f"| Eligible facilities | {portfolio.get('eligible_facility_count', 'N/A')} |")
+    lines.append(f"| Go-to-robot gate | {'PASS' if bool(gate.get('passed', False)) else 'FAIL'} |")
+    lines.append(f"| Pooled site vs frozen mean uplift (pp) | {pooled_frozen.get('mean_lift_pp', 'N/A')} |")
+    lines.append(f"| Pooled site vs frozen 95% CI low (pp) | {pooled_frozen.get('ci_low_pp', 'N/A')} |")
+    lines.append(f"| Pooled site vs generic mean uplift (pp) | {pooled_generic.get('mean_lift_pp', 'N/A')} |")
+    lines.append(f"| Pooled site vs generic 95% CI low (pp) | {pooled_generic.get('ci_low_pp', 'N/A')} |")
+    lines.append("")
+    failures = list(gate.get("failures", []) or [])
+    if failures:
+        lines.append("Gate failures:")
+        for failure in failures:
+            lines.append(f"- {failure}")
+        lines.append("")
+    facility_claims = list(portfolio.get("facility_claims", []) or [])
+    if facility_claims:
+        lines.append("| Facility | Eligible | Site-Frozen (pp) | Site-Generic (pp) | Generic Control |")
+        lines.append("|----------|----------|------------------|-------------------|-----------------|")
+        for claim in facility_claims:
+            lines.append(
+                f"| {claim.get('facility_id', 'N/A')} "
+                f"| {claim.get('eligible', False)} "
+                f"| {claim.get('site_vs_frozen_lift_pp', 'N/A')} "
+                f"| {claim.get('site_vs_generic_lift_pp', 'N/A')} "
+                f"| {claim.get('generic_control_mode', 'N/A')} |"
+            )
+        lines.append("")
+
+
 def _claim_outcome(metrics: Dict[str, Any]) -> str:
     outcome = str(metrics.get("claim_outcome", "") or "").strip().upper()
     if outcome in {"PASS", "FAIL", "INCONCLUSIVE", "INELIGIBLE"}:
@@ -367,6 +409,8 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
     # Executive Summary
     lines.append("## Executive Summary\n")
     _add_executive_summary(lines, data, config)
+
+    _append_claim_portfolio_section(lines, data)
 
     # Per-Facility Results
     for fid, fac_data in data.get("facilities", {}).items():
@@ -566,6 +610,34 @@ def _add_executive_summary(lines: list, data: dict, config: ValidationConfig = N
     cross_site_applicable = bool(
         (config is not None and len(config.facilities) > 1) or data.get("cross_site")
     )
+    claim_portfolio = data.get("claim_portfolio") if isinstance(data, dict) else None
+
+    if claim_portfolio:
+        gate = claim_portfolio.get("go_to_robot_gate", {}) or {}
+        pooled_frozen = claim_portfolio.get("pooled_site_vs_frozen", {}) or {}
+        pooled_generic = claim_portfolio.get("pooled_site_vs_generic", {}) or {}
+        lines.append("| Test | Result |")
+        lines.append("|------|--------|")
+        lines.append(
+            "| Investor-Grade Multi-Facility Claim | "
+            f"{'PASS' if bool(gate.get('passed', False)) else 'FAIL'} |"
+        )
+        lines.append("")
+        if bool(gate.get("passed", False)):
+            lines.append(
+                "**Portfolio gate passed.** "
+                f"{claim_portfolio.get('eligible_facility_count', 0)} facilities cleared the "
+                "same fixed-world claim protocol, with pooled site-vs-frozen lift "
+                f"{pooled_frozen.get('mean_lift_pp', 'N/A')}pp and pooled site-vs-generic lift "
+                f"{pooled_generic.get('mean_lift_pp', 'N/A')}pp.\n"
+            )
+        else:
+            lines.append(
+                "**Portfolio gate not yet passed.** "
+                "The investor-grade multi-facility claim either lacks enough eligible facilities "
+                "or misses one or more pooled lift / integrity thresholds.\n"
+            )
+        return
 
     if fixed_world_claim:
         claim_metrics = None

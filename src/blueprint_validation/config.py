@@ -575,6 +575,23 @@ class ExternalInteractionConfig:
 
 
 @dataclass
+class NativeTeacherConfig:
+    enabled: bool = False
+    include_generic_control: bool = True
+    generate_corrections: bool = True
+    planner_horizon_steps: int = 16
+
+
+@dataclass
+class ClaimPortfolioConfig:
+    min_facilities: int = 3
+    min_mean_site_vs_frozen_lift_pp: float = 8.0
+    min_mean_site_vs_generic_lift_pp: float = 2.0
+    max_negative_task_family_delta_pp: float = -5.0
+    require_manipulation_nonzero: bool = True
+
+
+@dataclass
 class PolicyRLLoopConfig:
     enabled: bool = False
     iterations: int = 2
@@ -731,6 +748,8 @@ class ValidationConfig:
     robosplat_scan: RoboSplatScanConfig = field(default_factory=RoboSplatScanConfig)
     splatsim: SplatSimConfig = field(default_factory=SplatSimConfig)
     external_interaction: ExternalInteractionConfig = field(default_factory=ExternalInteractionConfig)
+    native_teacher: NativeTeacherConfig = field(default_factory=NativeTeacherConfig)
+    claim_portfolio: ClaimPortfolioConfig = field(default_factory=ClaimPortfolioConfig)
     action_boost: ActionBoostConfig = field(default_factory=ActionBoostConfig)
     policy_rl_loop: PolicyRLLoopConfig = field(default_factory=PolicyRLLoopConfig)
     wm_refresh_loop: WorldModelRefreshLoopConfig = field(default_factory=WorldModelRefreshLoopConfig)
@@ -1685,6 +1704,31 @@ def load_config(path: Path) -> ValidationConfig:
             source_name=str(ei.get("source_name", "external")),
         )
 
+    if "native_teacher" in raw:
+        nt = raw["native_teacher"]
+        config.native_teacher = NativeTeacherConfig(
+            enabled=bool(nt.get("enabled", False)),
+            include_generic_control=bool(nt.get("include_generic_control", True)),
+            generate_corrections=bool(nt.get("generate_corrections", True)),
+            planner_horizon_steps=int(nt.get("planner_horizon_steps", 16)),
+        )
+
+    if "claim_portfolio" in raw:
+        cp = raw["claim_portfolio"]
+        config.claim_portfolio = ClaimPortfolioConfig(
+            min_facilities=int(cp.get("min_facilities", 3)),
+            min_mean_site_vs_frozen_lift_pp=float(
+                cp.get("min_mean_site_vs_frozen_lift_pp", 8.0)
+            ),
+            min_mean_site_vs_generic_lift_pp=float(
+                cp.get("min_mean_site_vs_generic_lift_pp", 2.0)
+            ),
+            max_negative_task_family_delta_pp=float(
+                cp.get("max_negative_task_family_delta_pp", -5.0)
+            ),
+            require_manipulation_nonzero=bool(cp.get("require_manipulation_nonzero", True)),
+        )
+
     if "action_boost" in raw:
         ab = raw["action_boost"]
         config.action_boost = ActionBoostConfig(
@@ -2072,6 +2116,14 @@ def load_config(path: Path) -> ValidationConfig:
         raise ValueError("policy_adapter.dreamzero.train_script must be non-empty")
     if not str(config.external_interaction.source_name).strip():
         raise ValueError("external_interaction.source_name must be non-empty")
+    if int(config.native_teacher.planner_horizon_steps) < 1:
+        raise ValueError("native_teacher.planner_horizon_steps must be >= 1")
+    if int(config.claim_portfolio.min_facilities) < 1:
+        raise ValueError("claim_portfolio.min_facilities must be >= 1")
+    if float(config.claim_portfolio.min_mean_site_vs_frozen_lift_pp) < 0.0:
+        raise ValueError("claim_portfolio.min_mean_site_vs_frozen_lift_pp must be >= 0")
+    if float(config.claim_portfolio.min_mean_site_vs_generic_lift_pp) < 0.0:
+        raise ValueError("claim_portfolio.min_mean_site_vs_generic_lift_pp must be >= 0")
     if int(config.enrich.min_source_clips) < 0:
         raise ValueError("enrich.min_source_clips must be >= 0")
     if int(config.enrich.min_valid_outputs) < 0:

@@ -68,6 +68,7 @@ class PolicyPairTrainStage(PipelineStage):
             )
         summary_payload = read_json(summary_path)
         dataset_lineage = dict(summary_payload.get("dataset_lineage", {}) or {})
+        generic_control_mode = str(summary_payload.get("generic_control_mode", "") or "").strip()
         if bool(summary_payload.get("claim_mode", False)):
             action_contract = summary_payload.get("action_contract", {})
             reliability_gate = summary_payload.get("reliability_gate", {})
@@ -105,7 +106,9 @@ class PolicyPairTrainStage(PipelineStage):
         base_root.mkdir(parents=True, exist_ok=True)
         site_root.mkdir(parents=True, exist_ok=True)
 
-        baseline_train_dir = dataset_root / "baseline" / "train"
+        baseline_train_dir = dataset_root / "generic_control" / "train"
+        if not baseline_train_dir.exists():
+            baseline_train_dir = dataset_root / "baseline" / "train"
         adapted_train_dir = dataset_root / "adapted" / "train"
         base_dataset_root = adapter.dataset_transform(
             source_dataset_dir=baseline_train_dir,
@@ -170,6 +173,7 @@ class PolicyPairTrainStage(PipelineStage):
                 "policy_base": primary_base,
                 "policy_site": primary_site,
                 "dataset_lineage": dataset_lineage,
+                "generic_control_mode": generic_control_mode,
                 "replicates": {
                     "generic_control": base_runs,
                     "site_trained": site_runs,
@@ -187,6 +191,7 @@ class PolicyPairTrainStage(PipelineStage):
                 "num_successful_site_trained": sum(
                     1 for run in site_runs if run["status"] == "success"
                 ),
+                "investor_grade_generic_control": generic_control_mode == "leave_one_facility_out",
             }
             detail = (
                 f"generic_control={metrics['num_successful_generic_control']}/{len(base_runs)} "
@@ -229,12 +234,14 @@ class PolicyPairTrainStage(PipelineStage):
                     "detail": site_result.detail,
                 },
                 "dataset_lineage": dataset_lineage,
+                "generic_control_mode": generic_control_mode,
             }
             metrics = {
                 "policy_base_status": base_result.status,
                 "policy_site_status": site_result.status,
                 "policy_base_seconds": round(base_result.elapsed_seconds, 2),
                 "policy_site_seconds": round(site_result.elapsed_seconds, 2),
+                "investor_grade_generic_control": generic_control_mode == "leave_one_facility_out",
             }
             detail = f"base={base_result.detail} site={site_result.detail}"
         write_json(summary, train_root / "policy_pair_train_summary.json")

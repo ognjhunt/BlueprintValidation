@@ -71,6 +71,7 @@ class DeterministicRolloutStateProxy:
     stable_after_place: bool = False
     stable_steps: int = 0
     navigation_progress_m: float = 0.0
+    sim_backend: str = "native_benchmark_sim"
 
     @classmethod
     def from_context(
@@ -143,6 +144,81 @@ class DeterministicRolloutStateProxy:
         if action is not None:
             self._advance(action)
         return self._snapshot(step_idx=step_idx)
+
+    def clone(self) -> "DeterministicRolloutStateProxy":
+        return DeterministicRolloutStateProxy(
+            task_prompt=str(self.task_prompt),
+            task_family=str(self.task_family),
+            goal_region_id=str(self.goal_region_id),
+            start_region_id=str(self.start_region_id),
+            target_instance_id=self.target_instance_id,
+            target_label=self.target_label,
+            goal_point=None if self.goal_point is None else np.asarray(self.goal_point, dtype=np.float64).copy(),
+            target_point=None if self.target_point is None else np.asarray(self.target_point, dtype=np.float64).copy(),
+            position_world=np.asarray(self.position_world, dtype=np.float64).copy(),
+            forward_world=np.asarray(self.forward_world, dtype=np.float64).copy(),
+            right_world=np.asarray(self.right_world, dtype=np.float64).copy(),
+            up_world=np.asarray(self.up_world, dtype=np.float64).copy(),
+            ee_position_world=np.asarray(self.ee_position_world, dtype=np.float64).copy(),
+            goal_radius_m=float(self.goal_radius_m),
+            grasp_radius_m=float(self.grasp_radius_m),
+            lift_height_m=float(self.lift_height_m),
+            joint_position=float(self.joint_position),
+            invalid_collision=bool(self.invalid_collision),
+            target_dropped=bool(self.target_dropped),
+            attached=bool(self.attached),
+            object_position_world=(
+                None
+                if self.object_position_world is None
+                else np.asarray(self.object_position_world, dtype=np.float64).copy()
+            ),
+            object_rest_position_world=(
+                None
+                if self.object_rest_position_world is None
+                else np.asarray(self.object_rest_position_world, dtype=np.float64).copy()
+            ),
+            object_start_z=float(self.object_start_z),
+            grasp_acquired=bool(self.grasp_acquired),
+            lifted_clear=bool(self.lifted_clear),
+            placed_in_target=bool(self.placed_in_target),
+            stable_after_place=bool(self.stable_after_place),
+            stable_steps=int(self.stable_steps),
+            navigation_progress_m=float(self.navigation_progress_m),
+            sim_backend=str(self.sim_backend),
+        )
+
+    def world_to_local_translation(self, world_delta: np.ndarray) -> np.ndarray:
+        delta = np.asarray(world_delta, dtype=np.float64).reshape(-1)
+        if delta.size < 3:
+            delta = np.pad(delta, (0, 3 - delta.size))
+        scale = 0.18
+        return np.asarray(
+            [
+                float(np.dot(delta[:3], self.forward_world)) / scale,
+                float(np.dot(delta[:3], self.right_world)) / scale,
+                float(np.dot(delta[:3], self.up_world)) / scale,
+            ],
+            dtype=np.float64,
+        )
+
+    def make_action(
+        self,
+        *,
+        world_delta: np.ndarray | None = None,
+        grip: float | None = None,
+        yaw: float = 0.0,
+        action_dim: int = 7,
+    ) -> List[float]:
+        dim = max(7, int(action_dim))
+        action = np.zeros((dim,), dtype=np.float64)
+        if world_delta is not None:
+            local = np.clip(self.world_to_local_translation(np.asarray(world_delta, dtype=np.float64)), -1.0, 1.0)
+            action[:3] = local[:3]
+        if dim > 5:
+            action[5] = float(np.clip(yaw, -1.0, 1.0))
+        if grip is not None:
+            action[-1] = float(np.clip(grip, -1.0, 1.0))
+        return action.astype(np.float32).tolist()
 
     def _advance(self, action: object) -> None:
         arr = np.asarray(action, dtype=np.float64).reshape(-1)
@@ -231,7 +307,7 @@ class DeterministicRolloutStateProxy:
             joint_positions[self.target_instance_id] = float(self.joint_position)
 
         return {
-            "state_source": "deterministic_rollout_state_proxy",
+            "state_source": self.sim_backend,
             "step_idx": int(step_idx),
             "task_family": self.task_family,
             "active_region_id": active_region_id,
@@ -253,6 +329,84 @@ class DeterministicRolloutStateProxy:
             "target_instance_id": self.target_instance_id,
             "target_label": self.target_label,
         }
+
+
+def teacher_demo_quota(task_family: str) -> tuple[int, int]:
+    family = str(task_family or "").strip().lower()
+    if family == "manipulation":
+        return 6, 2
+    return 4, 4
+
+
+def build_teacher_action_candidates(
+    *,
+    task_spec: Dict[str, object],
+    rollout_context: Dict[str, object],
+    max_steps: int,
+    mode: str = "site",
+    action_dim: int = 7,
+) -> List[Dict[str, object]]:
+    proxy = DeterministicRolloutStateProxy.from_context(
+        task_prompt=str(task_spec.get("task_prompt", "") or rollout_context.get("task", "")),
+        task_spec=task_spec,
+        rollout_context=rollout_context,
+    )
+    family = str(task_spec.get("task_family", "") or proxy.task_family).strip().lower()
+    if family == "navigation":
+        return _navigation_teacher_candidates(proxy=proxy, max_steps=max_steps, action_dim=action_dim, mode=mode)
+    if family == "articulation":
+        return _articulation_teacher_candidates(proxy=proxy, max_steps=max_steps, action_dim=action_dim, mode=mode)
+    return _manipulation_teacher_candidates(proxy=proxy, max_steps=max_steps, action_dim=action_dim, mode=mode)
+
+
+def recovery_start_step(
+    *,
+    task_family: str,
+    state_trace: List[Dict[str, object]],
+) -> int:
+    family = str(task_family or "").strip().lower()
+    if family == "navigation":
+        for state in state_trace:
+            if bool(state.get("invalid_collision", False)):
+                return max(0, int(state.get("step_idx", 0)) - 1)
+        return max(0, len(state_trace) // 2)
+    if family == "articulation":
+        for state in state_trace:
+            joint_pos = float(state.get("joint_position", 0.0) or 0.0)
+            if joint_pos < 0.2 or joint_pos > 0.8:
+                return max(0, int(state.get("step_idx", 0)) - 1)
+        return 0
+    for state in state_trace:
+        if not bool(state.get("grasp_acquired", False)):
+            return max(0, int(state.get("step_idx", 0)))
+        if not bool(state.get("lifted_clear", False)):
+            return max(0, int(state.get("step_idx", 0)))
+        if not bool(state.get("placed_in_target", False)):
+            return max(0, int(state.get("step_idx", 0)))
+    return 0
+
+
+def build_correction_action_candidates(
+    *,
+    task_spec: Dict[str, object],
+    rollout_context: Dict[str, object],
+    state_trace: List[Dict[str, object]],
+    max_steps: int,
+    mode: str = "site",
+    action_dim: int = 7,
+) -> tuple[int, List[Dict[str, object]]]:
+    start_step = recovery_start_step(
+        task_family=str(task_spec.get("task_family", "") or rollout_context.get("task_kind", "")),
+        state_trace=state_trace,
+    )
+    candidates = build_teacher_action_candidates(
+        task_spec=task_spec,
+        rollout_context=rollout_context,
+        max_steps=max_steps,
+        mode=mode,
+        action_dim=action_dim,
+    )
+    return start_step, candidates
 
 
 def _maybe_xyz(value: object) -> np.ndarray | None:
@@ -278,3 +432,114 @@ def _infer_task_family(task_prompt: str) -> str:
     if any(token in lowered for token in ("navigate", "approach", "go to", "move toward")):
         return "navigation"
     return "other"
+
+
+def _navigation_teacher_candidates(
+    *,
+    proxy: DeterministicRolloutStateProxy,
+    max_steps: int,
+    action_dim: int,
+    mode: str,
+) -> List[Dict[str, object]]:
+    goal = proxy.goal_point if proxy.goal_point is not None else (proxy.position_world + (1.0 * proxy.forward_world))
+    motion_families = [
+        ("direct", 0.0),
+        ("left_arc", 0.30),
+        ("right_arc", -0.30),
+        ("cautious", 0.0),
+    ]
+    if mode == "generic":
+        motion_families = [("generic_direct", 0.0), ("generic_cautious", 0.0)]
+    sequences: List[Dict[str, object]] = []
+    for family_name, lateral_bias in motion_families:
+        sim = proxy.clone()
+        actions: List[List[float]] = []
+        steps = max(4, min(int(max_steps), 12 if family_name != "cautious" else 16))
+        for step_idx in range(steps):
+            remaining = goal - sim.position_world
+            if lateral_bias != 0.0:
+                remaining = remaining + (lateral_bias * sim.right_world * max(0.0, 1.0 - (step_idx / max(steps - 1, 1))))
+            delta = remaining / max(1.0, float(steps - step_idx))
+            action = sim.make_action(world_delta=delta, grip=-1.0, action_dim=action_dim)
+            sim.capture(action=action, step_idx=step_idx + 1, phase="teacher")
+            actions.append(action)
+        sequences.append(
+            {
+                "motion_family": family_name,
+                "action_sequence": actions,
+            }
+        )
+    return sequences
+
+
+def _articulation_teacher_candidates(
+    *,
+    proxy: DeterministicRolloutStateProxy,
+    max_steps: int,
+    action_dim: int,
+    mode: str,
+) -> List[Dict[str, object]]:
+    del mode
+    sequences: List[Dict[str, object]] = []
+    base_patterns = [
+        ("open_close", [1.0, 1.0, -1.0, -1.0]),
+        ("open_pause_close", [1.0, 1.0, 0.3, -1.0, -1.0]),
+        ("close_open", [-1.0, -1.0, 1.0, 1.0]),
+        ("cautious_open_close", [0.6, 0.6, 0.6, -0.6, -0.6, -0.6]),
+    ]
+    for family_name, joint_pattern in base_patterns:
+        actions: List[List[float]] = []
+        sim = proxy.clone()
+        for step_idx, joint_drive in enumerate(joint_pattern[: max(2, min(max_steps, len(joint_pattern)))], start=1):
+            action = sim.make_action(world_delta=np.zeros((3,), dtype=np.float64), grip=(-1.0 if joint_drive >= 0 else 1.0), yaw=(0.5 * joint_drive), action_dim=action_dim)
+            sim.capture(action=action, step_idx=step_idx, phase="teacher")
+            actions.append(action)
+        sequences.append({"motion_family": family_name, "action_sequence": actions})
+    return sequences
+
+
+def _manipulation_teacher_candidates(
+    *,
+    proxy: DeterministicRolloutStateProxy,
+    max_steps: int,
+    action_dim: int,
+    mode: str,
+) -> List[Dict[str, object]]:
+    target = proxy.target_point if proxy.target_point is not None else proxy.ee_position_world
+    goal = proxy.goal_point if proxy.goal_point is not None else (target + np.asarray([0.35, 0.0, 0.10], dtype=np.float64))
+    lift_scale_options = [1.0, 1.35]
+    lateral_options = [-0.12, 0.0, 0.12]
+    if mode == "generic":
+        lateral_options = [-0.08, 0.08]
+    sequences: List[Dict[str, object]] = []
+    for lateral in lateral_options:
+        for lift_scale in lift_scale_options:
+            family_name = f"{'generic_' if mode == 'generic' else ''}lat_{lateral:+.2f}_lift_{lift_scale:.2f}"
+            sim = proxy.clone()
+            actions: List[List[float]] = []
+            candidate_goal = goal + (lateral * sim.right_world)
+            phase_targets = [
+                ("approach", (target + (lateral * sim.right_world)) - sim.ee_position_world, 1.0),
+                ("grasp", np.zeros((3,), dtype=np.float64), -1.0),
+                ("lift", (sim.up_world * sim.lift_height_m * lift_scale), -1.0),
+                ("carry", candidate_goal - target, -1.0),
+                ("place", np.zeros((3,), dtype=np.float64), 1.0),
+                ("stabilize", np.zeros((3,), dtype=np.float64), 1.0),
+            ]
+            step_idx = 1
+            for phase_name, world_delta, grip in phase_targets:
+                phase_steps = 2 if phase_name in {"grasp", "place", "stabilize"} else 3
+                if phase_name == "carry":
+                    phase_steps = 4
+                for _ in range(phase_steps):
+                    delta = np.asarray(world_delta, dtype=np.float64) / max(1, phase_steps)
+                    action = sim.make_action(world_delta=delta, grip=grip, action_dim=action_dim)
+                    sim.capture(action=action, step_idx=step_idx, phase=phase_name)
+                    actions.append(action)
+                    step_idx += 1
+                    if len(actions) >= max_steps:
+                        break
+                if len(actions) >= max_steps:
+                    break
+            sequences.append({"motion_family": family_name, "action_sequence": actions})
+    return sequences

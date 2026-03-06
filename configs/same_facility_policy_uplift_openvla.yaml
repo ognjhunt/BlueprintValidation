@@ -34,6 +34,8 @@ eval_policy:
   min_manip_success_delta_pp: 15.0
   replication:
     training_seeds: [0, 1, 2, 3, 4, 5, 6, 7]
+  claim_strictness:
+    site_vs_generic_min_lift_pp: 2.0
   reliability:
     enforce_stage_success: true
     fail_on_short_rollout: true
@@ -76,6 +78,12 @@ splatsim:
 
 external_interaction:
   enabled: false
+
+native_teacher:
+  enabled: true
+  include_generic_control: true
+  generate_corrections: true
+  planner_horizon_steps: 16
 
 action_boost:
   enabled: false

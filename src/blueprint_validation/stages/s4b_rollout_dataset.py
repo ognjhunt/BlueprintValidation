@@ -12,6 +12,7 @@ import numpy as np
 from ..common import StageResult, get_logger, read_json, write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..evaluation.claim_protocol import claim_protocol_enabled
+from ..training.native_teacher import generate_correction_rollouts, generate_teacher_rollouts
 from ..training.rlds_export import export_rollouts_to_rlds_jsonl
 from ..validation import ManifestValidationError, load_and_validate_manifest
 from .base import PipelineStage
@@ -45,7 +46,7 @@ class RolloutDatasetStage(PipelineStage):
         work_dir: Path,
         previous_results: Dict[str, StageResult],
     ) -> StageResult:
-        del facility, previous_results
+        del previous_results
         if (
             (getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only")
             .strip()
@@ -161,8 +162,76 @@ class RolloutDatasetStage(PipelineStage):
             baseline, split_train_ids, split_heldout_ids
         )
         adapted_train, adapted_heldout = _split_by_ids(adapted, split_train_ids, split_heldout_ids)
+        native_teacher_summary: Dict[str, object] = {}
+        generic_control_train = list(baseline_train)
+        generic_control_mode = "baseline_only"
+        if claim_protocol_enabled(config) and bool(getattr(config.native_teacher, "enabled", False)):
+            teacher_dir = work_dir / "native_teacher"
+            site_teacher_rows, site_teacher_meta = generate_teacher_rollouts(
+                config=config,
+                facility=facility,
+                work_dir=work_dir,
+                output_dir=teacher_dir / "site_teacher",
+                condition="adapted",
+                mode="site",
+                max_steps=int(config.native_teacher.planner_horizon_steps),
+            )
+            generic_teacher_rows: List[dict] = []
+            generic_teacher_meta: Dict[str, object] = {}
+            if bool(config.native_teacher.include_generic_control):
+                generic_teacher_rows, generic_teacher_meta = generate_teacher_rollouts(
+                    config=config,
+                    facility=facility,
+                    work_dir=work_dir,
+                    output_dir=teacher_dir / "generic_teacher",
+                    condition="baseline",
+                    mode="generic",
+                    max_steps=int(config.native_teacher.planner_horizon_steps),
+                )
+            correction_rows: List[dict] = []
+            correction_meta: Dict[str, object] = {}
+            if bool(config.native_teacher.generate_corrections):
+                correction_rows, correction_meta = generate_correction_rollouts(
+                    config=config,
+                    facility=facility,
+                    work_dir=work_dir,
+                    output_dir=teacher_dir / "site_corrections",
+                    failed_rows=[
+                        row
+                        for row in adapted_train
+                        if not bool(row.get("task_success", False))
+                    ],
+                    condition="adapted",
+                    mode="site",
+                    max_steps=int(config.native_teacher.planner_horizon_steps),
+                )
+            adapted_train = _merge_augmented_rollouts(adapted_train, site_teacher_rows + correction_rows)
+            if generic_teacher_rows:
+                generic_control_train = _merge_augmented_rollouts(
+                    baseline_train,
+                    generic_teacher_rows,
+                )
+                generic_control_mode = "provisional_generic_control"
+            native_teacher_summary = {
+                "site_teacher": site_teacher_meta,
+                "generic_teacher": generic_teacher_meta,
+                "site_corrections": correction_meta,
+                "num_site_teacher_rows": len(site_teacher_rows),
+                "num_generic_teacher_rows": len(generic_teacher_rows),
+                "num_site_correction_rows": len(correction_rows),
+            }
+        strict_generic_rows = _load_leave_one_facility_out_generic_pool(
+            config=config,
+            target_facility_id=str(work_dir.name),
+            target_teacher_count=int(native_teacher_summary.get("num_site_teacher_rows", 0) or 0),
+            target_correction_count=int(native_teacher_summary.get("num_site_correction_rows", 0) or 0),
+            pipeline_work_root=work_dir.parent,
+        )
+        if strict_generic_rows:
+            generic_control_train = strict_generic_rows
+            generic_control_mode = "leave_one_facility_out"
         leakage_error = _claim_split_leakage_error(
-            train_rollouts=baseline_train + adapted_train,
+            train_rollouts=baseline_train + generic_control_train + adapted_train,
             heldout_rollouts=baseline_heldout + adapted_heldout,
         )
         if leakage_error is not None:
@@ -176,6 +245,7 @@ class RolloutDatasetStage(PipelineStage):
         dataset_root = config.rollout_dataset.export_dir / work_dir.name
         baseline_root = dataset_root / "baseline"
         adapted_root = dataset_root / "adapted"
+        generic_root = dataset_root / "generic_control"
         baseline_train_meta = export_rollouts_to_rlds_jsonl(
             rollouts=baseline_train,
             output_dir=baseline_root / "train",
@@ -193,6 +263,15 @@ class RolloutDatasetStage(PipelineStage):
             task_threshold=config.rollout_dataset.task_score_threshold,
             min_steps_per_rollout=config.rollout_dataset.min_steps_per_rollout,
             include_failed_rollouts=True,
+        )
+        generic_control_train_meta = export_rollouts_to_rlds_jsonl(
+            rollouts=generic_control_train,
+            output_dir=generic_root / "train",
+            condition="baseline",
+            split="train",
+            task_threshold=config.rollout_dataset.task_score_threshold,
+            min_steps_per_rollout=config.rollout_dataset.min_steps_per_rollout,
+            include_failed_rollouts=config.rollout_dataset.include_failed_rollouts,
         )
         adapted_train_meta = export_rollouts_to_rlds_jsonl(
             rollouts=adapted_train,
@@ -216,6 +295,7 @@ class RolloutDatasetStage(PipelineStage):
         summary = {
             "baseline_train": baseline_train_meta,
             "baseline_heldout": baseline_heldout_meta,
+            "generic_control_train": generic_control_train_meta,
             "adapted_train": adapted_train_meta,
             "adapted_heldout": adapted_heldout_meta,
             "baseline_dataset_name": config.rollout_dataset.baseline_dataset_name,
@@ -229,6 +309,8 @@ class RolloutDatasetStage(PipelineStage):
             "claim_protocol": claim_protocol_enabled(config),
             "claim_split_manifest_path": str(claim_split_path) if claim_split_path.exists() else "",
             "claim_manifest_path": str(claim_manifest_path) if claim_manifest_path.exists() else "",
+            "generic_control_mode": generic_control_mode,
+            "investor_grade_generic_control": generic_control_mode == "leave_one_facility_out",
             "dataset_lineage": {
                 "world_snapshot_hash": str(
                     claim_manifest.get("world_snapshot_hash", "")
@@ -240,6 +322,7 @@ class RolloutDatasetStage(PipelineStage):
                 "train_eval_cell_ids_hash": _sorted_token_hash(split_train_ids),
                 "heldout_eval_cell_ids_hash": _sorted_token_hash(split_heldout_ids),
             },
+            "native_teacher": native_teacher_summary,
         }
         write_json(summary, dataset_root / "dataset_export_summary.json")
 
@@ -250,6 +333,7 @@ class RolloutDatasetStage(PipelineStage):
             outputs={
                 "dataset_root": str(dataset_root),
                 "baseline_dataset_root": str(baseline_root),
+                "generic_control_dataset_root": str(generic_root),
                 "adapted_dataset_root": str(adapted_root),
                 "summary_path": str(dataset_root / "dataset_export_summary.json"),
             },
@@ -259,7 +343,9 @@ class RolloutDatasetStage(PipelineStage):
                 "num_pairs_heldout": len(split_heldout_ids),
                 "num_forced_heldout_pairs": len(forced_heldout_ids),
                 "baseline_train_episodes": baseline_train_meta["num_episodes"],
+                "generic_control_train_episodes": generic_control_train_meta["num_episodes"],
                 "adapted_train_episodes": adapted_train_meta["num_episodes"],
+                "investor_grade_generic_control": generic_control_mode == "leave_one_facility_out",
             },
         )
 
@@ -362,6 +448,76 @@ def _action_contract_hash(action_contract: dict) -> str:
     except Exception:
         payload = "{}"
     return hashlib.md5(payload.encode("utf-8")).hexdigest()
+
+
+def _merge_augmented_rollouts(base_rows: List[dict], extra_rows: List[dict]) -> List[dict]:
+    merged: List[dict] = []
+    seen: set[tuple[str, int, str]] = set()
+    for row in list(base_rows) + list(extra_rows):
+        video_path = str(row.get("video_path", "")).strip()
+        rollout_index = int(row.get("rollout_index", -1))
+        source_type = str(row.get("source_type", "policy_rollout")).strip()
+        key = (video_path, rollout_index, source_type)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(dict(row))
+    return merged
+
+
+def _load_leave_one_facility_out_generic_pool(
+    *,
+    config: ValidationConfig,
+    target_facility_id: str,
+    target_teacher_count: int,
+    target_correction_count: int,
+    pipeline_work_root: Path,
+) -> List[dict]:
+    if not claim_protocol_enabled(config):
+        return []
+    if len(config.facilities) < int(config.claim_portfolio.min_facilities):
+        return []
+    teacher_rows: List[dict] = []
+    correction_rows: List[dict] = []
+    for facility_id in sorted(config.facilities.keys()):
+        if facility_id == target_facility_id:
+            continue
+        facility_dir = pipeline_work_root / facility_id / "native_teacher"
+        teacher_rows.extend(
+            _load_row_manifest(facility_dir / "site_teacher" / "adapted_site_teacher_rows.json")
+        )
+        correction_rows.extend(
+            _load_row_manifest(
+                facility_dir / "site_corrections" / "adapted_site_correction_rows.json"
+            )
+        )
+    if not teacher_rows and not correction_rows:
+        return []
+    teacher_rows = sorted(teacher_rows, key=_generic_row_sort_key)
+    correction_rows = sorted(correction_rows, key=_generic_row_sort_key)
+    if target_teacher_count > 0:
+        teacher_rows = teacher_rows[:target_teacher_count]
+    if target_correction_count > 0:
+        correction_rows = correction_rows[:target_correction_count]
+    return _merge_augmented_rollouts(teacher_rows, correction_rows)
+
+
+def _load_row_manifest(path: Path) -> List[dict]:
+    if not path.exists():
+        return []
+    try:
+        payload = read_json(path)
+    except Exception:
+        return []
+    rows = payload.get("rows", []) if isinstance(payload, dict) else []
+    return [dict(row) for row in rows if isinstance(row, dict)]
+
+
+def _generic_row_sort_key(row: dict) -> tuple[str, int]:
+    return (
+        str(row.get("task_spec_id", "")).strip(),
+        int(row.get("rollout_index", -1)),
+    )
 
 
 def _json_manifest_hash(path: Path) -> str:

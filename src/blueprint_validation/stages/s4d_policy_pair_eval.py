@@ -314,6 +314,7 @@ def _run_fixed_world_claim_eval(
     pair_summary: dict,
     heldout_path: Path,
 ) -> StageResult:
+    generic_control_mode = str(pair_summary.get("generic_control_mode", "") or "").strip()
     for moving_stage in ("s3c_policy_rl_loop", "s3d_wm_refresh_loop"):
         stage_result = previous_results.get(moving_stage)
         if stage_result and stage_result.status == "success":
@@ -687,6 +688,7 @@ def _run_fixed_world_claim_eval(
                 "episode_id": ep["episode_id"],
                 "eval_cell_id": ep.get("eval_cell_id"),
                 "task_spec_id": ep.get("task_spec_id"),
+                "task_family": task_spec.get("task_family"),
                 "start_clip_id": ep.get("start_clip_id"),
                 "start_region_id": ep.get("start_region_id"),
                 "start_frame_hash": ep.get("start_frame_hash"),
@@ -905,9 +907,20 @@ def _run_fixed_world_claim_eval(
             },
         },
     }
+    task_family_summary = _task_family_arm_summary(score_rows)
+    negative_task_families = _materially_negative_task_families(task_family_summary)
+    if negative_task_families and bool(getattr(config.native_teacher, "enabled", False)):
+        inconclusive_reasons.append(
+            "Site-specific arm is materially negative in task families: "
+            + ", ".join(sorted(negative_task_families))
+        )
+        claim_outcome = "INCONCLUSIVE"
+        claim_failure_reasons = inconclusive_reasons + fail_reasons
     claim_metrics = {
         "claim_protocol": "fixed_same_facility_uplift",
         "primary_endpoint": "task_success",
+        "generic_control_mode": generic_control_mode,
+        "investor_grade_generic_control": generic_control_mode == "leave_one_facility_out",
         "world_snapshot_hash": world_snapshot_hash,
         "claim_manifest_path": str(claim_manifest_path),
         "claim_split_manifest_path": str(claim_split_path),
@@ -920,6 +933,8 @@ def _run_fixed_world_claim_eval(
         "bootstrap_generic_vs_frozen": generic_bootstrap,
         "site_vs_generic_attribution": attribution,
         "arm_summary": arm_summary,
+        "task_family_summary": task_family_summary,
+        "negative_task_families": sorted(negative_task_families),
         "claim_outcome": claim_outcome,
         "headline_eligible": bool(evidence_valid),
         "claim_passed": claim_outcome == "PASS",
@@ -1355,6 +1370,48 @@ def _bootstrap_meets_claim_bar(*, bootstrap: Dict[str, object], config: Validati
         and float(p_value) < float(strictness.p_value_threshold)
         and positive_seed_count >= int(strictness.min_positive_training_seeds)
     )
+
+
+def _task_family_arm_summary(rows: List[Dict[str, object]]) -> Dict[str, Dict[str, object]]:
+    families = sorted(
+        {
+            str(row.get("task_family", "")).strip()
+            for row in rows
+            if str(row.get("task_family", "")).strip()
+        }
+    )
+    summary: Dict[str, Dict[str, object]] = {}
+    for family in families:
+        family_rows = [row for row in rows if str(row.get("task_family", "")).strip() == family]
+        summary[family] = {
+            "frozen_baseline": round(
+                success_rate([row for row in family_rows if row.get("arm") == "frozen_baseline"]),
+                6,
+            ),
+            "generic_control": round(
+                success_rate([row for row in family_rows if row.get("arm") == "generic_control"]),
+                6,
+            ),
+            "site_trained": round(
+                success_rate([row for row in family_rows if row.get("arm") == "site_trained"]),
+                6,
+            ),
+            "num_rows": len(family_rows),
+        }
+    return summary
+
+
+def _materially_negative_task_families(
+    task_family_summary: Dict[str, Dict[str, object]],
+) -> List[str]:
+    negative: List[str] = []
+    for family, payload in task_family_summary.items():
+        site = float(payload.get("site_trained", 0.0) or 0.0)
+        baseline = float(payload.get("frozen_baseline", 0.0) or 0.0)
+        generic = float(payload.get("generic_control", 0.0) or 0.0)
+        if site < (baseline - 0.05) or site < (generic - 0.05):
+            negative.append(str(family))
+    return negative
 
 
 def _claim_dataset_lineage_error(

@@ -21,6 +21,7 @@ from ..evaluation.vlm_judge import (
 from ..policy_adapters import get_policy_adapter
 from .dataset_builder import build_dreamdojo_dataset
 from .dreamdojo_finetune import run_dreamdojo_finetune
+from .native_teacher import generate_correction_rollouts
 from .rlds_export import export_rollouts_to_rlds_jsonl
 from .rollout_curriculum import build_world_refresh_mix
 
@@ -109,6 +110,19 @@ def run_policy_rl_iterations(
             near_miss_min_quantile=loop_cfg.near_miss_min_quantile,
             near_miss_max_quantile=loop_cfg.near_miss_max_quantile,
         )
+        correction_rows: List[Dict] = []
+        correction_metrics: Dict[str, object] = {}
+        if bool(config.native_teacher.enabled) and bool(config.native_teacher.generate_corrections):
+            correction_rows, correction_metrics = generate_correction_rollouts(
+                config=config,
+                facility=facility,
+                work_dir=work_dir,
+                output_dir=iter_dir / "planner_corrections",
+                failed_rows=near_miss + hard_negative,
+                condition="adapted",
+                mode="site",
+                max_steps=int(config.native_teacher.planner_horizon_steps),
+            )
         policy_mix_rows, policy_mix_metrics = _build_policy_refine_mix(
             selected_success=selected_success,
             near_miss=near_miss,
@@ -117,6 +131,12 @@ def run_policy_rl_iterations(
             hard_negative_fraction=float(loop_cfg.policy_refine_hard_negative_fraction),
             seed=int(config.rollout_dataset.seed) + int(iteration),
         )
+        if correction_rows:
+            policy_mix_rows = _prepend_unique_rows(correction_rows, policy_mix_rows)
+            policy_mix_metrics["selected_corrections"] = len(correction_rows)
+            policy_mix_metrics["selected_total"] = len(policy_mix_rows)
+        else:
+            policy_mix_metrics["selected_corrections"] = 0
 
         dataset_name = f"{config.policy_finetune.dataset_name}_rl_iter{iteration:02d}"
         policy_source_dir, policy_manifest_path = _export_selected_rollouts(
@@ -188,6 +208,7 @@ def run_policy_rl_iterations(
                 "status": "success" if policy_refine_succeeded else "failed",
                 "curriculum_manifest_path": str(policy_manifest_path),
                 "mix_metrics": policy_mix_metrics,
+                "correction_metrics": correction_metrics,
                 "detail": policy_refine_detail,
             },
             "world_refresh": world_refresh,
@@ -453,6 +474,22 @@ def _build_policy_refine_mix(
         "selected_total": len(mixed),
     }
     return mixed, metrics
+
+
+def _prepend_unique_rows(preferred: List[Dict], existing: List[Dict]) -> List[Dict]:
+    merged: List[Dict] = []
+    seen: set[tuple[int, str, str]] = set()
+    for row in list(preferred) + list(existing):
+        key = (
+            int(row.get("rollout_index", -1)),
+            str(row.get("video_path", "")).strip(),
+            str(row.get("source_type", "policy_rollout")).strip(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(dict(row))
+    return merged
 
 
 def _export_selected_rollouts(

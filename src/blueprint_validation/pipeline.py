@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Dict
 
 from .common import StageResult, get_logger, read_json, write_json
+from .evaluation.claim_portfolio import build_claim_portfolio_artifact
 from .config import ValidationConfig
 from .evaluation.policy_eval_matrix import build_policy_eval_matrix_artifact
 from .stages.s0_task_hints_bootstrap import TaskHintsBootstrapStage
@@ -71,6 +72,7 @@ class ValidationPipeline:
     ) -> Dict[str, StageResult]:
         """Run all stages for all facilities, then cross-site test."""
         all_results: Dict[str, StageResult] = {}
+        facility_results_by_id: Dict[str, Dict[str, StageResult]] = {}
         stage_provenance: Dict[str, Dict[str, str | None]] = {}
         failed_stage_keys: list[str] = []
         aborted_early = False
@@ -375,6 +377,16 @@ class ValidationPipeline:
 
             if aborted_early:
                 break
+            facility_results_by_id[fid] = facility_results
+
+        if not aborted_early:
+            aborted_early = self._run_claim_reconciliation_postpass(
+                all_results=all_results,
+                facility_results_by_id=facility_results_by_id,
+                stage_provenance=stage_provenance,
+                failed_stage_keys=failed_stage_keys,
+                fail_fast=fail_fast,
+            )
 
         # Cross-site stage (requires all facilities)
         if aborted_early:
@@ -412,14 +424,22 @@ class ValidationPipeline:
             logger.info("Skipping cross-site test (requires 2+ facilities)")
 
         matrix_report_path: str | None = None
+        claim_portfolio_report_path: str | None = None
         if aborted_early:
-            logger.info("Skipping policy eval matrix (pipeline aborted early).")
+            logger.info("Skipping policy eval matrix and claim portfolio (pipeline aborted early).")
         else:
             try:
                 matrix_path = build_policy_eval_matrix_artifact(self.config, self.work_dir)
                 matrix_report_path = str(matrix_path) if matrix_path is not None else None
             except Exception as exc:
                 logger.warning("Policy eval matrix generation failed: %s", exc)
+            try:
+                claim_portfolio_path = build_claim_portfolio_artifact(self.config, self.work_dir)
+                claim_portfolio_report_path = (
+                    str(claim_portfolio_path) if claim_portfolio_path is not None else None
+                )
+            except Exception as exc:
+                logger.warning("Claim portfolio generation failed: %s", exc)
 
         # Write pipeline summary
         run_finished_at = datetime.now(timezone.utc).isoformat()
@@ -444,11 +464,73 @@ class ValidationPipeline:
             "aborted_early": aborted_early,
             "failed_stage_keys": failed_stage_keys,
             "policy_eval_matrix_path": matrix_report_path,
+            "claim_portfolio_path": claim_portfolio_report_path,
         }
         write_json(summary, self.work_dir / "pipeline_summary.json")
 
         logger.info("Pipeline complete. Summary at %s", self.work_dir / "pipeline_summary.json")
         return all_results
+
+    def _run_claim_reconciliation_postpass(
+        self,
+        *,
+        all_results: Dict[str, StageResult],
+        facility_results_by_id: Dict[str, Dict[str, StageResult]],
+        stage_provenance: Dict[str, Dict[str, str | None]],
+        failed_stage_keys: list[str],
+        fail_fast: bool,
+    ) -> bool:
+        if len(self.config.facilities) < int(self.config.claim_portfolio.min_facilities):
+            return False
+        if (
+            str(getattr(self.config.eval_policy, "claim_protocol", "none") or "none").strip().lower()
+            != "fixed_same_facility_uplift"
+        ):
+            return False
+        scope = (
+            (getattr(self.config.eval_policy, "headline_scope", "wm_only") or "wm_only")
+            .strip()
+            .lower()
+        )
+        if scope == "wm_only":
+            return False
+
+        logger.info("=== Running multi-facility claim reconciliation post-pass ===")
+        stages = [RolloutDatasetStage(), PolicyPairTrainStage(), PolicyPairEvalStage()]
+        for fid, facility in self.config.facilities.items():
+            fac_dir = self.work_dir / fid
+            facility_results = facility_results_by_id.setdefault(fid, {})
+            for stage in stages:
+                stage_key = f"{fid}/{stage.name}"
+                result_path = fac_dir / f"{stage.name}_result.json"
+                result = stage.execute(
+                    config=self.config,
+                    facility=facility,
+                    work_dir=fac_dir,
+                    previous_results=facility_results,
+                )
+                result.save(result_path)
+                facility_results[stage.name] = result
+                all_results[stage_key] = result
+                stage_provenance[stage_key] = {
+                    "source": "executed",
+                    "result_path": str(result_path),
+                }
+                if result.status == "failed":
+                    if stage_key not in failed_stage_keys:
+                        failed_stage_keys.append(stage_key)
+                    if fail_fast:
+                        logger.error(
+                            "Claim reconciliation post-pass failed at %s for %s: %s",
+                            stage.name,
+                            fid,
+                            result.detail,
+                        )
+                        return True
+                else:
+                    while stage_key in failed_stage_keys:
+                        failed_stage_keys.remove(stage_key)
+        return False
 
     def _apply_action_boost_runtime_overrides(self) -> dict:
         cfg = getattr(self.config, "action_boost", None)

@@ -8,6 +8,7 @@ from typing import Dict, List
 from ..common import StageResult, get_logger, read_json, write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..evaluation.claim_protocol import claim_protocol_enabled
+from ..training.native_teacher import generate_correction_rollouts, generate_teacher_rollouts
 from ..training.rlds_export import (
     convert_jsonl_to_tfrecord,
     export_rollouts_to_rlds_jsonl,
@@ -45,7 +46,6 @@ class RLDSExportStage(PipelineStage):
         work_dir: Path,
         previous_results: Dict[str, StageResult],
     ) -> StageResult:
-        del facility
         if (
             (getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only")
             .strip()
@@ -182,6 +182,39 @@ class RLDSExportStage(PipelineStage):
             ]
             curriculum_manifest["train_pair_ids"] = sorted(train_ids)
             curriculum_manifest["eval_pair_ids"] = sorted(eval_ids)
+            if bool(getattr(config.native_teacher, "enabled", False)):
+                teacher_dir = work_dir / "native_teacher" / "rlds_export"
+                teacher_rows, teacher_meta = generate_teacher_rollouts(
+                    config=config,
+                    facility=facility,
+                    work_dir=work_dir,
+                    output_dir=teacher_dir / "site_teacher",
+                    condition="adapted",
+                    mode="site",
+                    max_steps=int(config.native_teacher.planner_horizon_steps),
+                )
+                correction_rows: List[Dict] = []
+                correction_meta: Dict[str, object] = {}
+                if bool(config.native_teacher.generate_corrections):
+                    correction_rows, correction_meta = generate_correction_rollouts(
+                        config=config,
+                        facility=facility,
+                        work_dir=work_dir,
+                        output_dir=teacher_dir / "site_corrections",
+                        failed_rows=[
+                            row for row in train_rollouts if not bool(row.get("task_success", False))
+                        ],
+                        condition="adapted",
+                        mode="site",
+                        max_steps=int(config.native_teacher.planner_horizon_steps),
+                    )
+                train_rollouts = _merge_augmented_rollouts(train_rollouts, teacher_rows + correction_rows)
+                curriculum_manifest["native_teacher"] = {
+                    "site_teacher": teacher_meta,
+                    "site_corrections": correction_meta,
+                    "num_site_teacher_rows": len(teacher_rows),
+                    "num_site_correction_rows": len(correction_rows),
+                }
         if not filtered_rollouts:
             return StageResult(
                 stage_name=self.name,
@@ -352,6 +385,12 @@ class RLDSExportStage(PipelineStage):
                 "num_train_hard_negative": int(
                     curriculum_manifest.get("train_bucket_counts", {}).get("hard_negative", 0)
                 ),
+                "num_train_teacher_rows": int(
+                    (curriculum_manifest.get("native_teacher", {}) or {}).get("num_site_teacher_rows", 0)
+                ),
+                "num_train_correction_rows": int(
+                    (curriculum_manifest.get("native_teacher", {}) or {}).get("num_site_correction_rows", 0)
+                ),
                 "num_eval_only_rollouts_excluded": num_eval_only_rollouts_excluded,
                 "eval_only_tasks": sorted(eval_only_tasks),
                 "max_action_delta_norm": config.rollout_dataset.max_action_delta_norm,
@@ -382,3 +421,19 @@ def _claim_split_leakage_error(train_rollouts: List[Dict], eval_rollouts: List[D
                 f"{', '.join(overlap[:5])}"
             )
     return None
+
+
+def _merge_augmented_rollouts(base_rows: List[Dict], extra_rows: List[Dict]) -> List[Dict]:
+    merged: List[Dict] = []
+    seen: set[tuple[str, int, str]] = set()
+    for row in list(base_rows) + list(extra_rows):
+        key = (
+            str(row.get("video_path", "")).strip(),
+            int(row.get("rollout_index", -1)),
+            str(row.get("source_type", "policy_rollout")).strip(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(dict(row))
+    return merged
