@@ -4,8 +4,21 @@ project_name: Same-Facility Policy Uplift (DreamZero)
 facilities:
   facility_a:
     name: Facility A
-    ply_path: ./data/facilities/facility_a/splat.ply
+    ply_path: ../data/facilities/facility_a/splat.ply
+    claim_benchmark_path: ./benchmarks/facility_a.fixed_claim.json
     description: Target deployment facility world model
+
+robot_composite:
+  enabled: false
+
+finetune:
+  dreamdojo_repo: ../data/vendor/DreamDojo
+  dreamdojo_checkpoint: ../data/checkpoints/DreamDojo/2B_pretrain/
+  eval_world_experiment: cosmos_predict2p5_2B_reason_embeddings_action_conditioned_rectified_flow_bridge_13frame_256x320
+
+enrich:
+  cosmos_repo: ../data/vendor/cosmos-transfer
+  cosmos_checkpoint: ../data/checkpoints/cosmos-transfer-2.5-2b/
 
 eval_policy:
   # Canonical executable headline: fixed-world same-facility claim only.
@@ -55,7 +68,7 @@ policy_adapter:
   dreamzero:
     repo_path: /opt/dreamzero
     base_model_name: dreamzero/base
-    checkpoint_path: ./data/checkpoints/dreamzero
+    checkpoint_path: ../data/checkpoints/dreamzero
     inference_module: dreamzero.inference
     inference_class: DreamZeroInference
     policy_action_dim: 7

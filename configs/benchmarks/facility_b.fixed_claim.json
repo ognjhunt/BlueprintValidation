@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "task_specs": [
+    {
+      "task_spec_id": "task_spec_nav_loading_dock",
+      "task_prompt": "Navigate to the loading dock",
+      "task_family": "navigation",
+      "goal_region_id": "region::loading_dock",
+      "success_predicate": {
+        "type": "navigation_reach_and_hold",
+        "goal_region_id": "region::loading_dock",
+        "hold_steps": 2,
+        "collision_key": "invalid_collision"
+      }
+    },
+    {
+      "task_spec_id": "task_spec_manip_tote_station",
+      "task_prompt": "Pick up the tote and place it on the packing station",
+      "task_family": "manipulation",
+      "target_instance_id": "301",
+      "target_label": "tote",
+      "goal_region_id": "region::packing_station",
+      "success_predicate": {
+        "type": "manipulation_pick_place_stable",
+        "target_instance_id": "301",
+        "goal_region_id": "region::packing_station",
+        "require_stable_after_place": true
+      }
+    }
+  ],
+  "assignments": [
+    {
+      "rollout_index": 0,
+      "task_spec_id": "task_spec_nav_loading_dock",
+      "clip_name": "claim_clip_100_nav_a",
+      "start_clip_id": "claim_clip_100_nav_a",
+      "start_region_id": "nav_start::loading_dock_a"
+    },
+    {
+      "rollout_index": 1,
+      "task_spec_id": "task_spec_manip_tote_station",
+      "clip_name": "claim_clip_101_manip_a",
+      "start_clip_id": "claim_clip_101_manip_a",
+      "start_region_id": "manip_start::tote_a",
+      "target_instance_id": "301",
+      "target_label": "tote"
+    },
+    {
+      "rollout_index": 2,
+      "task_spec_id": "task_spec_nav_loading_dock",
+      "clip_name": "claim_clip_102_nav_b",
+      "start_clip_id": "claim_clip_102_nav_b",
+      "start_region_id": "nav_start::loading_dock_b"
+    },
+    {
+      "rollout_index": 3,
+      "task_spec_id": "task_spec_manip_tote_station",
+      "clip_name": "claim_clip_103_manip_b",
+      "start_clip_id": "claim_clip_103_manip_b",
+      "start_region_id": "manip_start::tote_b",
+      "target_instance_id": "301",
+      "target_label": "tote"
+    }
+  ]
+}

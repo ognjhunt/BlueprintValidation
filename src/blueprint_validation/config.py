@@ -27,6 +27,7 @@ class FacilityConfig:
     name: str
     ply_path: Path
     task_hints_path: Optional[Path] = None
+    claim_benchmark_path: Optional[Path] = None
     description: str = ""
     landmarks: List[str] = field(default_factory=list)
     floor_height_m: float = 0.0
@@ -904,10 +905,14 @@ def _min_sign_flip_seed_count(p_value_threshold: float) -> int:
 
 def _parse_facility(raw: Dict[str, Any], base_dir: Path) -> FacilityConfig:
     task_hints_value = raw.get("task_hints_path")
+    claim_benchmark_value = raw.get("claim_benchmark_path")
     return FacilityConfig(
         name=raw["name"],
         ply_path=_resolve_path(raw["ply_path"], base_dir),
         task_hints_path=_resolve_path(task_hints_value, base_dir) if task_hints_value else None,
+        claim_benchmark_path=(
+            _resolve_path(claim_benchmark_value, base_dir) if claim_benchmark_value else None
+        ),
         description=raw.get("description", ""),
         landmarks=raw.get("landmarks", []),
         floor_height_m=raw.get("floor_height_m", 0.0),
@@ -1993,6 +1998,17 @@ def load_config(path: Path) -> ValidationConfig:
             "claim_protocol=fixed_same_facility_uplift"
         )
     if str(config.eval_policy.claim_protocol).strip().lower() == "fixed_same_facility_uplift":
+        missing_benchmarks = sorted(
+            facility_id
+            for facility_id, facility in config.facilities.items()
+            if getattr(facility, "claim_benchmark_path", None) is None
+        )
+        if missing_benchmarks:
+            raise ValueError(
+                "facility.claim_benchmark_path must be set for every facility when "
+                "claim_protocol=fixed_same_facility_uplift "
+                f"(missing: {', '.join(missing_benchmarks)})"
+            )
         min_claim_seeds = max(
             6,
             _min_sign_flip_seed_count(float(config.eval_policy.claim_strictness.p_value_threshold)),

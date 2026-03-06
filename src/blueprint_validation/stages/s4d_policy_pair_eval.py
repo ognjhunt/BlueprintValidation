@@ -18,6 +18,10 @@ from ..evaluation.claim_stats import (
     success_rate,
 )
 from ..evaluation.openvla_runner import load_dreamdojo_world_model
+from ..evaluation.rollout_reliability import (
+    build_reliability_gate,
+    single_or_none,
+)
 from ..evaluation.rollout_utils import run_rollout_with_adapter
 from ..evaluation.task_success import evaluate_task_success
 from ..evaluation.video_orientation import (
@@ -559,6 +563,17 @@ def _run_fixed_world_claim_eval(
     eval_dir.mkdir(parents=True, exist_ok=True)
     score_rows: List[dict] = []
     state_failures: List[str] = []
+    scoring_failures: List[str] = []
+    short_rollout_failures: List[str] = []
+    short_step_rollout_failures: List[str] = []
+    observed_policy_dims: set[int] = set()
+    observed_world_dims: set[int] = set()
+    observed_action_dims: set[int] = set()
+    min_observed_rollout_frames: int | None = None
+    min_observed_rollout_steps: int | None = None
+    fail_on_short_rollout = bool(config.eval_policy.reliability.fail_on_short_rollout)
+    min_rollout_frames = int(config.eval_policy.reliability.min_rollout_frames)
+    min_rollout_steps = int(config.eval_policy.reliability.min_rollout_steps)
 
     for i, ep in enumerate(episodes):
         init_frame = _read_rgb_image(Path(ep["init_frame_path"]))
@@ -595,13 +610,79 @@ def _run_fixed_world_claim_eval(
                 device=device,
                 rollout_context=dict(ep),
                 task_spec=dict(task_spec),
+                require_native_task_state=True,
             )
-            score = _score_rollout_video(
-                facility=facility,
-                config=config,
-                video_path=rollout_result.video_path,
-                task=task,
-            )
+            action_contract = getattr(rollout_result, "action_contract", {}) or {}
+            policy_dim = action_contract.get("policy_dim")
+            world_dim = action_contract.get("world_dim")
+            dataset_dim = action_contract.get("dataset_dim")
+            if policy_dim is not None:
+                observed_policy_dims.add(int(policy_dim))
+            if world_dim is not None:
+                observed_world_dims.add(int(world_dim))
+            if dataset_dim is not None:
+                observed_action_dims.add(int(dataset_dim))
+
+            if not rollout_result.video_path or not Path(rollout_result.video_path).exists():
+                msg = (
+                    "Rollout video missing for claim eval "
+                    f"arm={arm} seed={seed} eval_cell={ep.get('eval_cell_id')}"
+                )
+                logger.warning(msg)
+                scoring_failures.append(msg)
+                continue
+
+            rollout_step_count = int(getattr(rollout_result, "num_steps", 0) or 0)
+            if (
+                min_observed_rollout_steps is None
+                or rollout_step_count < min_observed_rollout_steps
+            ):
+                min_observed_rollout_steps = rollout_step_count
+            if fail_on_short_rollout and rollout_step_count < min_rollout_steps:
+                msg = (
+                    "Claim rollout trajectory too short for reliable scoring: "
+                    f"arm={arm} seed={seed} eval_cell={ep.get('eval_cell_id')} "
+                    f"has {rollout_step_count} steps (required >= {min_rollout_steps})"
+                )
+                logger.warning(msg)
+                scoring_failures.append(msg)
+                short_step_rollout_failures.append(msg)
+                continue
+
+            rollout_frame_count: int | None = None
+            if fail_on_short_rollout:
+                rollout_frame_count = _video_frame_count(Path(rollout_result.video_path))
+                if (
+                    min_observed_rollout_frames is None
+                    or rollout_frame_count < min_observed_rollout_frames
+                ):
+                    min_observed_rollout_frames = rollout_frame_count
+                if rollout_frame_count < min_rollout_frames:
+                    msg = (
+                        "Claim rollout video too short for reliable scoring: "
+                        f"arm={arm} seed={seed} eval_cell={ep.get('eval_cell_id')} "
+                        f"has {rollout_frame_count} frames (required >= {min_rollout_frames})"
+                    )
+                    logger.warning(msg)
+                    scoring_failures.append(msg)
+                    short_rollout_failures.append(msg)
+                    continue
+
+            try:
+                score = _score_rollout_video(
+                    facility=facility,
+                    config=config,
+                    video_path=rollout_result.video_path,
+                    task=task,
+                )
+            except Exception as exc:
+                msg = (
+                    "Claim rollout scoring failed "
+                    f"arm={arm} seed={seed} eval_cell={ep.get('eval_cell_id')}: {exc}"
+                )
+                logger.warning(msg)
+                scoring_failures.append(msg)
+                continue
             row = {
                 "episode_id": ep["episode_id"],
                 "eval_cell_id": ep.get("eval_cell_id"),
@@ -617,7 +698,8 @@ def _run_fixed_world_claim_eval(
                 "task_score": score.task_score,
                 "visual_score": score.visual_score,
                 "spatial_score": score.spatial_score,
-                "num_steps": rollout_result.num_steps,
+                "num_steps": rollout_step_count,
+                "rollout_frame_count": rollout_frame_count,
                 "video_path": str(rollout_result.video_path),
                 "action_sequence": rollout_result.action_sequence,
                 "state_trace": list(getattr(rollout_result, "state_trace", []) or []),
@@ -626,6 +708,7 @@ def _run_fixed_world_claim_eval(
                 "lifted_clear": getattr(score, "lifted_clear", None),
                 "placed_in_target": getattr(score, "placed_in_target", None),
                 "stable_after_place": getattr(score, "stable_after_place", None),
+                "action_contract": action_contract,
             }
             row.update(
                 evaluate_task_success(
@@ -648,6 +731,33 @@ def _run_fixed_world_claim_eval(
     legacy_rows = [row for row in score_rows if row["policy"] in {"policy_base", "policy_site"}]
     pair_metrics = _compute_pair_metrics(legacy_rows) if legacy_rows else {"num_pairs": 0}
     write_json(pair_metrics, eval_dir / "pair_eval_report.json")
+
+    policy_dim = single_or_none(observed_policy_dims)
+    world_dim = single_or_none(observed_world_dims)
+    dataset_dim = single_or_none(observed_action_dims)
+    action_contract = {
+        "policy_dim": policy_dim,
+        "world_dim": world_dim,
+        "dataset_dim": dataset_dim,
+        "compliant": (
+            policy_dim is not None
+            and world_dim is not None
+            and dataset_dim is not None
+            and policy_dim == world_dim == dataset_dim
+        ),
+        "reason": "",
+    }
+    if not action_contract["compliant"]:
+        action_contract["reason"] = (
+            "policy/world/dataset action dimensions are missing or inconsistent in claim eval."
+        )
+    total_scoring_attempts = len(score_rows) + len(scoring_failures)
+    scoring_failure_rate = len(scoring_failures) / max(total_scoring_attempts, 1)
+    reliability_gate = build_reliability_gate(
+        config,
+        score_rows,
+        scoring_failure_rate=scoring_failure_rate,
+    )
 
     baseline_rows = [row for row in score_rows if row["arm"] == "frozen_baseline"]
     site_rows_by_seed = {
@@ -685,6 +795,25 @@ def _run_fixed_world_claim_eval(
     )
     required_positive = int(strictness.min_positive_training_seeds)
     inconclusive_reasons: List[str] = []
+    if not action_contract["compliant"]:
+        inconclusive_reasons.append(
+            f"Action contract failed for claim eval: {action_contract.get('reason')}"
+        )
+    if not reliability_gate["passed"]:
+        inconclusive_reasons.append(
+            "Reliability gate failed for claim eval: "
+            f"replay_pass_rate={reliability_gate['replay_pass_rate']:.3f}, "
+            f"controllability_pass_rate={reliability_gate['controllability_pass_rate']:.3f}, "
+            f"scoring_failure_rate={reliability_gate['scoring_failure_rate']:.3f}"
+        )
+    if short_rollout_failures:
+        inconclusive_reasons.append(
+            f"Short-rollout guard failed for {len(short_rollout_failures)} claim rollouts."
+        )
+    if short_step_rollout_failures:
+        inconclusive_reasons.append(
+            f"Short step-rollout guard failed for {len(short_step_rollout_failures)} claim rollouts."
+        )
     if state_failures:
         inconclusive_reasons.append(
             f"Deterministic primary endpoint unavailable for {len(state_failures)} scored rows."
@@ -751,6 +880,14 @@ def _run_fixed_world_claim_eval(
     if inconclusive_reasons:
         claim_outcome = "INCONCLUSIVE"
         claim_failure_reasons = inconclusive_reasons + fail_reasons
+    evidence_valid = (
+        bool(score_rows)
+        and not state_failures
+        and bool(action_contract.get("compliant", False))
+        and bool(reliability_gate.get("passed", False))
+        and not short_rollout_failures
+        and not short_step_rollout_failures
+    )
 
     arm_summary = {
         "frozen_baseline": {
@@ -784,15 +921,30 @@ def _run_fixed_world_claim_eval(
         "site_vs_generic_attribution": attribution,
         "arm_summary": arm_summary,
         "claim_outcome": claim_outcome,
-        "headline_eligible": True,
+        "headline_eligible": bool(evidence_valid),
         "claim_passed": claim_outcome == "PASS",
         "claim_failure_reasons": claim_failure_reasons,
         "num_state_failures": len(state_failures),
+        "action_contract": action_contract,
+        "reliability_gate": reliability_gate,
+        "num_scoring_failures": len(scoring_failures),
+        "scoring_failure_rate": round(float(scoring_failure_rate), 6),
+        "num_short_rollouts": len(short_rollout_failures),
+        "num_short_step_rollouts": len(short_step_rollout_failures),
+        "min_rollout_frames_required": int(min_rollout_frames),
+        "min_rollout_steps_required": int(min_rollout_steps),
+        "fail_on_short_rollout": bool(fail_on_short_rollout),
+        "min_observed_rollout_frames": (
+            int(min_observed_rollout_frames) if min_observed_rollout_frames is not None else None
+        ),
+        "min_observed_rollout_steps": (
+            int(min_observed_rollout_steps) if min_observed_rollout_steps is not None else None
+        ),
     }
     write_json(claim_metrics, eval_dir / "claim_eval_report.json")
     return StageResult(
         stage_name="s4d_policy_pair_eval",
-        status="success" if score_rows else "failed",
+        status="success" if evidence_valid else "failed",
         elapsed_seconds=0,
         outputs={
             "pair_eval_dir": str(eval_dir),
@@ -801,7 +953,7 @@ def _run_fixed_world_claim_eval(
             "claim_report_path": str(eval_dir / "claim_eval_report.json"),
         },
         metrics=claim_metrics,
-        detail=" ".join(claim_failure_reasons).strip(),
+        detail=" ".join((scoring_failures[:5] + claim_failure_reasons)[:10]).strip(),
     )
 
 
@@ -833,6 +985,27 @@ def _load_heldout_episodes(path: Path) -> List[dict]:
             }
         )
     return episodes
+
+
+def _video_frame_count(video_path: Path) -> int:
+    try:
+        import cv2
+
+        cap = cv2.VideoCapture(str(video_path))
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        if frame_count > 0:
+            cap.release()
+            return frame_count
+        decoded = 0
+        while True:
+            ok, _ = cap.read()
+            if not ok:
+                break
+            decoded += 1
+        cap.release()
+        return int(decoded)
+    except Exception:
+        return 0
 
 
 def _claim_arm_entries(

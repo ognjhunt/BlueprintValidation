@@ -40,7 +40,7 @@ PLY file (from BlueprintCapturePipeline)
 
 Note: Stage 3d (`wm_refresh_loop.enabled`) is now enabled by default and runs in WM-only scope.
 
-For the canonical same-facility WM-only question, use `eval_policy.claim_protocol=fixed_same_facility_uplift` together with `eval_policy.primary_endpoint=task_success`, `eval_policy.freeze_world_snapshot=true`, and `eval_policy.split_strategy=disjoint_tasks_and_starts`. In that mode, Stage 4d (`s4d_policy_pair_eval`) is the sole primary gate for the report headline; Stage 4 and Stage 4e are supporting or exploratory world-model evidence only.
+For the canonical same-facility WM-only question, use `eval_policy.claim_protocol=fixed_same_facility_uplift` together with `eval_policy.primary_endpoint=task_success`, `eval_policy.freeze_world_snapshot=true`, `eval_policy.split_strategy=disjoint_tasks_and_starts`, and a pinned `facility.claim_benchmark_path`. In that mode, Stage 4d (`s4d_policy_pair_eval`) is the sole primary gate for the report headline; Stage 4 and Stage 4e are supporting or exploratory world-model evidence only.
 
 ## Scene-Memory Mapping (Stage 1/2/3)
 

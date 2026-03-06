@@ -9,6 +9,7 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from .rollout_state_proxy import DeterministicRolloutStateProxy
+from .task_state_capture import capture_task_state, world_model_supports_native_task_state
 from ..video_io import ensure_h264_video, open_mp4_writer
 
 
@@ -27,6 +28,7 @@ def run_rollout_with_adapter(
     reanchor_every: Optional[int] = None,
     rollout_context: Optional[Dict[str, object]] = None,
     task_spec: Optional[Dict[str, object]] = None,
+    require_native_task_state: bool = False,
 ) -> SimpleNamespace:
     """Run a policy rollout in a world model using a generic policy adapter.
 
@@ -44,8 +46,14 @@ def run_rollout_with_adapter(
         task_spec=task_spec,
         rollout_context=rollout_context,
     )
+    native_task_state_supported = world_model_supports_native_task_state(world_model)
+    if require_native_task_state and not native_task_state_supported:
+        raise RuntimeError(
+            "Claim mode requires native world-model task state, but the loaded world model "
+            "does not expose capture_rollout_state or extract_task_state."
+        )
     current = initial_frame
-    initial_state = _capture_task_state(
+    initial_state = capture_task_state(
         world_model=world_model,
         frame=current,
         action=None,
@@ -53,6 +61,7 @@ def run_rollout_with_adapter(
         phase="initial",
         task_prompt=task_prompt,
         fallback_proxy=state_proxy,
+        require_native_task_state=require_native_task_state,
     )
     if initial_state is not None:
         state_trace.append(initial_state)
@@ -74,7 +83,7 @@ def run_rollout_with_adapter(
         actions.append(action_list)
         next_frame = world_model.predict_next_frame(current, action)
         frames.append(next_frame)
-        captured = _capture_task_state(
+        captured = capture_task_state(
             world_model=world_model,
             frame=next_frame,
             action=action_list,
@@ -82,6 +91,7 @@ def run_rollout_with_adapter(
             phase="post_step",
             task_prompt=task_prompt,
             fallback_proxy=state_proxy,
+            require_native_task_state=require_native_task_state,
         )
         if captured is not None:
             state_trace.append(captured)
@@ -131,64 +141,6 @@ def run_rollout_with_adapter(
             "compliant": bool(compliant),
             "reason": "" if compliant else "policy/world/dataset dims differ or missing",
         },
+        native_task_state_required=bool(require_native_task_state),
+        native_task_state_supported=bool(native_task_state_supported),
     )
-
-
-def _capture_task_state(
-    *,
-    world_model,
-    frame,
-    action,
-    step_idx: int,
-    phase: str,
-    task_prompt: str,
-    fallback_proxy: DeterministicRolloutStateProxy | None = None,
-) -> dict | None:
-    capture = getattr(world_model, "capture_rollout_state", None)
-    if callable(capture):
-        try:
-            payload = capture(
-                frame=frame,
-                action=action,
-                step_idx=step_idx,
-                phase=phase,
-                task_prompt=task_prompt,
-            )
-            if isinstance(payload, dict):
-                return payload
-        except TypeError:
-            try:
-                payload = capture(frame=frame, action=action, step_idx=step_idx)
-                if isinstance(payload, dict):
-                    return payload
-            except Exception:
-                pass
-        except Exception:
-            pass
-    extract = getattr(world_model, "extract_task_state", None)
-    if callable(extract):
-        try:
-            payload = extract(
-                frame=frame,
-                action=action,
-                step_idx=step_idx,
-                phase=phase,
-                task_prompt=task_prompt,
-            )
-            if isinstance(payload, dict):
-                return payload
-        except TypeError:
-            try:
-                payload = extract(frame=frame, action=action, step_idx=step_idx)
-                if isinstance(payload, dict):
-                    return payload
-            except Exception:
-                pass
-        except Exception:
-            pass
-    if fallback_proxy is not None:
-        try:
-            return fallback_proxy.capture(action=action, step_idx=step_idx, phase=phase)
-        except Exception:
-            return None
-    return None

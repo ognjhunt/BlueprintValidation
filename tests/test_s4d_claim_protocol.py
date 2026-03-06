@@ -35,6 +35,9 @@ def _prepare_claim_eval_workspace(
     sample_config.eval_policy.claim_strictness.min_eval_start_clips = 1
     sample_config.eval_policy.claim_strictness.min_common_eval_cells = 1
     sample_config.eval_policy.claim_strictness.min_positive_training_seeds = 1
+    sample_config.eval_policy.reliability.min_replay_pass_rate = 0.0
+    sample_config.eval_policy.reliability.min_controllability_pass_rate = 0.0
+    sample_config.eval_policy.reliability.max_scoring_failure_rate = 1.0
     sample_config.policy_compare.enabled = True
     sample_config.policy_compare.control_arms = [
         "frozen_baseline",
@@ -244,6 +247,13 @@ def test_s4d_claim_protocol_emits_claim_report(sample_config, tmp_path, monkeypa
             action_sequence=[[0.0] * 7 for _ in range(2)],
             num_steps=2,
             state_trace=state_trace,
+            action_contract={
+                "policy_dim": 7,
+                "world_dim": 7,
+                "dataset_dim": 7,
+                "compliant": True,
+                "reason": "",
+            },
         )
 
     monkeypatch.setattr(
@@ -433,6 +443,13 @@ def test_s4d_claim_protocol_marks_site_vs_generic_tie_inconclusive(
             action_sequence=[[0.0] * 7 for _ in range(2)],
             num_steps=2,
             state_trace=state_trace,
+            action_contract={
+                "policy_dim": 7,
+                "world_dim": 7,
+                "dataset_dim": 7,
+                "compliant": True,
+                "reason": "",
+            },
         )
 
     monkeypatch.setattr(

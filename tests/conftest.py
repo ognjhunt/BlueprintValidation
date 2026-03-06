@@ -144,6 +144,8 @@ def sample_config(tmp_path):
 
     ply_path = tmp_path / "test.ply"
     ply_path.touch()
+    claim_benchmark_path = tmp_path / "claim_benchmark.json"
+    claim_benchmark_path.write_text('{"version": 1, "task_specs": [], "assignments": []}')
 
     cfg = ValidationConfig(
         project_name="Test Project",
@@ -151,6 +153,7 @@ def sample_config(tmp_path):
             "test_facility": FacilityConfig(
                 name="Test Facility",
                 ply_path=ply_path,
+                claim_benchmark_path=claim_benchmark_path,
                 description="A test facility",
                 landmarks=["door", "table"],
             )

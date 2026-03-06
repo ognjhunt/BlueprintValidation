@@ -17,15 +17,19 @@ from ..evaluation.openvla_runner import (
 )
 from ..evaluation.judge_audit import write_judge_audit_csv
 from ..evaluation.action_overlay import overlay_scripted_trace_on_video
+from ..evaluation.claim_benchmark import load_pinned_claim_benchmark
 from ..evaluation.claim_protocol import (
     build_claim_split_payload,
-    build_task_specs,
     checkpoint_content_hash,
     claim_manifest_payload,
     claim_protocol_enabled,
     deterministic_claim_task_failures,
     paired_eval_key,
     validate_claim_split_payload,
+)
+from ..evaluation.rollout_reliability import (
+    build_reliability_gate as shared_build_reliability_gate,
+    single_or_none as shared_single_or_none,
 )
 from ..evaluation.task_hints import (
     balance_eval_tasks,
@@ -153,31 +157,7 @@ class PolicyEvalStage(PipelineStage):
 
         render_manifest = read_json(render_manifest_path)
 
-        tasks, hint_count = _build_task_list(config, facility)
-        unresolved_manip_tasks_dropped = 0
-        if bool(config.eval_policy.require_object_grounded_manip_tasks):
-            filtered_tasks: List[str] = []
-            for task in tasks:
-                if _is_manipulation_task(task) and not _is_object_grounded_manip_task(task):
-                    unresolved_manip_tasks_dropped += 1
-                    continue
-                filtered_tasks.append(task)
-            tasks = filtered_tasks
-            if not tasks:
-                tasks = [
-                    "Navigate forward through the corridor",
-                    "Turn left at the intersection",
-                    "Approach the nearest obstacle",
-                ]
-
         requested_rollouts = int(config.eval_policy.num_rollouts)
-        task_profile = "claim" if fixed_claim_protocol else "dreamdojo"
-        planned_rollouts = recommended_rollouts_per_condition(
-            num_unique_tasks=len(tasks),
-            requested=requested_rollouts,
-            profile=task_profile,
-        )
-
         shared_manifest_path = eval_dir / "shared_task_start_manifest.json"
         selector_config = {
             "min_assignment_quality_score": float(config.eval_policy.min_assignment_quality_score),
@@ -185,51 +165,143 @@ class PolicyEvalStage(PipelineStage):
                 config.eval_policy.require_object_grounded_manip_tasks
             ),
         }
+        claim_benchmark_path = (
+            Path(facility.claim_benchmark_path) if facility.claim_benchmark_path is not None else None
+        )
+        claim_benchmark_manifest_hash = ""
+        task_specs: List[Dict[str, object]] = []
+        task_specs_by_prompt: Dict[str, Dict[str, object]] = {}
+        tasks: List[str] = []
+        hint_count = 0
+        unresolved_manip_tasks_dropped = 0
         shared_manifest = load_shared_task_start_manifest(shared_manifest_path)
         reused_shared_manifest = False
         rollout_assignments: List[dict] = []
-        if shared_manifest and shared_manifest_is_compatible(
-            shared_manifest,
-            facility_name=facility.name,
-            render_manifest_path=render_manifest_path,
-            render_manifest=render_manifest,
-            tasks=tasks,
-            video_orientation_fix=facility.video_orientation_fix,
-            selector_config=selector_config,
-        ):
-            rollout_assignments = list(shared_manifest.get("assignments", []))
-            reused_shared_manifest = bool(rollout_assignments)
-
-        if not rollout_assignments:
-            rollout_assignments = build_task_start_assignments(
-                tasks=tasks,
-                num_rollouts=planned_rollouts,
-                render_manifest=render_manifest,
-                task_hints_path=facility.task_hints_path,
-                min_assignment_quality_score=float(config.eval_policy.min_assignment_quality_score),
-                require_object_grounded_manip_tasks=bool(
-                    config.eval_policy.require_object_grounded_manip_tasks
-                ),
-                video_orientation_fix=facility.video_orientation_fix,
-            )
-            save_shared_task_start_manifest(
-                path=shared_manifest_path,
+        if fixed_claim_protocol:
+            if claim_benchmark_path is None:
+                return StageResult(
+                    stage_name=self.name,
+                    status="failed",
+                    elapsed_seconds=0,
+                    detail=(
+                        "Fixed-world claim protocol requires facility.claim_benchmark_path to "
+                        "point to a pinned benchmark manifest."
+                    ),
+                )
+            try:
+                claim_benchmark = load_pinned_claim_benchmark(
+                    benchmark_path=claim_benchmark_path,
+                    render_manifest=render_manifest,
+                    video_orientation_fix=facility.video_orientation_fix,
+                )
+            except ValueError as exc:
+                return StageResult(
+                    stage_name=self.name,
+                    status="failed",
+                    elapsed_seconds=0,
+                    detail=f"Invalid claim benchmark manifest: {exc}",
+                )
+            claim_benchmark_manifest_hash = claim_benchmark.manifest_hash
+            task_specs = [dict(spec) for spec in claim_benchmark.task_specs]
+            task_specs_by_prompt = {
+                str(spec.get("task_prompt", "")).strip(): dict(spec) for spec in task_specs
+            }
+            tasks = list(claim_benchmark.tasks)
+            planned_rollouts = len(claim_benchmark.assignments)
+            if shared_manifest and shared_manifest_is_compatible(
+                shared_manifest,
                 facility_name=facility.name,
                 render_manifest_path=render_manifest_path,
-                task_profile="dreamdojo",
-                requested_rollouts=requested_rollouts,
-                planned_rollouts=planned_rollouts,
-                tasks=tasks,
-                assignments=rollout_assignments,
                 render_manifest=render_manifest,
+                tasks=tasks,
                 video_orientation_fix=facility.video_orientation_fix,
                 selector_config=selector_config,
-            )
+                benchmark_manifest_hash=claim_benchmark_manifest_hash,
+            ):
+                rollout_assignments = list(shared_manifest.get("assignments", []))
+                reused_shared_manifest = bool(rollout_assignments)
+            if not rollout_assignments:
+                rollout_assignments = [dict(assignment) for assignment in claim_benchmark.assignments]
+                save_shared_task_start_manifest(
+                    path=shared_manifest_path,
+                    facility_name=facility.name,
+                    render_manifest_path=render_manifest_path,
+                    task_profile="claim",
+                    requested_rollouts=requested_rollouts,
+                    planned_rollouts=planned_rollouts,
+                    tasks=tasks,
+                    assignments=rollout_assignments,
+                    render_manifest=render_manifest,
+                    video_orientation_fix=facility.video_orientation_fix,
+                    selector_config=selector_config,
+                    benchmark_manifest_hash=claim_benchmark_manifest_hash,
+                )
+            else:
+                normalized_fix = str(getattr(facility, "video_orientation_fix", "none"))
+                for assignment in rollout_assignments:
+                    assignment.setdefault("video_orientation_fix", normalized_fix)
         else:
-            # Ensure older manifests still carry explicit orientation metadata at runtime.
-            normalized_fix = str(getattr(facility, "video_orientation_fix", "none"))
-            for assignment in rollout_assignments:
-                assignment.setdefault("video_orientation_fix", normalized_fix)
+            tasks, hint_count = _build_task_list(config, facility)
+            if bool(config.eval_policy.require_object_grounded_manip_tasks):
+                filtered_tasks: List[str] = []
+                for task in tasks:
+                    if _is_manipulation_task(task) and not _is_object_grounded_manip_task(task):
+                        unresolved_manip_tasks_dropped += 1
+                        continue
+                    filtered_tasks.append(task)
+                tasks = filtered_tasks
+                if not tasks:
+                    tasks = [
+                        "Navigate forward through the corridor",
+                        "Turn left at the intersection",
+                        "Approach the nearest obstacle",
+                    ]
+
+            planned_rollouts = recommended_rollouts_per_condition(
+                num_unique_tasks=len(tasks),
+                requested=requested_rollouts,
+                profile="dreamdojo",
+            )
+            if shared_manifest and shared_manifest_is_compatible(
+                shared_manifest,
+                facility_name=facility.name,
+                render_manifest_path=render_manifest_path,
+                render_manifest=render_manifest,
+                tasks=tasks,
+                video_orientation_fix=facility.video_orientation_fix,
+                selector_config=selector_config,
+            ):
+                rollout_assignments = list(shared_manifest.get("assignments", []))
+                reused_shared_manifest = bool(rollout_assignments)
+            if not rollout_assignments:
+                rollout_assignments = build_task_start_assignments(
+                    tasks=tasks,
+                    num_rollouts=planned_rollouts,
+                    render_manifest=render_manifest,
+                    task_hints_path=facility.task_hints_path,
+                    min_assignment_quality_score=float(config.eval_policy.min_assignment_quality_score),
+                    require_object_grounded_manip_tasks=bool(
+                        config.eval_policy.require_object_grounded_manip_tasks
+                    ),
+                    video_orientation_fix=facility.video_orientation_fix,
+                )
+                save_shared_task_start_manifest(
+                    path=shared_manifest_path,
+                    facility_name=facility.name,
+                    render_manifest_path=render_manifest_path,
+                    task_profile="dreamdojo",
+                    requested_rollouts=requested_rollouts,
+                    planned_rollouts=planned_rollouts,
+                    tasks=tasks,
+                    assignments=rollout_assignments,
+                    render_manifest=render_manifest,
+                    video_orientation_fix=facility.video_orientation_fix,
+                    selector_config=selector_config,
+                )
+            else:
+                normalized_fix = str(getattr(facility, "video_orientation_fix", "none"))
+                for assignment in rollout_assignments:
+                    assignment.setdefault("video_orientation_fix", normalized_fix)
 
         invalid_assignments = [
             assignment
@@ -237,7 +309,7 @@ class PolicyEvalStage(PipelineStage):
             if str(assignment.get("assignment_reject_reason") or "").strip()
         ]
         num_rejected_task_start_assignments = len(invalid_assignments)
-        if invalid_assignments:
+        if invalid_assignments and not fixed_claim_protocol:
             logger.warning(
                 "Dropping %d fallback task-start assignments that failed strict selector constraints.",
                 num_rejected_task_start_assignments,
@@ -269,18 +341,11 @@ class PolicyEvalStage(PipelineStage):
             )
 
         world_snapshot_hash = ""
-        task_specs: List[Dict[str, object]] = []
-        task_specs_by_prompt: Dict[str, Dict[str, object]] = {}
         claim_manifest_path = eval_dir / "claim_manifest.json"
         task_specs_path = eval_dir / "task_specs.json"
         claim_split_manifest_path = eval_dir / "claim_split_manifest.json"
         if fixed_claim_protocol:
             world_snapshot_hash = checkpoint_content_hash(adapted_dir)
-            task_specs = build_task_specs(
-                config=config,
-                facility=facility,
-                tasks=tasks,
-            )
             deterministic_failures = deterministic_claim_task_failures(task_specs)
             if deterministic_failures:
                 return StageResult(
@@ -347,6 +412,8 @@ class PolicyEvalStage(PipelineStage):
                     world_snapshot_hash=world_snapshot_hash,
                     task_specs_path=task_specs_path,
                     split_manifest_path=claim_split_manifest_path,
+                    benchmark_manifest_path=claim_benchmark_path,
+                    benchmark_manifest_hash=claim_benchmark_manifest_hash,
                 ),
                 claim_manifest_path,
             )
@@ -447,6 +514,8 @@ class PolicyEvalStage(PipelineStage):
                 claim_manifest_path=claim_manifest_path,
                 task_specs_path=task_specs_path,
                 claim_split_manifest_path=claim_split_manifest_path,
+                claim_benchmark_path=claim_benchmark_path,
+                claim_benchmark_manifest_hash=claim_benchmark_manifest_hash,
                 unresolved_manip_tasks_dropped=unresolved_manip_tasks_dropped,
                 num_rejected_task_start_assignments=num_rejected_task_start_assignments,
                 min_rollout_frames=min_rollout_frames,
@@ -553,6 +622,7 @@ class PolicyEvalStage(PipelineStage):
                     ),
                     rollout_context=dict(assignment),
                     task_spec=task_specs_by_prompt.get(task),
+                    require_native_task_state=fixed_claim_protocol,
                 )
                 action_contract = getattr(rollout, "action_contract", {}) or {}
                 action_dim = action_contract.get("dataset_dim")
@@ -900,6 +970,8 @@ class PolicyEvalStage(PipelineStage):
             "claim_split_manifest_path": (
                 str(claim_split_manifest_path) if fixed_claim_protocol else ""
             ),
+            "claim_benchmark_path": str(claim_benchmark_path) if claim_benchmark_path else "",
+            "claim_benchmark_manifest_hash": claim_benchmark_manifest_hash or "",
             "num_claim_state_failures": len(claim_state_failures),
         }
 
@@ -979,6 +1051,8 @@ def _run_world_model_only_eval(
     claim_manifest_path: Path,
     task_specs_path: Path,
     claim_split_manifest_path: Path,
+    claim_benchmark_path: Path | None,
+    claim_benchmark_manifest_hash: str,
     unresolved_manip_tasks_dropped: int,
     num_rejected_task_start_assignments: int,
     min_rollout_frames: int,
@@ -1148,6 +1222,7 @@ def _run_world_model_only_eval(
                 rollout_context=dict(assignment),
                 task_prompt=task,
                 task_spec=task_specs_by_prompt.get(task),
+                require_native_task_state=fixed_claim_protocol,
             )
             action_contract = getattr(rollout, "action_contract", {}) or {}
             action_dim_row = action_contract.get("dataset_dim")
@@ -1499,6 +1574,8 @@ def _run_world_model_only_eval(
         "claim_split_manifest_path": (
             str(claim_split_manifest_path) if fixed_claim_protocol else ""
         ),
+        "claim_benchmark_path": str(claim_benchmark_path) if claim_benchmark_path else "",
+        "claim_benchmark_manifest_hash": claim_benchmark_manifest_hash or "",
         "num_claim_state_failures": len(claim_state_failures),
     }
     write_json(metrics, eval_dir / "policy_eval_report.json")
@@ -1894,11 +1971,7 @@ def _extract_world_action_dim(world_model) -> int | None:
 
 
 def _single_or_none(values: set[int]) -> int | None:
-    if not values:
-        return None
-    if len(values) == 1:
-        return next(iter(values))
-    return None
+    return shared_single_or_none(values)
 
 
 def _build_reliability_gate(
@@ -1907,63 +1980,13 @@ def _build_reliability_gate(
     *,
     scoring_failure_rate: float = 0.0,
 ) -> Dict:
-    if not scores:
-        return {
-            "replay_pass_rate": 0.0,
-            "controllability_pass_rate": 0.0,
-            "passed": False,
-            "reason": "No valid scored rollouts available.",
-            "scoring_failure_rate": round(float(scoring_failure_rate), 6),
-            "max_scoring_failure_rate": round(
-                float(config.eval_policy.reliability.max_scoring_failure_rate), 6
-            ),
-            "num_valid_scores": 0,
-        }
-    replay_passes = 0
-    controllability_passes = 0
-    for row in scores:
-        visual = float(row.get("visual_score", 0.0))
-        spatial = float(row.get("spatial_score", 0.0))
-        if visual >= 5.0 and spatial >= 5.0:
-            replay_passes += 1
-        actions = row.get("action_sequence") or []
-        if len(actions) >= 2:
-            try:
-                arr = np.asarray(actions, dtype=np.float32)
-                deltas = np.diff(arr, axis=0)
-                if float(np.max(np.linalg.norm(deltas, axis=1))) > 1e-4:
-                    controllability_passes += 1
-            except Exception:
-                pass
-    replay_rate = replay_passes / max(len(scores), 1)
-    ctrl_rate = controllability_passes / max(len(scores), 1)
-    failure_rate_ok = float(scoring_failure_rate) <= float(
-        config.eval_policy.reliability.max_scoring_failure_rate
+    return dict(
+        shared_build_reliability_gate(
+            config,
+            scores,
+            scoring_failure_rate=scoring_failure_rate,
+        )
     )
-    passed = (
-        replay_rate >= float(config.eval_policy.reliability.min_replay_pass_rate)
-        and ctrl_rate >= float(config.eval_policy.reliability.min_controllability_pass_rate)
-        and failure_rate_ok
-    )
-    reasons: List[str] = []
-    if replay_rate < float(config.eval_policy.reliability.min_replay_pass_rate):
-        reasons.append("replay_pass_rate below threshold")
-    if ctrl_rate < float(config.eval_policy.reliability.min_controllability_pass_rate):
-        reasons.append("controllability_pass_rate below threshold")
-    if not failure_rate_ok:
-        reasons.append("scoring_failure_rate above threshold")
-    reason = "" if passed else "; ".join(reasons)
-    return {
-        "replay_pass_rate": round(float(replay_rate), 6),
-        "controllability_pass_rate": round(float(ctrl_rate), 6),
-        "passed": bool(passed),
-        "reason": reason,
-        "scoring_failure_rate": round(float(scoring_failure_rate), 6),
-        "max_scoring_failure_rate": round(
-            float(config.eval_policy.reliability.max_scoring_failure_rate), 6
-        ),
-        "num_valid_scores": len(scores),
-    }
 
 
 def _build_confidence_intervals(baseline_scores: List[Dict], adapted_scores: List[Dict]) -> Dict:

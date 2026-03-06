@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -412,67 +413,109 @@ def test_s4_fixed_claim_protocol_does_not_fail_on_supporting_task_score_threshol
     (adapted_ckpt / "weights.bin").write_bytes(b"world")
     render_dir = work_dir / "renders"
     render_dir.mkdir(parents=True, exist_ok=True)
-    (render_dir / "render_manifest.json").write_text('{"clips":[]}')
+    (render_dir / "render_manifest.json").write_text(
+        json.dumps(
+            {
+                "clips": [
+                    {
+                        "clip_index": 0,
+                        "clip_name": "clip_000",
+                        "path_type": "manipulation",
+                        "video_path": str(render_dir / "clip_000.mp4"),
+                        "initial_camera": {"position": [0.0, 0.0, 1.0]},
+                        "path_context": {"approach_point": [0.0, 0.0, 0.8]},
+                    },
+                    {
+                        "clip_index": 1,
+                        "clip_name": "clip_001",
+                        "path_type": "manipulation",
+                        "video_path": str(render_dir / "clip_001.mp4"),
+                        "initial_camera": {"position": [0.5, 0.0, 1.0]},
+                        "path_context": {"approach_point": [0.5, 0.0, 0.8]},
+                    },
+                ]
+            }
+        )
+    )
+    benchmark_path = tmp_path / "claim_benchmark.json"
+    benchmark_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "task_specs": [
+                    {
+                        "task_spec_id": "task_spec_bowl",
+                        "task_prompt": sample_config.eval_policy.tasks[0],
+                        "task_family": "manipulation",
+                        "target_instance_id": "101",
+                        "target_label": "bowl",
+                        "goal_region_id": "region::target_zone",
+                        "success_predicate": {
+                            "type": "manipulation_pick_place_stable",
+                            "target_instance_id": "101",
+                            "goal_region_id": "region::target_zone",
+                            "require_stable_after_place": True,
+                        },
+                    },
+                    {
+                        "task_spec_id": "task_spec_mug",
+                        "task_prompt": sample_config.eval_policy.tasks[1],
+                        "task_family": "manipulation",
+                        "target_instance_id": "102",
+                        "target_label": "mug",
+                        "goal_region_id": "region::target_zone",
+                        "success_predicate": {
+                            "type": "manipulation_pick_place_stable",
+                            "target_instance_id": "102",
+                            "goal_region_id": "region::target_zone",
+                            "require_stable_after_place": True,
+                        },
+                    },
+                ],
+                "assignments": [
+                    {
+                        "rollout_index": 0,
+                        "task_spec_id": "task_spec_bowl",
+                        "clip_name": "clip_000",
+                        "start_clip_id": "clip_000",
+                        "start_region_id": "manip:101_a",
+                        "target_instance_id": "101",
+                        "target_label": "bowl",
+                    },
+                    {
+                        "rollout_index": 1,
+                        "task_spec_id": "task_spec_mug",
+                        "clip_name": "clip_000",
+                        "start_clip_id": "clip_000",
+                        "start_region_id": "manip:102_a",
+                        "target_instance_id": "102",
+                        "target_label": "mug",
+                    },
+                    {
+                        "rollout_index": 2,
+                        "task_spec_id": "task_spec_bowl",
+                        "clip_name": "clip_001",
+                        "start_clip_id": "clip_001",
+                        "start_region_id": "manip:101_b",
+                        "target_instance_id": "101",
+                        "target_label": "bowl",
+                    },
+                    {
+                        "rollout_index": 3,
+                        "task_spec_id": "task_spec_mug",
+                        "clip_name": "clip_001",
+                        "start_clip_id": "clip_001",
+                        "start_region_id": "manip:102_b",
+                        "target_instance_id": "102",
+                        "target_label": "mug",
+                    },
+                ],
+            }
+        )
+    )
+    fac.claim_benchmark_path = benchmark_path
 
     frame = np.zeros((16, 16, 3), dtype=np.uint8)
-    assignments = [
-        {
-            "rollout_index": 0,
-            "task": sample_config.eval_policy.tasks[0],
-            "clip_index": 0,
-            "clip_name": "clip_000",
-            "path_type": "manipulation",
-            "target_label": "bowl",
-            "target_instance_id": "101",
-            "target_grounded": True,
-            "assignment_quality_score": 1.0,
-            "assignment_reject_reason": None,
-            "video_orientation_fix": "none",
-        },
-        {
-            "rollout_index": 1,
-            "task": sample_config.eval_policy.tasks[1],
-            "clip_index": 0,
-            "clip_name": "clip_000",
-            "path_type": "manipulation",
-            "target_label": "mug",
-            "target_instance_id": "102",
-            "target_grounded": True,
-            "assignment_quality_score": 1.0,
-            "assignment_reject_reason": None,
-            "video_orientation_fix": "none",
-        },
-        {
-            "rollout_index": 2,
-            "task": sample_config.eval_policy.tasks[0],
-            "clip_index": 1,
-            "clip_name": "clip_001",
-            "path_type": "manipulation",
-            "target_label": "bowl",
-            "target_instance_id": "101",
-            "target_grounded": True,
-            "assignment_quality_score": 1.0,
-            "assignment_reject_reason": None,
-            "video_orientation_fix": "none",
-        },
-        {
-            "rollout_index": 3,
-            "task": sample_config.eval_policy.tasks[1],
-            "clip_index": 1,
-            "clip_name": "clip_001",
-            "path_type": "manipulation",
-            "target_label": "mug",
-            "target_instance_id": "102",
-            "target_grounded": True,
-            "assignment_quality_score": 1.0,
-            "assignment_reject_reason": None,
-            "video_orientation_fix": "none",
-        },
-    ]
-    monkeypatch.setattr(
-        "blueprint_validation.stages.s4_policy_eval.build_task_start_assignments",
-        lambda **kwargs: assignments,
-    )
     monkeypatch.setattr(
         "blueprint_validation.stages.s4_policy_eval.load_initial_frames_for_assignments",
         lambda assignments: {0: frame, 1: frame},

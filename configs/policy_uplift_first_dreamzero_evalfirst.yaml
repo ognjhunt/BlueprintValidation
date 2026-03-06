@@ -4,8 +4,21 @@ project_name: Policy Uplift First (DreamZero + External Interaction Eval-First)
 facilities:
   facility_a:
     name: Facility A
-    ply_path: ./data/facilities/facility_a/splat.ply
+    ply_path: ../data/facilities/facility_a/splat.ply
+    claim_benchmark_path: ./benchmarks/facility_a.fixed_claim.json
     description: Primary deployment site
+
+robot_composite:
+  enabled: false
+
+finetune:
+  dreamdojo_repo: ../data/vendor/DreamDojo
+  dreamdojo_checkpoint: ../data/checkpoints/DreamDojo/2B_pretrain/
+  eval_world_experiment: cosmos_predict2p5_2B_reason_embeddings_action_conditioned_rectified_flow_bridge_13frame_256x320
+
+enrich:
+  cosmos_repo: ../data/vendor/cosmos-transfer
+  cosmos_checkpoint: ../data/checkpoints/cosmos-transfer-2.5-2b/
 
 # Use the fixed-world claim protocol for the canonical same-facility headline.
 # This mode is for deployment-site world-model uplift only and does not answer IRL transfer.
@@ -39,7 +52,7 @@ policy_adapter:
   name: dreamzero
   dreamzero:
     repo_path: /opt/dreamzero
-    checkpoint_path: ./data/checkpoints/dreamzero
+    checkpoint_path: ../data/checkpoints/dreamzero
     inference_module: dreamzero.inference
     inference_class: DreamZeroInference
     policy_action_dim: 7
@@ -51,7 +64,7 @@ policy_adapter:
 # External physics interaction ingest (PolaRiS-style eval-first) is integrated but OFF by default.
 external_interaction:
   enabled: false
-  manifest_path: ./data/external_interaction/interaction_manifest.json
+  manifest_path: ../data/external_interaction/interaction_manifest.json
   source_name: polaris
 
 # Keep existing fallback interaction generation available.

@@ -199,6 +199,7 @@ def save_shared_task_start_manifest(
     render_manifest: Optional[dict] = None,
     video_orientation_fix: str = "none",
     selector_config: Optional[dict] = None,
+    benchmark_manifest_hash: Optional[str] = None,
 ) -> None:
     payload = {
         "version": 2,
@@ -214,6 +215,7 @@ def save_shared_task_start_manifest(
         "task_list_hash": _stable_payload_hash(tasks),
         "video_orientation_fix": normalize_video_orientation_fix(video_orientation_fix),
         "selector_config_hash": _stable_payload_hash(selector_config or {}),
+        "benchmark_manifest_hash": str(benchmark_manifest_hash or "").strip() or None,
         "assignments": assignments,
     }
     write_json(payload, path)
@@ -228,6 +230,7 @@ def shared_manifest_is_compatible(
     tasks: Optional[List[str]] = None,
     video_orientation_fix: Optional[str] = None,
     selector_config: Optional[dict] = None,
+    benchmark_manifest_hash: Optional[str] = None,
 ) -> bool:
     if str(manifest.get("facility", "")) != facility_name:
         return False
@@ -246,6 +249,10 @@ def shared_manifest_is_compatible(
             return False
     if selector_config is not None:
         if manifest.get("selector_config_hash") != _stable_payload_hash(selector_config):
+            return False
+    if benchmark_manifest_hash is not None:
+        expected_hash = str(benchmark_manifest_hash or "").strip() or None
+        if manifest.get("benchmark_manifest_hash") != expected_hash:
             return False
     return bool(manifest.get("assignments"))
 

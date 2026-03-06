@@ -48,7 +48,7 @@ Expected immediate impact from these already-applied changes:
 - world-model metrics in this repo: **+6 to +12 absolute points**
 - future same-facility IRL planning prior once matched robot runs exist: **+2 to +6 absolute points**
 
-These are priors, not guarantees. Validate the current repo claim per-location with the fixed-world Stage 4d claim path and held-out tasks inside the adapted world model.
+These are priors, not guarantees. Validate the current repo claim per-location with the fixed-world Stage 4d claim path, a pinned per-facility claim benchmark manifest, and held-out tasks inside the adapted world model.
 
 ## Decision Matrix (No-New-Real-Data Compatible)
 

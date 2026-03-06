@@ -6,6 +6,7 @@ facilities:
   facility_a:
     name: "Warehouse A - Durham"
     ply_path: ../data/facilities/facility_a/splat.ply
+    claim_benchmark_path: ./benchmarks/facility_a.fixed_claim.json
     # Optional: BlueprintCapturePipeline task_targets.json generated from source video.
     # When present, Stage 4 auto-injects additional manipulation/articulation tasks.
     # task_hints_path: /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/runs/<run>/task_targets.json
@@ -34,6 +35,7 @@ facilities:
   facility_b:
     name: "Warehouse B - Raleigh"
     ply_path: ../data/facilities/facility_b/splat.ply
+    claim_benchmark_path: ./benchmarks/facility_b.fixed_claim.json
     # task_hints_path: /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/runs/<run>/task_targets.json
     description: "Smaller warehouse with conveyor system, narrow aisles"
     landmarks:

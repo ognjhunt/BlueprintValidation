@@ -413,8 +413,10 @@ def claim_manifest_payload(
     world_snapshot_hash: str,
     task_specs_path: Path,
     split_manifest_path: Path,
+    benchmark_manifest_path: Path | None = None,
+    benchmark_manifest_hash: str = "",
 ) -> Dict[str, object]:
-    return {
+    payload = {
         "claim_protocol": "fixed_same_facility_uplift",
         "facility_name": facility.name,
         "facility_description": facility.description,
@@ -444,6 +446,10 @@ def claim_manifest_payload(
         },
         "config_hash": _stable_protocol_id("config", config.eval_policy.__dict__),
     }
+    if benchmark_manifest_path is not None:
+        payload["benchmark_manifest_path"] = str(benchmark_manifest_path)
+        payload["benchmark_manifest_hash"] = str(benchmark_manifest_hash or "").strip()
+    return payload
 
 
 def paired_eval_key(row: Dict[str, object]) -> str:
@@ -781,12 +787,18 @@ def _forbidden_events_for_family(family: str) -> List[str]:
 
 
 def _start_clip_id(assignment: dict) -> str:
+    explicit = str(assignment.get("start_clip_id", "")).strip()
+    if explicit:
+        return explicit
     clip_index = int(assignment.get("clip_index", -1))
     clip_name = str(assignment.get("clip_name", f"clip_{clip_index:03d}")).strip()
     return clip_name or f"clip_{clip_index:03d}"
 
 
 def _start_region_id(assignment: dict) -> str:
+    explicit = str(assignment.get("start_region_id", "")).strip()
+    if explicit:
+        return explicit
     path_type = str(assignment.get("path_type", "unknown")).strip() or "unknown"
     target_instance_id = str(assignment.get("target_instance_id", "")).strip()
     clip_index = int(assignment.get("clip_index", -1))

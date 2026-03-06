@@ -1427,7 +1427,13 @@ def test_config_rejects_fixed_claim_protocol_without_disjoint_split_strategy(tmp
         yaml.dump(
             {
                 "project_name": "Bad Claim Split",
-                "facilities": {"a": {"name": "A", "ply_path": str(tmp_path / "a.ply")}},
+                "facilities": {
+                    "a": {
+                        "name": "A",
+                        "ply_path": str(tmp_path / "a.ply"),
+                        "claim_benchmark_path": str(tmp_path / "claim_benchmark.json"),
+                    }
+                },
                 "eval_policy": {
                     "claim_protocol": "fixed_same_facility_uplift",
                     "primary_endpoint": "task_success",
@@ -1457,7 +1463,13 @@ def test_config_rejects_fixed_claim_protocol_without_required_control_arms(tmp_p
         yaml.dump(
             {
                 "project_name": "Bad Claim Arms",
-                "facilities": {"a": {"name": "A", "ply_path": str(tmp_path / "a.ply")}},
+                "facilities": {
+                    "a": {
+                        "name": "A",
+                        "ply_path": str(tmp_path / "a.ply"),
+                        "claim_benchmark_path": str(tmp_path / "claim_benchmark.json"),
+                    }
+                },
                 "eval_policy": {
                     "claim_protocol": "fixed_same_facility_uplift",
                     "primary_endpoint": "task_success",
@@ -1487,7 +1499,13 @@ def test_config_rejects_fixed_claim_protocol_with_too_few_training_seeds(tmp_pat
         yaml.dump(
             {
                 "project_name": "Bad Claim Seeds",
-                "facilities": {"a": {"name": "A", "ply_path": str(tmp_path / "a.ply")}},
+                "facilities": {
+                    "a": {
+                        "name": "A",
+                        "ply_path": str(tmp_path / "a.ply"),
+                        "claim_benchmark_path": str(tmp_path / "claim_benchmark.json"),
+                    }
+                },
                 "eval_policy": {
                     "claim_protocol": "fixed_same_facility_uplift",
                     "primary_endpoint": "task_success",
@@ -1541,7 +1559,13 @@ def test_config_rejects_claim_strictness_with_zero_min_eval_cells(tmp_path):
         yaml.dump(
             {
                 "project_name": "Bad Claim Strictness",
-                "facilities": {"a": {"name": "A", "ply_path": str(tmp_path / "a.ply")}},
+                "facilities": {
+                    "a": {
+                        "name": "A",
+                        "ply_path": str(tmp_path / "a.ply"),
+                        "claim_benchmark_path": str(tmp_path / "claim_benchmark.json"),
+                    }
+                },
                 "eval_policy": {
                     "claim_protocol": "fixed_same_facility_uplift",
                     "primary_endpoint": "task_success",
@@ -1572,7 +1596,13 @@ def test_config_rejects_claim_strictness_positive_seed_requirement_above_seed_co
         yaml.dump(
             {
                 "project_name": "Bad Claim Positive Seed Requirement",
-                "facilities": {"a": {"name": "A", "ply_path": str(tmp_path / "a.ply")}},
+                "facilities": {
+                    "a": {
+                        "name": "A",
+                        "ply_path": str(tmp_path / "a.ply"),
+                        "claim_benchmark_path": str(tmp_path / "claim_benchmark.json"),
+                    }
+                },
                 "eval_policy": {
                     "claim_protocol": "fixed_same_facility_uplift",
                     "primary_endpoint": "task_success",
@@ -1590,4 +1620,34 @@ def test_config_rejects_claim_strictness_positive_seed_requirement_above_seed_co
     )
 
     with pytest.raises(ValueError, match="min_positive_training_seeds"):
+        load_config(config_path)
+
+
+def test_config_rejects_fixed_claim_protocol_without_benchmark_manifest(tmp_path):
+    import yaml
+
+    from blueprint_validation.config import load_config
+
+    config_path = tmp_path / "bad_claim_benchmark.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Claim Benchmark",
+                "facilities": {"a": {"name": "A", "ply_path": str(tmp_path / "a.ply")}},
+                "eval_policy": {
+                    "claim_protocol": "fixed_same_facility_uplift",
+                    "primary_endpoint": "task_success",
+                    "freeze_world_snapshot": True,
+                    "split_strategy": "disjoint_tasks_and_starts",
+                    "replication": {"training_seeds": [0, 1, 2, 3, 4, 5]},
+                },
+                "policy_compare": {
+                    "enabled": True,
+                    "control_arms": ["frozen_baseline", "site_trained", "generic_control"],
+                },
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="claim_benchmark_path"):
         load_config(config_path)
