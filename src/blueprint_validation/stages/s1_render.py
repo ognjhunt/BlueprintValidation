@@ -71,12 +71,32 @@ _TARGET_PRESENCE_STRICT_MIN_CENTER_RATIO = 0.70
 # occluded but still task-usable views in dense kitchen scenes.
 _TARGET_PRESENCE_STRICT_MIN_LOS_RATIO = 0.30
 _TARGET_PRESENCE_STRICT_MIN_SIZE_RATIO = 0.07
+_SCENE_LOCKED_SOURCE_TAG_PREFIX = "scene_locked:"
 _KITCHEN_0787_LOCKED_SOURCE_TAG = "kitchen_0787_locked"
+_FACILITY_A_LOCKED_SOURCE_TAG = f"{_SCENE_LOCKED_SOURCE_TAG_PREFIX}facility_a"
 _KITCHEN_0787_LOCKED_MAX_TARGETS = 12
-_KITCHEN_0787_LOCKED_DEFAULT_EYE_OFFSET_M = (0.78, -0.40, 0.34)
-_KITCHEN_0787_LOCKED_DEFAULT_LOOK_AT_OFFSET_M = (0.0, 0.0, 0.05)
+_FACILITY_A_LOCKED_MAX_TARGETS = 8
+_SCENE_LOCKED_DEFAULTS: Dict[str, Dict[str, object]] = {
+    "kitchen_0787": {
+        "source_tag": _KITCHEN_0787_LOCKED_SOURCE_TAG,
+        "max_targets": _KITCHEN_0787_LOCKED_MAX_TARGETS,
+        "eye_offset_m": (0.78, -0.40, 0.34),
+        "look_at_offset_m": (0.0, 0.0, 0.05),
+        "probe_motion_radius_m": 0.006,
+    },
+    "facility_a": {
+        "source_tag": _FACILITY_A_LOCKED_SOURCE_TAG,
+        "max_targets": _FACILITY_A_LOCKED_MAX_TARGETS,
+        "eye_offset_m": (0.95, -0.55, 0.38),
+        "look_at_offset_m": (0.0, 0.0, 0.05),
+        "probe_motion_radius_m": 0.008,
+    },
+}
+# Backward-compatible names for the existing kitchen-specific path.
+_KITCHEN_0787_LOCKED_DEFAULT_EYE_OFFSET_M = _SCENE_LOCKED_DEFAULTS["kitchen_0787"]["eye_offset_m"]
+_KITCHEN_0787_LOCKED_DEFAULT_LOOK_AT_OFFSET_M = _SCENE_LOCKED_DEFAULTS["kitchen_0787"]["look_at_offset_m"]
 # Keep probes near-static to reduce blur and preserve deterministic framing.
-_KITCHEN_0787_LOCKED_DEFAULT_PROBE_MOTION_RADIUS_M = 0.006
+_KITCHEN_0787_LOCKED_DEFAULT_PROBE_MOTION_RADIUS_M = _SCENE_LOCKED_DEFAULTS["kitchen_0787"]["probe_motion_radius_m"]
 # Absolute world-space camera table calibrated once for kitchen_0787 targets.
 # Values are in the facility raw world frame (before any scene_transform).
 _KITCHEN_0787_LOCKED_TARGET_POSE_TABLE: Dict[str, Dict[str, object]] = {
@@ -139,6 +159,40 @@ _KITCHEN_0787_LOCKED_TARGET_POSE_TABLE: Dict[str, Dict[str, object]] = {
         "eye_world_m": (-0.468377, -1.593787, 1.094312),
         "look_at_world_m": (-0.068377, -1.593787, 0.703945),
         "probe_motion_radius_m": 0.008,
+    },
+}
+# Placeholder scene-locked calibration table for facility_a.
+# Fill these exact entries from the first tiny GPU calibration render.
+_FACILITY_A_LOCKED_TARGET_POSE_TABLE: Dict[str, Dict[str, object]] = {
+    "101": {  # bowl
+        "eye_world_m": None,
+        "look_at_world_m": None,
+        "probe_motion_radius_m": 0.008,
+    },
+    "102": {  # bottle
+        "eye_world_m": None,
+        "look_at_world_m": None,
+        "probe_motion_radius_m": 0.008,
+    },
+    "103": {  # mug
+        "eye_world_m": None,
+        "look_at_world_m": None,
+        "probe_motion_radius_m": 0.008,
+    },
+    "region::prep_counter": {
+        "eye_world_m": None,
+        "look_at_world_m": None,
+        "probe_motion_radius_m": 0.010,
+    },
+    "region::sink": {
+        "eye_world_m": None,
+        "look_at_world_m": None,
+        "probe_motion_radius_m": 0.010,
+    },
+    "region::pantry_shelf": {
+        "eye_world_m": None,
+        "look_at_world_m": None,
+        "probe_motion_radius_m": 0.010,
     },
 }
 
@@ -424,8 +478,8 @@ class RenderStage(PipelineStage):
             if has_transform:
                 splat_means_np = transform_means(splat_means_np, scene_T)
             scene_center = splat_means_np.mean(axis=0)
-            kitchen_0787_locked_mode = _is_kitchen_0787_scene(facility)
-            if kitchen_0787_locked_mode and (
+            scene_locked_profile = _resolve_scene_locked_profile(config, facility)
+            if scene_locked_profile and (
                 not bool(config.render.stage1_active_perception_enabled)
                 or not bool(config.render.stage1_active_perception_fail_closed)
             ):
@@ -434,16 +488,17 @@ class RenderStage(PipelineStage):
                     status="failed",
                     elapsed_seconds=0,
                     detail=(
-                        "kitchen_0787 scene-locked mode requires "
+                        f"{scene_locked_profile} scene-locked mode requires "
                         "render.stage1_active_perception_enabled=true and "
                         "render.stage1_active_perception_fail_closed=true."
                     ),
                     outputs={
                         "render_dir": str(render_dir),
                         "facility_name": facility.name,
-                        "error_code": "s1_kitchen_locked_requires_active_perception",
+                        "scene_locked_profile": scene_locked_profile,
+                        "error_code": "s1_scene_locked_requires_active_perception",
                     },
-                    metrics={"error_code": "s1_kitchen_locked_requires_active_perception"},
+                    metrics={"error_code": "s1_scene_locked_requires_active_perception"},
                 )
 
             # Scene-aware camera placement
@@ -455,11 +510,12 @@ class RenderStage(PipelineStage):
             base_specs = list(config.render.camera_paths)
             if has_transform:
                 base_specs = transform_camera_path_specs(base_specs, scene_T)
-            if kitchen_0787_locked_mode:
-                all_path_specs = _build_kitchen_0787_locked_specs(
+            if scene_locked_profile:
+                all_path_specs = _build_scene_locked_specs(
                     config=config,
                     facility=facility,
                     scene_transform=(scene_T if has_transform else None),
+                    profile=scene_locked_profile,
                 )
                 if not all_path_specs:
                     return StageResult(
@@ -467,7 +523,7 @@ class RenderStage(PipelineStage):
                         status="failed",
                         elapsed_seconds=0,
                         detail=(
-                            "kitchen_0787 scene-locked mode could not build any target-grounded "
+                            f"{scene_locked_profile} scene-locked mode could not build any target-grounded "
                             "camera specs from task hints."
                         ),
                         outputs={
@@ -477,13 +533,15 @@ class RenderStage(PipelineStage):
                                 if facility.task_hints_path is not None
                                 else None
                             ),
-                            "error_code": "s1_kitchen_locked_no_specs",
+                            "scene_locked_profile": scene_locked_profile,
+                            "error_code": "s1_scene_locked_no_specs",
                         },
-                        metrics={"error_code": "s1_kitchen_locked_no_specs"},
+                        metrics={"error_code": "s1_scene_locked_no_specs"},
                     )
                 extra_specs_count = len(all_path_specs)
                 logger.info(
-                    "kitchen_0787 scene-locked mode active: using %d deterministic target-grounded specs",
+                    "%s scene-locked mode active: using %d deterministic target-grounded specs",
+                    scene_locked_profile,
                     len(all_path_specs),
                 )
             else:
@@ -745,12 +803,13 @@ class RenderStage(PipelineStage):
         if has_transform:
             base_specs = transform_camera_path_specs(base_specs, scene_T)
 
-        kitchen_0787_locked_mode = _is_kitchen_0787_scene(facility)
-        if kitchen_0787_locked_mode:
-            all_path_specs = _build_kitchen_0787_locked_specs(
+        scene_locked_profile = _resolve_scene_locked_profile(config, facility)
+        if scene_locked_profile:
+            all_path_specs = _build_scene_locked_specs(
                 config=config,
                 facility=facility,
                 scene_transform=(scene_T if has_transform else None),
+                profile=scene_locked_profile,
             )
         else:
             all_path_specs = base_specs + extra_specs
@@ -1025,7 +1084,8 @@ class RenderStage(PipelineStage):
             "task_hints_path": (
                 str(facility.task_hints_path) if facility.task_hints_path is not None else None
             ),
-            "kitchen_0787_locked_mode": bool(kitchen_0787_locked_mode),
+            "kitchen_0787_locked_mode": bool(scene_locked_profile == "kitchen_0787"),
+            "scene_locked_profile": scene_locked_profile,
             "targeted_only": bool(targeted_only),
             "probe_frames": int(probe_frames),
             "probe_resolution": [int(probe_resolution[0]), int(probe_resolution[1])],
@@ -1975,7 +2035,7 @@ class RenderStage(PipelineStage):
         start_offset: np.ndarray,
     ) -> tuple[List[object], int, int, int, int]:
         if _is_scene_locked_spec(path_spec):
-            poses = _build_kitchen_0787_locked_poses(
+            poses = _build_scene_locked_poses(
                 path_spec=path_spec,
                 num_frames=int(num_frames),
                 resolution=resolution,
@@ -3269,8 +3329,42 @@ def _is_kitchen_0787_scene(facility: FacilityConfig) -> bool:
     return "0787" in text and "kitchen" in text
 
 
+def _resolve_scene_locked_profile(
+    config: ValidationConfig,
+    facility: FacilityConfig,
+) -> str | None:
+    raw = str(getattr(config.render, "scene_locked_profile", "auto") or "auto").strip().lower()
+    if raw in {"", "none"}:
+        return None
+    if raw == "auto":
+        return "kitchen_0787" if _is_kitchen_0787_scene(facility) else None
+    return raw
+
+
+def _scene_locked_defaults(profile: str) -> Dict[str, object]:
+    return dict(_SCENE_LOCKED_DEFAULTS.get(str(profile).strip().lower(), {}))
+
+
+def _scene_locked_source_tag(profile: str) -> str:
+    defaults = _scene_locked_defaults(profile)
+    source_tag = str(defaults.get("source_tag", "")).strip()
+    if source_tag:
+        return source_tag
+    return f"{_SCENE_LOCKED_SOURCE_TAG_PREFIX}{str(profile).strip().lower()}"
+
+
+def _resolve_scene_locked_profile_from_spec(path_spec: CameraPathSpec) -> str | None:
+    source_tag = str(getattr(path_spec, "source_tag", "") or "").strip().lower()
+    if source_tag == "kitchen_0787_locked":
+        return "kitchen_0787"
+    if source_tag.startswith(_SCENE_LOCKED_SOURCE_TAG_PREFIX):
+        suffix = source_tag[len(_SCENE_LOCKED_SOURCE_TAG_PREFIX) :].strip()
+        return suffix or None
+    return None
+
+
 def _is_scene_locked_spec(path_spec: CameraPathSpec) -> bool:
-    return str(getattr(path_spec, "source_tag", "")).strip().lower() == _KITCHEN_0787_LOCKED_SOURCE_TAG
+    return _resolve_scene_locked_profile_from_spec(path_spec) is not None
 
 
 def _stable_phase_from_key(text: str) -> float:
@@ -3280,15 +3374,23 @@ def _stable_phase_from_key(text: str) -> float:
     return float(2.0 * np.pi * unit)
 
 
-def _resolve_locked_pose_table_entry(target_instance_id: object) -> Dict[str, object]:
+def _resolve_locked_pose_table_entry(
+    profile: str,
+    target_instance_id: object,
+) -> Dict[str, object]:
+    profile_key = str(profile or "").strip().lower()
+    if profile_key == "facility_a":
+        table = _FACILITY_A_LOCKED_TARGET_POSE_TABLE
+    else:
+        table = _KITCHEN_0787_LOCKED_TARGET_POSE_TABLE
     raw = str(target_instance_id or "").strip()
-    if raw and raw in _KITCHEN_0787_LOCKED_TARGET_POSE_TABLE:
-        return dict(_KITCHEN_0787_LOCKED_TARGET_POSE_TABLE[raw])
+    if raw and raw in table:
+        return dict(table[raw])
     m = re.search(r"([0-9]+)$", raw)
     if m:
         key = m.group(1)
-        if key in _KITCHEN_0787_LOCKED_TARGET_POSE_TABLE:
-            return dict(_KITCHEN_0787_LOCKED_TARGET_POSE_TABLE[key])
+        if key in table:
+            return dict(table[key])
     return {}
 
 
@@ -3322,19 +3424,26 @@ def _transform_scene_point(point: np.ndarray, scene_transform: Optional[np.ndarr
 def _resolve_kitchen_0787_locked_pose_params(
     path_spec: CameraPathSpec,
 ) -> tuple[np.ndarray, np.ndarray, float]:
-    entry = _resolve_locked_pose_table_entry(getattr(path_spec, "target_instance_id", None))
+    profile = _resolve_scene_locked_profile_from_spec(path_spec) or "kitchen_0787"
+    defaults = _scene_locked_defaults(profile)
+    default_eye_offset = tuple(defaults.get("eye_offset_m", _KITCHEN_0787_LOCKED_DEFAULT_EYE_OFFSET_M))
+    default_look_offset = tuple(defaults.get("look_at_offset_m", _KITCHEN_0787_LOCKED_DEFAULT_LOOK_AT_OFFSET_M))
+    default_motion_radius = float(
+        defaults.get("probe_motion_radius_m", _KITCHEN_0787_LOCKED_DEFAULT_PROBE_MOTION_RADIUS_M)
+    )
+    entry = _resolve_locked_pose_table_entry(profile, getattr(path_spec, "target_instance_id", None))
     motion_radius_raw = (
         getattr(path_spec, "locked_probe_motion_radius_m", None)
         if getattr(path_spec, "locked_probe_motion_radius_m", None) is not None
         else entry.get(
             "probe_motion_radius_m",
-            _KITCHEN_0787_LOCKED_DEFAULT_PROBE_MOTION_RADIUS_M,
+            default_motion_radius,
         )
     )
     try:
         motion_radius_m = float(motion_radius_raw)
     except Exception:
-        motion_radius_m = float(_KITCHEN_0787_LOCKED_DEFAULT_PROBE_MOTION_RADIUS_M)
+        motion_radius_m = default_motion_radius
     motion_radius_m = float(np.clip(motion_radius_m, 0.0, 0.05))
 
     target = _as_valid_point3(getattr(path_spec, "approach_point", None))
@@ -3350,8 +3459,8 @@ def _resolve_kitchen_0787_locked_pose_params(
             eye = np.asarray([0.0, 0.0, 1.2], dtype=np.float64)
             look_at = np.asarray([0.0, 0.0, 0.0], dtype=np.float64)
         else:
-            eye = target + np.asarray(_KITCHEN_0787_LOCKED_DEFAULT_EYE_OFFSET_M, dtype=np.float64)
-            look_at = target + np.asarray(_KITCHEN_0787_LOCKED_DEFAULT_LOOK_AT_OFFSET_M, dtype=np.float64)
+            eye = target + np.asarray(default_eye_offset, dtype=np.float64)
+            look_at = target + np.asarray(default_look_offset, dtype=np.float64)
 
     if float(np.linalg.norm(look_at - eye)) <= 1e-4:
         if target is not None and float(np.linalg.norm(target - eye)) > 1e-4:
@@ -3361,7 +3470,7 @@ def _resolve_kitchen_0787_locked_pose_params(
     return eye, look_at, motion_radius_m
 
 
-def _build_kitchen_0787_locked_poses(
+def _build_scene_locked_poses(
     *,
     path_spec: CameraPathSpec,
     num_frames: int,
@@ -3408,6 +3517,19 @@ def _build_kitchen_0787_locked_poses(
             )
         )
     return poses
+
+
+def _build_kitchen_0787_locked_poses(
+    *,
+    path_spec: CameraPathSpec,
+    num_frames: int,
+    resolution: tuple[int, int],
+) -> List[CameraPose]:
+    return _build_scene_locked_poses(
+        path_spec=path_spec,
+        num_frames=num_frames,
+        resolution=resolution,
+    )
 
 
 def _project_world_point_to_image(pose: object, xyz: np.ndarray) -> tuple[float, float] | None:
@@ -3482,17 +3604,19 @@ def _estimate_target_projected_size_ratio(
     return float(np.median(np.asarray(ratios, dtype=np.float64)))
 
 
-def _build_kitchen_0787_locked_specs(
+def _build_scene_locked_specs(
     *,
     config: ValidationConfig,
     facility: FacilityConfig,
     scene_transform: Optional[np.ndarray],
+    profile: str,
 ) -> List[CameraPathSpec]:
     """Build deterministic target-grounded specs for fixed eye/look-at capture."""
     task_hints_path = Path(facility.task_hints_path) if facility.task_hints_path else None
     if task_hints_path is None or not task_hints_path.exists():
         logger.warning(
-            "kitchen_0787 scene-locked mode skipped: missing task_hints_path (%s)",
+            "%s scene-locked mode skipped: missing task_hints_path (%s)",
+            profile,
             facility.task_hints_path,
         )
         return []
@@ -3501,7 +3625,8 @@ def _build_kitchen_0787_locked_specs(
         obbs = load_obbs_from_task_targets(task_hints_path)
     except Exception:
         logger.warning(
-            "kitchen_0787 scene-locked mode failed to load OBBs from %s",
+            "%s scene-locked mode failed to load OBBs from %s",
+            profile,
             task_hints_path,
             exc_info=True,
         )
@@ -3521,10 +3646,10 @@ def _build_kitchen_0787_locked_specs(
     selected_obbs, scoped_stats, role_by_instance = _select_task_scoped_obbs(
         obbs=obbs,
         tasks=tasks,
-        max_specs=int(_KITCHEN_0787_LOCKED_MAX_TARGETS),
+        max_specs=int(_scene_locked_defaults(profile).get("max_targets", _KITCHEN_0787_LOCKED_MAX_TARGETS)),
         context_per_target=1,
         overview_specs=0,
-        fallback_specs=int(_KITCHEN_0787_LOCKED_MAX_TARGETS),
+        fallback_specs=int(_scene_locked_defaults(profile).get("max_targets", _KITCHEN_0787_LOCKED_MAX_TARGETS)),
         center_dedupe_dist_m=float(max(0.0, config.render.stage1_probe_dedupe_center_dist_m)),
     )
     if not selected_obbs:
@@ -3550,7 +3675,7 @@ def _build_kitchen_0787_locked_specs(
         ext_arr = np.asarray(obb.extents, dtype=np.float64).reshape(-1)
         if ext_arr.size < 3:
             ext_arr = np.pad(ext_arr, (0, 3 - ext_arr.size), constant_values=0.1)
-        table_entry = _resolve_locked_pose_table_entry(obb.instance_id)
+        table_entry = _resolve_locked_pose_table_entry(profile, obb.instance_id)
         eye_abs = _as_valid_point3(table_entry.get("eye_world_m"))
         look_abs = _as_valid_point3(table_entry.get("look_at_world_m"))
         if eye_abs is not None and look_abs is not None:
@@ -3574,7 +3699,7 @@ def _build_kitchen_0787_locked_specs(
         probe_motion_radius_m = float(np.clip(probe_motion_radius_m, 0.0, 0.05))
 
         meta = {
-            "source_tag": _KITCHEN_0787_LOCKED_SOURCE_TAG,
+            "source_tag": _scene_locked_source_tag(profile),
             "target_instance_id": str(obb.instance_id) if str(obb.instance_id).strip() else None,
             "target_label": str(obb.label) if str(obb.label).strip() else None,
             "target_category": str(obb.category) if str(obb.category).strip() else None,
@@ -3603,7 +3728,8 @@ def _build_kitchen_0787_locked_specs(
         )
 
     logger.info(
-        "kitchen_0787 scene-locked spec builder selected %d OBBs (targets=%d context=%d fallback=%d) -> %d locked specs",
+        "%s scene-locked spec builder selected %d OBBs (targets=%d context=%d fallback=%d) -> %d locked specs",
+        profile,
         len(selected_obbs),
         int(scoped_stats.get("targets", 0)),
         int(scoped_stats.get("context", 0)),
@@ -3611,6 +3737,20 @@ def _build_kitchen_0787_locked_specs(
         len(specs),
     )
     return specs
+
+
+def _build_kitchen_0787_locked_specs(
+    *,
+    config: ValidationConfig,
+    facility: FacilityConfig,
+    scene_transform: Optional[np.ndarray],
+) -> List[CameraPathSpec]:
+    return _build_scene_locked_specs(
+        config=config,
+        facility=facility,
+        scene_transform=scene_transform,
+        profile="kitchen_0787",
+    )
 
 
 def _select_task_scoped_obbs(
@@ -4004,6 +4144,7 @@ def _quality_cache_key(
         f"{float(config.render.stage1_coverage_blur_laplacian_min):.6f}",
         str(bool(config.render.stage1_active_perception_enabled)),
         str(config.render.stage1_active_perception_scope),
+        str(config.render.scene_locked_profile),
         str(int(config.render.stage1_active_perception_max_loops)),
         str(bool(config.render.stage1_active_perception_fail_closed)),
         str(int(config.render.stage1_probe_frames_override)),

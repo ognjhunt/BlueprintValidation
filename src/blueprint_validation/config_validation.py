@@ -147,6 +147,7 @@ _RENDER_KEYS = {
     "stage1_repeat_dedupe_max_regen_attempts",
     "stage1_repeat_min_xy_jitter_m",
     "stage1_repeat_similarity_ssim_threshold",
+    "scene_locked_profile",
     "orientation_autocorrect_enabled",
     "orientation_autocorrect_mode",
     "manipulation_random_xy_offset_m",

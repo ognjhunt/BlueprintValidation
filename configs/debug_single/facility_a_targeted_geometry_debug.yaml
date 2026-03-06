@@ -1,0 +1,87 @@
+schema_version: v1
+project_name: Facility A Targeted Geometry Debug
+
+facilities:
+  facility_a:
+    name: Facility A
+    ply_path: ../../data/facilities/facility_a/splat.ply
+    task_hints_path: ../../data/outputs/facility_a_targeted_debug/facility_a/bootstrap/task_targets.manual.json
+    claim_benchmark_path: ../benchmarks/facility_a.fixed_claim.json
+    description: Target deployment facility world model
+
+render:
+  resolution: [320, 430]
+  fps: 8
+  num_frames: 33
+  camera_height_m: 1.2
+  camera_look_down_deg: 15.0
+  camera_paths:
+    - type: orbit
+      radius_m: 3.2
+  num_clips_per_path: 1
+  scene_aware: true
+  task_scoped_scene_aware: true
+  task_scoped_max_specs: 24
+  task_scoped_context_per_target: 2
+  task_scoped_overview_specs: 4
+  task_scoped_fallback_specs: 8
+  task_scoped_profile: dreamdojo
+  task_scoped_num_clips_per_path: 1
+  task_scoped_num_frames_override: 33
+  scene_locked_profile: facility_a
+  collision_check: true
+  voxel_size_m: 0.1
+  density_threshold: 3
+  min_clearance_m: 0.15
+  stage1_coverage_gate_enabled: false
+  stage1_quality_planner_enabled: true
+  stage1_quality_candidate_budget: medium
+  stage1_quality_autoretry_enabled: true
+  stage1_active_perception_enabled: true
+  stage1_active_perception_scope: targeted
+  stage1_active_perception_max_loops: 1
+  stage1_active_perception_fail_closed: true
+  stage1_probe_frames_override: 8
+
+robot_composite:
+  enabled: false
+
+gemini_polish:
+  enabled: false
+
+robosplat:
+  enabled: false
+
+robosplat_scan:
+  enabled: false
+
+splatsim:
+  enabled: false
+
+external_interaction:
+  enabled: false
+
+native_teacher:
+  enabled: false
+
+action_boost:
+  enabled: false
+
+policy_finetune:
+  enabled: false
+
+policy_rl_loop:
+  enabled: false
+
+wm_refresh_loop:
+  enabled: false
+
+rollout_dataset:
+  enabled: false
+
+policy_compare:
+  enabled: false
+
+eval_policy:
+  mode: research
+  headline_scope: wm_only

@@ -151,6 +151,7 @@ class RenderConfig:
     stage1_repeat_dedupe_max_regen_attempts: int = 2
     stage1_repeat_min_xy_jitter_m: float = 0.06
     stage1_repeat_similarity_ssim_threshold: float = 0.995
+    scene_locked_profile: str = "auto"  # auto|none|kitchen_0787|facility_a
     orientation_autocorrect_enabled: bool = True
     orientation_autocorrect_mode: str = "auto"  # auto|fail_fast|warn_only
     manipulation_random_xy_offset_m: float = 0.0
@@ -853,6 +854,7 @@ _ALLOWED_WM_REFRESH_SOURCE_CONDITIONS = {"baseline", "adapted"}
 _ALLOWED_MANIP_EVAL_MODES = {"overlay_marker", "raw"}
 _ALLOWED_STAGE1_QUALITY_CANDIDATE_BUDGETS = {"low", "medium", "high"}
 _ALLOWED_STAGE1_ACTIVE_PERCEPTION_SCOPES = {"all", "targeted", "manipulation"}
+_ALLOWED_SCENE_LOCKED_PROFILES = {"auto", "none", "kitchen_0787", "facility_a"}
 _ALLOWED_CLAIM_PROTOCOLS = {"none", "fixed_same_facility_uplift"}
 _ALLOWED_PRIMARY_ENDPOINTS = {"vlm_task_score", "task_success"}
 _ALLOWED_CLAIM_SPLIT_STRATEGIES = {"legacy", "disjoint_tasks_and_starts"}
@@ -879,6 +881,16 @@ def _parse_stage1_active_perception_scope(raw_value: Any) -> str:
     if value not in _ALLOWED_STAGE1_ACTIVE_PERCEPTION_SCOPES:
         allowed = ", ".join(sorted(_ALLOWED_STAGE1_ACTIVE_PERCEPTION_SCOPES))
         raise ValueError(f"render.stage1_active_perception_scope must be one of: {allowed}")
+    return value
+
+
+def _parse_scene_locked_profile(raw_value: Any) -> str:
+    value = str(raw_value or "auto").strip().lower()
+    if value in {"off", "false", "disabled"}:
+        value = "none"
+    if value not in _ALLOWED_SCENE_LOCKED_PROFILES:
+        allowed = ", ".join(sorted(_ALLOWED_SCENE_LOCKED_PROFILES))
+        raise ValueError(f"render.scene_locked_profile must be one of: {allowed}")
     return value
 
 
@@ -1104,6 +1116,9 @@ def _parse_render_config(raw: Dict[str, Any], base_dir: Path) -> RenderConfig:
         stage1_repeat_min_xy_jitter_m=float(raw.get("stage1_repeat_min_xy_jitter_m", 0.06)),
         stage1_repeat_similarity_ssim_threshold=float(
             raw.get("stage1_repeat_similarity_ssim_threshold", 0.995)
+        ),
+        scene_locked_profile=_parse_scene_locked_profile(
+            raw.get("scene_locked_profile", "auto")
         ),
         orientation_autocorrect_enabled=bool(raw.get("orientation_autocorrect_enabled", True)),
         orientation_autocorrect_mode=str(raw.get("orientation_autocorrect_mode", "auto")),
@@ -2233,6 +2248,9 @@ def load_config(path: Path) -> ValidationConfig:
     ):
         allowed = ", ".join(sorted(_ALLOWED_STAGE1_ACTIVE_PERCEPTION_SCOPES))
         raise ValueError(f"render.stage1_active_perception_scope must be one of: {allowed}")
+    if str(config.render.scene_locked_profile).strip().lower() not in _ALLOWED_SCENE_LOCKED_PROFILES:
+        allowed = ", ".join(sorted(_ALLOWED_SCENE_LOCKED_PROFILES))
+        raise ValueError(f"render.scene_locked_profile must be one of: {allowed}")
     if int(config.render.stage1_active_perception_max_loops) < 0:
         raise ValueError("render.stage1_active_perception_max_loops must be >= 0")
     if int(config.render.stage1_probe_frames_override) < 0:

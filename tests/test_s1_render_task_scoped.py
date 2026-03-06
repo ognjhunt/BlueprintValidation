@@ -313,6 +313,19 @@ def test_is_kitchen_0787_scene_detects_known_facility_tokens(tmp_path):
     assert _is_kitchen_0787_scene(fac) is True
 
 
+def test_resolve_scene_locked_profile_honors_explicit_facility_a(sample_config, tmp_path):
+    from blueprint_validation.config import FacilityConfig
+    from blueprint_validation.stages.s1_render import _resolve_scene_locked_profile
+
+    sample_config.render.scene_locked_profile = "facility_a"
+    fac = FacilityConfig(
+        name="Facility A",
+        ply_path=tmp_path / "facility_a" / "splat.ply",
+        task_hints_path=tmp_path / "facility_a" / "task_targets.manual.json",
+    )
+    assert _resolve_scene_locked_profile(sample_config, fac) == "facility_a"
+
+
 def test_build_kitchen_0787_locked_specs_is_target_grounded_and_deterministic(
     sample_config, tmp_path, monkeypatch
 ):
@@ -380,6 +393,57 @@ def test_build_kitchen_0787_locked_specs_is_target_grounded_and_deterministic(
         spec.locked_probe_motion_radius_m is not None and spec.locked_probe_motion_radius_m >= 0.0
         for spec in specs
     )
+
+
+def test_build_scene_locked_specs_facility_a_uses_placeholder_profile(
+    sample_config, tmp_path, monkeypatch
+):
+    from blueprint_validation.config import FacilityConfig
+    from blueprint_validation.rendering.scene_geometry import OrientedBoundingBox
+    from blueprint_validation.stages.s1_render import _build_scene_locked_specs
+
+    hints = tmp_path / "task_targets.manual.json"
+    hints.write_text("{}")
+    fac = FacilityConfig(
+        name="Facility A",
+        ply_path=tmp_path / "facility_a.ply",
+        task_hints_path=hints,
+    )
+
+    obbs = [
+        OrientedBoundingBox(
+            instance_id="101",
+            label="bowl",
+            center=np.asarray([0.0, 0.0, 0.8], dtype=np.float64),
+            extents=np.asarray([0.3, 0.3, 0.2], dtype=np.float64),
+            axes=np.eye(3, dtype=np.float64),
+            confidence=0.9,
+            category="manipulation",
+        ),
+    ]
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render.load_obbs_from_task_targets",
+        lambda _path: list(obbs),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render._build_task_prompt_pool",
+        lambda **_kwargs: ["pick up bowl_101"],
+    )
+
+    specs = _build_scene_locked_specs(
+        config=sample_config,
+        facility=fac,
+        scene_transform=None,
+        profile="facility_a",
+    )
+
+    assert specs
+    assert specs[0].source_tag == "scene_locked:facility_a"
+    assert specs[0].type == "file"
+    assert specs[0].target_instance_id == "101"
+    assert isinstance(specs[0].locked_eye_point, list) and len(specs[0].locked_eye_point) == 3
+    assert isinstance(specs[0].locked_look_at_point, list) and len(specs[0].locked_look_at_point) == 3
 
 
 def test_build_render_poses_scene_locked_uses_fixed_eye_lookat_without_collision_nudge(

@@ -99,6 +99,7 @@ def test_config_defaults():
     assert config.render.stage1_probe_tiebreak_extra_votes == 2
     assert config.render.stage1_probe_tiebreak_spread_threshold == pytest.approx(3.0)
     assert config.render.stage1_keep_probe_videos is False
+    assert config.render.scene_locked_profile == "auto"
     assert config.render.orientation_autocorrect_enabled is True
     assert config.render.orientation_autocorrect_mode == "auto"
     assert config.render.manipulation_random_xy_offset_m == pytest.approx(0.0)
@@ -1265,6 +1266,25 @@ def test_config_rejects_invalid_stage1_active_perception_scope(tmp_path):
     )
 
     with pytest.raises(ValueError, match="stage1_active_perception_scope"):
+        load_config(config_path)
+
+
+def test_config_rejects_invalid_scene_locked_profile(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "bad_scene_locked_profile.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Bad Scene Locked Profile",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "render": {"scene_locked_profile": "always"},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="scene_locked_profile"):
         load_config(config_path)
 
 
