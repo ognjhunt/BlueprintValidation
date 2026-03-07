@@ -34,9 +34,6 @@ robosplat:
 robosplat_scan:
   enabled: false
 
-splatsim:
-  enabled: false
-
 external_interaction:
   enabled: false
 

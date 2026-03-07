@@ -240,11 +240,11 @@ policy_adapter:
     train_script: scripts/train.py
     extra_train_args: []
 
-# ---- Stage 1f: External interaction ingest (PolaRiS-style, eval-first) ----
+# ---- Stage 1f: External interaction ingest ----
 external_interaction:
   enabled: false
   manifest_path: ../data/external_interaction/interaction_manifest.json
-  source_name: polaris
+  source_name: external
 
 # pi0.5 switch example (required refs; preflight will fail if OpenVLA-like refs remain):
 # policy_adapter:

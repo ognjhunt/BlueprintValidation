@@ -2066,14 +2066,6 @@ def run_preflight(
         )
 
     checks.append(check_external_interaction_manifest(config))
-    if bool(config.external_interaction.enabled) and bool(config.splatsim.enabled):
-        checks.append(
-            PreflightCheck(
-                name="external_interaction:merge_with_splatsim",
-                passed=True,
-                detail="Stage 1f will merge S1e + external manifests with clip dedupe/source labels.",
-            )
-        )
     if bool(config.policy_compare.enabled):
         facility_count = len(config.facilities)
         checks.append(

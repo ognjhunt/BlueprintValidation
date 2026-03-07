@@ -1,4 +1,4 @@
-"""Stage 1f: Ingest external interaction manifests (e.g., PolaRiS outputs)."""
+"""Stage 1f: Ingest external interaction manifests."""
 
 from __future__ import annotations
 
@@ -28,10 +28,9 @@ def _normalize_clip(
     return normalized
 
 
-def _merge_clip_rows(
+def _normalize_external_clips(
     *,
     external_clips: List[dict],
-    splatsim_clips: List[dict],
     external_source_name: str,
 ) -> Tuple[List[dict], int, int]:
     merged: List[dict] = []
@@ -78,12 +77,6 @@ def _merge_clip_rows(
         stage_name="s1f_external_interaction_ingest",
         default_source_name=external_source_name,
     )
-    _ingest(
-        splatsim_clips,
-        source_tag="splatsim",
-        stage_name="s1e_splatsim_interaction",
-        default_source_name="splatsim",
-    )
     return merged, renamed_count, duplicate_count
 
 
@@ -103,7 +96,7 @@ class ExternalInteractionIngestStage(PipelineStage):
         work_dir: Path,
         previous_results: Dict[str, StageResult],
     ) -> StageResult:
-        del facility
+        del facility, previous_results
 
         ext_cfg = config.external_interaction
         if not bool(ext_cfg.enabled):
@@ -148,62 +141,24 @@ class ExternalInteractionIngestStage(PipelineStage):
                 detail=f"Invalid external interaction manifest: {exc}",
             )
 
-        splatsim_manifest_path: Path | None = None
-        splatsim_manifest: dict | None = None
-        s1e_result = previous_results.get("s1e_splatsim_interaction")
-        if s1e_result and s1e_result.status == "success":
-            splatsim_raw = str(s1e_result.outputs.get("manifest_path", "")).strip()
-            splatsim_manifest_path = (
-                Path(splatsim_raw) if splatsim_raw else work_dir / "splatsim" / "interaction_manifest.json"
-            )
-            if not splatsim_manifest_path.exists():
-                return StageResult(
-                    stage_name=self.name,
-                    status="failed",
-                    elapsed_seconds=0,
-                    detail=(
-                        "SplatSim stage reported success but manifest is missing: "
-                        f"{splatsim_manifest_path}"
-                    ),
-                )
-            try:
-                splatsim_manifest = load_and_validate_manifest(
-                    splatsim_manifest_path,
-                    manifest_type="stage1_source",
-                    require_existing_paths=True,
-                )
-            except ManifestValidationError as exc:
-                return StageResult(
-                    stage_name=self.name,
-                    status="failed",
-                    elapsed_seconds=0,
-                    detail=f"Invalid SplatSim manifest while merging sources: {exc}",
-                )
-
         stage_dir = work_dir / "external_interaction"
         stage_dir.mkdir(parents=True, exist_ok=True)
         output_manifest = stage_dir / "interaction_manifest.json"
 
         source_name = str(ext_cfg.source_name or "external").strip() or "external"
         external_clips = list(external_manifest.get("clips", []))
-        splatsim_clips = list(splatsim_manifest.get("clips", [])) if splatsim_manifest else []
-        normalized_clips, renamed_count, duplicate_count = _merge_clip_rows(
+        normalized_clips, renamed_count, duplicate_count = _normalize_external_clips(
             external_clips=external_clips,
-            splatsim_clips=splatsim_clips,
             external_source_name=source_name,
         )
 
         normalized_manifest = {
             "source_name": source_name,
             "source_manifest": str(manifest_path),
-            "source_manifests": [
-                str(manifest_path),
-                *([str(splatsim_manifest_path)] if splatsim_manifest_path is not None else []),
-            ],
+            "source_manifests": [str(manifest_path)],
             "augmentation_type": "external_interaction",
             "num_source_clips": len(normalized_clips),
             "num_external_source_clips": len(external_clips),
-            "num_splatsim_source_clips": len(splatsim_clips),
             "num_duplicate_rows_dropped": duplicate_count,
             "num_clip_names_renamed": renamed_count,
             "num_generated_clips": 0,
@@ -221,12 +176,10 @@ class ExternalInteractionIngestStage(PipelineStage):
                 "source_manifest": str(manifest_path),
                 "source_manifests": normalized_manifest["source_manifests"],
                 "source_name": source_name,
-                "merged_with_splatsim": bool(splatsim_manifest is not None),
             },
             metrics={
                 "num_clips": len(normalized_clips),
                 "num_external_source_clips": len(external_clips),
-                "num_splatsim_source_clips": len(splatsim_clips),
                 "num_duplicate_rows_dropped": duplicate_count,
                 "num_clip_names_renamed": renamed_count,
                 "source_name": source_name,

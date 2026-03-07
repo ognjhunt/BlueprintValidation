@@ -19,7 +19,6 @@ from .stages.s1_render import RenderStage
 from .stages.s1b_robot_composite import RobotCompositeStage
 from .stages.s1c_gemini_polish import GeminiPolishStage
 from .stages.s1d_gaussian_augment import GaussianAugmentStage
-from .stages.s1e_splatsim_interaction import SplatSimInteractionStage
 from .stages.s1f_external_interaction_ingest import ExternalInteractionIngestStage
 from .stages.s2_enrich import EnrichStage
 from .stages.s3_finetune import FinetuneStage
@@ -161,7 +160,6 @@ class ValidationPipeline:
             RobotCompositeStage(),  # S1b: URDF robot arm composite
             GeminiPolishStage(),  # S1c: optional Gemini photorealism polish
             GaussianAugmentStage(),  # S1d: Full RoboSplat-default augmentation
-            SplatSimInteractionStage(),  # S1e: Optional PyBullet interaction augmentation
             ExternalInteractionIngestStage(),  # S1f: Optional external interaction ingest
             EnrichStage(),  # S2: Cosmos Transfer variants
             FinetuneStage(),  # S3: DreamDojo LoRA fine-tune

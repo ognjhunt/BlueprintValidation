@@ -225,7 +225,7 @@ policy_adapter:
 external_interaction:
   enabled: false
   manifest_path: /models/inputs/external_interaction/interaction_manifest.json
-  source_name: polaris
+  source_name: external
 
 eval_visual:
   metrics: [psnr, ssim, lpips]

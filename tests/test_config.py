@@ -56,6 +56,26 @@ render:
         load_config(config_path)
 
 
+def test_load_config_rejects_removed_splatsim_key(tmp_path):
+    from blueprint_validation.config import load_config
+
+    config_path = tmp_path / "removed_splatsim.yaml"
+    config_path.write_text(
+        """
+project_name: Test
+facilities:
+  a:
+    name: A
+    ply_path: /tmp/a.ply
+splatsim:
+  enabled: false
+""".strip()
+    )
+
+    with pytest.raises(ValueError, match="splatsim"):
+        load_config(config_path)
+
+
 def test_config_defaults():
     from blueprint_validation.config import ValidationConfig
 
@@ -180,8 +200,6 @@ def test_config_defaults():
     assert config.robosplat.enabled is True
     assert config.robosplat.backend == "auto"
     assert config.robosplat_scan.enabled is True
-    assert config.splatsim.enabled is False
-    assert config.splatsim.mode == "hybrid"
     assert config.policy_rl_loop.enabled is False
     assert config.policy_rl_loop.policy_refine_near_miss_fraction == pytest.approx(0.30)
     assert config.policy_rl_loop.policy_refine_hard_negative_fraction == pytest.approx(0.10)
@@ -405,14 +423,6 @@ def test_config_with_all_sections(tmp_path):
             "max_steps": 100,
         },
         "policy_adapter": {"name": "openvla_oft"},
-        "splatsim": {
-            "enabled": True,
-            "mode": "strict",
-            "per_zone_rollouts": 3,
-            "horizon_steps": 40,
-            "min_successful_rollouts_per_zone": 2,
-            "fallback_to_prior_manifest": False,
-        },
         "policy_rl_loop": {
             "enabled": True,
             "policy_refine_near_miss_fraction": 0.25,
@@ -591,9 +601,6 @@ def test_config_with_all_sections(tmp_path):
     assert config.eval_policy.vlm_judge.video_metadata_fps == pytest.approx(12.0)
     assert config.policy_finetune.enabled is True
     assert config.policy_finetune.max_steps == 100
-    assert config.splatsim.enabled is True
-    assert config.splatsim.mode == "strict"
-    assert config.splatsim.per_zone_rollouts == 3
     assert config.rollout_dataset.seed == 99
     assert config.rollout_dataset.selection_mode == "success_near_miss_hard"
     assert config.rollout_dataset.near_miss_min_task_score == pytest.approx(4.0)

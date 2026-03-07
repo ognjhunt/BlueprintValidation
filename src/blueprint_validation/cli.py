@@ -424,23 +424,6 @@ def augment_robosplat(ctx: click.Context, facility: str) -> None:
     click.echo(f"RoboSplat augment complete: {result.status} ({result.elapsed_seconds:.1f}s)")
 
 
-@cli.command("simulate-interaction")
-@click.option("--facility", required=True, help="Facility ID.")
-@click.pass_context
-def simulate_interaction(ctx: click.Context, facility: str) -> None:
-    """Stage 1e: Optional PyBullet interaction-validated clip generation."""
-    from .stages.s1e_splatsim_interaction import SplatSimInteractionStage
-
-    config = ctx.obj["config"]
-    fac = _get_facility(ctx, facility)
-    work_dir = _get_stage_work_dir(ctx, facility)
-
-    stage = SplatSimInteractionStage()
-    result = stage.execute(config, fac, work_dir, {})
-    result.save(work_dir / "s1e_splatsim_interaction_result.json")
-    click.echo(f"SplatSim interaction complete: {result.status} ({result.elapsed_seconds:.1f}s)")
-
-
 @cli.command("ingest-external-interaction")
 @click.option("--facility", required=True, help="Facility ID.")
 @click.pass_context
@@ -855,7 +838,6 @@ def status(ctx: click.Context) -> None:
         "s1b_robot_composite",
         "s1c_gemini_polish",
         "s1d_gaussian_augment",
-        "s1e_splatsim_interaction",
         "s1f_external_interaction_ingest",
         "s2_enrich",
         "s3_finetune",

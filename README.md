@@ -20,7 +20,6 @@ PLY file (from BlueprintCapturePipeline)
   → Stage 1b (optional): Composite URDF robot arm with camera extrinsics
   → Stage 1c (optional): Gemini image polish on composited clips
   → Stage 1d (optional): Full RoboSplat-default 3D Gaussian augmentation (hybrid fallback)
-  → Stage 1e (optional): Minimal SplatSim interaction clips (PyBullet, fallback-safe)
   → Stage 2: Enrich with Cosmos Transfer 2.5 (5-10 variants per clip)
   → Stage 3: Fine-tune DreamDojo-2B on enriched video
   → Stage 4: Frozen policy rollouts (baseline vs adapted world model) + VLM scoring
@@ -130,7 +129,6 @@ blueprint-validate compose-robot --facility facility_a    # optional
 blueprint-validate polish-gemini --facility facility_a    # optional
 blueprint-validate augment-gaussian --facility facility_a # optional Stage 1d (full RoboSplat default)
 blueprint-validate augment-robosplat --facility facility_a # alias
-blueprint-validate simulate-interaction --facility facility_a # optional Stage 1e
 blueprint-validate ingest-external-interaction --facility facility_a # optional Stage 1f
 blueprint-validate enrich --facility facility_a
 blueprint-validate finetune --facility facility_a
@@ -314,7 +312,6 @@ Hook env vars passed per stage:
 - Python 3.10+
 - CUDA GPU (H100 recommended for full pipeline)
 - `uv` package manager
-- (Optional) `pybullet` for Stage 1e SplatSim interaction generation (`pip install "blueprint-validation[manipulation]"`)
 - (Optional) pinned RoboSplat vendor repo at `./vendor/robosplat` for vendor backend path
 - Google Gemini API key (for VLM judge)
 - HuggingFace account (for model downloads)
@@ -387,15 +384,15 @@ Backward compatibility:
 - Legacy `eval_policy.openvla_model` and `eval_policy.openvla_checkpoint` are still accepted and mapped to `model_name` / `checkpoint_path` with deprecation warnings.
 - Legacy stage output keys (`adapted_openvla_checkpoint*`) are still emitted alongside canonical adapter-neutral keys (`adapted_policy_checkpoint*`).
 
-## External Interaction Ingest (Eval-First)
+## External Interaction Ingest
 
-Stage 1f allows you to ingest external interaction manifests (for example PolaRiS-produced clips) without coupling the runtime to PolaRiS directly.
+Stage 1f allows you to ingest external interaction manifests without coupling the runtime to a specific external simulator or evaluator.
 
 Config:
 
 - `external_interaction.enabled: true`
 - `external_interaction.manifest_path: <stage1_source_manifest.json>`
-- `external_interaction.source_name: polaris`
+- `external_interaction.source_name: external`
 
 Behavior:
 
@@ -403,7 +400,7 @@ Behavior:
 - It writes normalized output to:
   - `<work_dir>/<facility>/external_interaction/interaction_manifest.json`
 - Stage 2 source resolution precedence is:
-  - `s1f_external_interaction_ingest` > `s1e_splatsim_interaction` > `s1d_gaussian_augment` > ...
+  - `s1f_external_interaction_ingest` > `s1d_gaussian_augment` > `s1c_gemini_polish` > `s1b_robot_composite` > `s1_render`
 
 ## Manipulation-Focused Setup
 

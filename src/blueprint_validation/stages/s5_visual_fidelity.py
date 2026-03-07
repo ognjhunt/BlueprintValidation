@@ -170,10 +170,6 @@ def _resolve_source_manifest_source(
         previous_results=previous_results or {},
         candidates=[
             ManifestCandidate(
-                stage_name="s1e_splatsim_interaction",
-                manifest_relpath=Path("splatsim/interaction_manifest.json"),
-            ),
-            ManifestCandidate(
                 stage_name="s1d_gaussian_augment",
                 manifest_relpath=Path("gaussian_augment/augmented_manifest.json"),
             ),

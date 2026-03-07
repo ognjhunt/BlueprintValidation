@@ -561,16 +561,6 @@ class RoboSplatConfig:
 
 
 @dataclass
-class SplatSimConfig:
-    enabled: bool = False
-    mode: str = "hybrid"  # hybrid|strict
-    per_zone_rollouts: int = 2
-    horizon_steps: int = 30
-    min_successful_rollouts_per_zone: int = 1
-    fallback_to_prior_manifest: bool = True
-
-
-@dataclass
 class ExternalInteractionConfig:
     enabled: bool = False
     manifest_path: Optional[Path] = None
@@ -749,7 +739,6 @@ class ValidationConfig:
     policy_adapter: PolicyAdapterConfig = field(default_factory=PolicyAdapterConfig)
     robosplat: RoboSplatConfig = field(default_factory=RoboSplatConfig)
     robosplat_scan: RoboSplatScanConfig = field(default_factory=RoboSplatScanConfig)
-    splatsim: SplatSimConfig = field(default_factory=SplatSimConfig)
     external_interaction: ExternalInteractionConfig = field(default_factory=ExternalInteractionConfig)
     native_teacher: NativeTeacherConfig = field(default_factory=NativeTeacherConfig)
     claim_portfolio: ClaimPortfolioConfig = field(default_factory=ClaimPortfolioConfig)
@@ -1690,17 +1679,6 @@ def load_config(path: Path) -> ValidationConfig:
                 vendor_repo_path=_resolve_path("./vendor/robosplat", base_dir),
                 vendor_ref="",
             )
-
-    if "splatsim" in raw:
-        ss = raw["splatsim"]
-        config.splatsim = SplatSimConfig(
-            enabled=ss.get("enabled", False),
-            mode=str(ss.get("mode", "hybrid")),
-            per_zone_rollouts=int(ss.get("per_zone_rollouts", 2)),
-            horizon_steps=int(ss.get("horizon_steps", 30)),
-            min_successful_rollouts_per_zone=int(ss.get("min_successful_rollouts_per_zone", 1)),
-            fallback_to_prior_manifest=ss.get("fallback_to_prior_manifest", True),
-        )
 
     if "external_interaction" in raw:
         ei = raw["external_interaction"]

@@ -103,9 +103,6 @@ policy_adapter:
     base_model_name: openvla/openvla-7b
     base_checkpoint_path: ../data/checkpoints/openvla-7b
 
-splatsim:
-  enabled: false
-
 external_interaction:
   enabled: false
 

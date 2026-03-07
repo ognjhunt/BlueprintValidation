@@ -20,7 +20,6 @@ _TOP_LEVEL_KEYS = {
     "policy_adapter",
     "robosplat",
     "robosplat_scan",
-    "splatsim",
     "external_interaction",
     "native_teacher",
     "claim_portfolio",
@@ -453,15 +452,6 @@ _ROBOSPLAT_SCAN_KEYS = {
     "temporal_speed_factors",
 }
 
-_SPLATSIM_KEYS = {
-    "enabled",
-    "mode",
-    "per_zone_rollouts",
-    "horizon_steps",
-    "min_successful_rollouts_per_zone",
-    "fallback_to_prior_manifest",
-}
-
 _EXTERNAL_INTERACTION_KEYS = {"enabled", "manifest_path", "source_name"}
 _NATIVE_TEACHER_KEYS = {
     "enabled",
@@ -728,7 +718,6 @@ def validate_config_keys(raw: Mapping[str, object], *, config_path: Path) -> Non
     for section, allowed in (
         ("robosplat", _ROBOSPLAT_KEYS),
         ("robosplat_scan", _ROBOSPLAT_SCAN_KEYS),
-        ("splatsim", _SPLATSIM_KEYS),
         ("external_interaction", _EXTERNAL_INTERACTION_KEYS),
         ("native_teacher", _NATIVE_TEACHER_KEYS),
         ("claim_portfolio", _CLAIM_PORTFOLIO_KEYS),

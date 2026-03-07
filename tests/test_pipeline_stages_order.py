@@ -7,7 +7,6 @@ def test_pipeline_stage_smoke_imports(sample_config, tmp_path):
     """Verify core stage classes import and expose stable names."""
     from blueprint_validation.pipeline import ValidationPipeline
     from blueprint_validation.stages.s0_task_hints_bootstrap import TaskHintsBootstrapStage
-    from blueprint_validation.stages.s1e_splatsim_interaction import SplatSimInteractionStage
     from blueprint_validation.stages.s1f_external_interaction_ingest import (
         ExternalInteractionIngestStage,
     )
@@ -21,7 +20,6 @@ def test_pipeline_stage_smoke_imports(sample_config, tmp_path):
     ValidationPipeline(sample_config, tmp_path / "outputs")
 
     assert TaskHintsBootstrapStage().name == "s0_task_hints_bootstrap"
-    assert SplatSimInteractionStage().name == "s1e_splatsim_interaction"
     assert ExternalInteractionIngestStage().name == "s1f_external_interaction_ingest"
     assert PolicyFinetuneStage().name == "s3b_policy_finetune"
     assert PolicyRLLoopStage().name == "s3c_policy_rl_loop"
@@ -37,7 +35,6 @@ def test_stage_names_are_unique():
     from blueprint_validation.stages.s1b_robot_composite import RobotCompositeStage
     from blueprint_validation.stages.s1c_gemini_polish import GeminiPolishStage
     from blueprint_validation.stages.s1d_gaussian_augment import GaussianAugmentStage
-    from blueprint_validation.stages.s1e_splatsim_interaction import SplatSimInteractionStage
     from blueprint_validation.stages.s1f_external_interaction_ingest import (
         ExternalInteractionIngestStage,
     )
@@ -62,7 +59,6 @@ def test_stage_names_are_unique():
         RobotCompositeStage(),
         GeminiPolishStage(),
         GaussianAugmentStage(),
-        SplatSimInteractionStage(),
         ExternalInteractionIngestStage(),
         EnrichStage(),
         FinetuneStage(),
@@ -125,7 +121,6 @@ def test_pipeline_reruns_s4_after_successful_s3d(sample_config, tmp_path, monkey
     monkeypatch.setattr(pipeline_mod, "RobotCompositeStage", lambda: OrderedStage("s1b_robot_composite"))
     monkeypatch.setattr(pipeline_mod, "GeminiPolishStage", lambda: OrderedStage("s1c_gemini_polish"))
     monkeypatch.setattr(pipeline_mod, "GaussianAugmentStage", lambda: OrderedStage("s1d_gaussian_augment"))
-    monkeypatch.setattr(pipeline_mod, "SplatSimInteractionStage", lambda: OrderedStage("s1e_splatsim_interaction"))
     monkeypatch.setattr(
         pipeline_mod,
         "ExternalInteractionIngestStage",

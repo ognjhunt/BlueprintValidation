@@ -58,12 +58,11 @@ These are priors, not guarantees. Validate the current repo claim per-location w
 | B. Stage 1 coverage densification + longer windows | Yes (in-repo knobs) | Yes | Small | None | +3 to +8 / +1 to +4 |
 | C. Stage 2 multi-view + scene-index retrieval at scale | Yes (in-repo scaffolding) | Yes | Small-Med | None | +2 to +6 / +1 to +3 |
 | D. Synthetic hard-negative loop (WMPO-style, but fully synthetic rollouts) | Yes (build in current stack) | Yes | Medium | Synthetic failures only | +5 to +12 / +3 to +8 |
-| E. SplatSim integration path | Yes ([repo](https://github.com/qureshinomaan/SplatSim)) | Yes (if seeded from existing captures + synthetic trajectories) | Medium-Large | Simulation trajectories/demos (synthetic acceptable) | +4 to +12 / +3 to +10 |
-| F. GSWorld integration path | Yes ([repo](https://github.com/luccachiang/GSWorld)) | Yes (can run from existing captures) | Large | Existing site images/splats + synthetic policies | +6 to +15 / +4 to +12 |
-| G. DISCOVERSE integration path | Yes ([repo](https://github.com/TATP-233/DISCOVERSE)) | Yes (no additional real rollouts required) | Large | Scene assets + synthetic training loops | +6 to +16 / +4 to +12 |
-| H. MimicGen/RoboCasa synthetic demo expansion | Yes ([MimicGen](https://github.com/NVlabs/mimicgen), [RoboCasa docs](https://robocasa.ai/docs/use_cases/mimicgen.html)) | Yes (if source demos are synthetic/existing) | Medium | Source demonstrations (can be synthetic/programmatic) | +5 to +14 / +3 to +9 |
-| I. WMPO full stack adoption | Yes ([repo](https://github.com/WM-PO/WMPO)) | Mostly (can train without new real interaction after base) | Large | Heavy compute + large released data/checkpoints | +6 to +18 / +4 to +12 |
-| J. World-VLA-Loop direct reproduction | **Not fully** (repo says "In preparation") | Not ideal under current constraints | Large | SANS-like near-success + teleop in original method | N/A until code/data mature |
+| E. GSWorld integration path | Yes ([repo](https://github.com/luccachiang/GSWorld)) | Yes (can run from existing captures) | Large | Existing site images/splats + synthetic policies | +6 to +15 / +4 to +12 |
+| F. DISCOVERSE integration path | Yes ([repo](https://github.com/TATP-233/DISCOVERSE)) | Yes (no additional real rollouts required) | Large | Scene assets + synthetic training loops | +6 to +16 / +4 to +12 |
+| G. MimicGen/RoboCasa synthetic demo expansion | Yes ([MimicGen](https://github.com/NVlabs/mimicgen), [RoboCasa docs](https://robocasa.ai/docs/use_cases/mimicgen.html)) | Yes (if source demos are synthetic/existing) | Medium | Source demonstrations (can be synthetic/programmatic) | +5 to +14 / +3 to +9 |
+| H. WMPO full stack adoption | Yes ([repo](https://github.com/WM-PO/WMPO)) | Mostly (can train without new real interaction after base) | Large | Heavy compute + large released data/checkpoints | +6 to +18 / +4 to +12 |
+| I. World-VLA-Loop direct reproduction | **Not fully** (repo says "In preparation") | Not ideal under current constraints | Large | SANS-like near-success + teleop in original method | N/A until code/data mature |
 
 ## What To Prioritize First (Highest ROI Under Constraints)
 
@@ -111,7 +110,6 @@ Pick one implementation path first:
 
 - GSWorld if you want stronger closed-loop + ManiSkill ecosystem alignment
 - DISCOVERSE if you want a broad modular 3DGS + MuJoCo pipeline
-- SplatSim if you want a narrower, faster-to-prototype sim2real path
 
 Target uplift in current repo (incremental over Phases 1-2):
 
@@ -161,12 +159,6 @@ Use this template to keep work consistent across sessions:
 - Project page outlines a 4-phase loop and explicitly includes SANS curation mainly via manual teleoperation ([project](https://showlab.github.io/World-VLA-Loop/)).
 - Public GitHub currently states source code is "In preparation" ([repo](https://github.com/showlab/World-VLA-Loop)).
 - Conclusion: use as design inspiration, not as immediate drop-in.
-
-### SplatSim
-
-- Public repository and installation docs are available ([repo](https://github.com/qureshinomaan/SplatSim)).
-- README describes dependency on trajectories and real2sim assets for examples.
-- Conclusion: implementable now; needs careful adapter layer to fit this repo.
 
 ### GSWorld
 

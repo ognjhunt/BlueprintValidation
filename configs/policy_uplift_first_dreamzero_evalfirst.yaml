@@ -63,22 +63,17 @@ policy_adapter:
     allow_training: true
     train_script: scripts/train.py
 
-# External physics interaction ingest (PolaRiS-style eval-first) is integrated but OFF by default.
+# External interaction ingest is integrated but OFF by default.
 external_interaction:
   enabled: false
   manifest_path: ../data/external_interaction/interaction_manifest.json
-  source_name: polaris
+  source_name: external
 
 native_teacher:
   enabled: true
   include_generic_control: true
   generate_corrections: true
   planner_horizon_steps: 16
-
-# Keep existing fallback interaction generation available.
-splatsim:
-  enabled: true
-  mode: hybrid
 
 # Optional: disable action-boost autoswitch if you want manual stage control.
 action_boost:

@@ -112,7 +112,6 @@ def _write_fixture_config(path: Path, *, facility_id: str, scene_ply: Path) -> N
         "gemini_polish": {"enabled": False},
         "robosplat": {"enabled": False},
         "robosplat_scan": {"enabled": False},
-        "splatsim": {"enabled": False},
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")

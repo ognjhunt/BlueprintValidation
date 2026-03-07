@@ -9,7 +9,6 @@ FACILITY_STAGE_RESULT_NAMES = [
     "s1b_robot_composite",
     "s1c_gemini_polish",
     "s1d_gaussian_augment",
-    "s1e_splatsim_interaction",
     "s1f_external_interaction_ingest",
     "s2_enrich",
     "s3_finetune",

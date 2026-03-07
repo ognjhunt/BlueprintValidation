@@ -204,33 +204,27 @@ def test_s2_enrich_reads_robosplat_manifest(sample_config, tmp_path, monkeypatch
     assert manifest["clips"][0]["clip_name"] == "clip_000_rb00"
 
 
-def test_s2_manifest_resolution_prefers_s1e(tmp_path):
+def test_s2_manifest_resolution_prefers_s1d(tmp_path):
     from blueprint_validation.stages.s2_enrich import _resolve_render_manifest
 
-    splat = tmp_path / "splatsim" / "interaction_manifest.json"
     gauss = tmp_path / "gaussian_augment" / "augmented_manifest.json"
     render = tmp_path / "renders" / "render_manifest.json"
-    splat.parent.mkdir(parents=True, exist_ok=True)
     gauss.parent.mkdir(parents=True, exist_ok=True)
     render.parent.mkdir(parents=True, exist_ok=True)
-    splat.write_text("{}")
     gauss.write_text("{}")
     render.write_text("{}")
 
-    assert _resolve_render_manifest(tmp_path) == splat
+    assert _resolve_render_manifest(tmp_path) == gauss
 
 
-def test_s2_manifest_resolution_prefers_s1f_over_s1e_and_s1d(tmp_path):
+def test_s2_manifest_resolution_prefers_s1f_over_s1d(tmp_path):
     from blueprint_validation.stages.s2_enrich import _resolve_render_manifest
 
     ext = tmp_path / "external_interaction" / "interaction_manifest.json"
-    splat = tmp_path / "splatsim" / "interaction_manifest.json"
     gauss = tmp_path / "gaussian_augment" / "augmented_manifest.json"
     ext.parent.mkdir(parents=True, exist_ok=True)
-    splat.parent.mkdir(parents=True, exist_ok=True)
     gauss.parent.mkdir(parents=True, exist_ok=True)
     ext.write_text("{}")
-    splat.write_text("{}")
     gauss.write_text("{}")
 
     assert _resolve_render_manifest(tmp_path) == ext
@@ -241,11 +235,8 @@ def test_s2_manifest_resolution_prefers_s1f_in_previous_results(tmp_path):
     from blueprint_validation.stages.s2_enrich import _resolve_render_manifest_source
 
     ext = tmp_path / "external_interaction" / "interaction_manifest.json"
-    splat = tmp_path / "splatsim" / "interaction_manifest.json"
     ext.parent.mkdir(parents=True, exist_ok=True)
-    splat.parent.mkdir(parents=True, exist_ok=True)
     ext.write_text("{}")
-    splat.write_text("{}")
 
     prev = {
         "s1f_external_interaction_ingest": StageResult(
@@ -253,12 +244,6 @@ def test_s2_manifest_resolution_prefers_s1f_in_previous_results(tmp_path):
             status="success",
             elapsed_seconds=0,
             outputs={"manifest_path": str(ext)},
-        ),
-        "s1e_splatsim_interaction": StageResult(
-            stage_name="s1e_splatsim_interaction",
-            status="success",
-            elapsed_seconds=0,
-            outputs={"manifest_path": str(splat)},
         ),
     }
     source = _resolve_render_manifest_source(tmp_path, prev)
@@ -294,22 +279,6 @@ def test_s2_enrich_prefers_previous_results_manifest(sample_config, tmp_path, mo
     )
 
     # Stale higher-priority manifest on disk should be ignored when previous_results are present.
-    stale_splatsim = tmp_path / "splatsim" / "interaction_manifest.json"
-    stale_splatsim.parent.mkdir(parents=True, exist_ok=True)
-    write_json(
-        {
-            "facility": "Test Facility",
-            "clips": [
-                {
-                    "clip_name": "clip_stale",
-                    "video_path": str(video_path),
-                    "depth_video_path": str(depth_path),
-                }
-            ],
-        },
-        stale_splatsim,
-    )
-
     monkeypatch.setattr(
         "blueprint_validation.stages.s2_enrich.get_variants",
         lambda **kwargs: [VariantSpec(name="v1", prompt="test variant")],

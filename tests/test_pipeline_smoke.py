@@ -166,7 +166,6 @@ def _patch_pipeline_stages_with_dummies(monkeypatch, call_counts):
         "RobotCompositeStage": "s1b_robot_composite",
         "GeminiPolishStage": "s1c_gemini_polish",
         "GaussianAugmentStage": "s1d_gaussian_augment",
-        "SplatSimInteractionStage": "s1e_splatsim_interaction",
         "ExternalInteractionIngestStage": "s1f_external_interaction_ingest",
         "EnrichStage": "s2_enrich",
         "FinetuneStage": "s3_finetune",
@@ -278,7 +277,7 @@ def test_pipeline_post_stage_sync_hook(sample_config, tmp_path, monkeypatch):
     pipeline.run_all(resume_from_results=False)
 
     lines = hook_log.read_text().strip().splitlines()
-    assert len(lines) == 21
+    assert len(lines) == 20
     assert any(line.startswith("test_facility/s1_render|success") for line in lines)
 
 
@@ -372,9 +371,6 @@ def test_pipeline_action_boost_require_full_converts_skipped_to_failed(
     monkeypatch.setattr(pipeline_mod, "GeminiPolishStage", lambda: DummyStage("s1c_gemini_polish"))
     monkeypatch.setattr(
         pipeline_mod, "GaussianAugmentStage", lambda: DummyStage("s1d_gaussian_augment")
-    )
-    monkeypatch.setattr(
-        pipeline_mod, "SplatSimInteractionStage", lambda: DummyStage("s1e_splatsim_interaction")
     )
     monkeypatch.setattr(
         pipeline_mod,

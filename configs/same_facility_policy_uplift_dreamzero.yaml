@@ -98,9 +98,6 @@ policy_adapter:
     allow_training: true
     train_script: scripts/train.py
 
-splatsim:
-  enabled: false
-
 external_interaction:
   enabled: false
 
