@@ -256,6 +256,32 @@ def test_pipeline_resume_fails_fast_on_corrupt_stage_result(sample_config, tmp_p
     assert call_counts.get("s1_render", 0) == 0
 
 
+def test_pipeline_resume_rejects_tampered_checkpoint_path(sample_config, tmp_path, monkeypatch):
+    call_counts = {}
+    pipeline_mod = _patch_pipeline_stages_with_dummies(monkeypatch, call_counts)
+    sample_config.cloud.max_cost_usd = 0
+    work_dir = tmp_path / "outputs"
+    pipeline = pipeline_mod.ValidationPipeline(sample_config, work_dir)
+    pipeline.run_all(resume_from_results=False)
+
+    tampered_path = work_dir / "test_facility" / "s3_finetune_result.json"
+    payload = json.loads(tampered_path.read_text())
+    payload["outputs"]["adapted_checkpoint_path"] = str(tmp_path / "evil_checkpoint")
+    tampered_path.write_text(json.dumps(payload))
+
+    call_counts.clear()
+    results = pipeline.run_all(resume_from_results=True)
+
+    stage_key = "test_facility/s3_finetune"
+    assert results[stage_key].status == "failed"
+    assert "outside allowed work directories" in results[stage_key].detail
+
+    summary = json.loads((work_dir / "pipeline_summary.json").read_text())
+    provenance = summary["stages"][stage_key]["provenance"]
+    assert provenance["source"] == "resume_corrupt"
+    assert call_counts.get("s3_finetune", 0) == 0
+
+
 def test_pipeline_post_stage_sync_hook(sample_config, tmp_path, monkeypatch):
     call_counts = {}
     pipeline_mod = _patch_pipeline_stages_with_dummies(monkeypatch, call_counts)

@@ -221,7 +221,11 @@ class ValidationPipeline:
 
                 if resume_from_results:
                     try:
-                        existing = self._load_existing_stage_result(result_path)
+                        existing = self._load_existing_stage_result(
+                            result_path,
+                            expected_stage_name=stage.name,
+                            facility_work_dir=fac_dir,
+                        )
                     except ValueError as exc:
                         detail = str(exc)
                         logger.error(detail)
@@ -628,7 +632,13 @@ class ValidationPipeline:
             timestamp=result.timestamp,
         )
 
-    def _load_existing_stage_result(self, result_path: Path) -> StageResult | None:
+    def _load_existing_stage_result(
+        self,
+        result_path: Path,
+        *,
+        expected_stage_name: str,
+        facility_work_dir: Path,
+    ) -> StageResult | None:
         if not result_path.exists():
             return None
         try:
@@ -637,15 +647,26 @@ class ValidationPipeline:
             raise ValueError(
                 f"Corrupt resume artifact at {result_path}: failed to parse JSON ({exc})."
             ) from exc
+        stage_name = str(payload.get("stage_name") or result_path.stem.replace("_result", ""))
+        if stage_name != expected_stage_name:
+            raise ValueError(
+                "Corrupt resume artifact at "
+                f"{result_path}: stage_name={stage_name!r} does not match expected {expected_stage_name!r}."
+            )
+
+        outputs = dict(payload.get("outputs") or {})
+        self._validate_resumed_outputs(
+            outputs=outputs,
+            result_path=result_path,
+            facility_work_dir=facility_work_dir,
+        )
 
         try:
             return StageResult(
-                stage_name=str(
-                    payload.get("stage_name") or result_path.stem.replace("_result", "")
-                ),
+                stage_name=stage_name,
                 status=str(payload.get("status", "failed")),
                 elapsed_seconds=float(payload.get("elapsed_seconds", 0.0)),
-                outputs=dict(payload.get("outputs") or {}),
+                outputs=outputs,
                 metrics=dict(payload.get("metrics") or {}),
                 detail=str(payload.get("detail") or ""),
                 timestamp=str(payload.get("timestamp") or datetime.now(timezone.utc).isoformat()),
@@ -654,6 +675,39 @@ class ValidationPipeline:
             raise ValueError(
                 f"Corrupt resume artifact at {result_path}: malformed stage result payload ({exc})."
             ) from exc
+
+    def _validate_resumed_outputs(
+        self,
+        *,
+        outputs: dict,
+        result_path: Path,
+        facility_work_dir: Path,
+    ) -> None:
+        path_keys = {
+            "adapted_checkpoint_path",
+            "adapted_policy_checkpoint",
+            "adapted_openvla_checkpoint",
+            "adapted_policy_checkpoint_rl",
+            "adapted_openvla_checkpoint_rl",
+            "adapted_world_checkpoint_rl",
+            "final_policy_checkpoint",
+            "final_world_checkpoint",
+            "lora_weights_path",
+            "checkpoint_dir",
+        }
+        allowed_roots = {facility_work_dir.resolve(), self.work_dir.resolve()}
+        for key in path_keys:
+            raw_value = outputs.get(key)
+            if not raw_value:
+                continue
+            candidate = Path(str(raw_value).strip())
+            resolved = candidate.resolve()
+            if not any(resolved.is_relative_to(root) for root in allowed_roots):
+                raise ValueError(
+                    "Corrupt resume artifact at "
+                    f"{result_path}: outputs[{key!r}]={str(candidate)!r} is outside "
+                    f"allowed work directories ({facility_work_dir} / {self.work_dir})."
+                )
 
     def _maybe_run_post_stage_sync_hook(
         self,
