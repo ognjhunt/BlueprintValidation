@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -130,6 +131,10 @@ def test_active_probe_selects_candidate_that_passes_threshold(sample_config, tmp
     assert selected.radius_m == spec_b.radius_m
     assert probe_meta["vlm_probe_passed"] is True
     assert probe_meta["vlm_probe_attempts"] >= 2
+    assert probe_meta["selected_probe_render_video_path"] is not None
+    assert probe_meta["selected_probe_scoring_video_path"] is not None
+    assert Path(str(probe_meta["selected_probe_render_video_path"])).exists()
+    assert Path(str(probe_meta["selected_probe_scoring_video_path"])).exists()
 
 
 def test_active_probe_fail_closed_on_scoring_error(sample_config, tmp_path, monkeypatch):
@@ -729,6 +734,275 @@ def test_active_probe_rejects_target_missing_vlm_tags_for_target_grounded(
         row.get("status") == "target_presence_reject" and row.get("reason") == "vlm_target_missing"
         for row in rows
     )
+
+
+def test_active_probe_trusts_geometry_for_scene_locked_facility_a_target_presence(
+    sample_config, tmp_path, monkeypatch
+):
+    from blueprint_validation.config import CameraPathSpec
+    from blueprint_validation.evaluation.vlm_judge import Stage1ProbeScore
+    from blueprint_validation.stages.s1_render import RenderStage
+
+    sample_config.render.stage1_active_perception_max_loops = 0
+    sample_config.render.stage1_probe_min_viable_pose_ratio = 0.1
+    sample_config.render.stage1_probe_min_unique_positions = 1
+    sample_config.render.stage1_probe_dedupe_enabled = False
+
+    spec = CameraPathSpec(
+        type="file",
+        radius_m=1.0,
+        approach_point=[0.0, 0.0, -1.0],
+        source_tag="scene_locked:facility_a",
+        target_label="bookshelf_right",
+        target_role="targets",
+        target_extents_m=[0.2, 0.4, 0.6],
+        locked_eye_point=[0.0, 0.0, 0.0],
+        locked_look_at_point=[0.0, 0.0, -1.0],
+        locked_probe_motion_radius_m=0.0,
+    )
+    ranked = [SimpleNamespace(spec=spec, score=0.9, metrics={})]
+
+    monkeypatch.setattr(
+        RenderStage,
+        "_build_render_poses",
+        lambda self, **kwargs: ([_pose(), _pose()], 13, 13, 13, 0),
+    )
+
+    def _fake_render_video(**kwargs):
+        clip_name = kwargs["clip_name"]
+        video = tmp_path / f"{clip_name}.mp4"
+        depth = tmp_path / f"{clip_name}_depth.mp4"
+        video.write_bytes(b"x")
+        depth.write_bytes(b"x")
+        return SimpleNamespace(video_path=video, depth_video_path=depth)
+
+    monkeypatch.setattr("blueprint_validation.stages.s1_render.render_video", _fake_render_video)
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render._ensure_probe_h264_for_scoring",
+        lambda video_path, min_frames: SimpleNamespace(
+            path=video_path,
+            codec_name="h264",
+            decoded_frames=int(min_frames),
+            width=128,
+            height=96,
+            content_monochrome_warning=False,
+        ),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render.score_stage1_probe",
+        lambda **kwargs: Stage1ProbeScore(
+            task_score=9.0,
+            visual_score=8.0,
+            spatial_score=8.0,
+            issue_tags=["target_missing", "target_off_center"],
+            reasoning="vlm thought the shelf target was unclear",
+            raw_response="{}",
+        ),
+    )
+
+    stage = RenderStage()
+    selected, probe_meta = stage._run_active_perception_probe(
+        config=sample_config,
+        splat=object(),
+        clip_name="clip_000_file",
+        initial_spec=spec,
+        ranked_candidates=ranked,
+        scene_center=np.array([0.0, 0.0, 0.0], dtype=np.float64),
+        occupancy=None,
+        render_dir=tmp_path,
+        camera_height=1.0,
+        look_down_deg=20.0,
+        resolution=(96, 128),
+        start_offset=np.zeros(3, dtype=np.float64),
+        fps=8,
+        scene_T=None,
+        facility_description="",
+        target_presence_enforced=True,
+        probe_scores_path=tmp_path / "probe_scores.jsonl",
+        locked_mode=True,
+    )
+
+    assert selected.type == "file"
+    assert probe_meta["vlm_probe_passed"] is True
+
+
+def test_active_probe_scene_locked_facility_a_geometry_can_override_low_vlm_scores(
+    sample_config, tmp_path, monkeypatch
+):
+    from blueprint_validation.config import CameraPathSpec
+    from blueprint_validation.evaluation.vlm_judge import Stage1ProbeScore
+    from blueprint_validation.stages.s1_render import RenderStage
+
+    sample_config.render.stage1_active_perception_max_loops = 0
+    sample_config.render.stage1_probe_min_viable_pose_ratio = 0.1
+    sample_config.render.stage1_probe_min_unique_positions = 1
+    sample_config.render.stage1_probe_dedupe_enabled = False
+
+    spec = CameraPathSpec(
+        type="file",
+        radius_m=1.0,
+        approach_point=[0.0, 0.0, -1.0],
+        source_tag="scene_locked:facility_a",
+        target_label="bookshelf_right",
+        target_role="targets",
+        target_extents_m=[0.2, 0.4, 0.6],
+        locked_eye_point=[0.0, 0.0, 0.0],
+        locked_look_at_point=[0.0, 0.0, -1.0],
+        locked_probe_motion_radius_m=0.0,
+    )
+    ranked = [SimpleNamespace(spec=spec, score=0.9, metrics={})]
+
+    monkeypatch.setattr(
+        RenderStage,
+        "_build_render_poses",
+        lambda self, **kwargs: ([_pose(), _pose()], 13, 13, 13, 0),
+    )
+
+    def _fake_render_video(**kwargs):
+        clip_name = kwargs["clip_name"]
+        video = tmp_path / f"{clip_name}.mp4"
+        depth = tmp_path / f"{clip_name}_depth.mp4"
+        video.write_bytes(b"x")
+        depth.write_bytes(b"x")
+        return SimpleNamespace(video_path=video, depth_video_path=depth)
+
+    monkeypatch.setattr("blueprint_validation.stages.s1_render.render_video", _fake_render_video)
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render._ensure_probe_h264_for_scoring",
+        lambda video_path, min_frames: SimpleNamespace(
+            path=video_path,
+            codec_name="h264",
+            decoded_frames=int(min_frames),
+            width=128,
+            height=96,
+            content_monochrome_warning=False,
+        ),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render.score_stage1_probe",
+        lambda **kwargs: Stage1ProbeScore(
+            task_score=2.0,
+            visual_score=3.0,
+            spatial_score=2.0,
+            issue_tags=["blur_or_soft_focus", "camera_too_far", "target_off_center"],
+            reasoning="shelf clip still looks a bit far",
+            raw_response="{}",
+        ),
+    )
+
+    stage = RenderStage()
+    selected, probe_meta = stage._run_active_perception_probe(
+        config=sample_config,
+        splat=object(),
+        clip_name="clip_000_file",
+        initial_spec=spec,
+        ranked_candidates=ranked,
+        scene_center=np.array([0.0, 0.0, 0.0], dtype=np.float64),
+        occupancy=None,
+        render_dir=tmp_path,
+        camera_height=1.0,
+        look_down_deg=20.0,
+        resolution=(96, 128),
+        start_offset=np.zeros(3, dtype=np.float64),
+        fps=8,
+        scene_T=None,
+        facility_description="",
+        target_presence_enforced=True,
+        probe_scores_path=tmp_path / "probe_scores.jsonl",
+        locked_mode=True,
+    )
+
+    assert selected.type == "file"
+    assert probe_meta["vlm_probe_passed"] is False
+
+
+def test_active_probe_scene_locked_facility_a_geometry_override_requires_min_semantic_floor(
+    sample_config, tmp_path, monkeypatch
+):
+    from blueprint_validation.config import CameraPathSpec
+    from blueprint_validation.evaluation.vlm_judge import Stage1ProbeScore
+    from blueprint_validation.stages.s1_render import RenderStage
+
+    sample_config.render.stage1_active_perception_max_loops = 0
+    sample_config.render.stage1_probe_min_viable_pose_ratio = 0.1
+    sample_config.render.stage1_probe_min_unique_positions = 1
+    sample_config.render.stage1_probe_dedupe_enabled = False
+
+    spec = CameraPathSpec(
+        type="file",
+        radius_m=1.0,
+        approach_point=[0.0, 0.0, -1.0],
+        source_tag="scene_locked:facility_a",
+        target_label="bookshelf_right",
+        target_role="targets",
+        target_extents_m=[0.2, 0.4, 0.6],
+        locked_eye_point=[0.0, 0.0, 0.0],
+        locked_look_at_point=[0.0, 0.0, -1.0],
+        locked_probe_motion_radius_m=0.0,
+    )
+    ranked = [SimpleNamespace(spec=spec, score=0.9, metrics={})]
+
+    monkeypatch.setattr(
+        RenderStage,
+        "_build_render_poses",
+        lambda self, **kwargs: ([_pose(), _pose()], 13, 13, 13, 0),
+    )
+
+    def _fake_render_video(**kwargs):
+        clip_name = kwargs["clip_name"]
+        video = tmp_path / f"{clip_name}.mp4"
+        depth = tmp_path / f"{clip_name}_depth.mp4"
+        video.write_bytes(b"x")
+        depth.write_bytes(b"x")
+        return SimpleNamespace(video_path=video, depth_video_path=depth)
+
+    monkeypatch.setattr("blueprint_validation.stages.s1_render.render_video", _fake_render_video)
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render._ensure_probe_h264_for_scoring",
+        lambda video_path, min_frames: SimpleNamespace(
+            path=video_path,
+            codec_name="h264",
+            decoded_frames=int(min_frames),
+            width=128,
+            height=96,
+            content_monochrome_warning=False,
+        ),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render.score_stage1_probe",
+        lambda **kwargs: Stage1ProbeScore(
+            task_score=7.0,
+            visual_score=4.0,
+            spatial_score=7.0,
+            issue_tags=["blur_or_soft_focus", "camera_too_far"],
+            reasoning="shelf clip is soft but semantically usable",
+            raw_response="{}",
+        ),
+    )
+
+    selected, probe_meta = RenderStage()._run_active_perception_probe(
+        config=sample_config,
+        splat=object(),
+        clip_name="clip_000_file",
+        initial_spec=spec,
+        ranked_candidates=ranked,
+        scene_center=np.array([0.0, 0.0, 0.0], dtype=np.float64),
+        occupancy=None,
+        render_dir=tmp_path,
+        camera_height=1.0,
+        look_down_deg=20.0,
+        resolution=(96, 128),
+        start_offset=np.zeros(3, dtype=np.float64),
+        fps=8,
+        scene_T=None,
+        facility_description="",
+        target_presence_enforced=True,
+        probe_scores_path=tmp_path / "probe_scores.jsonl",
+        locked_mode=True,
+    )
+
+    assert selected.type == "file"
+    assert probe_meta["vlm_probe_passed"] is True
 
 
 def test_stage1_bypasses_warmup_cache_when_active_perception_enabled(

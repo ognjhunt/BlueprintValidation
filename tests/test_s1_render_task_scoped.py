@@ -396,15 +396,22 @@ def test_build_kitchen_0787_locked_specs_is_target_grounded_and_deterministic(
     )
 
 
-def test_build_scene_locked_specs_facility_a_uses_placeholder_profile(
+def test_build_scene_locked_specs_facility_a_builds_target_grounded_locked_pose(
     sample_config, tmp_path, monkeypatch
 ):
     from blueprint_validation.config import FacilityConfig
     from blueprint_validation.rendering.scene_geometry import OrientedBoundingBox
     from blueprint_validation.stages.s1_render import _build_scene_locked_specs
 
-    hints = tmp_path / "task_targets.manual.json"
-    hints.write_text("{}")
+    hints = tmp_path / "task_targets.synthetic.json"
+    hints.write_text(
+        json.dumps(
+            {
+                "tasks": [{"task_id": "Pick up the book from the shelf"}],
+                "manipulation_candidates": [{"instance_id": "101", "label": "book", "category": "manipulation"}],
+            }
+        )
+    )
     fac = FacilityConfig(
         name="Facility A",
         ply_path=tmp_path / "facility_a.ply",
@@ -414,7 +421,7 @@ def test_build_scene_locked_specs_facility_a_uses_placeholder_profile(
     obbs = [
         OrientedBoundingBox(
             instance_id="101",
-            label="bowl",
+            label="book",
             center=np.asarray([0.0, 0.0, 0.8], dtype=np.float64),
             extents=np.asarray([0.3, 0.3, 0.2], dtype=np.float64),
             axes=np.eye(3, dtype=np.float64),
@@ -429,7 +436,7 @@ def test_build_scene_locked_specs_facility_a_uses_placeholder_profile(
     )
     monkeypatch.setattr(
         "blueprint_validation.stages.s1_render._build_task_prompt_pool",
-        lambda **_kwargs: ["pick up bowl_101"],
+        lambda **_kwargs: ["pick up book_101"],
     )
 
     specs = _build_scene_locked_specs(
@@ -445,9 +452,68 @@ def test_build_scene_locked_specs_facility_a_uses_placeholder_profile(
     assert specs[0].target_instance_id == "101"
     assert isinstance(specs[0].locked_eye_point, list) and len(specs[0].locked_eye_point) == 3
     assert isinstance(specs[0].locked_look_at_point, list) and len(specs[0].locked_look_at_point) == 3
-    assert specs[0].locked_eye_point == pytest.approx([0.95, -0.55, 1.18])
-    assert specs[0].locked_look_at_point == pytest.approx([0.0, 0.0, 0.85])
-    assert specs[0].locked_probe_motion_radius_m == pytest.approx(0.008)
+    assert np.all(np.isfinite(np.asarray(specs[0].locked_eye_point, dtype=np.float64)))
+    assert np.all(np.isfinite(np.asarray(specs[0].locked_look_at_point, dtype=np.float64)))
+    assert specs[0].locked_look_at_point[0] == pytest.approx(0.0)
+    assert specs[0].locked_look_at_point[1] == pytest.approx(0.0)
+    assert 0.70 <= float(specs[0].locked_look_at_point[2]) <= 0.80
+    assert float(np.linalg.norm(np.asarray(specs[0].locked_eye_point) - np.asarray(specs[0].locked_look_at_point))) > 0.5
+    assert specs[0].locked_probe_motion_radius_m == pytest.approx(0.12)
+
+
+def test_build_scene_locked_specs_facility_a_rejects_non_bookshelf_semantics(
+    sample_config, tmp_path, monkeypatch
+):
+    from blueprint_validation.config import FacilityConfig
+    from blueprint_validation.rendering.scene_geometry import OrientedBoundingBox
+    from blueprint_validation.stages.s1_render import _build_scene_locked_specs
+
+    hints = tmp_path / "facility_a" / "task_targets.manual.json"
+    hints.parent.mkdir(parents=True, exist_ok=True)
+    hints.write_text(
+        json.dumps(
+            {
+                "tasks": [{"task_id": "Pick up the bottle from the shelf and place it in the target zone"}],
+                "manipulation_candidates": [{"instance_id": "102", "label": "bottle", "category": "manipulation"}],
+                "navigation_hints": [{"instance_id": "region::pantry_shelf", "label": "pantry_shelf", "category": "navigation"}],
+            }
+        )
+    )
+    fac = FacilityConfig(
+        name="Facility A",
+        ply_path=tmp_path / "dummy.ply",
+        task_hints_path=hints,
+        description="facility_a",
+    )
+    obbs = [
+        OrientedBoundingBox(
+            instance_id="102",
+            label="bottle",
+            center=np.asarray([0.0, 0.0, 1.0], dtype=np.float64),
+            extents=np.asarray([0.2, 0.2, 0.4], dtype=np.float64),
+            axes=np.eye(3, dtype=np.float64),
+            confidence=0.9,
+            category="manipulation",
+        )
+    ]
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render.load_obbs_from_task_targets",
+        lambda _path: list(obbs),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render._build_task_prompt_pool",
+        lambda **_kwargs: ["pick up bottle_102"],
+    )
+
+    specs = _build_scene_locked_specs(
+        config=sample_config,
+        facility=fac,
+        scene_transform=None,
+        profile="facility_a",
+    )
+
+    assert specs == []
 
 
 def test_build_render_poses_scene_locked_uses_fixed_eye_lookat_without_collision_nudge(
@@ -622,6 +688,53 @@ def test_generate_and_render_scene_locked_forces_single_clip_and_locked_probe(
     assert len(entries) == 1
     assert captured["locked_mode"] is True
     np.testing.assert_allclose(captured["start_offset"], np.zeros(3, dtype=np.float64), atol=1e-10)
+
+
+def test_annotate_entry_quality_ignores_approach_bins_for_scene_locked_facility_a(
+    sample_config, monkeypatch
+):
+    from blueprint_validation.stages.s1_render import RenderStage
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s1_render.evaluate_clip_quality",
+        lambda **kwargs: {
+            "target_visibility_ratio": 1.0,
+            "target_center_band_ratio": 1.0,
+            "target_approach_angle_bins": 1,
+            "target_visible_frames": 25,
+            "target_total_frames": 25,
+            "target_center_band_frames": 25,
+            "blur_laplacian_score": 300.0,
+            "clip_quality_score": 0.92,
+            "quality_gate_passed": False,
+            "quality_reject_reasons": ["approach_angle_bins_low"],
+        },
+    )
+
+    entry = {
+        "clip_name": "clip_001_file",
+        "path_type": "file",
+        "path_context": {
+            "source_tag": "scene_locked:facility_a",
+            "approach_point": [0.0, 0.0, -1.0],
+            "target_label": "bookshelf_right",
+            "target_role": "targets",
+        },
+        "video_path": "unused.mp4",
+        "camera_path": "unused.json",
+        "resolution": [64, 80],
+    }
+
+    passed = RenderStage()._annotate_entry_quality(
+        config=sample_config,
+        clip_entry=entry,
+        quality_retries_used=0,
+        candidate_count_evaluated=1,
+    )
+
+    assert passed is True
+    assert entry["quality_gate_passed"] is True
+    assert entry["quality_reject_reasons"] == []
 
 
 def test_run_geometry_canary_reports_target_presence(sample_config, tmp_path, monkeypatch):

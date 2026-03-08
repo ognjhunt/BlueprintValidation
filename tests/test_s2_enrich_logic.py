@@ -39,3 +39,17 @@ def test_s2_select_source_clips_explicit_fail_closed_metadata(sample_config):
     assert selected == []
     assert meta["fail_closed"] is True
     assert meta["fallback"] == "explicit_clip_not_found"
+
+
+def test_s2_build_stage2_prompt_for_clip_appends_expected_focus_once():
+    from blueprint_validation.stages.s2_enrich import _build_stage2_prompt_for_clip
+
+    base = "Preserve scene geometry and lighting while keeping the environment stable and realistic."
+    focus = "Primary target focus: keep bookshelf_right centered and clearly visible for most of the clip."
+
+    prompt = _build_stage2_prompt_for_clip(base, focus)
+    assert "Preserve the same room identity and camera framing." in prompt
+    assert focus in prompt
+
+    prompt2 = _build_stage2_prompt_for_clip(prompt, focus)
+    assert prompt2 == prompt

@@ -5,11 +5,12 @@ facilities:
   facility_a:
     name: Pilot Facility A
     ply_path: ../data/facilities/facility_a/splat.ply
+    task_hints_path: ../data/outputs/audit_stage0_same/facility_a/bootstrap/task_targets.synthetic.json
     description: Single-scene cheap first pass for directional world-model uplift only.
     video_orientation_fix: rotate180
 
 render:
-  resolution: [480, 640]
+  resolution: [720, 1280]
   fps: 10
   num_frames: 25
   camera_height_m: 1.0
@@ -45,6 +46,7 @@ render:
   stage1_active_perception_scope: targeted
   stage1_active_perception_max_loops: 1
   stage1_active_perception_fail_closed: true
+  stage1_probe_resolution_scale: 0.5
   camera_paths:
     - type: file
       path: ./camera_paths/facility_a_book_shelf_locked.json

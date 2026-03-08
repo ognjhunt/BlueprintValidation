@@ -1413,6 +1413,46 @@ def test_select_source_clips_task_targeted_fallback_orders_manipulation_first(sa
     assert meta["fallback"] == "missing_task_hints"
 
 
+def test_select_source_clips_all_prefers_target_grounded_manipulation(sample_config):
+    from blueprint_validation.stages.s2_enrich import _select_source_clips
+
+    sample_config.enrich.max_source_clips = 1
+    sample_config.enrich.source_clip_selection_mode = "all"
+    facility = list(sample_config.facilities.values())[0]
+
+    selected, meta = _select_source_clips(
+        render_manifest={
+            "clips": [
+                {
+                    "clip_name": "clip_000_nav",
+                    "clip_quality_score": 0.99,
+                    "blur_laplacian_score": 2000.0,
+                    "path_context": {
+                        "target_role": "targets",
+                        "target_category": "navigation",
+                        "target_label": "shelf",
+                    },
+                },
+                {
+                    "clip_name": "clip_001_manip",
+                    "clip_quality_score": 0.80,
+                    "blur_laplacian_score": 1200.0,
+                    "path_context": {
+                        "target_role": "context",
+                        "target_category": "manipulation",
+                        "target_label": "book",
+                    },
+                },
+            ]
+        },
+        config=sample_config,
+        facility=facility,
+    )
+
+    assert [c["clip_name"] for c in selected] == ["clip_001_manip"]
+    assert meta["selection_mode"] == "all"
+
+
 def test_select_source_clips_explicit_missing_name_fails_closed(sample_config):
     from blueprint_validation.stages.s2_enrich import _select_source_clips
 

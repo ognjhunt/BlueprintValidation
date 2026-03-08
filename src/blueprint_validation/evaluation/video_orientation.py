@@ -9,7 +9,7 @@ from ..common import (
     sanitize_filename_component,
     sanitize_filename_component_with_hash,
 )
-from ..video_io import open_mp4_writer
+from ..video_io import open_mp4_writer, write_video_frames
 
 logger = get_logger("evaluation.video_orientation")
 
@@ -85,33 +85,43 @@ def transform_video_orientation(
     else:
         height, width = first.shape[:2]
 
-    writer = open_mp4_writer(
-        output_path=output_path,
-        fps=float(fps),
-        frame_size=(width, height),
-        is_color=not force_grayscale,
-    )
-    if not writer.isOpened():
-        cap.release()
-        raise RuntimeError(f"Could not open output video writer for {output_path}")
-
-    frame_count = 0
+    frames = [first]
     try:
-        frame = first
         while True:
-            if force_grayscale and frame.ndim == 3:
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            writer.write(frame)
-            frame_count += 1
             ok, frame = cap.read()
             if not ok or frame is None:
                 break
             if force_grayscale and frame.ndim == 3:
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            frame = transform_video_frame(frame, mode)
+            frames.append(transform_video_frame(frame, mode))
     finally:
         cap.release()
-        writer.release()
+
+    frame_count = len(frames)
+    if force_grayscale:
+        writer = open_mp4_writer(
+            output_path=output_path,
+            fps=float(fps),
+            frame_size=(width, height),
+            is_color=False,
+        )
+        if not writer.isOpened():
+            raise RuntimeError(f"Could not open output video writer for {output_path}")
+        try:
+            for frame in frames:
+                writer.write(frame)
+        finally:
+            writer.release()
+    else:
+        rgb_frames = [cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) for frame in frames]
+        write_video_frames(
+            output_path=output_path,
+            fps=float(fps),
+            frames=rgb_frames,
+            is_color=True,
+            ffmpeg_crf=12,
+            ffmpeg_preset="slow",
+        )
 
     if frame_count <= 0:
         raise RuntimeError(f"No frames written during orientation transform: {input_path}")

@@ -624,11 +624,16 @@ class EnrichStage(PipelineStage):
                         controlnet_inputs=attempt_controlnet_inputs,
                         guidance=attempt_guidance,
                     )
+                    variant_prompt = _build_stage2_prompt_for_clip(
+                        base_prompt=variant.prompt,
+                        expected_focus_text=expected_focus_text,
+                    )
+                    attempt_variant = replace(variant, prompt=variant_prompt)
 
                     outputs = enrich_clip(
                         video_path=prepared.video_path,
                         depth_path=prepared.depth_path,
-                        variants=[variant],
+                        variants=[attempt_variant],
                         output_dir=enrich_dir,
                         clip_name=clip_name,
                         config=attempt_cfg,
@@ -850,6 +855,7 @@ class EnrichStage(PipelineStage):
                             "interframe_delta_mean": interframe_delta_mean,
                             "source_expected_focus_text": source_expected_focus_text,
                             "expected_focus_text": expected_focus_text,
+                            "resolved_variant_prompt": variant_prompt,
                             "vlm_quality_task_score": vlm_task_score,
                             "vlm_quality_visual_score": vlm_visual_score,
                             "vlm_quality_spatial_score": vlm_spatial_score,
@@ -1263,7 +1269,7 @@ def _select_source_clips(
                 fallback_reason = "explicit_clip_not_found"
                 selected = []
     else:
-        selected = clips
+        selected = sorted(clips, key=_source_clip_priority_key)
 
     if (
         not selected
@@ -1316,6 +1322,52 @@ def _fallback_task_targeted_clip_order(clips: List[dict]) -> List[dict]:
         else:
             non_manipulation.append(clip)
     return manipulation + non_manipulation
+
+
+def _build_stage2_prompt_for_clip(base_prompt: str, expected_focus_text: str) -> str:
+    prompt = str(base_prompt or "").strip()
+    focus = str(expected_focus_text or "").strip()
+    if not focus:
+        return prompt
+    if focus.lower() in prompt.lower():
+        return prompt
+    prefix = "Preserve the same room identity and camera framing."
+    if prompt:
+        return f"{prompt} {prefix} {focus}"
+    return f"{prefix} {focus}"
+
+
+def _source_clip_priority_key(clip: dict) -> tuple[float, float, float, float, str]:
+    path_context = clip.get("path_context") or {}
+    if not isinstance(path_context, dict):
+        path_context = {}
+
+    role = str(path_context.get("target_role", "")).strip().lower()
+    role_priority = {
+        "targets": 3.0,
+        "context": 2.0,
+        "overview": 1.0,
+        "fallback": 0.5,
+    }.get(role, 0.0)
+
+    category = str(path_context.get("target_category", "")).strip().lower()
+    category_priority = {
+        "manipulation": 3.0,
+        "articulation": 2.0,
+        "navigation": 1.0,
+    }.get(category, 0.0)
+
+    try:
+        quality_score = float(clip.get("clip_quality_score", 0.0) or 0.0)
+    except Exception:
+        quality_score = 0.0
+    try:
+        blur_score = float(clip.get("blur_laplacian_score", 0.0) or 0.0)
+    except Exception:
+        blur_score = 0.0
+
+    clip_name = str(clip.get("clip_name", "")).strip()
+    return (-category_priority, -role_priority, -quality_score, -blur_score, clip_name)
 
 
 def _rebalance_task_targeted_selection(

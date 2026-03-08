@@ -9,7 +9,7 @@ from typing import Any, List, Optional
 import numpy as np
 
 from ..common import get_logger
-from ..video_io import open_mp4_writer
+from ..video_io import open_mp4_writer, write_video_frames
 from .camera_paths import CameraPose
 from .ply_loader import GaussianSplatData
 
@@ -112,8 +112,6 @@ def render_video(
 
     Saves RGB video and depth video as MP4. Returns RenderOutput.
     """
-    import cv2
-
     output_dir.mkdir(parents=True, exist_ok=True)
     rgb_frames = []
     depth_frames = []
@@ -138,16 +136,15 @@ def render_video(
     # Save RGB video
     h, w = rgb_frames[0].shape[:2]
     video_path = output_dir / f"{clip_name}.mp4"
-    writer = open_mp4_writer(
+    encoder_used = write_video_frames(
         output_path=video_path,
         fps=float(fps),
-        frame_size=(w, h),
         is_color=True,
+        frames=rgb_frames,
+        ffmpeg_crf=12,
+        ffmpeg_preset="slow",
     )
-    for frame in rgb_frames:
-        writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-    writer.release()
-    logger.info("Saved RGB video: %s", video_path)
+    logger.info("Saved RGB video: %s (encoder=%s)", video_path, encoder_used)
 
     # Save depth video (normalized to 0-255 for visualization)
     depth_video_path = output_dir / f"{clip_name}_depth.mp4"

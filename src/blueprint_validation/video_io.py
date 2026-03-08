@@ -79,6 +79,175 @@ def open_mp4_writer(
     )
 
 
+def write_video_frames(
+    *,
+    output_path: Path,
+    fps: float,
+    frames: Sequence[Any],
+    is_color: bool = True,
+    ffmpeg_crf: int = 12,
+    ffmpeg_preset: str = "slow",
+) -> str:
+    """Write video frames with ffmpeg when available, else fall back to OpenCV."""
+    frame_list = list(frames)
+    if not frame_list:
+        raise ValueError(f"No frames provided for video writer: {output_path}")
+
+    first = frame_list[0]
+    height, width = _frame_shape(first, is_color=bool(is_color))
+    if bool(is_color):
+        ffmpeg_bin = shutil.which("ffmpeg")
+        if ffmpeg_bin is not None:
+            try:
+                _write_video_frames_ffmpeg(
+                    ffmpeg_bin=ffmpeg_bin,
+                    output_path=output_path,
+                    fps=fps,
+                    frames=frame_list,
+                    width=width,
+                    height=height,
+                    crf=int(ffmpeg_crf),
+                    preset=str(ffmpeg_preset),
+                )
+                return "ffmpeg"
+            except Exception as exc:
+                logger.warning(
+                    "ffmpeg frame encode failed for %s: %s; falling back to OpenCV writer",
+                    output_path,
+                    exc,
+                )
+
+    import cv2
+
+    writer = open_mp4_writer(
+        output_path=output_path,
+        fps=float(fps),
+        frame_size=(width, height),
+        is_color=bool(is_color),
+    )
+    try:
+        for frame in frame_list:
+            fh, fw = _frame_shape(frame, is_color=bool(is_color))
+            if fh != height or fw != width:
+                raise ValueError(
+                    f"All frames must share the same size for {output_path}: "
+                    f"expected {(height, width)}, got {(fh, fw)}"
+                )
+            if bool(is_color):
+                writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+            else:
+                writer.write(frame)
+    finally:
+        writer.release()
+    return "opencv"
+
+
+def _frame_shape(frame: Any, *, is_color: bool) -> tuple[int, int]:
+    shape = getattr(frame, "shape", None)
+    if not shape or len(shape) < 2:
+        raise ValueError(f"Unsupported frame shape: {shape}")
+    height = int(shape[0])
+    width = int(shape[1])
+    if height <= 0 or width <= 0:
+        raise ValueError(f"Invalid frame shape: {shape}")
+    if is_color and (len(shape) != 3 or int(shape[2]) != 3):
+        raise ValueError(f"Expected RGB frame with shape (H, W, 3), got {shape}")
+    if not is_color and len(shape) not in (2, 3):
+        raise ValueError(f"Expected grayscale-compatible frame, got {shape}")
+    return height, width
+
+
+def _write_video_frames_ffmpeg(
+    *,
+    ffmpeg_bin: str,
+    output_path: Path,
+    fps: float,
+    frames: Sequence[Any],
+    width: int,
+    height: int,
+    crf: int,
+    preset: str,
+) -> None:
+    import numpy as np
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    resolved_fps = float(fps) if fps and fps > 0 else 10.0
+    cmd = [
+        ffmpeg_bin,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "-s:v",
+        f"{int(width)}x{int(height)}",
+        "-r",
+        f"{resolved_fps:.6f}",
+        "-i",
+        "pipe:0",
+        "-an",
+        "-c:v",
+        "libx264",
+        "-preset",
+        str(preset),
+        "-crf",
+        str(int(crf)),
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        str(output_path),
+    ]
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    stderr_bytes = b""
+    try:
+        assert proc.stdin is not None
+        for frame in frames:
+            fh, fw = _frame_shape(frame, is_color=True)
+            if fh != height or fw != width:
+                raise ValueError(
+                    f"All frames must share the same size for {output_path}: "
+                    f"expected {(height, width)}, got {(fh, fw)}"
+                )
+            proc.stdin.write(np.ascontiguousarray(frame, dtype=np.uint8).tobytes())
+        proc.stdin.close()
+        stderr_bytes = proc.stderr.read() if proc.stderr is not None else b""
+        returncode = proc.wait()
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        raise
+    finally:
+        if proc.stdin is not None:
+            try:
+                proc.stdin.close()
+            except Exception:
+                pass
+        if proc.stderr is not None:
+            try:
+                proc.stderr.close()
+            except Exception:
+                pass
+    if returncode != 0:
+        stderr_tail = stderr_bytes.decode("utf-8", errors="replace")[-1000:]
+        raise RuntimeError(
+            f"ffmpeg frame encode failed for {output_path} "
+            f"(returncode={returncode}, stderr_tail={stderr_tail!r})"
+        )
+    if not output_path.exists() or output_path.stat().st_size <= 0:
+        raise RuntimeError(f"ffmpeg produced empty output: {output_path}")
+
+
 def decode_video_frame_count(video_path: Path) -> int:
     """Decode frames with OpenCV and return the exact decoded count."""
     import cv2
