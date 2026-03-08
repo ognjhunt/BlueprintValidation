@@ -28,6 +28,35 @@ pip_install() {
   uv pip install --python "$PYTHON_BIN" "$@"
 }
 
+ensure_python_dev_headers() {
+  if "$PYTHON_BIN" - <<'PY' >/dev/null 2>&1
+import sysconfig
+from pathlib import Path
+hdr = Path(sysconfig.get_paths()["include"]) / "Python.h"
+raise SystemExit(0 if hdr.exists() else 1)
+PY
+  then
+    return 0
+  fi
+
+  if ! command -v apt-get >/dev/null 2>&1; then
+    echo "WARNING: Python.h missing and apt-get unavailable; continuing without auto-install."
+    return 1
+  fi
+
+  local py_ver
+  py_ver="$("$PYTHON_BIN" - <<'PY'
+import sys
+print(f"{sys.version_info.major}.{sys.version_info.minor}")
+PY
+)"
+  echo "Installing Python development headers for ${py_ver}..."
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    python3-dev \
+    "python${py_ver}-dev" || DEBIAN_FRONTEND=noninteractive apt-get install -y python3-dev
+}
+
 verify_dreamdojo_import() {
   DREAMDOJO_REPO="$ROOT_DIR/data/vendor/DreamDojo" "$PYTHON_BIN" - <<'PY'
 import os
@@ -157,6 +186,7 @@ fi
 
 echo
 echo "[1/5] Syncing repo-local environment"
+ensure_python_dev_headers || true
 SYNC_ARGS=(--extra rlds)
 if [[ "$SYNC_MANIPULATION_EXTRA" == "true" ]]; then
   SYNC_ARGS+=(--extra manipulation)
