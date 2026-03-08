@@ -20,6 +20,7 @@ Optional env:
   STRICT_SYNC=false          # true: fail fast on first copy error
   SSH_HOST=<instance ssh host>  # auto-resolved from vastai if omitted
   SSH_PORT=<instance ssh port>  # auto-resolved from vastai if omitted
+  SSH_KNOWN_HOSTS_FILE=~/.ssh/known_hosts  # path to trusted known_hosts file
   ENABLE_B2_SYNC=auto        # auto|true|false
   B2_SYNC_MODE=auto          # auto|push|pull|off
 EOF
@@ -195,9 +196,10 @@ copy_one() {
 }
 
 resolve_ssh_target
-ssh_opts=(-o StrictHostKeyChecking=no -o BatchMode=yes -p "$SSH_PORT")
+SSH_KNOWN_HOSTS_FILE="${SSH_KNOWN_HOSTS_FILE:-$HOME/.ssh/known_hosts}"
+ssh_opts=(-o StrictHostKeyChecking=yes -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" -o BatchMode=yes -p "$SSH_PORT")
 ssh_target="root@${SSH_HOST}"
-ssh_rsync_cmd="ssh -o StrictHostKeyChecking=no -o BatchMode=yes -p ${SSH_PORT}"
+ssh_rsync_cmd="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${SSH_KNOWN_HOSTS_FILE@Q} -o BatchMode=yes -p ${SSH_PORT}"
 
 b2_enabled="$(resolve_enable_b2_sync)"
 b2_mode=""
