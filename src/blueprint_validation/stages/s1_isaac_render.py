@@ -21,7 +21,11 @@ from ..teleop.runtime import (
 )
 from ..video_io import ensure_h264_video, open_mp4_writer
 from .base import PipelineStage
-from .render_backend import active_render_backend, resolved_scene_package_path
+from .render_backend import (
+    active_render_backend,
+    resolved_scene_package_path,
+    unsafe_scene_package_imports_enabled,
+)
 
 
 class IsaacRenderStage(PipelineStage):
@@ -133,6 +137,12 @@ def _render_scripted_isaac_clips(
     scene_root: Path,
     render_dir: Path,
 ) -> List[dict]:
+    if not unsafe_scene_package_imports_enabled():
+        raise RuntimeError(
+            "Isaac Stage-1 scene package rendering is disabled by default because it imports "
+            "executable Python from the scene package. Set "
+            "BLUEPRINT_UNSAFE_ALLOW_SCENE_PACKAGE_IMPORT=1 only for trusted scene packages."
+        )
     modules = _load_isaac_lab_modules()
     if str(scene_root) not in sys.path:
         sys.path.insert(0, str(scene_root))
