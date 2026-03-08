@@ -96,10 +96,37 @@ def test_resolve_latest_checkpoint_recurses(tmp_path):
     lora_dir = tmp_path / "lora_weights"
     ckpt = lora_dir / "blueprint_validation" / "facility_a" / "run_1" / "checkpoints" / "iter_000001"
     ckpt.mkdir(parents=True)
+    (ckpt / "weights.safetensors").write_text("ok")
 
     resolved = _resolve_latest_checkpoint(lora_dir)
     assert resolved == ckpt
 
+
+
+
+def test_resolve_latest_checkpoint_ignores_empty_iter_dirs(tmp_path):
+    from blueprint_validation.training.dreamdojo_finetune import _resolve_latest_checkpoint
+
+    lora_dir = tmp_path / "lora_weights"
+    empty_iter = lora_dir / "blueprint_validation" / "facility_a" / "run_1" / "checkpoints" / "iter_000002"
+    empty_iter.mkdir(parents=True)
+
+    valid_iter = lora_dir / "blueprint_validation" / "facility_a" / "run_1" / "checkpoints" / "iter_000001"
+    valid_iter.mkdir(parents=True)
+    (valid_iter / "weights.safetensors").write_text("ok")
+
+    resolved = _resolve_latest_checkpoint(lora_dir)
+    assert resolved == valid_iter
+
+
+def test_resolve_latest_checkpoint_rejects_empty_checkpoint_tree(tmp_path):
+    from blueprint_validation.training.dreamdojo_finetune import _resolve_latest_checkpoint
+
+    lora_dir = tmp_path / "lora_weights"
+    (lora_dir / "blueprint_validation" / "facility_a" / "run_1" / "checkpoints").mkdir(parents=True)
+
+    resolved = _resolve_latest_checkpoint(lora_dir)
+    assert resolved is None
 
 def test_resolve_checkpoint_load_path_from_parent(tmp_path):
     from blueprint_validation.training.dreamdojo_finetune import _resolve_checkpoint_load_path

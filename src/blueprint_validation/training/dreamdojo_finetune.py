@@ -310,13 +310,18 @@ def _resolve_latest_checkpoint(lora_dir: Path) -> Path | None:
     if not lora_dir.exists():
         return None
 
+    def _contains_files(path: Path) -> bool:
+        return any(candidate.is_file() for candidate in path.rglob("*"))
+
     # DreamDojo writes under IMAGINAIRE_OUTPUT_ROOT/<project>/<group>/<name>/checkpoints.
-    iter_dirs = [path for path in lora_dir.rglob("iter_*") if path.is_dir()]
+    iter_dirs = [path for path in lora_dir.rglob("iter_*") if path.is_dir() and _contains_files(path)]
     if iter_dirs:
         iter_dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         return iter_dirs[0]
 
-    checkpoint_dirs = [path for path in lora_dir.rglob("checkpoints") if path.is_dir()]
+    checkpoint_dirs = [
+        path for path in lora_dir.rglob("checkpoints") if path.is_dir() and _contains_files(path)
+    ]
     if checkpoint_dirs:
         checkpoint_dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         return checkpoint_dirs[0]
