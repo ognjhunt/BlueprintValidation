@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import re
 import threading
@@ -344,10 +345,19 @@ def _wait_for_uploaded_file_active(
         current = client.files.get(name=name)
 
 
+def _is_video_file_path(video_path: Path) -> bool:
+    mime_type, _ = mimetypes.guess_type(str(video_path))
+    return bool(mime_type and mime_type.startswith("video/"))
+
+
 def _upload_video_file(client, video_path: Path):
     """Upload a local video file to Gemini Files API and wait until ACTIVE."""
     if not video_path.exists():
         raise FileNotFoundError(f"Video not found: {video_path}")
+    if not video_path.is_file():
+        raise ValueError(f"Video path is not a file: {video_path}")
+    if not _is_video_file_path(video_path):
+        raise ValueError(f"Video path does not have a recognized video MIME type: {video_path}")
     uploaded = client.files.upload(file=str(video_path))
     return _wait_for_uploaded_file_active(client, uploaded)
 

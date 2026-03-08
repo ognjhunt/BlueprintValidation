@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import mimetypes
 import sys
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,22 @@ DEFAULT_SCORING_PROMPT = (
     "3. spatial_score: How useful is this camera view for downstream world-model/policy training?\n"
     'Return JSON: {"task_score": N, "visual_score": N, "spatial_score": N, "reasoning": "..."}'
 )
+
+
+def _resolve_run_scoped_video_path(video_path_text: str, *, run_dir: Path) -> Path:
+    raw_path = Path(video_path_text).expanduser()
+    candidate = raw_path if raw_path.is_absolute() else (run_dir / raw_path)
+    resolved = candidate.resolve()
+    try:
+        resolved.relative_to(run_dir)
+    except ValueError as exc:
+        raise ValueError(f"video_path escapes run_dir: {resolved}") from exc
+    return resolved
+
+
+def _is_video_path(video_path: Path) -> bool:
+    mime_type, _ = mimetypes.guess_type(str(video_path))
+    return bool(mime_type and mime_type.startswith("video/"))
 
 
 def _parse_args() -> argparse.Namespace:
@@ -249,7 +266,20 @@ def main() -> int:
     for clip in clips:
         clip_name = _clean_text(clip.get("clip_name")) or "unknown_clip"
         video_path_text = _clean_text(clip.get("video_path"))
-        video_path = Path(video_path_text).expanduser() if video_path_text else None
+        video_path = None
+        if video_path_text:
+            try:
+                video_path = _resolve_run_scoped_video_path(video_path_text, run_dir=run_dir)
+            except ValueError as exc:
+                row = {
+                    "clip_name": clip_name,
+                    "video_path": video_path_text,
+                    "error": str(exc),
+                    "pass": False,
+                }
+                num_error += 1
+                rows.append(row)
+                continue
         path_context = clip.get("path_context")
         if not isinstance(path_context, dict):
             path_context = {}
@@ -285,6 +315,12 @@ def main() -> int:
 
         if video_path is None or not video_path.exists():
             row["error"] = "video_path missing or file not found"
+            row["pass"] = False
+            num_error += 1
+            rows.append(row)
+            continue
+        if not video_path.is_file() or not _is_video_path(video_path):
+            row["error"] = "video_path must point to a file with a video MIME type"
             row["pass"] = False
             num_error += 1
             rows.append(row)
