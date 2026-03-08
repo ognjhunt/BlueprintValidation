@@ -956,7 +956,7 @@ def check_cosmos_predict_tokenizer_access(cosmos_checkpoint_path: Path) -> Prefl
 def check_python_import_from_path(
     module_name: str | tuple[str, ...] | list[str], extra_path: Path, name: str
 ) -> PreflightCheck:
-    """Check if one (or any) module name can be imported with an extra sys.path entry."""
+    """Check whether a module is discoverable from a path without importing it."""
     if not extra_path.exists():
         return PreflightCheck(name=name, passed=False, detail=f"Path not found: {extra_path}")
 
@@ -968,41 +968,27 @@ def check_python_import_from_path(
     if not module_candidates:
         return PreflightCheck(name=name, passed=False, detail="No module candidates provided")
 
-    inserted = False
-    errors: list[str] = []
-    try:
-        path_text = str(extra_path)
-        if path_text not in sys.path:
-            sys.path.insert(0, path_text)
-            inserted = True
+    for candidate in module_candidates:
+        rel = Path(*candidate.split("."))
+        file_candidate = extra_path / rel.with_suffix(".py")
+        package_candidate = extra_path / rel / "__init__.py"
+        namespace_candidate = extra_path / rel
 
-        for candidate in module_candidates:
-            try:
-                import_module(candidate)
-                return PreflightCheck(
-                    name=name,
-                    passed=True,
-                    detail=f"Importable as '{candidate}' from {extra_path}",
-                )
-            except Exception as exc:
-                errors.append(f"{candidate}: {exc}")
-            finally:
-                for key in list(sys.modules.keys()):
-                    if key == candidate or key.startswith(candidate + "."):
-                        sys.modules.pop(key, None)
+        if file_candidate.exists() or package_candidate.exists() or namespace_candidate.is_dir():
+            return PreflightCheck(
+                name=name,
+                passed=True,
+                detail=f"Module layout for '{candidate}' found under {extra_path}",
+            )
 
-        joined = "; ".join(errors)
-        return PreflightCheck(
-            name=name,
-            passed=False,
-            detail=f"Cannot import any candidate ({', '.join(module_candidates)}): {joined}",
-        )
-    finally:
-        if inserted:
-            try:
-                sys.path.remove(str(extra_path))
-            except ValueError:
-                pass
+    return PreflightCheck(
+        name=name,
+        passed=False,
+        detail=(
+            "Cannot find module layout for any candidate "
+            f"({', '.join(module_candidates)}) under {extra_path}"
+        ),
+    )
 
 
 def check_api_key_for_scope(env_var: str, scope: str) -> PreflightCheck:

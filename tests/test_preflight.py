@@ -58,6 +58,41 @@ def test_check_gpu_handles_runtime_errors(monkeypatch):
     assert "GPU check failed" in result.detail
 
 
+def test_check_python_import_from_path_checks_layout_without_importing(tmp_path):
+    from blueprint_validation.preflight import check_python_import_from_path
+
+    repo = tmp_path / "repo"
+    module_dir = repo / "pkg"
+    module_dir.mkdir(parents=True)
+    marker = tmp_path / "executed.txt"
+    (module_dir / "mod.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n",
+        encoding="utf-8",
+    )
+
+    result = check_python_import_from_path("pkg.mod", repo, "import:pkg_mod")
+
+    assert result.passed is True
+    assert "Module layout" in result.detail
+    assert marker.exists() is False
+
+
+def test_check_python_import_from_path_reports_missing_module_layout(tmp_path):
+    from blueprint_validation.preflight import check_python_import_from_path
+
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+
+    result = check_python_import_from_path(
+        ("missing.mod", "still_missing"),
+        repo,
+        "import:missing",
+    )
+
+    assert result.passed is False
+    assert "Cannot find module layout" in result.detail
+
+
 def test_preflight_pi05_invalid_profile_runtime_backend(sample_config, monkeypatch, tmp_path):
     import blueprint_validation.preflight as preflight
     from blueprint_validation.common import PreflightCheck
