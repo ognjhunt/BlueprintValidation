@@ -61,6 +61,20 @@ def test_s1f_external_ingest_missing_manifest_fails(sample_config, tmp_path):
     assert "not found" in result.detail.lower()
 
 
+def test_s1f_external_ingest_missing_manifest_path_skips(sample_config, tmp_path):
+    from blueprint_validation.stages.s1f_external_interaction_ingest import (
+        ExternalInteractionIngestStage,
+    )
+
+    fac = sample_config.facilities["test_facility"]
+    sample_config.external_interaction.enabled = True
+    sample_config.external_interaction.manifest_path = None
+
+    result = ExternalInteractionIngestStage().run(sample_config, fac, tmp_path, {})
+    assert result.status == "skipped"
+    assert "auto-skipped" in result.detail.lower()
+
+
 def test_s1f_external_ingest_invalid_schema_fails(sample_config, tmp_path):
     from blueprint_validation.common import write_json
     from blueprint_validation.stages.s1f_external_interaction_ingest import (
@@ -106,4 +120,3 @@ def test_s1f_external_ingest_enforces_video_path_exists(sample_config, tmp_path)
     result = ExternalInteractionIngestStage().run(sample_config, fac, tmp_path, {})
     assert result.status == "failed"
     assert "does not exist" in result.detail.lower()
-

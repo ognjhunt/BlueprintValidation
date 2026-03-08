@@ -84,3 +84,16 @@ def test_s1g_external_rollout_ingest_missing_manifest_fails(sample_config, tmp_p
     result = ExternalRolloutIngestStage().run(sample_config, fac, tmp_path, {})
     assert result.status == "failed"
     assert "not found" in result.detail.lower()
+
+
+def test_s1g_external_rollout_ingest_missing_manifest_path_skips(sample_config, tmp_path: Path) -> None:
+    from blueprint_validation.stages.s1g_external_rollout_ingest import ExternalRolloutIngestStage
+
+    fac = sample_config.facilities["test_facility"]
+    sample_config.external_rollouts.enabled = True
+    sample_config.external_rollouts.manifest_path = None
+    sample_config.external_rollouts.mode = "policy_only"
+
+    result = ExternalRolloutIngestStage().run(sample_config, fac, tmp_path, {})
+    assert result.status == "skipped"
+    assert "auto-skipped" in result.detail.lower()

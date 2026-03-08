@@ -16,6 +16,8 @@ _TOP_LEVEL_KEYS = {
     "enrich",
     "finetune",
     "eval_policy",
+    "eval_polaris",
+    "scene_builder",
     "policy_finetune",
     "policy_adapter",
     "robosplat",
@@ -38,6 +40,7 @@ _TOP_LEVEL_KEYS = {
 _FACILITY_KEYS = {
     "name",
     "ply_path",
+    "scene_package_path",
     "task_hints_path",
     "claim_benchmark_path",
     "description",
@@ -318,6 +321,36 @@ _EVAL_POLICY_KEYS = {
     "vlm_judge",
     "openvla_model",
     "openvla_checkpoint",
+}
+
+_EVAL_POLARIS_KEYS = {
+    "enabled",
+    "repo_path",
+    "hub_path",
+    "environment_mode",
+    "environment_name",
+    "default_as_primary_gate",
+    "use_for_claim_gate",
+    "num_rollouts",
+    "device",
+    "policy_client",
+    "observation_mode",
+    "action_mode",
+    "export_dir",
+    "require_scene_package",
+    "require_success_correlation_metadata",
+}
+
+_SCENE_BUILDER_KEYS = {
+    "enabled",
+    "source_ply_path",
+    "output_scene_root",
+    "static_collision_mode",
+    "asset_manifest_path",
+    "robot_type",
+    "task_template",
+    "emit_isaac_lab",
+    "emit_polaris_metadata",
 }
 
 _CLAIM_REPLICATION_KEYS = {"training_seeds"}
@@ -700,6 +733,8 @@ def validate_config_keys(raw: Mapping[str, object], *, config_path: Path) -> Non
                     unknown_keys,
                 )
 
+    _validate_mapping_section(raw, "eval_polaris", _EVAL_POLARIS_KEYS, unknown_keys)
+    _validate_mapping_section(raw, "scene_builder", _SCENE_BUILDER_KEYS, unknown_keys)
     _validate_mapping_section(raw, "policy_finetune", _POLICY_FINETUNE_KEYS, unknown_keys)
     policy_adapter = _validate_mapping_section(raw, "policy_adapter", _POLICY_ADAPTER_KEYS, unknown_keys)
     if policy_adapter is not None:

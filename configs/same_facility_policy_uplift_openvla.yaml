@@ -5,6 +5,7 @@ facilities:
   facility_a:
     name: Facility A
     ply_path: ../data/facilities/facility_a/splat.ply
+    # scene_package_path: /path/to/facility_a_scene_package
     claim_benchmark_path: ./benchmarks/facility_a.fixed_claim.json
     description: Target deployment facility world model
 
@@ -67,6 +68,22 @@ eval_policy:
     - Pick up the bowl from the counter and place it in the sink
     - Pick up the bottle from the shelf and place it in the target zone
     - Pick up the mug from the prep counter and place it on the drying rack
+
+eval_polaris:
+  enabled: false
+  repo_path: ../data/vendor/PolaRiS
+  hub_path: ../data/vendor/PolaRiS-Hub
+  environment_mode: scene_package_bridge
+  default_as_primary_gate: true
+  use_for_claim_gate: true
+  num_rollouts: 16
+  device: cuda
+  policy_client: OpenVLA
+  observation_mode: external_only
+  action_mode: native
+  export_dir: ../data/outputs/polaris
+  require_scene_package: true
+  require_success_correlation_metadata: true
 
 policy_finetune:
   enabled: true

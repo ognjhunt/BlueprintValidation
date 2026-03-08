@@ -111,11 +111,11 @@ class ExternalInteractionIngestStage(PipelineStage):
         if manifest_path is None:
             return StageResult(
                 stage_name=self.name,
-                status="failed",
+                status="skipped",
                 elapsed_seconds=0,
                 detail=(
-                    "external_interaction.enabled=true but manifest_path is not set. "
-                    "Set external_interaction.manifest_path to a valid stage1_source manifest."
+                    "external_interaction.enabled=true but manifest_path is not set; "
+                    "Stage 1f auto-skipped."
                 ),
             )
 

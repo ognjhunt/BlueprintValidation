@@ -1,16 +1,17 @@
 # BlueprintValidation
 
-Gaussian splat to robot world model validation pipeline for same-facility world-model evaluation.
+Gaussian splat to robot adaptation pipeline with world-model inner-loop training and PolaRiS final-gate evaluation.
 
 Current canonical executable question:
 
-> Within a fixed site-adapted world model of the exact facility we plan to deploy to, can site-specific policy training produce a statistically significant uplift over the frozen baseline on disjoint starts/tasks in that same facility?
+> Which policy should we trust for this exact deployment scene: frozen OpenVLA or the scene-adapted OpenVLA candidate?
 
-Future same-facility deployment follow-up, not answered by the current repo:
+Default answer path in this repo:
 
-> If that same-facility uplift appears in the adapted world model, does it also carry over IRL in the exact same facility?
+- world model / DreamDojo = fast inner loop for scene adaptation, synthetic rollouts, and policy improvement
+- PolaRiS = default outer-loop evaluator and final deployment gate when enabled and valid
 
-This repo is intentionally scoped to same-facility world-model evidence. Novel-facility generalization is out of scope for the canonical headline, and IRL transfer to the same facility remains unmeasured until matched real-robot runs are added in the target facility. Until then, keep the headline fixed-world and WM-only.
+World-model stages remain central to the product. The change is that world-model evidence is now supporting by default for the final recommendation when `eval_polaris.enabled=true` and `eval_polaris.default_as_primary_gate=true`.
 
 ## Pipeline
 
@@ -30,6 +31,7 @@ PLY file (from BlueprintCapturePipeline)
   → Stage 3b: OFT-oriented policy fine-tuning on generated rollouts
   → Stage 3c: World-VLA-Loop-style iterative policy RL + world refresh
   → Stage 4e: Evaluate trained policy in adapted world model
+  → Stage 4f: Evaluate frozen vs adapted OpenVLA in PolaRiS
   → Stage 4b: Export paired rollouts to RLDS-style train/heldout datasets
   → Stage 4c: Train policy_base vs policy_site from same initialization/budget
   → Stage 4d: Heldout policy A/B evaluation in same world model
@@ -41,7 +43,9 @@ PLY file (from BlueprintCapturePipeline)
 
 Note: Stage 3d (`wm_refresh_loop.enabled`) is now enabled by default and runs in WM-only scope.
 
-For the canonical same-facility WM-only question, use `eval_policy.claim_protocol=fixed_same_facility_uplift` together with `eval_policy.primary_endpoint=task_success`, `eval_policy.freeze_world_snapshot=true`, `eval_policy.split_strategy=disjoint_tasks_and_starts`, and a pinned `facility.claim_benchmark_path`. In that mode, Stage 4d (`s4d_policy_pair_eval`) is the sole primary gate for the report headline; Stage 4 and Stage 4e are supporting or exploratory world-model evidence only.
+For the default deployment recommendation path, enable `eval_polaris` and point each facility at a validated `scene_package_path`. In that mode, Stage 4f (`s4f_polaris_eval`) is the primary gate for the report headline and deployment recommendation, while Stages 4/4e/4d remain supporting world-model evidence.
+
+For the legacy fixed-world same-facility WM-only claim path, use `eval_policy.claim_protocol=fixed_same_facility_uplift` together with `eval_policy.primary_endpoint=task_success`, `eval_policy.freeze_world_snapshot=true`, `eval_policy.split_strategy=disjoint_tasks_and_starts`, and a pinned `facility.claim_benchmark_path`.
 
 ## Scene-Memory Mapping (Stage 1/2/3)
 
@@ -76,6 +80,10 @@ To move closer to full-scene memory behavior:
   - [docs/vision_pro_teleop_setup.md](docs/vision_pro_teleop_setup.md)
 - Vision Pro sample-client hook details:
   - [docs/vision_pro_sample_client_hook.md](docs/vision_pro_sample_client_hook.md)
+- PolaRiS setup and scene handoff:
+  - [docs/polaris_outer_loop.md](docs/polaris_outer_loop.md)
+- Direct PLY-to-scene-package builder:
+  - [docs/scene_builder.md](docs/scene_builder.md)
 
 ## Full Action-Success Boost
 
@@ -240,6 +248,9 @@ Use these local scripts to keep resumable run state off-instance while training:
 ```bash
 # Validate a local scene handoff package for teleop use
 blueprint-validate validate-scene-package --scene-root /path/to/scene_root
+
+# Or build one directly from a raw PLY + local USD assets
+blueprint-validate --config configs/example_validation.yaml build-scene-package
 
 # Record one local teleop demo from an Isaac Lab task package
 blueprint-validate record-teleop \

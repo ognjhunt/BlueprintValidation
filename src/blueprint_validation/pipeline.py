@@ -32,6 +32,7 @@ from .stages.s4b_rollout_dataset import RolloutDatasetStage
 from .stages.s4c_policy_pair_train import PolicyPairTrainStage
 from .stages.s4d_policy_pair_eval import PolicyPairEvalStage
 from .stages.s4e_trained_eval import TrainedPolicyEvalStage
+from .stages.s4f_polaris_eval import PolarisEvalStage
 from .stages.s5_visual_fidelity import VisualFidelityStage
 from .stages.s6_spatial_accuracy import SpatialAccuracyStage
 from .stages.s7_cross_site import CrossSiteStage
@@ -46,6 +47,7 @@ _WM_ONLY_DEFERRED_STAGES = {
     "s4c_policy_pair_train",
     "s4d_policy_pair_eval",
     "s4e_trained_eval",
+    "s4f_polaris_eval",
 }
 
 _ACTION_BOOST_REQUIRED_STAGES = {
@@ -171,6 +173,7 @@ class ValidationPipeline:
             PolicyFinetuneStage(),  # S3b: OpenVLA-OFT fine-tune on pipeline-generated data
             PolicyRLLoopStage(),  # S3c: iterative RL loop + world-model refresh
             TrainedPolicyEvalStage(),  # S4e: evaluate trained vs frozen baselines
+            PolarisEvalStage(),  # S4f: final PolaRiS outer-loop gate
             RolloutDatasetStage(),  # S4b: export paired rollouts -> JSONL datasets
             PolicyPairTrainStage(),  # S4c: train policy_base + policy_site
             PolicyPairEvalStage(),  # S4d: heldout paired evaluation
@@ -479,6 +482,7 @@ class ValidationPipeline:
             "failed_stage_keys": failed_stage_keys,
             "policy_eval_matrix_path": matrix_report_path,
             "claim_portfolio_path": claim_portfolio_report_path,
+            "primary_gate": self._primary_gate_summary(facility_results_by_id),
         }
         write_json(summary, self.work_dir / "pipeline_summary.json")
 
@@ -637,7 +641,6 @@ class ValidationPipeline:
             raise ValueError(
                 f"Corrupt resume artifact at {result_path}: failed to parse JSON ({exc})."
             ) from exc
-
         try:
             return StageResult(
                 stage_name=str(
@@ -654,6 +657,71 @@ class ValidationPipeline:
             raise ValueError(
                 f"Corrupt resume artifact at {result_path}: malformed stage result payload ({exc})."
             ) from exc
+
+    def _primary_gate_summary(
+        self,
+        facility_results_by_id: Dict[str, Dict[str, StageResult]],
+    ) -> dict:
+        supporting_paths: list[str] = []
+        for facility_results in facility_results_by_id.values():
+            for stage_name in ("s4_policy_eval", "s4e_trained_eval", "s4d_policy_pair_eval"):
+                stage_result = facility_results.get(stage_name)
+                if stage_result is None:
+                    continue
+                for key in (
+                    "polaris_summary_path",
+                    "frozen_report_path",
+                    "adapted_report_path",
+                    "report_path",
+                    "matrix_report_path",
+                ):
+                    value = stage_result.outputs.get(key)
+                    if value:
+                        supporting_paths.append(str(value))
+        if bool(getattr(self.config.eval_polaris, "enabled", False)) and bool(
+            getattr(self.config.eval_polaris, "default_as_primary_gate", False)
+        ):
+            for facility_results in facility_results_by_id.values():
+                result = facility_results.get("s4f_polaris_eval")
+                if result is None:
+                    continue
+                return {
+                    "gate_name": "polaris",
+                    "stage_name": "s4f_polaris_eval",
+                    "winner": result.metrics.get("winner", "unknown"),
+                    "status": result.status,
+                    "report_path": result.outputs.get("polaris_summary_path"),
+                    "supporting_evidence_paths": supporting_paths,
+                }
+        gate_name = "world_model"
+        stage_name = "s4d_policy_pair_eval"
+        winner = "unknown"
+        status = "skipped"
+        report_path = None
+        for facility_results in facility_results_by_id.values():
+            result = (
+                facility_results.get("s4d_policy_pair_eval")
+                or facility_results.get("s4e_trained_eval")
+                or facility_results.get("s4_policy_eval")
+            )
+            if result is None:
+                continue
+            status = result.status
+            winner = str(
+                result.metrics.get("winner")
+                or result.metrics.get("claim_outcome")
+                or winner
+            )
+            stage_name = result.stage_name
+            break
+        return {
+            "gate_name": gate_name,
+            "stage_name": stage_name,
+            "winner": winner,
+            "status": status,
+            "report_path": report_path,
+            "supporting_evidence_paths": supporting_paths,
+        }
 
     def _maybe_run_post_stage_sync_hook(
         self,

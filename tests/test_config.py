@@ -150,6 +150,12 @@ def test_config_defaults():
     assert config.eval_policy.min_manip_success_delta_pp == pytest.approx(15.0)
     assert config.eval_policy.vlm_judge.enable_agentic_vision is True
     assert config.eval_policy.vlm_judge.video_metadata_fps == pytest.approx(10.0)
+    assert config.eval_polaris.enabled is False
+    assert str(config.eval_polaris.repo_path).endswith("opt/PolaRiS")
+    assert config.eval_polaris.environment_mode == "scene_package_bridge"
+    assert config.eval_polaris.default_as_primary_gate is True
+    assert config.eval_polaris.observation_mode == "external_only"
+    assert config.eval_polaris.action_mode == "native"
     assert config.enrich.max_input_frames == 0
     assert config.enrich.max_source_clips == 0
     assert config.enrich.min_source_clips == 8
@@ -181,6 +187,8 @@ def test_config_defaults():
     assert config.policy_adapter.name == "openvla_oft"
     assert str(config.policy_adapter.openvla.openvla_repo).endswith("opt/openvla-oft")
     assert config.policy_adapter.pi05.profile == "pi05_libero"
+    assert config.external_interaction.enabled is True
+    assert config.external_rollouts.enabled is True
     assert config.rollout_dataset.enabled is True
     assert config.rollout_dataset.selection_mode == "success_near_miss"
     assert config.rollout_dataset.near_miss_min_task_score == pytest.approx(5.0)
@@ -245,6 +253,89 @@ def test_facility_config():
     assert fac.up_axis == "auto"
     assert fac.scene_rotation_deg == [0.0, 0.0, 0.0]
     assert fac.video_orientation_fix == "none"
+    assert fac.scene_package_path is None
+
+
+def test_config_parses_polaris_block_and_scene_package(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    scene_root = tmp_path / "scene_pkg"
+    (scene_root / "assets").mkdir(parents=True)
+    (scene_root / "usd").mkdir(parents=True)
+    (scene_root / "assets" / "scene_manifest.json").write_text("{}")
+    (scene_root / "usd" / "scene.usda").write_text("#usda 1.0")
+    config_path = tmp_path / "polaris.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "polaris",
+                "facilities": {
+                    "a": {
+                        "name": "A",
+                        "ply_path": "/tmp/a.ply",
+                        "scene_package_path": str(scene_root),
+                    }
+                },
+                "eval_polaris": {
+                    "enabled": True,
+                    "repo_path": "/tmp/polaris",
+                    "hub_path": "/tmp/polaris-hub",
+                    "environment_mode": "native_bundle",
+                    "environment_name": "DROID-TestScene",
+                    "default_as_primary_gate": True,
+                    "use_for_claim_gate": False,
+                    "num_rollouts": 8,
+                    "device": "cpu",
+                    "policy_client": "OpenVLA",
+                    "observation_mode": "external_wrist_stitched",
+                    "action_mode": "joint_position_bridge",
+                    "export_dir": "/tmp/polaris-outputs",
+                    "require_scene_package": True,
+                    "require_success_correlation_metadata": False,
+                },
+            }
+        )
+    )
+
+    cfg = load_config(config_path)
+    assert cfg.facilities["a"].scene_package_path == scene_root.resolve()
+    assert cfg.eval_polaris.enabled is True
+    assert cfg.eval_polaris.environment_mode == "native_bundle"
+    assert cfg.eval_polaris.environment_name == "DROID-TestScene"
+    assert cfg.eval_polaris.observation_mode == "external_wrist_stitched"
+    assert cfg.eval_polaris.action_mode == "joint_position_bridge"
+
+
+def test_config_parses_scene_builder_block(tmp_path):
+    from blueprint_validation.config import load_config
+    import yaml
+
+    config_path = tmp_path / "scene_builder.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "scene-builder",
+                "facilities": {"a": {"name": "A", "ply_path": "/tmp/a.ply"}},
+                "scene_builder": {
+                    "enabled": True,
+                    "source_ply_path": "/tmp/source.ply",
+                    "output_scene_root": str(tmp_path / "scene_pkg"),
+                    "static_collision_mode": "simple",
+                    "asset_manifest_path": str(tmp_path / "assets.json"),
+                    "robot_type": "franka",
+                    "task_template": "pick_place_v1",
+                    "emit_isaac_lab": True,
+                    "emit_polaris_metadata": True,
+                },
+            }
+        )
+    )
+    cfg = load_config(config_path)
+    assert cfg.scene_builder.enabled is True
+    assert cfg.scene_builder.source_ply_path == Path("/tmp/source.ply")
+    assert cfg.scene_builder.output_scene_root == (tmp_path / "scene_pkg").resolve()
+    assert cfg.scene_builder.asset_manifest_path == (tmp_path / "assets.json").resolve()
 
 
 def test_config_parses_camera_path_target_metadata(tmp_path):

@@ -15,6 +15,7 @@ def test_pipeline_stage_smoke_imports(sample_config, tmp_path):
     from blueprint_validation.stages.s3d_wm_refresh_loop import WorldModelRefreshLoopStage
     from blueprint_validation.stages.s4a_rlds_export import RLDSExportStage
     from blueprint_validation.stages.s4e_trained_eval import TrainedPolicyEvalStage
+    from blueprint_validation.stages.s4f_polaris_eval import PolarisEvalStage
 
     # Ensure the pipeline can be instantiated with the shared fixture config.
     ValidationPipeline(sample_config, tmp_path / "outputs")
@@ -26,6 +27,7 @@ def test_pipeline_stage_smoke_imports(sample_config, tmp_path):
     assert WorldModelRefreshLoopStage().name == "s3d_wm_refresh_loop"
     assert RLDSExportStage().name == "s4a_rlds_export"
     assert TrainedPolicyEvalStage().name == "s4e_trained_eval"
+    assert PolarisEvalStage().name == "s4f_polaris_eval"
 
 
 def test_stage_names_are_unique():
@@ -49,6 +51,7 @@ def test_stage_names_are_unique():
     from blueprint_validation.stages.s4c_policy_pair_train import PolicyPairTrainStage
     from blueprint_validation.stages.s4d_policy_pair_eval import PolicyPairEvalStage
     from blueprint_validation.stages.s4e_trained_eval import TrainedPolicyEvalStage
+    from blueprint_validation.stages.s4f_polaris_eval import PolarisEvalStage
     from blueprint_validation.stages.s5_visual_fidelity import VisualFidelityStage
     from blueprint_validation.stages.s6_spatial_accuracy import SpatialAccuracyStage
     from blueprint_validation.stages.s7_cross_site import CrossSiteStage
@@ -68,6 +71,7 @@ def test_stage_names_are_unique():
         PolicyRLLoopStage(),
         WorldModelRefreshLoopStage(),
         TrainedPolicyEvalStage(),
+        PolarisEvalStage(),
         RolloutDatasetStage(),
         PolicyPairTrainStage(),
         PolicyPairEvalStage(),
@@ -136,6 +140,7 @@ def test_pipeline_reruns_s4_after_successful_s3d(sample_config, tmp_path, monkey
     monkeypatch.setattr(pipeline_mod, "PolicyFinetuneStage", lambda: OrderedStage("s3b_policy_finetune"))
     monkeypatch.setattr(pipeline_mod, "PolicyRLLoopStage", lambda: OrderedStage("s3c_policy_rl_loop"))
     monkeypatch.setattr(pipeline_mod, "TrainedPolicyEvalStage", lambda: OrderedStage("s4e_trained_eval"))
+    monkeypatch.setattr(pipeline_mod, "PolarisEvalStage", lambda: OrderedStage("s4f_polaris_eval"))
     monkeypatch.setattr(pipeline_mod, "RolloutDatasetStage", lambda: OrderedStage("s4b_rollout_dataset"))
     monkeypatch.setattr(pipeline_mod, "PolicyPairTrainStage", lambda: OrderedStage("s4c_policy_pair_train"))
     monkeypatch.setattr(pipeline_mod, "PolicyPairEvalStage", lambda: OrderedStage("s4d_policy_pair_eval"))
@@ -153,4 +158,6 @@ def test_pipeline_reruns_s4_after_successful_s3d(sample_config, tmp_path, monkey
     s3d = execution_order.index("s3d_wm_refresh_loop")
     second_s4 = execution_order.index("s4_policy_eval", first_s4 + 1)
     s4a = execution_order.index("s4a_rlds_export")
+    s4f = execution_order.index("s4f_polaris_eval")
     assert first_s4 < s3d < second_s4 < s4a
+    assert execution_order.index("s4e_trained_eval") < s4f < execution_order.index("s4b_rollout_dataset")

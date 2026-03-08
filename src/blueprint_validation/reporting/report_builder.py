@@ -222,6 +222,35 @@ def _append_s4e_trained_eval_section(
         lines.append("")
 
 
+def _append_s4f_polaris_eval_section(
+    lines: list[str], fac_data: Dict[str, Any], *, primary: bool
+) -> None:
+    if "s4f_polaris_eval" not in fac_data:
+        return
+    pe = fac_data["s4f_polaris_eval"]
+    metrics = pe.get("metrics", {})
+    lines.append(
+        "### Primary Headline: PolaRiS Deployment Gate (S4f)\n"
+        if primary
+        else "### PolaRiS Deployment Gate (S4f)\n"
+    )
+    if primary:
+        lines.append(
+            "*This is the default outer-loop decision gate when PolaRiS is enabled and valid. "
+            "World-model stages remain supporting evidence for training/adaptation.*\n"
+        )
+    lines.append("| Metric | Value |")
+    lines.append("|--------|-------|")
+    lines.append(f"| Winner | {metrics.get('winner', 'N/A')} |")
+    lines.append(f"| Frozen success rate | {metrics.get('frozen_success_rate', 'N/A')} |")
+    lines.append(f"| Adapted success rate | {metrics.get('adapted_success_rate', 'N/A')} |")
+    lines.append(f"| Frozen mean progress | {metrics.get('frozen_mean_progress', 'N/A')} |")
+    lines.append(f"| Adapted mean progress | {metrics.get('adapted_mean_progress', 'N/A')} |")
+    lines.append(f"| Delta vs frozen | {metrics.get('delta_vs_frozen', 'N/A')} |")
+    lines.append(f"| Scene mode | {metrics.get('scene_mode', 'N/A')} |")
+    lines.append("")
+
+
 def _append_s4d_policy_pair_eval_section(
     lines: list[str], fac_data: Dict[str, Any], *, supporting: bool
 ) -> None:
@@ -406,7 +435,15 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
         fac_name = fac_config.name if fac_config else fid
         lines.append(f"\n## Facility: {fac_name}\n")
 
-        if fixed_world_claim:
+        polaris_primary = bool(config.eval_polaris.enabled) and bool(
+            config.eval_polaris.default_as_primary_gate
+        )
+        if polaris_primary:
+            _append_s4f_polaris_eval_section(lines, fac_data, primary=True)
+            _append_s4_policy_eval_section(lines, fac_data, supporting=True)
+            _append_s4e_trained_eval_section(lines, fac_data, primary=False)
+            _append_s4d_policy_pair_eval_section(lines, fac_data, supporting=True)
+        elif fixed_world_claim:
             _append_claim_eval_section(lines, fac_data)
             _append_s4_policy_eval_section(lines, fac_data, supporting=True)
             _append_s4e_trained_eval_section(lines, fac_data, primary=False)
@@ -471,6 +508,15 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
             lines.append(f"- Status: {ei.get('status', 'N/A')}")
             lines.append(f"- Source: {eo.get('source_name', em.get('source_name', 'N/A'))}")
             lines.append(f"- Clips ingested: {em.get('num_clips', 'N/A')}")
+            lines.append("")
+
+        if "s1g_external_rollout_ingest" in fac_data:
+            er = fac_data["s1g_external_rollout_ingest"]
+            em = er.get("metrics", {})
+            lines.append("### External Rollout Ingest (S1g)\n")
+            lines.append(f"- Status: {er.get('status', 'N/A')}")
+            lines.append(f"- Sessions ingested: {em.get('num_sessions', 'N/A')}")
+            lines.append(f"- Output mode: {em.get('mode', 'N/A')}")
             lines.append("")
 
         if "s3_finetune" in fac_data:
@@ -593,6 +639,8 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
         f"- LoRA: {'rank=' + str(config.finetune.lora_rank) if config.finetune.use_lora else 'disabled (full fine-tuning)'}"
     )
     lines.append(f"- Policy finetune enabled: {config.policy_finetune.enabled}")
+    lines.append(f"- PolaRiS enabled: {config.eval_polaris.enabled}")
+    lines.append(f"- PolaRiS primary gate: {config.eval_polaris.default_as_primary_gate}")
     lines.append(f"- Policy RL loop enabled: {config.policy_rl_loop.enabled}")
     lines.append(f"- Policy dataset: {config.policy_finetune.dataset_name}")
     lines.append(f"- Policy adapter: {config.policy_adapter.name}")
@@ -613,6 +661,7 @@ def _add_executive_summary(lines: list, data: dict, config: ValidationConfig = N
         (config is not None and len(config.facilities) > 1) or data.get("cross_site")
     )
     claim_portfolio = data.get("claim_portfolio") if isinstance(data, dict) else None
+    polaris_primary = bool(config is not None and config.eval_polaris.enabled and config.eval_polaris.default_as_primary_gate)
 
     if claim_portfolio:
         gate = claim_portfolio.get("go_to_robot_gate", {}) or {}
@@ -638,6 +687,39 @@ def _add_executive_summary(lines: list, data: dict, config: ValidationConfig = N
                 "**Portfolio gate not yet passed.** "
                 "The investor-grade multi-facility claim either lacks enough eligible facilities "
                 "or misses one or more pooled lift / integrity thresholds.\n"
+            )
+        return
+
+    if polaris_primary:
+        polaris_metrics = None
+        for _, fac_data in data.get("facilities", {}).items():
+            s4f = fac_data.get("s4f_polaris_eval", {})
+            if s4f:
+                polaris_metrics = s4f.get("metrics", {})
+                break
+        winner = str((polaris_metrics or {}).get("winner", "PENDING/FAIL"))
+        adapted_rate = (polaris_metrics or {}).get("adapted_success_rate")
+        frozen_rate = (polaris_metrics or {}).get("frozen_success_rate")
+        lines.append("| Test | Result |")
+        lines.append("|------|--------|")
+        lines.append(
+            f"| Primary Headline: PolaRiS Deployment Gate | {winner if winner else 'PENDING/FAIL'} |"
+        )
+        lines.append(
+            "| Supporting Evidence: World-Model Inner Loop | "
+            f"{'PASS' if polaris_metrics is not None else 'PENDING/FAIL'} |"
+        )
+        lines.append("")
+        if polaris_metrics is not None:
+            lines.append(
+                "**Default deployment recommendation comes from PolaRiS.** "
+                f"Frozen success rate={frozen_rate}, adapted success rate={adapted_rate}, "
+                f"winner={winner}.\n"
+            )
+        else:
+            lines.append(
+                "**PolaRiS is configured as the default deployment gate, but no valid PolaRiS "
+                "result is present in this report.**\n"
             )
         return
 

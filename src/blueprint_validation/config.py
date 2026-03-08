@@ -28,6 +28,7 @@ class ManipulationZoneConfig:
 class FacilityConfig:
     name: str
     ply_path: Path
+    scene_package_path: Optional[Path] = None
     task_hints_path: Optional[Path] = None
     claim_benchmark_path: Optional[Path] = None
     description: str = ""
@@ -562,14 +563,14 @@ class RoboSplatConfig:
 
 @dataclass
 class ExternalInteractionConfig:
-    enabled: bool = False
+    enabled: bool = True
     manifest_path: Optional[Path] = None
     source_name: str = "external"
 
 
 @dataclass
 class ExternalRolloutsConfig:
-    enabled: bool = False
+    enabled: bool = True
     manifest_path: Optional[Path] = None
     source_name: str = "teleop"
     mode: str = "wm_and_policy"  # policy_only|wm_only|wm_and_policy
@@ -718,6 +719,38 @@ class SpatialAccuracyConfig:
 
 
 @dataclass
+class PolarisEvalConfig:
+    enabled: bool = False
+    repo_path: Path = Path("/opt/PolaRiS")
+    hub_path: Path = Path("./PolaRiS-Hub")
+    environment_mode: str = "scene_package_bridge"
+    environment_name: Optional[str] = None
+    default_as_primary_gate: bool = True
+    use_for_claim_gate: bool = True
+    num_rollouts: int = 16
+    device: str = "cuda"
+    policy_client: str = "OpenVLA"
+    observation_mode: str = "external_only"
+    action_mode: str = "native"
+    export_dir: Path = Path("./data/outputs/polaris")
+    require_scene_package: bool = True
+    require_success_correlation_metadata: bool = True
+
+
+@dataclass
+class SceneBuilderConfig:
+    enabled: bool = False
+    source_ply_path: Optional[Path] = None
+    output_scene_root: Path = Path("./data/scene_package")
+    static_collision_mode: str = "simple"
+    asset_manifest_path: Optional[Path] = None
+    robot_type: str = "franka"
+    task_template: str = "pick_place_v1"
+    emit_isaac_lab: bool = True
+    emit_polaris_metadata: bool = True
+
+
+@dataclass
 class CrossSiteConfig:
     num_clips_per_model: int = 30
     vlm_model: str = "gemini-3-flash-preview"
@@ -743,6 +776,8 @@ class ValidationConfig:
     enrich: EnrichConfig = field(default_factory=EnrichConfig)
     finetune: FinetuneConfig = field(default_factory=FinetuneConfig)
     eval_policy: PolicyEvalConfig = field(default_factory=PolicyEvalConfig)
+    eval_polaris: PolarisEvalConfig = field(default_factory=PolarisEvalConfig)
+    scene_builder: SceneBuilderConfig = field(default_factory=SceneBuilderConfig)
     policy_finetune: PolicyFinetuneConfig = field(default_factory=PolicyFinetuneConfig)
     policy_adapter: PolicyAdapterConfig = field(default_factory=PolicyAdapterConfig)
     robosplat: RoboSplatConfig = field(default_factory=RoboSplatConfig)
@@ -935,11 +970,15 @@ def _min_sign_flip_seed_count(p_value_threshold: float) -> int:
 
 
 def _parse_facility(raw: Dict[str, Any], base_dir: Path) -> FacilityConfig:
+    scene_package_value = raw.get("scene_package_path")
     task_hints_value = raw.get("task_hints_path")
     claim_benchmark_value = raw.get("claim_benchmark_path")
     return FacilityConfig(
         name=raw["name"],
         ply_path=_resolve_path(raw["ply_path"], base_dir),
+        scene_package_path=(
+            _resolve_path(scene_package_value, base_dir) if scene_package_value else None
+        ),
         task_hints_path=_resolve_path(task_hints_value, base_dir) if task_hints_value else None,
         claim_benchmark_path=(
             _resolve_path(claim_benchmark_value, base_dir) if claim_benchmark_value else None
@@ -1465,6 +1504,59 @@ def load_config(path: Path) -> ValidationConfig:
                 video_metadata_fps=float(vlm_raw.get("video_metadata_fps", 10.0)),
                 scoring_prompt=vlm_raw.get("scoring_prompt", VLMJudgeConfig().scoring_prompt),
             ),
+        )
+
+    if "eval_polaris" in raw:
+        epol = raw["eval_polaris"]
+        environment_name = epol.get("environment_name")
+        config.eval_polaris = PolarisEvalConfig(
+            enabled=bool(epol.get("enabled", False)),
+            repo_path=_resolve_path(epol.get("repo_path", "/opt/PolaRiS"), base_dir),
+            hub_path=_resolve_path(epol.get("hub_path", "./PolaRiS-Hub"), base_dir),
+            environment_mode=str(epol.get("environment_mode", "scene_package_bridge")).strip(),
+            environment_name=(str(environment_name).strip() if environment_name else None),
+            default_as_primary_gate=bool(epol.get("default_as_primary_gate", True)),
+            use_for_claim_gate=bool(epol.get("use_for_claim_gate", True)),
+            num_rollouts=int(epol.get("num_rollouts", 16)),
+            device=str(epol.get("device", "cuda")).strip(),
+            policy_client=str(epol.get("policy_client", "OpenVLA")).strip(),
+            observation_mode=str(epol.get("observation_mode", "external_only")).strip(),
+            action_mode=str(epol.get("action_mode", "native")).strip(),
+            export_dir=_resolve_path(
+                epol.get("export_dir", "./data/outputs/polaris"),
+                base_dir,
+            ),
+            require_scene_package=bool(epol.get("require_scene_package", True)),
+            require_success_correlation_metadata=bool(
+                epol.get("require_success_correlation_metadata", True)
+            ),
+        )
+
+    if "scene_builder" in raw:
+        sb = raw["scene_builder"]
+        source_ply_path = sb.get("source_ply_path")
+        asset_manifest_path = sb.get("asset_manifest_path")
+        config.scene_builder = SceneBuilderConfig(
+            enabled=bool(sb.get("enabled", False)),
+            source_ply_path=(
+                _resolve_path(source_ply_path, base_dir)
+                if source_ply_path is not None and str(source_ply_path).strip()
+                else None
+            ),
+            output_scene_root=_resolve_path(
+                sb.get("output_scene_root", "./data/scene_package"),
+                base_dir,
+            ),
+            static_collision_mode=str(sb.get("static_collision_mode", "simple")).strip(),
+            asset_manifest_path=(
+                _resolve_path(asset_manifest_path, base_dir)
+                if asset_manifest_path is not None and str(asset_manifest_path).strip()
+                else None
+            ),
+            robot_type=str(sb.get("robot_type", "franka")).strip(),
+            task_template=str(sb.get("task_template", "pick_place_v1")).strip(),
+            emit_isaac_lab=bool(sb.get("emit_isaac_lab", True)),
+            emit_polaris_metadata=bool(sb.get("emit_polaris_metadata", True)),
         )
 
     # Policy fine-tuning (OpenVLA-OFT adapter stage)
@@ -2318,5 +2410,40 @@ def load_config(path: Path) -> ValidationConfig:
             )
     if int(config.eval_spatial.min_valid_samples) < 1:
         raise ValueError("eval_spatial.min_valid_samples must be >= 1")
+    allowed_scene_builder_collision_modes = {"mesh", "convex_decomp", "simple"}
+    if config.scene_builder.static_collision_mode not in allowed_scene_builder_collision_modes:
+        allowed = ", ".join(sorted(allowed_scene_builder_collision_modes))
+        raise ValueError(f"scene_builder.static_collision_mode must be one of: {allowed}")
+    allowed_scene_builder_robot_types = {"franka"}
+    if config.scene_builder.robot_type not in allowed_scene_builder_robot_types:
+        allowed = ", ".join(sorted(allowed_scene_builder_robot_types))
+        raise ValueError(f"scene_builder.robot_type must be one of: {allowed}")
+    allowed_scene_builder_task_templates = {"pick_place_v1"}
+    if config.scene_builder.task_template not in allowed_scene_builder_task_templates:
+        allowed = ", ".join(sorted(allowed_scene_builder_task_templates))
+        raise ValueError(f"scene_builder.task_template must be one of: {allowed}")
+    if bool(config.scene_builder.enabled):
+        if config.scene_builder.source_ply_path is None:
+            raise ValueError("scene_builder.source_ply_path must be set when scene_builder.enabled=true")
+        if config.scene_builder.asset_manifest_path is None:
+            raise ValueError(
+                "scene_builder.asset_manifest_path must be set when scene_builder.enabled=true"
+            )
+    allowed_polaris_modes = {"auto", "scene_package_bridge", "native_bundle", "scan_only_bridge"}
+    if config.eval_polaris.environment_mode not in allowed_polaris_modes:
+        allowed = ", ".join(sorted(allowed_polaris_modes))
+        raise ValueError(f"eval_polaris.environment_mode must be one of: {allowed}")
+    allowed_polaris_observation_modes = {"external_only", "external_wrist_stitched"}
+    if config.eval_polaris.observation_mode not in allowed_polaris_observation_modes:
+        allowed = ", ".join(sorted(allowed_polaris_observation_modes))
+        raise ValueError(f"eval_polaris.observation_mode must be one of: {allowed}")
+    allowed_polaris_action_modes = {"auto", "native", "joint_position_bridge"}
+    if config.eval_polaris.action_mode not in allowed_polaris_action_modes:
+        allowed = ", ".join(sorted(allowed_polaris_action_modes))
+        raise ValueError(f"eval_polaris.action_mode must be one of: {allowed}")
+    if int(config.eval_polaris.num_rollouts) < 1:
+        raise ValueError("eval_polaris.num_rollouts must be >= 1")
+    if not str(config.eval_polaris.policy_client).strip():
+        raise ValueError("eval_polaris.policy_client must be non-empty")
 
     return config

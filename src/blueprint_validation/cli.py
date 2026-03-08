@@ -231,6 +231,31 @@ def _parse_key_value_pairs(values: tuple[str, ...]) -> dict[str, str]:
 
 
 @cli.command()
+@click.pass_context
+def build_scene_package(ctx: click.Context) -> None:
+    """Build a direct scene package from a raw PLY and local USD assets."""
+    from .scene_builder import SceneAssetManifestError, build_scene_package as _build_scene_package
+
+    config = ctx.obj["config"]
+    try:
+        result = _build_scene_package(config)
+    except (SceneAssetManifestError, RuntimeError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(
+        json.dumps(
+            {
+                "scene_root": str(result.scene_root),
+                "scene_manifest_path": str(result.scene_manifest_path),
+                "usd_scene_path": str(result.usd_scene_path),
+                "task_config_path": str(result.task_config_path),
+                "isaac_lab_package_root": str(result.isaac_lab_package_root),
+            },
+            indent=2,
+        )
+    )
+
+
+@cli.command()
 @click.option("--scene-root", type=click.Path(exists=True, file_okay=False), required=True)
 def validate_scene_package(scene_root: str) -> None:
     """Validate a local scene handoff directory for teleop use."""

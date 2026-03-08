@@ -6,6 +6,7 @@ facilities:
   facility_a:
     name: "Warehouse A - Durham"
     ply_path: ../data/facilities/facility_a/splat.ply
+    # scene_package_path: /path/to/facility_a_scene_package
     claim_benchmark_path: ./benchmarks/facility_a.fixed_claim.json
     # Optional: BlueprintCapturePipeline task_targets.json generated from source video.
     # When present, Stage 4 auto-injects additional manipulation/articulation tasks.
@@ -35,6 +36,7 @@ facilities:
   facility_b:
     name: "Warehouse B - Raleigh"
     ply_path: ../data/facilities/facility_b/splat.ply
+    # scene_package_path: /path/to/facility_b_scene_package
     claim_benchmark_path: ./benchmarks/facility_b.fixed_claim.json
     # task_hints_path: /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/runs/<run>/task_targets.json
     description: "Smaller warehouse with conveyor system, narrow aisles"
@@ -224,6 +226,23 @@ eval_policy:
     model: gemini-3-flash-preview
     api_key_env: GOOGLE_GENAI_API_KEY
     enable_agentic_vision: true
+
+# ---- Stage 4f: PolaRiS final gate ----
+eval_polaris:
+  enabled: false
+  repo_path: /opt/PolaRiS
+  hub_path: /opt/PolaRiS-Hub
+  environment_mode: scene_package_bridge
+  default_as_primary_gate: true
+  use_for_claim_gate: true
+  num_rollouts: 16
+  device: cuda
+  policy_client: OpenVLA
+  observation_mode: external_only
+  action_mode: native
+  export_dir: ./data/outputs/polaris
+  require_scene_package: true
+  require_success_correlation_metadata: true
 
 # ---- Stage 3b: OpenVLA-OFT policy fine-tune ----
 # Uses OFT-oriented finetuning defaults (OpenVLA-OFT-style recipe).

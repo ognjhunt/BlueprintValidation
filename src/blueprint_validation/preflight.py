@@ -20,6 +20,11 @@ from .evaluation.claim_benchmark import (
     claim_benchmark_strictness_failures,
     load_pinned_claim_benchmark,
 )
+from .polaris.runtime import (
+    polaris_primary_gate_enabled,
+    resolve_polaris_runtime,
+    resolve_polaris_scene_spec,
+)
 from .teleop.contracts import TeleopManifestError, load_and_validate_teleop_manifest
 from .validation import ManifestValidationError, load_and_validate_manifest
 
@@ -202,6 +207,35 @@ def check_path_exists_under(root: Path, rel_path: str, name: str) -> PreflightCh
     if target.exists():
         return PreflightCheck(name=name, passed=True, detail=str(target))
     return PreflightCheck(name=name, passed=False, detail=f"Missing required path: {target}")
+
+
+def check_polaris_runtime(config: ValidationConfig) -> PreflightCheck:
+    runtime = resolve_polaris_runtime(config)
+    return PreflightCheck(
+        name="polaris:runtime",
+        passed=runtime.runnable,
+        detail="ok" if runtime.runnable else "; ".join(runtime.issues),
+    )
+
+
+def check_polaris_scene_handoff(config: ValidationConfig, facility_id: str) -> PreflightCheck:
+    facility = config.facilities[facility_id]
+    spec = resolve_polaris_scene_spec(config, facility)
+    return PreflightCheck(
+        name=f"polaris:scene_handoff:{facility_id}",
+        passed=spec.scene_root is not None or spec.mode == "native_bundle",
+        detail=spec.detail or spec.mode,
+    )
+
+
+def check_polaris_primary_gate_eligibility(config: ValidationConfig, facility_id: str) -> PreflightCheck:
+    facility = config.facilities[facility_id]
+    spec = resolve_polaris_scene_spec(config, facility)
+    return PreflightCheck(
+        name=f"polaris:primary_gate:{facility_id}",
+        passed=spec.primary_eligible,
+        detail=spec.detail or spec.mode,
+    )
 
 
 def _canonical_policy_adapter_name(name: str) -> str:
@@ -996,10 +1030,10 @@ def check_external_interaction_manifest(config: ValidationConfig) -> PreflightCh
     if manifest_path is None:
         return PreflightCheck(
             name="external_interaction:manifest",
-            passed=False,
+            passed=True,
             detail=(
-                "external_interaction.enabled=true but manifest_path is not set. "
-                "Set external_interaction.manifest_path to a valid stage1_source manifest."
+                "external_interaction.enabled=true but manifest_path is not set; "
+                "Stage 1f will auto-skip until a stage1_source manifest is provided."
             ),
         )
     if not manifest_path.exists():
@@ -1049,10 +1083,10 @@ def check_external_rollout_manifest(config: ValidationConfig) -> PreflightCheck:
     if manifest_path is None:
         return PreflightCheck(
             name="external_rollouts:manifest",
-            passed=False,
+            passed=True,
             detail=(
-                "external_rollouts.enabled=true but manifest_path is not set. "
-                "Set external_rollouts.manifest_path to a valid teleop_session_manifest.json."
+                "external_rollouts.enabled=true but manifest_path is not set; "
+                "Stage 1g will auto-skip until a teleop_session_manifest.json is provided."
             ),
         )
     if not manifest_path.exists():
@@ -1847,9 +1881,17 @@ def run_preflight(
 
     checks.append(check_external_tool("ffmpeg"))
     checks.append(check_external_tool("ffprobe"))
+    if bool(config.eval_polaris.enabled):
+        checks.append(check_dependency("websockets", "websockets"))
+        checks.append(check_dependency("msgpack", "msgpack"))
+        checks.append(check_polaris_runtime(config))
 
     for fid, fconf in config.facilities.items():
         checks.append(check_facility_ply(fid, fconf.ply_path))
+        if bool(config.eval_polaris.enabled):
+            checks.append(check_polaris_scene_handoff(config, fid))
+            if polaris_primary_gate_enabled(config):
+                checks.append(check_polaris_primary_gate_eligibility(config, fid))
         if fconf.task_hints_path is not None:
             checks.append(check_path_exists(fconf.task_hints_path, f"task_hints:{fid}"))
         checks.append(

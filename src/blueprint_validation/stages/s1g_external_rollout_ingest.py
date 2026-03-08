@@ -46,9 +46,9 @@ class ExternalRolloutIngestStage(PipelineStage):
         if manifest_path is None:
             return StageResult(
                 stage_name=self.name,
-                status="failed",
+                status="skipped",
                 elapsed_seconds=0,
-                detail="external_rollouts.enabled=true but manifest_path is not set.",
+                detail="external_rollouts.enabled=true but manifest_path is not set; Stage 1g auto-skipped.",
             )
         if not manifest_path.exists():
             return StageResult(

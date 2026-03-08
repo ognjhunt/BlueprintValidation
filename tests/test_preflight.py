@@ -615,6 +615,16 @@ def test_preflight_external_interaction_manifest_fails_on_invalid_schema(sample_
     assert "invalid stage1_source manifest" in result.detail.lower()
 
 
+def test_preflight_external_interaction_manifest_autoskips_when_no_manifest(sample_config):
+    import blueprint_validation.preflight as preflight
+
+    sample_config.external_interaction.enabled = True
+    sample_config.external_interaction.manifest_path = None
+    result = preflight.check_external_interaction_manifest(sample_config)
+    assert result.passed is True
+    assert "auto-skip" in result.detail.lower()
+
+
 def test_preflight_external_interaction_manifest_passes_with_valid_schema(sample_config, tmp_path):
     from blueprint_validation.common import write_json
     import blueprint_validation.preflight as preflight
@@ -630,6 +640,16 @@ def test_preflight_external_interaction_manifest_passes_with_valid_schema(sample
     result = preflight.check_external_interaction_manifest(sample_config)
     assert result.passed is True
     assert "validated stage1_source manifest" in result.detail.lower()
+
+
+def test_preflight_external_rollout_manifest_autoskips_when_no_manifest(sample_config):
+    import blueprint_validation.preflight as preflight
+
+    sample_config.external_rollouts.enabled = True
+    sample_config.external_rollouts.manifest_path = None
+    result = preflight.check_external_rollout_manifest(sample_config)
+    assert result.passed is True
+    assert "auto-skip" in result.detail.lower()
 
 
 def test_preflight_dreamzero_training_required_when_effective_policy_finetune_enabled(

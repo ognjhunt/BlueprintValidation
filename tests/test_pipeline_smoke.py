@@ -175,6 +175,7 @@ def _patch_pipeline_stages_with_dummies(monkeypatch, call_counts):
         "PolicyFinetuneStage": "s3b_policy_finetune",
         "PolicyRLLoopStage": "s3c_policy_rl_loop",
         "TrainedPolicyEvalStage": "s4e_trained_eval",
+        "PolarisEvalStage": "s4f_polaris_eval",
         "RolloutDatasetStage": "s4b_rollout_dataset",
         "PolicyPairTrainStage": "s4c_policy_pair_train",
         "PolicyPairEvalStage": "s4d_policy_pair_eval",
@@ -277,7 +278,7 @@ def test_pipeline_post_stage_sync_hook(sample_config, tmp_path, monkeypatch):
     pipeline.run_all(resume_from_results=False)
 
     lines = hook_log.read_text().strip().splitlines()
-    assert len(lines) == 21
+    assert len(lines) == 22
     assert any(line.startswith("test_facility/s1_render|success") for line in lines)
 
 
@@ -299,6 +300,7 @@ def test_pipeline_wm_only_skips_openvla_stages(sample_config, tmp_path, monkeypa
         "s4c_policy_pair_train",
         "s4d_policy_pair_eval",
         "s4e_trained_eval",
+        "s4f_polaris_eval",
     ]
     for stage_name in deferred:
         key = f"test_facility/{stage_name}"
@@ -392,6 +394,9 @@ def test_pipeline_action_boost_require_full_converts_skipped_to_failed(
     monkeypatch.setattr(pipeline_mod, "PolicyRLLoopStage", lambda: DummyStage("s3c_policy_rl_loop"))
     monkeypatch.setattr(
         pipeline_mod, "TrainedPolicyEvalStage", lambda: DummyStage("s4e_trained_eval")
+    )
+    monkeypatch.setattr(
+        pipeline_mod, "PolarisEvalStage", lambda: DummyStage("s4f_polaris_eval")
     )
     monkeypatch.setattr(
         pipeline_mod, "RolloutDatasetStage", lambda: DummyStage("s4b_rollout_dataset")
