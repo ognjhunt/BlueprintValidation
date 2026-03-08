@@ -282,6 +282,28 @@ def test_pipeline_post_stage_sync_hook(sample_config, tmp_path, monkeypatch):
     assert any(line.startswith("test_facility/s1_render|success") for line in lines)
 
 
+
+def test_auto_shutdown_uses_argv_without_shell(sample_config, tmp_path, monkeypatch):
+    import blueprint_validation.pipeline as pipeline_mod
+
+    captured = {}
+
+    def _fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return None
+
+    sample_config.cloud.auto_shutdown = True
+    monkeypatch.setenv("BLUEPRINT_AUTO_SHUTDOWN_CMD", "echo safe; touch /tmp/pwned")
+    monkeypatch.setattr(pipeline_mod.subprocess, "run", _fake_run)
+
+    pipeline = pipeline_mod.ValidationPipeline(sample_config, tmp_path / "outputs")
+    pipeline._maybe_trigger_auto_shutdown("budget triggered")
+
+    assert captured["cmd"] == ["echo", "safe;", "touch", "/tmp/pwned"]
+    assert captured["kwargs"]["shell"] is False
+
+
 def test_pipeline_wm_only_skips_openvla_stages(sample_config, tmp_path, monkeypatch):
     call_counts = {}
     pipeline_mod = _patch_pipeline_stages_with_dummies(monkeypatch, call_counts)
