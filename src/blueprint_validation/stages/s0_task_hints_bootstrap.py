@@ -925,18 +925,6 @@ class TaskHintsBootstrapStage(PipelineStage):
             means_corrected = transform_means(means_raw, scene_T)
         scene_center = means_corrected.mean(axis=0)
 
-        if not bool(config.render.vlm_fallback):
-            return StageResult(
-                stage_name=self.name,
-                status="failed",
-                elapsed_seconds=0,
-                detail=(
-                    "Task-hints bootstrap requires render.vlm_fallback=true when no precomputed "
-                    "task hints are provided. "
-                    + _MANUAL_ANALYSIS_DETAIL
-                ),
-            )
-
         # --- VLM detection (with colors) ---
         detections: List[DetectedRegion] = []
         scene_type = "unknown"

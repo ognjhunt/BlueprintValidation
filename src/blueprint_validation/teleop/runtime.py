@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import importlib.util
+import hashlib
 import shutil
 import socket
 import sys
@@ -81,6 +83,16 @@ class TeleopBackend(Protocol):
 
     def record(self, config: TeleopRecorderConfig) -> RecordedSession:
         ...
+
+
+@dataclass
+class LoadedSceneEnv:
+    env: Any
+    runtime_kind: str
+    close_fn: Callable[[], None]
+
+    def close(self) -> None:
+        self.close_fn()
 
 
 def record_teleop_session(
@@ -167,7 +179,6 @@ class IsaacLabLocalBackend:
     """Local teleop backend using an Isaac Lab ManagerBasedEnv."""
 
     def record(self, config: TeleopRecorderConfig) -> RecordedSession:
-        modules = _load_isaac_lab_modules()
         device = str(config.teleop_device or "keyboard").strip().lower()
         if device not in {"keyboard", "spacemouse", "vision_pro"}:
             raise IsaacTeleopRuntimeError(
@@ -182,35 +193,16 @@ class IsaacLabLocalBackend:
                 f"Scene package does not include an isaac_lab directory: {scene_root}"
             )
 
-        task_package = config.task_package or _default_task_package_name(scene_root)
-        env_cfg_class = config.env_cfg_class or "TeleopEnvCfg"
-
-        isaac_lab_root = scene_root / "isaac_lab"
-        if str(isaac_lab_root) not in sys.path:
-            sys.path.insert(0, str(isaac_lab_root))
-
-        app_launcher = modules["AppLauncher"](
-            {
-                "headless": bool(config.headless),
-            }
+        loaded = load_scene_env(
+            scene_root=scene_root,
+            task_package=config.task_package,
+            env_cfg_class=config.env_cfg_class or "TeleopEnvCfg",
+            headless=bool(config.headless),
         )
-        app_launcher.start()
-
         try:
-            env_cfg = modules["parse_env_cfg"](
-                _load_env_cfg(task_package, env_cfg_class, num_envs=1)
-            )
-            env = modules["ManagerBasedEnv"](env_cfg)
-            try:
-                return _record_with_env(env, config)
-            finally:
-                close = getattr(env, "close", None)
-                if callable(close):
-                    close()
+            return _record_with_env(loaded.env, config)
         finally:
-            stop = getattr(app_launcher, "stop", None)
-            if callable(stop):
-                stop()
+            loaded.close()
 
 
 def _record_with_env(env: Any, config: TeleopRecorderConfig) -> RecordedSession:
@@ -680,6 +672,96 @@ def _load_env_cfg(task_package: str, env_cfg_class: str, *, num_envs: int) -> An
     if hasattr(cfg, "scene") and hasattr(cfg.scene, "num_envs"):
         cfg.scene.num_envs = int(num_envs)
     return cfg
+
+
+def _load_env_cfg_from_module(module: Any, env_cfg_class: str, *, num_envs: int) -> Any:
+    cfg_cls = getattr(module, env_cfg_class, None)
+    if cfg_cls is None:
+        raise IsaacTeleopRuntimeError(
+            f"EnvCfg class '{env_cfg_class}' not found in task package '{getattr(module, '__name__', '<module>')}'."
+        )
+    cfg = cfg_cls()
+    if hasattr(cfg, "scene") and hasattr(cfg.scene, "num_envs"):
+        cfg.scene.num_envs = int(num_envs)
+    return cfg
+
+
+def load_scene_env(
+    *,
+    scene_root: Path,
+    task_package: str | None = None,
+    env_cfg_class: str = "TeleopEnvCfg",
+    headless: bool = False,
+) -> LoadedSceneEnv:
+    package_name = task_package or _default_task_package_name(scene_root)
+    module = _load_scene_task_package(scene_root, package_name)
+
+    create_env = getattr(module, "create_env", None)
+    if callable(create_env):
+        env = create_env(headless=bool(headless))
+        return LoadedSceneEnv(
+            env=env,
+            runtime_kind="blueprint_scene_env",
+            close_fn=lambda: _close_env(env),
+        )
+
+    modules = _load_isaac_lab_modules()
+    app_launcher = modules["AppLauncher"]({"headless": bool(headless)})
+    app_launcher.start()
+    try:
+        env_cfg = _load_env_cfg_from_module(module, env_cfg_class, num_envs=1)
+        try:
+            parsed_cfg = modules["parse_env_cfg"](env_cfg)
+        except Exception:
+            parsed_cfg = env_cfg
+        env = modules["ManagerBasedEnv"](parsed_cfg)
+    except Exception:
+        stop = getattr(app_launcher, "stop", None)
+        if callable(stop):
+            stop()
+        raise
+
+    def _close_loaded() -> None:
+        _close_env(env)
+        stop = getattr(app_launcher, "stop", None)
+        if callable(stop):
+            stop()
+
+    return LoadedSceneEnv(
+        env=env,
+        runtime_kind="isaaclab_manager",
+        close_fn=_close_loaded,
+    )
+
+
+def _load_scene_task_package(scene_root: Path, package_name: str) -> Any:
+    package_root = (scene_root / "isaac_lab" / package_name).resolve()
+    init_path = package_root / "__init__.py"
+    if not init_path.exists():
+        raise IsaacTeleopRuntimeError(
+            f"Task package '{package_name}' not found under {scene_root / 'isaac_lab'}."
+        )
+    unique_name = (
+        f"_blueprint_scene_pkg_{package_name}_"
+        f"{hashlib.sha1(str(scene_root.resolve()).encode('utf-8')).hexdigest()[:10]}"
+    )
+    spec = importlib.util.spec_from_file_location(
+        unique_name,
+        init_path,
+        submodule_search_locations=[str(package_root)],
+    )
+    if spec is None or spec.loader is None:
+        raise IsaacTeleopRuntimeError(f"Could not load task package from {init_path}.")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[unique_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _close_env(env: Any) -> None:
+    close = getattr(env, "close", None)
+    if callable(close):
+        close()
 
 
 def _load_isaac_lab_modules() -> Dict[str, Any]:

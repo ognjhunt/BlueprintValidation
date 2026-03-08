@@ -6,6 +6,7 @@ import json
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 
 def _obb(
@@ -444,8 +445,8 @@ def test_build_scene_locked_specs_facility_a_uses_placeholder_profile(
     assert specs[0].target_instance_id == "101"
     assert isinstance(specs[0].locked_eye_point, list) and len(specs[0].locked_eye_point) == 3
     assert isinstance(specs[0].locked_look_at_point, list) and len(specs[0].locked_look_at_point) == 3
-    assert specs[0].locked_eye_point == [0.95, -0.55, 1.18]
-    assert specs[0].locked_look_at_point == [0.0, 0.0, 0.85]
+    assert specs[0].locked_eye_point == pytest.approx([0.95, -0.55, 1.18])
+    assert specs[0].locked_look_at_point == pytest.approx([0.0, 0.0, 0.85])
     assert specs[0].locked_probe_motion_radius_m == pytest.approx(0.008)
 
 

@@ -3,15 +3,44 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 
 def _write_scene_package(root: Path) -> Path:
     (root / "assets").mkdir(parents=True, exist_ok=True)
     (root / "usd").mkdir(parents=True, exist_ok=True)
-    (root / "isaac_lab").mkdir(parents=True, exist_ok=True)
+    pkg = root / "isaac_lab" / "scene_task"
+    pkg.mkdir(parents=True, exist_ok=True)
     (root / "assets" / "scene_manifest.json").write_text('{"scene_id":"demo_scene"}')
     (root / "usd" / "scene.usda").write_text("#usda 1.0\n")
+    (root / "isaac_lab" / "__init__.py").write_text("from .scene_task import TeleopEnvCfg, create_env\n")
+    pkg.joinpath("__init__.py").write_text(
+        "from .blueprint_env import TeleopEnvCfg, create_env\n"
+        "__all__ = ['TeleopEnvCfg', 'create_env']\n"
+    )
+    pkg.joinpath("blueprint_env.py").write_text(
+        "import numpy as np\n"
+        "class _Spec:\n"
+        "    shape = (7,)\n"
+        "class _Mgr:\n"
+        "    action_spec = _Spec()\n"
+        "class TeleopEnvCfg:\n"
+        "    pass\n"
+        "class _Env:\n"
+        "    device = 'cpu'\n"
+        "    action_manager = _Mgr()\n"
+        "    def __init__(self):\n"
+        "        self.task_success = np.asarray([False], dtype=bool)\n"
+        "    def reset(self):\n"
+        "        return {'wrist_rgb': np.zeros((8, 8, 3), dtype=np.uint8), 'policy': np.zeros((3,), dtype=np.float32)}\n"
+        "    def step(self, action):\n"
+        "        return self.reset(), np.asarray([0.0], dtype=np.float32), np.asarray([False], dtype=bool), {'rubric': {'success': False, 'progress': 0.0}}\n"
+        "    def close(self):\n"
+        "        return None\n"
+        "def create_env(*, headless=False):\n"
+        "    return _Env()\n"
+    )
+    pkg.joinpath("blueprint_runtime.json").write_text(
+        '{"schema_version":"v1","runtime_kind":"blueprint_scene_env","task_package":"scene_task","env_factory":"scene_task.create_env","env_cfg_class":"TeleopEnvCfg","action_dim":7,"camera_keys":["wrist_rgb"],"state_keys":["policy"]}'
+    )
     return root
 
 
@@ -169,3 +198,25 @@ def test_render_backend_auto_stays_gsplat_without_unsafe_opt_in(sample_config, t
     }
 
     assert active_render_backend(sample_config, fac, previous_results) == "gsplat"
+
+
+def test_generated_scene_package_env_can_reset_and_step(tmp_path):
+    from blueprint_validation.teleop.contracts import load_and_validate_scene_package
+    from blueprint_validation.teleop.runtime import _resolve_env_action_dim, load_scene_env
+
+    scene_root = _write_scene_package(tmp_path / "scene")
+    payload = load_and_validate_scene_package(scene_root)
+    assert payload["has_runnable_env"] is True
+
+    loaded = load_scene_env(scene_root=scene_root, headless=True)
+    try:
+        obs = loaded.env.reset()
+        assert "wrist_rgb" in obs
+        assert _resolve_env_action_dim(loaded.env) == 7
+        step_obs, reward, done, info = loaded.env.step([[0, 0, 0, 0, 0, 0, 0]])
+        assert "wrist_rgb" in step_obs
+        assert reward.shape == (1,)
+        assert done.shape == (1,)
+        assert "rubric" in info
+    finally:
+        loaded.close()

@@ -572,7 +572,7 @@ class ExternalInteractionConfig:
 
 @dataclass
 class ExternalRolloutsConfig:
-    enabled: bool = True
+    enabled: bool = False
     manifest_path: Optional[Path] = None
     source_name: str = "teleop"
     mode: str = "wm_and_policy"  # policy_only|wm_only|wm_and_policy
@@ -2393,6 +2393,14 @@ def load_config(path: Path) -> ValidationConfig:
     if str(config.render.backend) not in allowed_render_backends:
         allowed = ", ".join(sorted(allowed_render_backends))
         raise ValueError(f"render.backend must be one of: {allowed}")
+    if (
+        str(config.render.backend) == "isaac_scene"
+        and not bool(config.scene_builder.enabled)
+        and not any(facility.scene_package_path is not None for facility in config.facilities.values())
+    ):
+        raise ValueError(
+            "render.backend=isaac_scene requires facility.scene_package_path or scene_builder.enabled=true"
+        )
     if not (0.0 <= float(config.eval_policy.vlm_judge.video_metadata_fps) <= 24.0):
         raise ValueError("eval_policy.vlm_judge.video_metadata_fps must be in [0, 24]")
     if bool(config.eval_policy.reliability.fail_on_short_rollout):

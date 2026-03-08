@@ -23,6 +23,7 @@ def test_scene_package_bridge_requires_unsafe_opt_in(sample_config, tmp_path: Pa
     scene_spec = PolarisSceneSpec(
         mode="scene_package_bridge",
         primary_eligible=True,
+        runnable_scene_env=True,
         environment_name=None,
         scene_root=scene_root,
         usd_path=None,

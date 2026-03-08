@@ -26,6 +26,7 @@ class PolarisRuntimeInfo:
 class PolarisSceneSpec:
     mode: str
     primary_eligible: bool
+    runnable_scene_env: bool
     environment_name: Optional[str]
     scene_root: Optional[Path]
     usd_path: Optional[Path]
@@ -87,6 +88,7 @@ def resolve_polaris_scene_spec(
         return PolarisSceneSpec(
             mode=mode,
             primary_eligible=primary_eligible,
+            runnable_scene_env=primary_eligible,
             environment_name=env_name,
             scene_root=env_root if env_root.exists() else None,
             usd_path=usd_path if usd_path.exists() else None,
@@ -100,6 +102,7 @@ def resolve_polaris_scene_spec(
         return PolarisSceneSpec(
             mode=mode,
             primary_eligible=False,
+            runnable_scene_env=False,
             environment_name=None,
             scene_root=None,
             usd_path=None,
@@ -114,6 +117,7 @@ def resolve_polaris_scene_spec(
         return PolarisSceneSpec(
             mode="scene_package_bridge",
             primary_eligible=False,
+            runnable_scene_env=False,
             environment_name=None,
             scene_root=None,
             usd_path=None,
@@ -130,6 +134,7 @@ def resolve_polaris_scene_spec(
         return PolarisSceneSpec(
             mode="scene_package_bridge",
             primary_eligible=False,
+            runnable_scene_env=False,
             environment_name=None,
             scene_root=scene_root,
             usd_path=None,
@@ -141,15 +146,19 @@ def resolve_polaris_scene_spec(
 
     task_metadata_path = _resolve_task_metadata_path(scene_root)
     instruction = _resolve_instruction_from_scene_package(task_metadata_path)
-    primary_eligible = True
+    runnable_scene_env = bool(payload.get("has_runnable_env", False))
+    primary_eligible = runnable_scene_env
     if bool(config.eval_polaris.require_scene_package) and scene_root is None:
         primary_eligible = False
     if bool(config.eval_polaris.require_success_correlation_metadata) and task_metadata_path is None:
         primary_eligible = False
         detail = "Missing task metadata for strict scene_package_bridge"
+    if not runnable_scene_env:
+        detail = str(payload.get("runtime_detail", "") or "Scene package lacks a runnable env contract.")
     return PolarisSceneSpec(
         mode="scene_package_bridge",
         primary_eligible=primary_eligible,
+        runnable_scene_env=runnable_scene_env,
         environment_name=payload.get("scene_manifest", {}).get("scene_id"),
         scene_root=scene_root,
         usd_path=Path(payload["usd_scene_path"]),

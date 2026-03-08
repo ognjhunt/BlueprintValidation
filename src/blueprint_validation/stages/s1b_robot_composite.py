@@ -7,7 +7,6 @@ from typing import Dict, List
 
 from ..common import StageResult, get_logger, write_json
 from ..config import FacilityConfig, ValidationConfig
-from ..synthetic.robot_compositor import composite_robot_arm_into_clip
 from ..validation import load_and_validate_manifest
 from .base import PipelineStage
 from .render_backend import active_render_backend
@@ -70,6 +69,8 @@ class RobotCompositeStage(PipelineStage):
             manifest_type="stage1_source",
             require_existing_paths=True,
         )
+        from ..synthetic.robot_compositor import composite_robot_arm_into_clip
+
         out_dir = work_dir / "robot_composite"
         out_dir.mkdir(parents=True, exist_ok=True)
 

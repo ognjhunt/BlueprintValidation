@@ -10,6 +10,7 @@ def _write_scene_package(root: Path) -> None:
     (root / "assets").mkdir(parents=True, exist_ok=True)
     (root / "usd").mkdir(parents=True, exist_ok=True)
     (root / "geniesim").mkdir(parents=True, exist_ok=True)
+    (root / "isaac_lab" / "scene_task").mkdir(parents=True, exist_ok=True)
     (root / "assets" / "scene_manifest.json").write_text("{}")
     (root / "usd" / "scene.usda").write_text("#usda 1.0")
     (root / "geniesim" / "task_config.json").write_text(
@@ -19,6 +20,21 @@ def _write_scene_package(root: Path) -> None:
                 "suggested_tasks": [
                     {"description_hint": "Pick up the mug and place it on the table"}
                 ],
+            }
+        )
+    )
+    (root / "isaac_lab" / "scene_task" / "__init__.py").write_text("")
+    (root / "isaac_lab" / "scene_task" / "blueprint_runtime.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "runtime_kind": "blueprint_scene_env",
+                "task_package": "scene_task",
+                "env_factory": "scene_task.create_env",
+                "env_cfg_class": "TeleopEnvCfg",
+                "action_dim": 7,
+                "camera_keys": ["wrist_rgb"],
+                "state_keys": ["policy"],
             }
         )
     )

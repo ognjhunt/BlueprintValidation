@@ -25,7 +25,11 @@ from .polaris.runtime import (
     resolve_polaris_runtime,
     resolve_polaris_scene_spec,
 )
-from .teleop.contracts import TeleopManifestError, load_and_validate_teleop_manifest
+from .teleop.contracts import (
+    TeleopManifestError,
+    load_and_validate_scene_package,
+    load_and_validate_teleop_manifest,
+)
 from .validation import ManifestValidationError, load_and_validate_manifest
 
 logger = get_logger("preflight")
@@ -234,7 +238,10 @@ def check_polaris_scene_handoff(config: ValidationConfig, facility_id: str) -> P
     spec = resolve_polaris_scene_spec(config, facility)
     return PreflightCheck(
         name=f"polaris:scene_handoff:{facility_id}",
-        passed=spec.scene_root is not None or spec.mode == "native_bundle",
+        passed=(
+            spec.mode == "native_bundle"
+            or (spec.scene_root is not None and bool(spec.runnable_scene_env))
+        ),
         detail=spec.detail or spec.mode,
     )
 
@@ -246,6 +253,47 @@ def check_polaris_primary_gate_eligibility(config: ValidationConfig, facility_id
         name=f"polaris:primary_gate:{facility_id}",
         passed=spec.primary_eligible,
         detail=spec.detail or spec.mode,
+    )
+
+
+def check_polaris_scene_package_import_opt_in(
+    config: ValidationConfig, facility_id: str
+) -> PreflightCheck:
+    facility = config.facilities[facility_id]
+    spec = resolve_polaris_scene_spec(config, facility)
+    if spec.mode != "scene_package_bridge" or spec.scene_root is None:
+        return PreflightCheck(
+            name=f"polaris:scene_package_import_opt_in:{facility_id}",
+            passed=True,
+            detail=spec.detail or spec.mode,
+        )
+    enabled = (os.environ.get("BLUEPRINT_UNSAFE_ALLOW_SCENE_PACKAGE_IMPORT", "0") or "").strip()
+    passed = enabled == "1"
+    return PreflightCheck(
+        name=f"polaris:scene_package_import_opt_in:{facility_id}",
+        passed=passed,
+        detail=(
+            "BLUEPRINT_UNSAFE_ALLOW_SCENE_PACKAGE_IMPORT=1"
+            if passed
+            else "Set BLUEPRINT_UNSAFE_ALLOW_SCENE_PACKAGE_IMPORT=1 for trusted scene_package_bridge runs."
+        ),
+    )
+
+
+def check_scene_package_runtime_contract(config: ValidationConfig, facility_id: str) -> PreflightCheck:
+    facility = config.facilities[facility_id]
+    scene_root = facility.scene_package_path
+    name = f"scene_package:runnable_env:{facility_id}"
+    if scene_root is None:
+        return PreflightCheck(name=name, passed=True, detail="scene_package_path not configured")
+    try:
+        payload = load_and_validate_scene_package(scene_root)
+    except TeleopManifestError as exc:
+        return PreflightCheck(name=name, passed=False, detail=str(exc))
+    return PreflightCheck(
+        name=name,
+        passed=bool(payload.get("has_runnable_env", False)),
+        detail=str(payload.get("runtime_detail", "ok") or "ok"),
     )
 
 
@@ -1858,8 +1906,11 @@ def run_preflight(
 
     for fid, fconf in config.facilities.items():
         checks.append(check_facility_ply(fid, fconf.ply_path))
+        if fconf.scene_package_path is not None:
+            checks.append(check_scene_package_runtime_contract(config, fid))
         if bool(config.eval_polaris.enabled):
             checks.append(check_polaris_scene_handoff(config, fid))
+            checks.append(check_polaris_scene_package_import_opt_in(config, fid))
             if polaris_primary_gate_enabled(config):
                 checks.append(check_polaris_primary_gate_eligibility(config, fid))
         if fconf.task_hints_path is not None:

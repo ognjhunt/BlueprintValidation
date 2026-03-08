@@ -19,6 +19,17 @@ _SCENE_HANDOFF_REQUIRED = (
     Path("usd/scene.usda"),
 )
 
+_SCENE_RUNTIME_CONTRACT_REQUIRED = {
+    "schema_version",
+    "runtime_kind",
+    "task_package",
+    "env_factory",
+    "env_cfg_class",
+    "action_dim",
+    "camera_keys",
+    "state_keys",
+}
+
 _TELEOP_REQUIRED_SESSION_KEYS = {
     "session_id",
     "scene_id",
@@ -108,6 +119,23 @@ def load_and_validate_scene_package(scene_root: Path) -> Dict[str, Any]:
 
     scene_manifest_path = root / "assets" / "scene_manifest.json"
     scene_manifest = read_json(scene_manifest_path)
+    task_packages = sorted(
+        path.parent.name for path in (root / "isaac_lab").glob("*/__init__.py")
+    )
+    runtime_contract_path = None
+    runtime_contract: Dict[str, Any] = {}
+    runtime_detail = "isaac_lab package missing"
+    has_runnable_env = False
+    for package_name in task_packages:
+        candidate = root / "isaac_lab" / package_name / "blueprint_runtime.json"
+        if candidate.exists():
+            runtime_contract_path = candidate
+            runtime_contract = _load_scene_runtime_contract(candidate, task_packages=task_packages)
+            has_runnable_env = True
+            runtime_detail = "ok"
+            break
+    if task_packages and runtime_contract_path is None:
+        runtime_detail = "Missing blueprint_runtime.json under isaac_lab task package."
     return {
         "scene_root": str(root),
         "scene_manifest_path": str(scene_manifest_path),
@@ -115,7 +143,50 @@ def load_and_validate_scene_package(scene_root: Path) -> Dict[str, Any]:
         "usd_scene_path": str(root / "usd" / "scene.usda"),
         "has_isaac_lab": (root / "isaac_lab").exists(),
         "has_geniesim_task_config": (root / "geniesim" / "task_config.json").exists(),
+        "task_packages": task_packages,
+        "runtime_contract_path": str(runtime_contract_path) if runtime_contract_path else "",
+        "runtime_contract": runtime_contract,
+        "has_runnable_env": has_runnable_env,
+        "runtime_detail": runtime_detail,
     }
+
+
+def _load_scene_runtime_contract(path: Path, *, task_packages: List[str]) -> Dict[str, Any]:
+    payload = read_json(path)
+    if not isinstance(payload, dict):
+        raise TeleopManifestError(f"Scene runtime contract must be an object ({path})")
+    missing = sorted(_SCENE_RUNTIME_CONTRACT_REQUIRED - set(payload.keys()))
+    if missing:
+        raise TeleopManifestError(
+            f"Scene runtime contract missing keys ({path}): {', '.join(missing)}"
+        )
+    if str(payload.get("schema_version", "") or "").strip() != "v1":
+        raise TeleopManifestError(f"Unsupported scene runtime schema_version ({path})")
+    task_package = str(payload.get("task_package", "") or "").strip()
+    if not task_package or task_package not in task_packages:
+        raise TeleopManifestError(
+            f"Scene runtime contract task_package must match an isaac_lab package ({path})"
+        )
+    action_dim = int(payload.get("action_dim", 0) or 0)
+    if action_dim <= 0:
+        raise TeleopManifestError(f"Scene runtime contract action_dim must be > 0 ({path})")
+    camera_keys = payload.get("camera_keys")
+    state_keys = payload.get("state_keys")
+    if not isinstance(camera_keys, list) or not [str(v).strip() for v in camera_keys if str(v).strip()]:
+        raise TeleopManifestError(
+            f"Scene runtime contract camera_keys must be a non-empty list ({path})"
+        )
+    if not isinstance(state_keys, list) or not [str(v).strip() for v in state_keys if str(v).strip()]:
+        raise TeleopManifestError(
+            f"Scene runtime contract state_keys must be a non-empty list ({path})"
+        )
+    env_factory = str(payload.get("env_factory", "") or "").strip()
+    env_cfg_class = str(payload.get("env_cfg_class", "") or "").strip()
+    if not env_factory or not env_cfg_class:
+        raise TeleopManifestError(
+            f"Scene runtime contract requires env_factory and env_cfg_class ({path})"
+        )
+    return payload
 
 
 def summarize_teleop_session_quality(session: Mapping[str, Any], *, require_existing_paths: bool) -> Dict[str, Any]:

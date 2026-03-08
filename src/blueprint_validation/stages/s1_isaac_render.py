@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from typing import Any, Dict, List, Mapping
 
@@ -10,11 +9,10 @@ import numpy as np
 
 from ..common import StageResult, write_json
 from ..config import FacilityConfig, ValidationConfig
-from ..polaris.runner import _load_scene_env_cfg
 from ..teleop.contracts import load_and_validate_scene_package
 from ..teleop.runtime import (
     IsaacTeleopRuntimeError,
-    _load_isaac_lab_modules,
+    load_scene_env,
     _resolve_env_action_dim,
     _sorted_camera_keys,
     extract_camera_frames,
@@ -143,20 +141,9 @@ def _render_scripted_isaac_clips(
             "executable Python from the scene package. Set "
             "BLUEPRINT_UNSAFE_ALLOW_SCENE_PACKAGE_IMPORT=1 only for trusted scene packages."
         )
-    modules = _load_isaac_lab_modules()
-    if str(scene_root) not in sys.path:
-        sys.path.insert(0, str(scene_root))
-
-    app_launcher = modules["AppLauncher"]({"headless": True})
-    app_launcher.start()
-    env = None
+    loaded = load_scene_env(scene_root=scene_root, headless=True)
     try:
-        env_cfg = _load_scene_env_cfg(scene_root)
-        try:
-            parsed_cfg = modules["parse_env_cfg"](env_cfg)
-        except Exception:
-            parsed_cfg = env_cfg
-        env = modules["ManagerBasedEnv"](parsed_cfg)
+        env = loaded.env
         action_dim = int(_resolve_env_action_dim(env))
         num_frames = max(1, int(config.render.num_frames))
         num_rollouts = max(1, int(config.render.num_clips_per_path))
@@ -202,13 +189,7 @@ def _render_scripted_isaac_clips(
                 )
         return manifest_entries
     finally:
-        if env is not None:
-            close = getattr(env, "close", None)
-            if callable(close):
-                close()
-        stop = getattr(app_launcher, "stop", None)
-        if callable(stop):
-            stop()
+        loaded.close()
 
 
 def _collect_clip_frames(

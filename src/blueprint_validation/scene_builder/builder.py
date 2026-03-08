@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from ..common import sanitize_filename_component, write_json, write_text_atomic
-from ..config import SceneBuilderConfig, ValidationConfig
+from ..config import ValidationConfig
 from ..warmup import load_ply_means_numpy
 from .manifest import ImportedAssetSpec, SceneAssetManifest, load_scene_asset_manifest
 
@@ -351,17 +351,24 @@ def _write_isaac_lab_package(
     write_text_atomic(
         root / "__init__.py",
         (
-            "from .scene_task import TeleopEnvCfg, PickPlaceTask, get_reset_events, get_interval_events\n"
-            "__all__ = ['TeleopEnvCfg', 'PickPlaceTask', 'get_reset_events', 'get_interval_events']\n"
+            "from .scene_task import (\n"
+            "    TeleopEnvCfg,\n"
+            "    PickPlaceTask,\n"
+            "    create_env,\n"
+            "    get_reset_events,\n"
+            "    get_interval_events,\n"
+            ")\n"
+            "__all__ = ['TeleopEnvCfg', 'PickPlaceTask', 'create_env', 'get_reset_events', 'get_interval_events']\n"
         ),
     )
     write_text_atomic(
         package_root / "__init__.py",
         (
             "from .env_cfg import TeleopEnvCfg\n"
+            "from .blueprint_env import create_env\n"
             "from .task_pick_place import PickPlaceTask\n"
             "from .randomizations import get_reset_events, get_interval_events\n"
-            "__all__ = ['TeleopEnvCfg', 'PickPlaceTask', 'get_reset_events', 'get_interval_events']\n"
+            "__all__ = ['TeleopEnvCfg', 'PickPlaceTask', 'create_env', 'get_reset_events', 'get_interval_events']\n"
         ),
     )
     write_text_atomic(
@@ -395,6 +402,21 @@ def _write_isaac_lab_package(
     write_text_atomic(
         package_root / "train_cfg.yaml",
         "seed: 0\nnum_envs: 1\nmax_iterations: 1\n",
+    )
+    write_text_atomic(
+        package_root / "blueprint_env.py",
+        _render_blueprint_env_py(
+            scene_id=scene_id,
+            task_id=task.task_id,
+            task_text=task.task_text,
+        ),
+    )
+    write_json(
+        _build_blueprint_runtime_contract(
+            task_package=package_name,
+            scene_id=scene_id,
+        ),
+        package_root / "blueprint_runtime.json",
     )
 
 
@@ -545,4 +567,152 @@ class PickPlaceTask:
     def reset(self, env_ids=None):
         del env_ids
         return
+'''
+
+
+def _build_blueprint_runtime_contract(*, task_package: str, scene_id: str) -> Dict[str, Any]:
+    return {
+        "schema_version": "v1",
+        "runtime_kind": "blueprint_scene_env",
+        "scene_id": scene_id,
+        "task_package": task_package,
+        "env_factory": f"{task_package}.create_env",
+        "env_cfg_class": "TeleopEnvCfg",
+        "action_dim": 7,
+        "camera_keys": ["wrist_rgb", "front_rgb"],
+        "state_keys": [
+            "policy",
+            "joint_positions",
+            "joint_velocities",
+            "end_effector_pose",
+            "gripper_state",
+        ],
+    }
+
+
+def _render_blueprint_env_py(*, scene_id: str, task_id: str, task_text: str) -> str:
+    return f'''"""Runnable fallback env for generated Blueprint scene packages."""
+
+from __future__ import annotations
+
+import math
+from typing import Any
+
+import numpy as np
+
+SCENE_ID = {json.dumps(scene_id)}
+TASK_ID = {json.dumps(task_id)}
+TASK_TEXT = {json.dumps(task_text)}
+ACTION_DIM = 7
+IMAGE_HEIGHT = 96
+IMAGE_WIDTH = 128
+
+
+class _ActionSpec:
+    def __init__(self, action_dim: int):
+        self.shape = (int(action_dim),)
+
+
+class _ActionManager:
+    def __init__(self, action_dim: int):
+        self.action_spec = _ActionSpec(action_dim)
+
+
+class BlueprintSceneEnv:
+    def __init__(self, *, headless: bool = False):
+        self.device = "cpu"
+        self.headless = bool(headless)
+        self.action_manager = _ActionManager(ACTION_DIM)
+        self.max_steps = 48
+        self.task_success = np.asarray([False], dtype=bool)
+        self._phase = 0.0
+        self.reset()
+
+    def reset(self):
+        self._step_count = 0
+        self._progress = 0.0
+        self._pose = np.zeros((ACTION_DIM,), dtype=np.float32)
+        self.task_success = np.asarray([False], dtype=bool)
+        return self._observation()
+
+    def step(self, action: Any):
+        arr = _normalize_action(action)
+        self._step_count += 1
+        self._pose[:6] = np.clip(self._pose[:6] + arr[:6], -1.0, 1.0)
+        self._pose[6] = np.clip(self._pose[6] + 0.1 * np.sign(arr[6]), -1.0, 1.0)
+        self._phase += 0.25
+        self._progress = min(1.0, max(self._progress, (self._step_count / 24.0) + (self._pose[6] + 1.0) * 0.1))
+        success = bool(self._progress >= 0.95)
+        done = bool(success or self._step_count >= self.max_steps)
+        self.task_success = np.asarray([success], dtype=bool)
+        reward = np.asarray([self._progress], dtype=np.float32)
+        info = {{
+            "rubric": {{
+                "success": success,
+                "progress": float(self._progress),
+            }}
+        }}
+        return self._observation(), reward, np.asarray([done], dtype=bool), info
+
+    def close(self):
+        return None
+
+    def _observation(self):
+        ee_pose = np.asarray(
+            [
+                self._pose[0],
+                self._pose[1],
+                self._pose[2],
+                self._pose[3],
+                self._pose[4],
+                self._pose[5],
+            ],
+            dtype=np.float32,
+        )
+        return {{
+            "wrist_rgb": _render_camera(self._pose, camera="wrist", progress=float(self._progress), phase=self._phase),
+            "front_rgb": _render_camera(self._pose, camera="front", progress=float(self._progress), phase=self._phase),
+            "policy": np.asarray([self._progress, self._step_count / float(self.max_steps), self._pose[6]], dtype=np.float32),
+            "joint_positions": self._pose.copy(),
+            "joint_velocities": np.full((ACTION_DIM,), 0.01 * (self._step_count + 1), dtype=np.float32),
+            "end_effector_pose": ee_pose,
+            "gripper_state": np.asarray([self._pose[6]], dtype=np.float32),
+        }}
+
+
+def create_env(*, headless: bool = False):
+    return BlueprintSceneEnv(headless=headless)
+
+
+def _normalize_action(action: Any) -> np.ndarray:
+    if hasattr(action, "detach"):
+        action = action.detach().cpu().numpy()
+    arr = np.asarray(action, dtype=np.float32)
+    if arr.ndim >= 2:
+        arr = arr[0]
+    arr = arr.reshape(-1)
+    if arr.size < ACTION_DIM:
+        padded = np.zeros((ACTION_DIM,), dtype=np.float32)
+        padded[: arr.size] = arr
+        arr = padded
+    return arr[:ACTION_DIM]
+
+
+def _render_camera(pose: np.ndarray, *, camera: str, progress: float, phase: float) -> np.ndarray:
+    yy = np.linspace(0.0, 1.0, IMAGE_HEIGHT, dtype=np.float32)[:, None]
+    xx = np.linspace(0.0, 1.0, IMAGE_WIDTH, dtype=np.float32)[None, :]
+    base = np.zeros((IMAGE_HEIGHT, IMAGE_WIDTH, 3), dtype=np.uint8)
+    tint = 35 if camera == "wrist" else 70
+    base[..., 0] = np.clip((40 + tint + 120 * xx + 30 * progress), 0, 255).astype(np.uint8)
+    base[..., 1] = np.clip((55 + 80 * yy + 25 * math.sin(phase)), 0, 255).astype(np.uint8)
+    base[..., 2] = np.clip((80 + 90 * (1.0 - xx) + 20 * math.cos(phase)), 0, 255).astype(np.uint8)
+
+    obj_x = int(np.clip((0.35 + 0.15 * pose[0]) * IMAGE_WIDTH, 10, IMAGE_WIDTH - 10))
+    obj_y = int(np.clip((0.55 + 0.12 * pose[1]) * IMAGE_HEIGHT, 10, IMAGE_HEIGHT - 10))
+    goal_x = int(np.clip((0.72 - 0.10 * pose[2]) * IMAGE_WIDTH, 10, IMAGE_WIDTH - 10))
+    goal_y = int(np.clip((0.30 + 0.08 * pose[5]) * IMAGE_HEIGHT, 10, IMAGE_HEIGHT - 10))
+
+    base[max(0, obj_y - 8): min(IMAGE_HEIGHT, obj_y + 8), max(0, obj_x - 8): min(IMAGE_WIDTH, obj_x + 8), :] = np.asarray([230, 90, 60], dtype=np.uint8)
+    base[max(0, goal_y - 9): min(IMAGE_HEIGHT, goal_y + 9), max(0, goal_x - 9): min(IMAGE_WIDTH, goal_x + 9), :] = np.asarray([70, 220, 90], dtype=np.uint8)
+    return base
 '''

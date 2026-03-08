@@ -84,7 +84,7 @@ def test_build_scene_package_emits_expected_contracts(sample_config, sample_ply,
     from blueprint_validation.polaris.runtime import resolve_polaris_scene_spec
     from blueprint_validation.scene_builder import build_scene_package
     from blueprint_validation.teleop import load_and_validate_scene_package
-    from blueprint_validation.teleop.runtime import _default_task_package_name
+    from blueprint_validation.teleop.runtime import _default_task_package_name, _resolve_env_action_dim, load_scene_env
 
     asset_path = tmp_path / "asset.usda"
     _write_usda_asset(asset_path)
@@ -103,6 +103,7 @@ def test_build_scene_package_emits_expected_contracts(sample_config, sample_ply,
     payload = load_and_validate_scene_package(result.scene_root)
     assert payload["has_isaac_lab"] is True
     assert payload["has_geniesim_task_config"] is True
+    assert payload["has_runnable_env"] is True
     assert _default_task_package_name(result.scene_root) == "scene_task"
 
     sys.path.insert(0, str(result.scene_root / "isaac_lab"))
@@ -112,9 +113,18 @@ def test_build_scene_package_emits_expected_contracts(sample_config, sample_ply,
     finally:
         sys.path.pop(0)
 
+    loaded = load_scene_env(scene_root=result.scene_root, headless=True)
+    try:
+        obs = loaded.env.reset()
+        assert "wrist_rgb" in obs
+        assert _resolve_env_action_dim(loaded.env) == 7
+    finally:
+        loaded.close()
+
     sample_config.facilities["test_facility"].scene_package_path = result.scene_root
     spec = resolve_polaris_scene_spec(sample_config, sample_config.facilities["test_facility"])
     assert spec.primary_eligible is True
+    assert spec.runnable_scene_env is True
     assert spec.task_metadata_path is not None
 
 

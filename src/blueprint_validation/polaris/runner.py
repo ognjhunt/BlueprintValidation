@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import importlib
-import json
 import os
 import socket
 import subprocess
@@ -12,19 +11,19 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Iterable, List, Optional
 
 import numpy as np
 
-from ..common import read_json, write_json
+from ..common import write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..teleop.runtime import (
     IsaacTeleopRuntimeError,
     _flatten_obs,
-    _load_isaac_lab_modules,
     _looks_like_camera_key,
     _resolve_env_action_dim,
     _to_rgb_frame,
+    load_scene_env,
 )
 from ..video_io import ensure_h264_video, open_mp4_writer
 from .openvla_client import normalize_openvla_action
@@ -283,22 +282,13 @@ def _evaluate_scene_package_bridge(
             "from the scene package. Use native_bundle mode, or set "
             "BLUEPRINT_UNSAFE_ALLOW_SCENE_PACKAGE_IMPORT=1 only for trusted scene packages."
         )
-    modules = _load_isaac_lab_modules()
     scene_root = scene_spec.scene_root
-    if str(scene_root) not in sys.path:
-        sys.path.insert(0, str(scene_root))
-    app_launcher = modules["AppLauncher"]({"headless": True})
-    app_launcher.start()
+    loaded = load_scene_env(scene_root=scene_root, headless=True)
     env = None
     rows: list[dict[str, Any]] = []
     video_paths: list[str] = []
     try:
-        env_cfg = _load_scene_env_cfg(scene_root)
-        try:
-            parsed_cfg = modules["parse_env_cfg"](env_cfg)
-        except Exception:
-            parsed_cfg = env_cfg
-        env = modules["ManagerBasedEnv"](parsed_cfg)
+        env = loaded.env
         action_dim = int(_resolve_env_action_dim(env))
         for rollout_idx in range(int(config.eval_polaris.num_rollouts)):
             obs = env.reset()
@@ -340,12 +330,7 @@ def _evaluate_scene_package_bridge(
         raise RuntimeError(str(exc)) from exc
     finally:
         if env is not None:
-            close = getattr(env, "close", None)
-            if callable(close):
-                close()
-        stop = getattr(app_launcher, "stop", None)
-        if callable(stop):
-            stop()
+            loaded.close()
     return rows, video_paths
 
 

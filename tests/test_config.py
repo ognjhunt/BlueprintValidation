@@ -209,7 +209,7 @@ def test_config_defaults():
     assert str(config.policy_adapter.openvla.openvla_repo).endswith("opt/openvla-oft")
     assert config.policy_adapter.pi05.profile == "pi05_libero"
     assert config.external_interaction.enabled is True
-    assert config.external_rollouts.enabled is True
+    assert config.external_rollouts.enabled is False
     assert config.rollout_dataset.enabled is True
     assert config.rollout_dataset.selection_mode == "success_near_miss"
     assert config.rollout_dataset.near_miss_min_task_score == pytest.approx(5.0)
@@ -410,7 +410,7 @@ def test_config_with_all_sections(tmp_path):
             "b": {"name": "B", "ply_path": "/tmp/b.ply"},
         },
         "render": {
-            "backend": "isaac_scene",
+            "backend": "auto",
             "resolution": [240, 320],
             "num_frames": 10,
             "task_scoped_scene_aware": True,
@@ -611,7 +611,7 @@ def test_config_with_all_sections(tmp_path):
 
     config = load_config(config_path)
     assert len(config.facilities) == 2
-    assert config.render.backend == "isaac_scene"
+    assert config.render.backend == "auto"
     assert config.render.num_frames == 10
     assert config.render.task_scoped_scene_aware is True
     assert config.render.task_scoped_max_specs == 35

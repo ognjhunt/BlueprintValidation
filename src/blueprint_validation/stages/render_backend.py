@@ -49,8 +49,10 @@ def resolved_scene_package_path(
     if scene_root is None:
         return None
     try:
-        load_and_validate_scene_package(scene_root)
+        payload = load_and_validate_scene_package(scene_root)
     except (OSError, TeleopManifestError):
+        return None
+    if not bool(payload.get("has_runnable_env", False)):
         return None
     return scene_root.resolve()
 

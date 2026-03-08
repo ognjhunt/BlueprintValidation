@@ -5,6 +5,8 @@ facilities:
   facility_a:
     name: Facility A
     ply_path: /app/data/facilities/facility_a/splat.ply
+    # Set before enabling eval_polaris or Isaac-backed teleop recording.
+    # scene_package_path: /models/scene_packages/facility_a
     claim_benchmark_path: /app/configs/benchmarks/facility_a.fixed_claim.json
     description: Target deployment facility world model
 
@@ -66,6 +68,23 @@ eval_policy:
     - Pick up the bottle from the shelf and place it in the target zone
     - Pick up the mug from the prep counter and place it on the drying rack
 
+eval_polaris:
+  # Enable only after facility_a.scene_package_path points at a validated scene package.
+  enabled: false
+  repo_path: /app/data/vendor/PolaRiS
+  hub_path: /app/data/vendor/PolaRiS-Hub
+  environment_mode: scene_package_bridge
+  default_as_primary_gate: true
+  use_for_claim_gate: true
+  num_rollouts: 16
+  device: cuda
+  policy_client: OpenVLA
+  observation_mode: external_only
+  action_mode: native
+  export_dir: /models/outputs/polaris
+  require_scene_package: true
+  require_success_correlation_metadata: true
+
 policy_finetune:
   enabled: true
 
@@ -92,6 +111,12 @@ policy_adapter:
 
 external_interaction:
   enabled: false
+
+external_rollouts:
+  enabled: false
+  # manifest_path: /models/teleop/facility_a/teleop_session_manifest.json
+  source_name: teleop
+  mode: wm_and_policy
 
 native_teacher:
   enabled: true

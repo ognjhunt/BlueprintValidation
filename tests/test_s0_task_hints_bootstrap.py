@@ -198,7 +198,9 @@ def test_bootstrap_writes_centers_in_original_frame_for_y_up(sample_ply, tmp_pat
     np.testing.assert_allclose(extents, [0.2, 0.6, 0.4], atol=1e-8)
 
 
-def test_bootstrap_fails_without_vlm_fallback_and_skips_detector(sample_ply, tmp_path, monkeypatch):
+def test_bootstrap_attempts_vlm_even_when_render_vlm_fallback_is_disabled(
+    sample_ply, tmp_path, monkeypatch
+):
     config = ValidationConfig()
     config.render.vlm_fallback = False
     fac = FacilityConfig(name="A", ply_path=sample_ply)
@@ -206,20 +208,20 @@ def test_bootstrap_fails_without_vlm_fallback_and_skips_detector(sample_ply, tmp
 
     called = False
 
-    def _should_not_call(**kwargs):
+    def _detector(**kwargs):
         nonlocal called
         called = True
-        raise AssertionError("detect_and_generate_specs should not be called")
+        return SceneDetectionResult(specs=[], detections=[])
 
     monkeypatch.setattr(
         "blueprint_validation.stages.s0_task_hints_bootstrap.detect_and_generate_specs",
-        _should_not_call,
+        _detector,
     )
 
     result = stage.execute(config, fac, tmp_path / "outputs" / "a", {})
     assert result.status == "failed"
-    assert called is False
-    assert "render.vlm_fallback=true" in (result.detail or "")
+    assert called is True
+    assert "manual analysis is required" in (result.detail or "").lower()
 
 
 def test_derive_tasks_from_detections_prefers_suggestions_then_categories():

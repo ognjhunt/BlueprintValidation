@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 from pathlib import Path
-from typing import Any
 
 from ..config import PolicyAdapterConfig
 from ..policy_adapters.openvla_oft_adapter import OpenVLAOFTPolicyAdapter

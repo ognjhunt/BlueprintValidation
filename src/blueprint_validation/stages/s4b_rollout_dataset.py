@@ -47,7 +47,6 @@ class RolloutDatasetStage(PipelineStage):
         work_dir: Path,
         previous_results: Dict[str, StageResult],
     ) -> StageResult:
-        del previous_results
         if (
             (getattr(config.eval_policy, "headline_scope", "wm_only") or "wm_only")
             .strip()
