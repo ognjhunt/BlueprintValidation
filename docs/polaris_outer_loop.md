@@ -1,12 +1,14 @@
 # PolaRiS Outer Loop
 
 This repo now treats the world model as the inner-loop adaptation engine and PolaRiS as the default outer-loop deployment gate.
+When PolaRiS is unavailable, the canonical fallback is the fixed-world same-facility claim path (`s4d_policy_pair_eval`), not the VLM-scored `s4`/`s4e` diagnostics.
 
 ## What Changed
 
 - DreamDojo, Stage 3d refresh, teleop ingest, RLDS export, policy fine-tuning, and policy RL stay in place.
 - Stage 4f (`s4f_polaris_eval`) compares frozen OpenVLA vs the latest adapted OpenVLA candidate and produces the default deployment recommendation when `eval_polaris.default_as_primary_gate=true`.
-- Stage 4, Stage 4e, and Stage 4d remain supporting evidence unless PolaRiS is disabled.
+- Stage 4 and Stage 4e are supporting diagnostics only.
+- Stage 4d becomes the canonical non-PolaRiS fallback when the fixed-world claim protocol is enabled.
 
 ## Config
 
@@ -43,6 +45,12 @@ eval_polaris:
 - `scan_only_bridge`: research/smoke only. Never primary-gate eligible.
 
 Raw scan inputs like `3dgs_compressed*.ply` stay upstream of PolaRiS until they are converted into a scene package or a native PolaRiS bundle.
+
+## External Data Semantics
+
+- `external_interaction` is the DreamDojo/video ingestion path.
+- `external_rollouts` currently feeds policy-training datasets only.
+- `external_rollouts.mode=wm_only|wm_and_policy` is accepted for forward compatibility, but those action-labeled sessions are not yet wired into DreamDojo fine-tuning stages.
 
 ## Native Bundle Runtime Notes
 

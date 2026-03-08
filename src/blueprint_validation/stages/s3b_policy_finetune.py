@@ -69,6 +69,26 @@ class PolicyFinetuneStage(PipelineStage):
         curriculum_metrics: Dict[str, object] = {}
         s4a = previous_results.get("s4a_rlds_export")
         if s4a and s4a.status == "success":
+            quality_gate_reason = _policy_finetune_gate_reason(s4a.metrics)
+            if quality_gate_reason is not None:
+                return StageResult(
+                    stage_name=self.name,
+                    status="skipped",
+                    elapsed_seconds=0,
+                    detail=quality_gate_reason,
+                    outputs={
+                        "adapter_name": adapter.name,
+                    },
+                    metrics={
+                        "quality_gate_passed": False,
+                        "quality_gate_reason": quality_gate_reason,
+                        "num_train_episodes": s4a.metrics.get("num_train_episodes"),
+                        "num_success_candidates": s4a.metrics.get("num_success_candidates"),
+                        "num_train_teacher_rows": s4a.metrics.get("num_train_teacher_rows"),
+                        "num_train_correction_rows": s4a.metrics.get("num_train_correction_rows"),
+                        "num_train_external_rows": s4a.metrics.get("num_train_external_rows"),
+                    },
+                )
             train_jsonl = s4a.outputs.get("train_jsonl")
             rlds_name = s4a.outputs.get("dataset_name")
             if train_jsonl and rlds_name:
@@ -149,7 +169,34 @@ class PolicyFinetuneStage(PipelineStage):
                 "dataset_name": dataset_name,
                 "elapsed_seconds": train_result.elapsed_seconds,
                 "returncode": train_result.raw.get("returncode"),
+                "quality_gate_passed": True,
                 **curriculum_metrics,
             },
             detail=train_result.detail,
         )
+
+
+def _policy_finetune_gate_reason(metrics: Dict[str, object]) -> str | None:
+    """Return a skip reason when rollout curriculum is too weak for supervised policy tuning."""
+    if "num_train_episodes" not in metrics and "num_success_candidates" not in metrics:
+        return None
+    num_train = int(metrics.get("num_train_episodes", 0) or 0)
+    num_success_candidates = int(metrics.get("num_success_candidates", 0) or 0)
+    num_teacher = int(metrics.get("num_train_teacher_rows", 0) or 0)
+    num_corrections = int(metrics.get("num_train_correction_rows", 0) or 0)
+    num_external = int(metrics.get("num_train_external_rows", 0) or 0)
+    augmented_rows = num_teacher + num_corrections + num_external
+
+    if num_train <= 0:
+        return "Policy fine-tune skipped: Stage 4a produced zero train episodes."
+    if num_success_candidates <= 0 and augmented_rows <= 0:
+        return (
+            "Policy fine-tune skipped: Stage 4a produced no success-bucket inventory and no "
+            "teacher/external augmentation rows."
+        )
+    if num_train < 2 and augmented_rows <= 0:
+        return (
+            "Policy fine-tune skipped: Stage 4a produced fewer than 2 train episodes and no "
+            "teacher/external augmentation rows."
+        )
+    return None

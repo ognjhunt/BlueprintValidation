@@ -73,6 +73,12 @@ class ExternalRolloutIngestStage(PipelineStage):
         stage_dir.mkdir(parents=True, exist_ok=True)
         rows_path = stage_dir / "rollout_rows.json"
         write_external_rollout_rows(rows_path, rows)
+        mode = str(ext_cfg.mode or "wm_and_policy").strip().lower()
+        wm_notice = (
+            " WM ingestion is not wired through current stages; these sessions feed policy training only."
+            if mode in {"wm_only", "wm_and_policy"}
+            else ""
+        )
 
         return StageResult(
             stage_name=self.name,
@@ -86,5 +92,11 @@ class ExternalRolloutIngestStage(PipelineStage):
             metrics={
                 "num_sessions": len(payload.get("sessions", [])),
                 "num_rollout_rows": len(rows),
+                "mode": mode,
+                "wm_ingest_supported": False,
             },
+            detail=(
+                f"Ingested external teleop sessions for policy-training rows (mode={mode})."
+                f"{wm_notice}"
+            ),
         )

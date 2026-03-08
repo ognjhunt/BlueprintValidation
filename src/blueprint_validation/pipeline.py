@@ -683,12 +683,13 @@ class ValidationPipeline:
                     value = stage_result.outputs.get(key)
                     if value:
                         supporting_paths.append(str(value))
-        if bool(getattr(self.config.eval_polaris, "enabled", False)) and bool(
+        polaris_primary = bool(getattr(self.config.eval_polaris, "enabled", False)) and bool(
             getattr(self.config.eval_polaris, "default_as_primary_gate", False)
-        ):
+        )
+        if polaris_primary:
             for facility_results in facility_results_by_id.values():
                 result = facility_results.get("s4f_polaris_eval")
-                if result is None:
+                if result is None or result.status != "success":
                     continue
                 return {
                     "gate_name": "polaris",
@@ -698,6 +699,32 @@ class ValidationPipeline:
                     "report_path": result.outputs.get("polaris_summary_path"),
                     "supporting_evidence_paths": supporting_paths,
                 }
+        fixed_world_claim = (
+            str(getattr(self.config.eval_policy, "claim_protocol", "none") or "none")
+            .strip()
+            .lower()
+            == "fixed_same_facility_uplift"
+        )
+        if fixed_world_claim:
+            status = "failed"
+            report_path = None
+            winner = "unknown"
+            for facility_results in facility_results_by_id.values():
+                result = facility_results.get("s4d_policy_pair_eval")
+                if result is None:
+                    continue
+                status = result.status
+                winner = str(result.metrics.get("claim_outcome") or winner)
+                report_path = result.outputs.get("report_path")
+                break
+            return {
+                "gate_name": "fixed_world_claim",
+                "stage_name": "s4d_policy_pair_eval",
+                "winner": winner,
+                "status": status,
+                "report_path": report_path,
+                "supporting_evidence_paths": supporting_paths,
+            }
         gate_name = "world_model"
         stage_name = "s4d_policy_pair_eval"
         winner = "unknown"

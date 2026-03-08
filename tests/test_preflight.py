@@ -704,6 +704,18 @@ def test_preflight_external_rollout_manifest_autoskips_when_no_manifest(sample_c
     assert "auto-skip" in result.detail.lower()
 
 
+def test_preflight_warns_when_external_rollouts_request_wm_ingest(sample_config):
+    import blueprint_validation.preflight as preflight
+
+    sample_config.external_rollouts.enabled = True
+    sample_config.external_rollouts.mode = "wm_and_policy"
+
+    result = preflight.check_external_rollouts_wm_ingest_notice(sample_config)
+    assert result.passed is True
+    assert "policy-training datasets only" in result.detail
+    assert "external_interaction" in result.detail
+
+
 def test_preflight_dreamzero_training_required_when_effective_policy_finetune_enabled(
     sample_config, monkeypatch
 ):

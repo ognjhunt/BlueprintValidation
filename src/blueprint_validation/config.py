@@ -575,6 +575,8 @@ class ExternalRolloutsConfig:
     enabled: bool = False
     manifest_path: Optional[Path] = None
     source_name: str = "teleop"
+    # Current pipeline wiring ingests these sessions only into policy-training datasets.
+    # wm_only|wm_and_policy are accepted for forward compatibility, but WM ingestion is advisory-only.
     mode: str = "wm_and_policy"  # policy_only|wm_only|wm_and_policy
 
 
@@ -2010,6 +2012,8 @@ def load_config(path: Path) -> ValidationConfig:
             ),
         )
 
+    _apply_fixed_world_claim_defaults(config)
+
     # Visual fidelity
     if "eval_visual" in raw:
         ev = raw["eval_visual"]
@@ -2154,14 +2158,6 @@ def load_config(path: Path) -> ValidationConfig:
     ):
         raise ValueError(
             "eval_policy.split_strategy must be 'disjoint_tasks_and_starts' when "
-            "claim_protocol=fixed_same_facility_uplift"
-        )
-    if (
-        str(config.eval_policy.claim_protocol).strip().lower() == "fixed_same_facility_uplift"
-        and not bool(config.policy_compare.enabled)
-    ):
-        raise ValueError(
-            "policy_compare.enabled must be true when "
             "claim_protocol=fixed_same_facility_uplift"
         )
     if str(config.eval_policy.claim_protocol).strip().lower() == "fixed_same_facility_uplift":
@@ -2478,3 +2474,15 @@ def load_config(path: Path) -> ValidationConfig:
         raise ValueError("eval_polaris.policy_client must be non-empty")
 
     return config
+
+
+def _apply_fixed_world_claim_defaults(config: ValidationConfig) -> None:
+    """Auto-enable claim-path dependencies for the fixed-world fallback gate."""
+    if str(config.eval_policy.claim_protocol).strip().lower() != "fixed_same_facility_uplift":
+        return
+
+    if (str(config.eval_policy.headline_scope or "wm_only").strip().lower()) == "wm_only":
+        config.eval_policy.headline_scope = "wm_uplift"
+    config.policy_compare.enabled = True
+    config.rollout_dataset.enabled = True
+    config.policy_finetune.enabled = True

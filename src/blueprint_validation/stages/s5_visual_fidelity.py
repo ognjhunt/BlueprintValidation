@@ -40,14 +40,27 @@ class VisualFidelityStage(PipelineStage):
         source = _resolve_source_manifest_source(work_dir, previous_results)
         enriched_manifest_path = work_dir / "enriched" / "enriched_manifest.json"
         if source is None or not enriched_manifest_path.exists():
+            result_data = {
+                "aggregate": {
+                    "num_comparisons": 0,
+                    "diagnostic_only": True,
+                    "diagnostic_status": "missing_inputs",
+                },
+                "per_clip": [],
+                "lineage_source": source.to_metadata() if source is not None else {},
+            }
+            write_json(result_data, fidelity_dir / "visual_fidelity.json")
             return StageResult(
                 stage_name=self.name,
-                status="failed",
+                status="success",
                 elapsed_seconds=0,
                 detail=(
                     "Source Stage-1 lineage manifest or Stage-2 enriched manifest not found. "
-                    "Run Stages 1-2 first."
+                    "Visual fidelity remains diagnostic-only, so the stage is recorded without "
+                    "blocking the main claim path."
                 ),
+                outputs={"fidelity_dir": str(fidelity_dir)},
+                metrics=result_data["aggregate"],
             )
 
         source_manifest = load_and_validate_manifest(
@@ -128,6 +141,8 @@ class VisualFidelityStage(PipelineStage):
             agg = {"num_comparisons": 0}
         agg.update(
             {
+                "diagnostic_only": True,
+                "diagnostic_status": "ok" if all_metrics else "no_valid_comparisons",
                 "num_missing_enriched_outputs": skipped_missing_enriched,
                 "num_missing_reference_videos": skipped_missing_reference,
                 "num_empty_frame_pairs": skipped_empty_frames,
@@ -146,14 +161,15 @@ class VisualFidelityStage(PipelineStage):
 
         return StageResult(
             stage_name=self.name,
-            status="success" if all_metrics else "failed",
+            status="success",
             elapsed_seconds=0,
             detail=(
                 ""
                 if all_metrics
                 else (
                     "No valid visual-fidelity comparisons could be computed "
-                    "(missing reference/enriched videos or empty decoded frames)."
+                    "(missing reference/enriched videos or empty decoded frames). "
+                    "Stage 5 is diagnostic-only and does not block the main claim path."
                 )
             ),
             outputs={"fidelity_dir": str(fidelity_dir), **source.to_metadata()},

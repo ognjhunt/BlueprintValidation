@@ -306,6 +306,18 @@ def _append_claim_eval_section(lines: list[str], fac_data: Dict[str, Any]) -> No
     lines.append("|--------|-------|")
     lines.append(f"| Primary endpoint | {metrics.get('primary_endpoint', 'N/A')} |")
     lines.append(f"| Num eval cells | {metrics.get('num_eval_cells', 'N/A')} |")
+    lines.append(
+        f"| Frozen baseline task-success rate | "
+        f"{(metrics.get('arm_summary', {}).get('frozen_baseline', {}) or {}).get('success_rate', 'N/A')} |"
+    )
+    lines.append(
+        f"| Site-trained mean task-success rate | "
+        f"{_mean_seed_success_rate((metrics.get('arm_summary', {}).get('site_trained', {}) or {}).get('per_seed_success_rate', {}))} |"
+    )
+    lines.append(
+        f"| generic_control mean task-success rate | "
+        f"{_mean_seed_success_rate((metrics.get('arm_summary', {}).get('generic_control', {}) or {}).get('per_seed_success_rate', {}))} |"
+    )
     lines.append(f"| Mean uplift (pp) | {bootstrap.get('mean_lift_pp', 'N/A')} |")
     lines.append(f"| 95% CI low (pp) | {bootstrap.get('ci_low_pp', 'N/A')} |")
     lines.append(f"| 95% CI high (pp) | {bootstrap.get('ci_high_pp', 'N/A')} |")
@@ -381,6 +393,25 @@ def _claim_outcome(metrics: Dict[str, Any]) -> str:
     return "PASS" if bool(metrics.get("claim_passed", False)) else "FAIL"
 
 
+def _mean_seed_success_rate(per_seed: Dict[str, Any] | Dict[int, Any]) -> str:
+    if not isinstance(per_seed, dict) or not per_seed:
+        return "N/A"
+    values = []
+    for value in per_seed.values():
+        try:
+            values.append(float(value))
+        except Exception:
+            continue
+    if not values:
+        return "N/A"
+    return f"{sum(values) / len(values):.3f}"
+
+
+def _stage_succeeded(fac_data: Dict[str, Any], stage_name: str) -> bool:
+    payload = fac_data.get(stage_name, {})
+    return str(payload.get("status", "")).strip().lower() == "success"
+
+
 def _policy_eval_matrix_axis_rows(matrix_mode: str) -> list[tuple[str, str]]:
     if matrix_mode == "single_facility_same_site_policy_uplift":
         return [
@@ -438,7 +469,8 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
         polaris_primary = bool(config.eval_polaris.enabled) and bool(
             config.eval_polaris.default_as_primary_gate
         )
-        if polaris_primary:
+        polaris_available = _stage_succeeded(fac_data, "s4f_polaris_eval")
+        if polaris_primary and polaris_available:
             _append_s4f_polaris_eval_section(lines, fac_data, primary=True)
             _append_s4_policy_eval_section(lines, fac_data, supporting=True)
             _append_s4e_trained_eval_section(lines, fac_data, primary=False)
@@ -519,6 +551,11 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
             lines.append(f"- Status: {er.get('status', 'N/A')}")
             lines.append(f"- Sessions ingested: {em.get('num_sessions', 'N/A')}")
             lines.append(f"- Output mode: {em.get('mode', 'N/A')}")
+            if em.get("mode") in {"wm_only", "wm_and_policy"}:
+                lines.append(
+                    "- Note: current pipeline wiring uses these sessions for policy training only; "
+                    "DreamDojo/world-model ingestion still comes from `external_interaction`."
+                )
             lines.append("")
 
         if "s3_finetune" in fac_data:
@@ -663,7 +700,9 @@ def _add_executive_summary(lines: list, data: dict, config: ValidationConfig = N
         (config is not None and len(config.facilities) > 1) or data.get("cross_site")
     )
     claim_portfolio = data.get("claim_portfolio") if isinstance(data, dict) else None
-    polaris_primary = bool(config is not None and config.eval_polaris.enabled and config.eval_polaris.default_as_primary_gate)
+    polaris_primary = bool(
+        config is not None and config.eval_polaris.enabled and config.eval_polaris.default_as_primary_gate
+    )
 
     if claim_portfolio:
         gate = claim_portfolio.get("go_to_robot_gate", {}) or {}
@@ -692,13 +731,14 @@ def _add_executive_summary(lines: list, data: dict, config: ValidationConfig = N
             )
         return
 
+    polaris_metrics = None
     if polaris_primary:
-        polaris_metrics = None
         for _, fac_data in data.get("facilities", {}).items():
             s4f = fac_data.get("s4f_polaris_eval", {})
-            if s4f:
+            if s4f and str(s4f.get("status", "")).strip().lower() == "success":
                 polaris_metrics = s4f.get("metrics", {})
                 break
+    if polaris_primary and polaris_metrics is not None:
         winner = str((polaris_metrics or {}).get("winner", "PENDING/FAIL"))
         adapted_rate = (polaris_metrics or {}).get("adapted_success_rate")
         frozen_rate = (polaris_metrics or {}).get("frozen_success_rate")
@@ -717,11 +757,6 @@ def _add_executive_summary(lines: list, data: dict, config: ValidationConfig = N
                 "**Default deployment recommendation comes from PolaRiS.** "
                 f"Frozen success rate={frozen_rate}, adapted success rate={adapted_rate}, "
                 f"winner={winner}.\n"
-            )
-        else:
-            lines.append(
-                "**PolaRiS is configured as the default deployment gate, but no valid PolaRiS "
-                "result is present in this report.**\n"
             )
         return
 

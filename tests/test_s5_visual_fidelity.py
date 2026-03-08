@@ -129,3 +129,12 @@ def test_s5_visual_fidelity_prefers_input_video_path_over_manifest(
     report = read_json(work_dir / "visual_fidelity" / "visual_fidelity.json")
     assert report["per_clip"][0]["reference_resolution_mode"] == "input_video_path"
     assert report["per_clip"][0]["reference_video_path"] == str(enriched_input_video)
+
+
+def test_s5_visual_fidelity_is_diagnostic_only_when_inputs_missing(sample_config, tmp_path):
+    stage = VisualFidelityStage()
+    facility = sample_config.facilities["test_facility"]
+    result = stage.run(sample_config, facility, tmp_path, {})
+    assert result.status == "success"
+    assert result.metrics["diagnostic_only"] is True
+    assert result.metrics["diagnostic_status"] == "missing_inputs"

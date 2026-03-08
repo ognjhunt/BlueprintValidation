@@ -401,6 +401,9 @@ class RLDSExportStage(PipelineStage):
                 "num_train_correction_rows": int(
                     (curriculum_manifest.get("native_teacher", {}) or {}).get("num_site_correction_rows", 0)
                 ),
+                "num_train_external_rows": int(
+                    (curriculum_manifest.get("external_rollouts", {}) or {}).get("num_rows", 0)
+                ),
                 "num_eval_only_rollouts_excluded": num_eval_only_rollouts_excluded,
                 "eval_only_tasks": sorted(eval_only_tasks),
                 "max_action_delta_norm": config.rollout_dataset.max_action_delta_norm,

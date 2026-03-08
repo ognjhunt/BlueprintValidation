@@ -337,6 +337,35 @@ def test_pipeline_wm_only_skips_openvla_stages(sample_config, tmp_path, monkeypa
         assert call_counts.get(stage_name, 0) == 0
 
 
+def test_pipeline_primary_gate_summary_prefers_fixed_world_claim_over_s4e(sample_config, tmp_path):
+    import blueprint_validation.pipeline as pipeline_mod
+    from blueprint_validation.common import StageResult
+
+    sample_config.eval_policy.claim_protocol = "fixed_same_facility_uplift"
+    sample_config.eval_policy.primary_endpoint = "task_success"
+    sample_config.eval_policy.freeze_world_snapshot = True
+    sample_config.eval_polaris.enabled = False
+
+    pipeline = pipeline_mod.ValidationPipeline(sample_config, tmp_path / "outputs")
+    summary = pipeline._primary_gate_summary(
+        {
+            "test_facility": {
+                "s4e_trained_eval": StageResult(
+                    stage_name="s4e_trained_eval",
+                    status="success",
+                    elapsed_seconds=0,
+                    outputs={"report_path": "trained.json"},
+                    metrics={"claim_comparison_key": "adapted_vs_trained"},
+                )
+            }
+        }
+    )
+
+    assert summary["gate_name"] == "fixed_world_claim"
+    assert summary["stage_name"] == "s4d_policy_pair_eval"
+    assert summary["status"] == "failed"
+
+
 def test_pipeline_action_boost_auto_switches_wm_only_to_wm_uplift(
     sample_config, tmp_path, monkeypatch
 ):

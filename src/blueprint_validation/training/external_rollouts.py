@@ -1,4 +1,9 @@
-"""Helpers for loading external teleop rollouts."""
+"""Helpers for loading external teleop rollouts.
+
+Current pipeline wiring uses these manifests only for policy-training data paths.
+The config still accepts WM-related modes for forward compatibility, but no stage
+currently injects action-labeled external rollouts into DreamDojo fine-tuning.
+"""
 
 from __future__ import annotations
 

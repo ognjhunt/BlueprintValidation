@@ -414,3 +414,61 @@ def test_report_builder_fixed_world_claim_uses_s4d_as_primary_headline(tmp_path,
     assert "Primary Headline: Fixed-World Same-Facility Claim" in content
     assert "fixed-world same-facility claim protocol in simulation only" in content
     assert "Primary Headline: Fixed-World Same-Facility Claim | PASS" in content
+
+
+def test_report_builder_falls_back_to_fixed_world_claim_when_polaris_unavailable(
+    tmp_path, sample_config
+):
+    from blueprint_validation.common import write_json
+    from blueprint_validation.reporting.report_builder import build_report
+
+    sample_config.eval_polaris.enabled = True
+    sample_config.eval_polaris.default_as_primary_gate = True
+    sample_config.eval_policy.claim_protocol = "fixed_same_facility_uplift"
+    sample_config.eval_policy.primary_endpoint = "task_success"
+    sample_config.eval_policy.freeze_world_snapshot = True
+
+    work_dir = tmp_path / "outputs"
+    fac_dir = work_dir / "test_facility"
+    fac_dir.mkdir(parents=True)
+
+    write_json(
+        {
+            "stage_name": "s4f_polaris_eval",
+            "status": "failed",
+            "metrics": {},
+        },
+        fac_dir / "s4f_polaris_eval_result.json",
+    )
+    write_json(
+        {
+            "stage_name": "s4d_policy_pair_eval",
+            "status": "success",
+            "metrics": {
+                "claim_protocol": "fixed_same_facility_uplift",
+                "primary_endpoint": "task_success",
+                "num_eval_cells": 12,
+                "claim_outcome": "PASS",
+                "claim_passed": True,
+                "bootstrap_site_vs_frozen": {
+                    "mean_lift_pp": 12.0,
+                    "ci_low_pp": 4.0,
+                    "ci_high_pp": 18.0,
+                    "p_value_two_sided": 0.01,
+                    "positive_seed_count": 4,
+                },
+                "arm_summary": {
+                    "frozen_baseline": {"success_rate": 0.45},
+                    "generic_control": {"per_seed_success_rate": {"0": 0.51, "1": 0.53}},
+                    "site_trained": {"per_seed_success_rate": {"0": 0.70, "1": 0.74}},
+                },
+            },
+        },
+        fac_dir / "s4d_policy_pair_eval_result.json",
+    )
+
+    result = build_report(sample_config, work_dir, fmt="markdown", output_path=tmp_path / "report.md")
+    content = result.read_text()
+    assert "Primary Headline: Fixed-World Same-Facility Claim | PASS" in content
+    assert "Default deployment recommendation comes from PolaRiS" not in content
+    assert "Site-trained mean task-success rate" in content

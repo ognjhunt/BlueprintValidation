@@ -1746,6 +1746,41 @@ def test_same_facility_policy_uplift_configs_load():
         assert cfg.policy_adapter.name == adapter_name
 
 
+def test_config_auto_enables_fixed_world_claim_dependencies(tmp_path):
+    import yaml
+
+    from blueprint_validation.config import load_config
+
+    config_path = tmp_path / "auto_claim_defaults.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "project_name": "Auto Claim Defaults",
+                "facilities": {
+                    "a": {
+                        "name": "A",
+                        "ply_path": str(tmp_path / "a.ply"),
+                        "claim_benchmark_path": str(tmp_path / "claim_benchmark.json"),
+                    }
+                },
+                "eval_policy": {
+                    "claim_protocol": "fixed_same_facility_uplift",
+                    "primary_endpoint": "task_success",
+                    "freeze_world_snapshot": True,
+                    "split_strategy": "disjoint_tasks_and_starts",
+                    "replication": {"training_seeds": [0, 1, 2, 3, 4, 5]},
+                },
+            }
+        )
+    )
+
+    cfg = load_config(config_path)
+    assert cfg.eval_policy.headline_scope == "wm_uplift"
+    assert cfg.policy_compare.enabled is True
+    assert cfg.rollout_dataset.enabled is True
+    assert cfg.policy_finetune.enabled is True
+
+
 def test_config_rejects_claim_strictness_with_zero_min_eval_cells(tmp_path):
     import yaml
 

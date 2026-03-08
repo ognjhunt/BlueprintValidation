@@ -1196,6 +1196,34 @@ def check_external_rollout_manifest(config: ValidationConfig) -> PreflightCheck:
     )
 
 
+def check_external_rollouts_wm_ingest_notice(config: ValidationConfig) -> PreflightCheck:
+    """Advisory explaining the current external_rollouts data-path semantics."""
+    ext_cfg = config.external_rollouts
+    if not bool(ext_cfg.enabled):
+        return PreflightCheck(
+            name="external_rollouts:wm_ingest_notice",
+            passed=True,
+            detail="external_rollouts.enabled=false",
+        )
+
+    mode = str(ext_cfg.mode or "wm_and_policy").strip().lower()
+    if mode in {"wm_only", "wm_and_policy"}:
+        return PreflightCheck(
+            name="external_rollouts:wm_ingest_notice",
+            passed=True,
+            detail=(
+                "external_rollouts.mode requests world-model ingestion, but current stages wire "
+                "external_rollouts into policy-training datasets only. Use external_interaction "
+                "for DreamDojo/video ingestion today."
+            ),
+        )
+    return PreflightCheck(
+        name="external_rollouts:wm_ingest_notice",
+        passed=True,
+        detail="external_rollouts configured for policy-only ingestion",
+    )
+
+
 def check_dreamzero_runtime_contract(
     repo_path: Path,
     inference_module: str,
@@ -2214,6 +2242,7 @@ def run_preflight(
 
     checks.append(check_external_interaction_manifest(config))
     checks.append(check_external_rollout_manifest(config))
+    checks.append(check_external_rollouts_wm_ingest_notice(config))
     if bool(config.policy_compare.enabled):
         facility_count = len(config.facilities)
         checks.append(

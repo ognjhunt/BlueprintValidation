@@ -99,3 +99,51 @@ def test_s3c_emits_canonical_and_legacy_checkpoint_keys(sample_config, tmp_path,
     assert result.status == "success"
     assert result.outputs["adapted_policy_checkpoint_rl"]
     assert result.outputs["adapted_openvla_checkpoint_rl"]
+
+
+def test_s3b_skips_when_stage4a_curriculum_has_no_success_inventory(
+    sample_config, tmp_path, monkeypatch
+):
+    from blueprint_validation.common import StageResult
+    from blueprint_validation.stages.s3b_policy_finetune import PolicyFinetuneStage
+
+    sample_config.policy_finetune.enabled = True
+    fac = sample_config.facilities["test_facility"]
+    work_dir = tmp_path / "outputs" / "test_facility"
+    source = work_dir / "rlds" / "train"
+    source.mkdir(parents=True, exist_ok=True)
+    (source / "episodes.jsonl").write_text("")
+
+    class FakeAdapter:
+        name = "openvla_oft"
+
+        def dataset_transform(self, source_dataset_dir, output_root, dataset_name):
+            raise AssertionError("dataset_transform should not run when quality gate skips training")
+
+        def base_model_ref(self, eval_config):
+            return eval_config.model_name, eval_config.checkpoint_path
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s3b_policy_finetune.get_policy_adapter",
+        lambda cfg: FakeAdapter(),
+    )
+
+    prev = {
+        "s4a_rlds_export": StageResult(
+            stage_name="s4a_rlds_export",
+            status="success",
+            elapsed_seconds=0,
+            outputs={"train_jsonl": str(source / "episodes.jsonl"), "dataset_name": "bridge_orig"},
+            metrics={
+                "num_train_episodes": 4,
+                "num_success_candidates": 0,
+                "num_train_teacher_rows": 0,
+                "num_train_correction_rows": 0,
+                "num_train_external_rows": 0,
+            },
+        )
+    }
+    result = PolicyFinetuneStage().run(sample_config, fac, work_dir, prev)
+    assert result.status == "skipped"
+    assert "no success-bucket inventory" in result.detail
+    assert result.metrics["quality_gate_passed"] is False
