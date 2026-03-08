@@ -12,6 +12,7 @@ import numpy as np
 from ..common import StageResult, get_logger, read_json, write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..evaluation.claim_protocol import claim_protocol_enabled
+from ..training.external_rollouts import load_external_rollouts_for_policy
 from ..training.native_teacher import generate_correction_rollouts, generate_teacher_rollouts
 from ..training.rlds_export import export_rollouts_to_rlds_jsonl
 from ..validation import ManifestValidationError, load_and_validate_manifest
@@ -162,6 +163,9 @@ class RolloutDatasetStage(PipelineStage):
             baseline, split_train_ids, split_heldout_ids
         )
         adapted_train, adapted_heldout = _split_by_ids(adapted, split_train_ids, split_heldout_ids)
+        external_rollouts = load_external_rollouts_for_policy(config, previous_results)
+        if external_rollouts:
+            adapted_train = _merge_augmented_rollouts(adapted_train, external_rollouts)
         native_teacher_summary: Dict[str, object] = {}
         generic_control_train = list(baseline_train)
         generic_control_mode = "baseline_only"
@@ -219,6 +223,11 @@ class RolloutDatasetStage(PipelineStage):
                 "num_site_teacher_rows": len(site_teacher_rows),
                 "num_generic_teacher_rows": len(generic_teacher_rows),
                 "num_site_correction_rows": len(correction_rows),
+            }
+        if external_rollouts:
+            native_teacher_summary["external_rollouts"] = {
+                "num_rows": len(external_rollouts),
+                "source_name": str(config.external_rollouts.source_name or "teleop"),
             }
         strict_generic_rows = _load_leave_one_facility_out_generic_pool(
             config=config,

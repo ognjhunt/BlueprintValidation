@@ -21,6 +21,7 @@ _TOP_LEVEL_KEYS = {
     "robosplat",
     "robosplat_scan",
     "external_interaction",
+    "external_rollouts",
     "native_teacher",
     "claim_portfolio",
     "action_boost",
@@ -453,6 +454,7 @@ _ROBOSPLAT_SCAN_KEYS = {
 }
 
 _EXTERNAL_INTERACTION_KEYS = {"enabled", "manifest_path", "source_name"}
+_EXTERNAL_ROLLOUTS_KEYS = {"enabled", "manifest_path", "source_name", "mode"}
 _NATIVE_TEACHER_KEYS = {
     "enabled",
     "include_generic_control",
@@ -719,6 +721,7 @@ def validate_config_keys(raw: Mapping[str, object], *, config_path: Path) -> Non
         ("robosplat", _ROBOSPLAT_KEYS),
         ("robosplat_scan", _ROBOSPLAT_SCAN_KEYS),
         ("external_interaction", _EXTERNAL_INTERACTION_KEYS),
+        ("external_rollouts", _EXTERNAL_ROLLOUTS_KEYS),
         ("native_teacher", _NATIVE_TEACHER_KEYS),
         ("claim_portfolio", _CLAIM_PORTFOLIO_KEYS),
         ("action_boost", _ACTION_BOOST_KEYS),

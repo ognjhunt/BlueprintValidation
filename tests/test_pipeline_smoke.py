@@ -277,7 +277,7 @@ def test_pipeline_post_stage_sync_hook(sample_config, tmp_path, monkeypatch):
     pipeline.run_all(resume_from_results=False)
 
     lines = hook_log.read_text().strip().splitlines()
-    assert len(lines) == 20
+    assert len(lines) == 21
     assert any(line.startswith("test_facility/s1_render|success") for line in lines)
 
 

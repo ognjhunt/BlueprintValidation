@@ -20,6 +20,8 @@ PLY file (from BlueprintCapturePipeline)
   → Stage 1b (optional): Composite URDF robot arm with camera extrinsics
   → Stage 1c (optional): Gemini image polish on composited clips
   → Stage 1d (optional): Full RoboSplat-default 3D Gaussian augmentation (hybrid fallback)
+  → Stage 1f (optional): Ingest external interaction videos
+  → Stage 1g (optional): Ingest external teleop rollouts (videos + actions)
   → Stage 2: Enrich with Cosmos Transfer 2.5 (5-10 variants per clip)
   → Stage 3: Fine-tune DreamDojo-2B on enriched video
   → Stage 4: Frozen policy rollouts (baseline vs adapted world model) + VLM scoring
@@ -66,6 +68,14 @@ To move closer to full-scene memory behavior:
 
 - No-new-data scaling roadmap for future sessions:
   - [docs/no_new_data_scaling_playbook.md](docs/no_new_data_scaling_playbook.md)
+- Isaac teleop manifest + ingest workflow:
+  - [docs/teleop_isaac_workflow.md](docs/teleop_isaac_workflow.md)
+- Remote GPU setup for Isaac teleop:
+  - [docs/remote_isaac_teleop_setup.md](docs/remote_isaac_teleop_setup.md)
+- Vision Pro teleop bridge setup:
+  - [docs/vision_pro_teleop_setup.md](docs/vision_pro_teleop_setup.md)
+- Vision Pro sample-client hook details:
+  - [docs/vision_pro_sample_client_hook.md](docs/vision_pro_sample_client_hook.md)
 
 ## Full Action-Success Boost
 
@@ -130,6 +140,7 @@ blueprint-validate polish-gemini --facility facility_a    # optional
 blueprint-validate augment-gaussian --facility facility_a # optional Stage 1d (full RoboSplat default)
 blueprint-validate augment-robosplat --facility facility_a # alias
 blueprint-validate ingest-external-interaction --facility facility_a # optional Stage 1f
+blueprint-validate ingest-external-rollouts --facility facility_a # optional Stage 1g
 blueprint-validate enrich --facility facility_a
 blueprint-validate finetune --facility facility_a
 blueprint-validate eval-policy --facility facility_a
@@ -227,6 +238,44 @@ rg -n "AIza|hf_[A-Za-z0-9]{10,}" -S . --hidden --no-ignore \
 Use these local scripts to keep resumable run state off-instance while training:
 
 ```bash
+# Validate a local scene handoff package for teleop use
+blueprint-validate validate-scene-package --scene-root /path/to/scene_root
+
+# Record one local teleop demo from an Isaac Lab task package
+blueprint-validate record-teleop \
+  --scene-root /path/to/scene_root \
+  --task-id pick_tote \
+  --task-text "Pick up the tote and place it on the shelf" \
+  --output-dir /path/to/teleop_bundle \
+  --teleop-device keyboard \
+  --task-package my_scene_task \
+  --env-cfg-class TeleopEnvCfg \
+  --camera-key wrist_rgb \
+  --state-key policy \
+  --confirm-success \
+  --max-attempts 3
+
+# Build teleop manifests from recorded Isaac outputs
+blueprint-validate build-teleop-manifests \
+  --scene-id facility_a \
+  --task-id pick_tote \
+  --task-text "Pick up the tote and place it on the shelf" \
+  --demo-index 0 \
+  --robot-type franka \
+  --robot-asset-ref robot/franka/franka.usd \
+  --teleop-device spacemouse \
+  --lerobot-root /path/to/lerobot_dataset \
+  --episode-ref episode_000000 \
+  --action-sequence-path /path/to/actions.json \
+  --state-sequence-path /path/to/states.json \
+  --video wrist=/path/to/wrist.mp4 \
+  --calibration wrist=/path/to/wrist_calibration.json \
+  --state-key joint_positions \
+  --state-key joint_velocities \
+  --state-key end_effector_pose \
+  --state-key gripper_state \
+  --output-dir /path/to/teleop_bundle
+
 # One-shot backup pull from instance -> local
 INSTANCE_ID=<vast_instance_id> bash scripts/vast_checkpoint_sync.sh pull
 

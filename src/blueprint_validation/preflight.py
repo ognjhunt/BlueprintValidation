@@ -20,6 +20,7 @@ from .evaluation.claim_benchmark import (
     claim_benchmark_strictness_failures,
     load_pinned_claim_benchmark,
 )
+from .teleop.contracts import TeleopManifestError, load_and_validate_teleop_manifest
 from .validation import ManifestValidationError, load_and_validate_manifest
 
 logger = get_logger("preflight")
@@ -1031,6 +1032,58 @@ def check_external_interaction_manifest(config: ValidationConfig) -> PreflightCh
         name="external_interaction:manifest",
         passed=True,
         detail=f"Validated stage1_source manifest ({len(payload.get('clips', []))} clips): {manifest_path}",
+    )
+
+
+def check_external_rollout_manifest(config: ValidationConfig) -> PreflightCheck:
+    """Preflight strict schema/path validation for action-labeled teleop manifests."""
+    ext_cfg = config.external_rollouts
+    if not bool(ext_cfg.enabled):
+        return PreflightCheck(
+            name="external_rollouts:manifest",
+            passed=True,
+            detail="external_rollouts.enabled=false",
+        )
+
+    manifest_path = ext_cfg.manifest_path
+    if manifest_path is None:
+        return PreflightCheck(
+            name="external_rollouts:manifest",
+            passed=False,
+            detail=(
+                "external_rollouts.enabled=true but manifest_path is not set. "
+                "Set external_rollouts.manifest_path to a valid teleop_session_manifest.json."
+            ),
+        )
+    if not manifest_path.exists():
+        return PreflightCheck(
+            name="external_rollouts:manifest",
+            passed=False,
+            detail=f"External rollout manifest not found: {manifest_path}",
+        )
+
+    try:
+        payload = load_and_validate_teleop_manifest(manifest_path, require_existing_paths=True)
+    except TeleopManifestError as exc:
+        return PreflightCheck(
+            name="external_rollouts:manifest",
+            passed=False,
+            detail=f"Invalid teleop manifest: {exc}",
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        return PreflightCheck(
+            name="external_rollouts:manifest",
+            passed=False,
+            detail=f"Failed reading teleop manifest: {exc}",
+        )
+
+    return PreflightCheck(
+        name="external_rollouts:manifest",
+        passed=True,
+        detail=(
+            f"Validated teleop manifest ({len(payload.get('sessions', []))} sessions): "
+            f"{manifest_path}"
+        ),
     )
 
 
@@ -2066,6 +2119,7 @@ def run_preflight(
         )
 
     checks.append(check_external_interaction_manifest(config))
+    checks.append(check_external_rollout_manifest(config))
     if bool(config.policy_compare.enabled):
         facility_count = len(config.facilities)
         checks.append(

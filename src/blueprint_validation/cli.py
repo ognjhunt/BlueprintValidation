@@ -7,6 +7,7 @@ import shlex
 import hashlib
 import subprocess
 import sys
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -213,6 +214,317 @@ def _get_stage_work_dir(ctx: click.Context, facility_id: str) -> Path:
     work_dir = ctx.obj["work_dir"] / facility_id
     work_dir.mkdir(parents=True, exist_ok=True)
     return work_dir
+
+
+def _parse_key_value_pairs(values: tuple[str, ...]) -> dict[str, str]:
+    payload: dict[str, str] = {}
+    for item in values:
+        if "=" not in item:
+            raise click.ClickException(f"Expected KEY=VALUE format, got '{item}'.")
+        key, value = item.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key or not value:
+            raise click.ClickException(f"Expected KEY=VALUE format, got '{item}'.")
+        payload[key] = value
+    return payload
+
+
+@cli.command()
+@click.option("--scene-root", type=click.Path(exists=True, file_okay=False), required=True)
+def validate_scene_package(scene_root: str) -> None:
+    """Validate a local scene handoff directory for teleop use."""
+    from .teleop import TeleopManifestError, load_and_validate_scene_package
+
+    try:
+        payload = load_and_validate_scene_package(Path(scene_root))
+    except TeleopManifestError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(payload, indent=2))
+
+
+@cli.command("build-teleop-manifests")
+@click.option("--scene-id", required=True, help="Scene ID.")
+@click.option("--task-id", required=True, help="Task identifier.")
+@click.option("--task-text", required=True, help="Task description.")
+@click.option("--demo-index", type=int, default=0, show_default=True)
+@click.option("--robot-type", default="franka", show_default=True)
+@click.option("--robot-asset-ref", required=True, help="Robot asset reference.")
+@click.option("--teleop-device", required=True, help="Teleop device name.")
+@click.option("--sim-backend", default="isaac_sim", show_default=True)
+@click.option("--action-space", default="ee_delta_pose_gripper", show_default=True)
+@click.option("--action-dim", type=int, default=7, show_default=True)
+@click.option("--lerobot-root", type=click.Path(exists=True, file_okay=False), required=True)
+@click.option("--episode-ref", required=True, help="Episode reference within the teleop dataset.")
+@click.option("--action-sequence-path", type=click.Path(exists=True), required=True)
+@click.option("--state-sequence-path", type=click.Path(exists=True), required=True)
+@click.option("--joint-name", multiple=True, help="Repeat for each joint name.")
+@click.option("--state-key", multiple=True, help="Repeat for each state key.")
+@click.option("--video", "videos", multiple=True, help="Camera video mapping CAMERA_ID=/abs/path.mp4")
+@click.option(
+    "--calibration",
+    "calibrations",
+    multiple=True,
+    help="Camera calibration mapping CAMERA_ID=/abs/path.json",
+)
+@click.option("--output-dir", type=click.Path(file_okay=False), required=True)
+def build_teleop_manifests(
+    scene_id: str,
+    task_id: str,
+    task_text: str,
+    demo_index: int,
+    robot_type: str,
+    robot_asset_ref: str,
+    teleop_device: str,
+    sim_backend: str,
+    action_space: str,
+    action_dim: int,
+    lerobot_root: str,
+    episode_ref: str,
+    action_sequence_path: str,
+    state_sequence_path: str,
+    joint_name: tuple[str, ...],
+    state_key: tuple[str, ...],
+    videos: tuple[str, ...],
+    calibrations: tuple[str, ...],
+    output_dir: str,
+) -> None:
+    """Build teleop manifests from recorded video/action/state files."""
+    from .teleop import TeleopManifestError, write_teleop_manifests
+
+    video_map = _parse_key_value_pairs(videos)
+    calib_map = _parse_key_value_pairs(calibrations)
+    missing = sorted(set(video_map) - set(calib_map))
+    if missing:
+        raise click.ClickException(
+            f"Missing calibration mapping for camera ids: {', '.join(missing)}."
+        )
+
+    start_state_hash = hashlib.sha256(
+        json.dumps(
+            {
+                "scene_id": scene_id,
+                "task_id": task_id,
+                "demo_index": demo_index,
+                "robot_type": robot_type,
+            },
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    session = {
+        "session_id": f"{scene_id}::{task_id}::{demo_index:03d}",
+        "scene_id": scene_id,
+        "task_id": task_id,
+        "task_text": task_text,
+        "demo_index": int(demo_index),
+        "success": True,
+        "sim_backend": sim_backend,
+        "teleop_device": teleop_device,
+        "robot_type": robot_type,
+        "robot_asset_ref": robot_asset_ref,
+        "action_space": action_space,
+        "action_dim": int(action_dim),
+        "joint_names": list(joint_name),
+        "state_keys": list(state_key),
+        "camera_ids": list(video_map.keys()),
+        "video_paths": video_map,
+        "calibration_refs": calib_map,
+        "lerobot_root": str(Path(lerobot_root).resolve()),
+        "episode_ref": episode_ref,
+        "start_state_hash": start_state_hash,
+        "action_sequence_path": str(Path(action_sequence_path).resolve()),
+        "state_sequence_path": str(Path(state_sequence_path).resolve()),
+    }
+    try:
+        outputs = write_teleop_manifests(
+            output_dir=Path(output_dir),
+            source_name="teleop",
+            sessions=[session],
+        )
+    except TeleopManifestError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps({k: str(v) for k, v in outputs.items()}, indent=2))
+
+
+@cli.command()
+@click.option("--listen-host", default="0.0.0.0", show_default=True)
+@click.option("--listen-port", type=int, default=49111, show_default=True)
+@click.option("--target-host", default="127.0.0.1", show_default=True)
+@click.option("--target-port", type=int, default=49110, show_default=True)
+@click.option("--action-dim", type=int, default=7, show_default=True)
+@click.option("--connect-timeout-s", type=float, default=120.0, show_default=True)
+@click.option("--idle-timeout-s", type=float, default=10.0, show_default=True)
+@click.option("--target-retry-seconds", type=float, default=0.5, show_default=True)
+@click.option("--translation-scale", type=float, default=1.0, show_default=True)
+@click.option("--rotation-scale", type=float, default=1.0, show_default=True)
+@click.option("--gripper-open-value", type=float, default=1.0, show_default=True)
+@click.option("--gripper-close-value", type=float, default=-1.0, show_default=True)
+@click.option("--packet-log-path", type=click.Path(), default=None)
+def run_vision_pro_relay(
+    listen_host: str,
+    listen_port: int,
+    target_host: str,
+    target_port: int,
+    action_dim: int,
+    connect_timeout_s: float,
+    idle_timeout_s: float,
+    target_retry_seconds: float,
+    translation_scale: float,
+    rotation_scale: float,
+    gripper_open_value: float,
+    gripper_close_value: float,
+    packet_log_path: Optional[str],
+) -> None:
+    """Run the Vision Pro JSON bridge relay on the remote GPU box."""
+    from .teleop import (
+        VisionProRelayConfig,
+        VisionProRelayError,
+        run_vision_pro_relay as _run_vision_pro_relay,
+    )
+
+    cfg = VisionProRelayConfig(
+        listen_host=listen_host,
+        listen_port=int(listen_port),
+        target_host=target_host,
+        target_port=int(target_port),
+        action_dim=int(action_dim),
+        connect_timeout_s=float(connect_timeout_s),
+        idle_timeout_s=float(idle_timeout_s),
+        target_retry_seconds=float(target_retry_seconds),
+        packet_log_path=Path(packet_log_path) if packet_log_path else None,
+        translation_scale=float(translation_scale),
+        rotation_scale=float(rotation_scale),
+        gripper_open_value=float(gripper_open_value),
+        gripper_close_value=float(gripper_close_value),
+    )
+    try:
+        _run_vision_pro_relay(cfg)
+    except VisionProRelayError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@cli.command()
+@click.option("--scene-root", type=click.Path(exists=True, file_okay=False), required=True)
+@click.option("--task-id", required=True, help="Task identifier.")
+@click.option("--task-text", required=True, help="Task description.")
+@click.option("--output-dir", type=click.Path(file_okay=False), required=True)
+@click.option("--demo-index", type=int, default=0, show_default=True)
+@click.option("--robot-type", default="franka", show_default=True)
+@click.option("--robot-asset-ref", default="robot/franka/franka.usd", show_default=True)
+@click.option("--teleop-device", default="keyboard", show_default=True)
+@click.option("--sim-backend", default="isaac_sim", show_default=True)
+@click.option("--action-space", default="ee_delta_pose_gripper", show_default=True)
+@click.option("--action-dim", type=int, default=7, show_default=True)
+@click.option("--max-steps", type=int, default=200, show_default=True)
+@click.option("--headless/--windowed", default=False, show_default=True)
+@click.option(
+    "--success-flag",
+    type=click.Choice(["auto", "success", "failure"]),
+    default="auto",
+    show_default=True,
+    help="Use auto to prompt after each attempt; success/failure forces the outcome.",
+)
+@click.option("--task-package", default=None, help="Isaac Lab task package import path.")
+@click.option("--env-cfg-class", default="TeleopEnvCfg", show_default=True)
+@click.option("--camera-key", multiple=True, help="Observation key(s) to treat as RGB cameras.")
+@click.option("--state-key", multiple=True, help="Observation key(s) to persist as state.")
+@click.option("--scripted-command", multiple=True, help="Optional scripted keyboard commands for non-interactive runs.")
+@click.option("--translation-step-m", type=float, default=0.02, show_default=True)
+@click.option("--rotation-step-rad", type=float, default=0.12, show_default=True)
+@click.option("--gripper-step", type=float, default=1.0, show_default=True)
+@click.option("--spacemouse-deadzone", type=float, default=0.08, show_default=True)
+@click.option("--spacemouse-translation-scale", type=float, default=0.03, show_default=True)
+@click.option("--spacemouse-rotation-scale", type=float, default=0.18, show_default=True)
+@click.option("--bridge-host", default="0.0.0.0", show_default=True)
+@click.option("--bridge-port", type=int, default=49110, show_default=True)
+@click.option("--bridge-connect-timeout-s", type=float, default=120.0, show_default=True)
+@click.option("--bridge-idle-timeout-s", type=float, default=10.0, show_default=True)
+@click.option("--bridge-packet-log-enabled/--no-bridge-packet-log-enabled", default=True, show_default=True)
+@click.option("--confirm-success/--no-confirm-success", default=True, show_default=True)
+@click.option("--max-attempts", type=int, default=1, show_default=True)
+@click.option("--attempt-pause-seconds", type=float, default=0.5, show_default=True)
+def record_teleop(
+    scene_root: str,
+    task_id: str,
+    task_text: str,
+    output_dir: str,
+    demo_index: int,
+    robot_type: str,
+    robot_asset_ref: str,
+    teleop_device: str,
+    sim_backend: str,
+    action_space: str,
+    action_dim: int,
+    max_steps: int,
+    headless: bool,
+    success_flag: str,
+    task_package: Optional[str],
+    env_cfg_class: str,
+    camera_key: tuple[str, ...],
+    state_key: tuple[str, ...],
+    scripted_command: tuple[str, ...],
+    translation_step_m: float,
+    rotation_step_rad: float,
+    gripper_step: float,
+    spacemouse_deadzone: float,
+    spacemouse_translation_scale: float,
+    spacemouse_rotation_scale: float,
+    bridge_host: str,
+    bridge_port: int,
+    bridge_connect_timeout_s: float,
+    bridge_idle_timeout_s: float,
+    bridge_packet_log_enabled: bool,
+    confirm_success: bool,
+    max_attempts: int,
+    attempt_pause_seconds: float,
+) -> None:
+    """Record one local Isaac teleop demo and emit teleop manifests."""
+    from .teleop import IsaacTeleopRuntimeError, TeleopRecorderConfig, record_teleop_session
+
+    cfg = TeleopRecorderConfig(
+        scene_root=Path(scene_root),
+        output_dir=Path(output_dir),
+        task_id=task_id,
+        task_text=task_text,
+        demo_index=int(demo_index),
+        robot_type=robot_type,
+        robot_asset_ref=robot_asset_ref,
+        teleop_device=teleop_device,
+        sim_backend=sim_backend,
+        action_space=action_space,
+        action_dim=int(action_dim),
+        max_steps=int(max_steps),
+        headless=bool(headless),
+        success=(
+            None
+            if success_flag == "auto"
+            else True if success_flag == "success" else False
+        ),
+        task_package=task_package,
+        env_cfg_class=env_cfg_class,
+        camera_keys=list(camera_key),
+        state_keys=list(state_key),
+        scripted_commands=list(scripted_command),
+        translation_step_m=float(translation_step_m),
+        rotation_step_rad=float(rotation_step_rad),
+        gripper_step=float(gripper_step),
+        spacemouse_deadzone=float(spacemouse_deadzone),
+        spacemouse_translation_scale=float(spacemouse_translation_scale),
+        spacemouse_rotation_scale=float(spacemouse_rotation_scale),
+        bridge_host=str(bridge_host),
+        bridge_port=int(bridge_port),
+        bridge_connect_timeout_s=float(bridge_connect_timeout_s),
+        bridge_idle_timeout_s=float(bridge_idle_timeout_s),
+        bridge_packet_log_enabled=bool(bridge_packet_log_enabled),
+        confirm_success=bool(confirm_success),
+        max_attempts=int(max_attempts),
+        attempt_pause_seconds=float(attempt_pause_seconds),
+    )
+    try:
+        outputs = record_teleop_session(cfg)
+    except IsaacTeleopRuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps({k: str(v) for k, v in outputs.items()}, indent=2))
 
 
 @cli.command()
@@ -440,6 +752,25 @@ def ingest_external_interaction(ctx: click.Context, facility: str) -> None:
     result.save(work_dir / "s1f_external_interaction_ingest_result.json")
     click.echo(
         f"External interaction ingest complete: {result.status} ({result.elapsed_seconds:.1f}s)"
+    )
+
+
+@cli.command("ingest-external-rollouts")
+@click.option("--facility", required=True, help="Facility ID.")
+@click.pass_context
+def ingest_external_rollouts(ctx: click.Context, facility: str) -> None:
+    """Stage 1g: Ingest external teleop rollouts into action-labeled rows."""
+    from .stages.s1g_external_rollout_ingest import ExternalRolloutIngestStage
+
+    config = ctx.obj["config"]
+    fac = _get_facility(ctx, facility)
+    work_dir = _get_stage_work_dir(ctx, facility)
+
+    stage = ExternalRolloutIngestStage()
+    result = stage.execute(config, fac, work_dir, {})
+    result.save(work_dir / "s1g_external_rollout_ingest_result.json")
+    click.echo(
+        f"External rollout ingest complete: {result.status} ({result.elapsed_seconds:.1f}s)"
     )
 
 

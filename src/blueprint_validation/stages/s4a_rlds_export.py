@@ -9,6 +9,7 @@ from ..common import StageResult, get_logger, read_json, write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..evaluation.claim_protocol import claim_protocol_enabled
 from ..training.native_teacher import generate_correction_rollouts, generate_teacher_rollouts
+from ..training.external_rollouts import load_external_rollouts_for_policy
 from ..training.rlds_export import (
     convert_jsonl_to_tfrecord,
     export_rollouts_to_rlds_jsonl,
@@ -251,6 +252,15 @@ class RLDSExportStage(PipelineStage):
         write_json(split_manifest, split_manifest_path)
         curriculum_manifest_path = stage_dir / "curriculum_manifest.json"
         write_json(curriculum_manifest, curriculum_manifest_path)
+
+        external_rollouts = load_external_rollouts_for_policy(config, previous_results)
+        if external_rollouts:
+            train_rollouts = _merge_augmented_rollouts(train_rollouts, external_rollouts)
+            curriculum_manifest["external_rollouts"] = {
+                "num_rows": len(external_rollouts),
+                "source_name": str(config.external_rollouts.source_name or "teleop"),
+            }
+            write_json(curriculum_manifest, curriculum_manifest_path)
 
         strict_disjoint_eval = bool(getattr(config.action_boost, "enabled", False)) and bool(
             getattr(config.action_boost, "strict_disjoint_eval", True)

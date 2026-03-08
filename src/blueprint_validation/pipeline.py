@@ -20,6 +20,7 @@ from .stages.s1b_robot_composite import RobotCompositeStage
 from .stages.s1c_gemini_polish import GeminiPolishStage
 from .stages.s1d_gaussian_augment import GaussianAugmentStage
 from .stages.s1f_external_interaction_ingest import ExternalInteractionIngestStage
+from .stages.s1g_external_rollout_ingest import ExternalRolloutIngestStage
 from .stages.s2_enrich import EnrichStage
 from .stages.s3_finetune import FinetuneStage
 from .stages.s3b_policy_finetune import PolicyFinetuneStage
@@ -161,6 +162,7 @@ class ValidationPipeline:
             GeminiPolishStage(),  # S1c: optional Gemini photorealism polish
             GaussianAugmentStage(),  # S1d: Full RoboSplat-default augmentation
             ExternalInteractionIngestStage(),  # S1f: Optional external interaction ingest
+            ExternalRolloutIngestStage(),  # S1g: Optional external teleop rollout ingest
             EnrichStage(),  # S2: Cosmos Transfer variants
             FinetuneStage(),  # S3: DreamDojo LoRA fine-tune
             PolicyEvalStage(),  # S4: frozen policy eval (baseline + adapted)

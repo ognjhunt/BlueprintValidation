@@ -568,6 +568,14 @@ class ExternalInteractionConfig:
 
 
 @dataclass
+class ExternalRolloutsConfig:
+    enabled: bool = False
+    manifest_path: Optional[Path] = None
+    source_name: str = "teleop"
+    mode: str = "wm_and_policy"  # policy_only|wm_only|wm_and_policy
+
+
+@dataclass
 class NativeTeacherConfig:
     enabled: bool = False
     include_generic_control: bool = True
@@ -740,6 +748,7 @@ class ValidationConfig:
     robosplat: RoboSplatConfig = field(default_factory=RoboSplatConfig)
     robosplat_scan: RoboSplatScanConfig = field(default_factory=RoboSplatScanConfig)
     external_interaction: ExternalInteractionConfig = field(default_factory=ExternalInteractionConfig)
+    external_rollouts: ExternalRolloutsConfig = field(default_factory=ExternalRolloutsConfig)
     native_teacher: NativeTeacherConfig = field(default_factory=NativeTeacherConfig)
     claim_portfolio: ClaimPortfolioConfig = field(default_factory=ClaimPortfolioConfig)
     action_boost: ActionBoostConfig = field(default_factory=ActionBoostConfig)
@@ -1693,6 +1702,20 @@ def load_config(path: Path) -> ValidationConfig:
             source_name=str(ei.get("source_name", "external")),
         )
 
+    if "external_rollouts" in raw:
+        er = raw["external_rollouts"]
+        manifest_raw = er.get("manifest_path")
+        config.external_rollouts = ExternalRolloutsConfig(
+            enabled=bool(er.get("enabled", False)),
+            manifest_path=(
+                _resolve_path(manifest_raw, base_dir)
+                if manifest_raw is not None and str(manifest_raw).strip()
+                else None
+            ),
+            source_name=str(er.get("source_name", "teleop")),
+            mode=str(er.get("mode", "wm_and_policy")),
+        )
+
     if "native_teacher" in raw:
         nt = raw["native_teacher"]
         config.native_teacher = NativeTeacherConfig(
@@ -2105,6 +2128,14 @@ def load_config(path: Path) -> ValidationConfig:
         raise ValueError("policy_adapter.dreamzero.train_script must be non-empty")
     if not str(config.external_interaction.source_name).strip():
         raise ValueError("external_interaction.source_name must be non-empty")
+    if not str(config.external_rollouts.source_name).strip():
+        raise ValueError("external_rollouts.source_name must be non-empty")
+    external_rollout_mode = str(config.external_rollouts.mode or "wm_and_policy").strip().lower()
+    if external_rollout_mode not in {"policy_only", "wm_only", "wm_and_policy"}:
+        raise ValueError(
+            "external_rollouts.mode must be one of: policy_only, wm_only, wm_and_policy"
+        )
+    config.external_rollouts.mode = external_rollout_mode
     if int(config.native_teacher.planner_horizon_steps) < 1:
         raise ValueError("native_teacher.planner_horizon_steps must be >= 1")
     if int(config.claim_portfolio.min_facilities) < 1:
