@@ -71,6 +71,7 @@ def test_isaac_render_stage_runs_from_scene_package(sample_config, tmp_path, mon
     fac.scene_package_path = scene_root
 
     sample_config.render.backend = "auto"
+    monkeypatch.setenv("BLUEPRINT_UNSAFE_ALLOW_SCENE_PACKAGE_IMPORT", "1")
 
     clip_video = tmp_path / "isaac_renders" / "head_rollout_000.mp4"
     clip_video.parent.mkdir(parents=True, exist_ok=True)
@@ -106,7 +107,7 @@ def test_isaac_render_stage_runs_from_scene_package(sample_config, tmp_path, mon
     assert result.outputs["manifest_path"].endswith("isaac_renders/render_manifest.json")
 
 
-def test_legacy_stage1_stages_skip_for_isaac_backend(sample_config, tmp_path):
+def test_legacy_stage1_stages_skip_for_isaac_backend(sample_config, tmp_path, monkeypatch):
     from blueprint_validation.common import StageResult
     from blueprint_validation.stages.s1_render import RenderStage
     from blueprint_validation.stages.s1b_robot_composite import RobotCompositeStage
@@ -116,6 +117,7 @@ def test_legacy_stage1_stages_skip_for_isaac_backend(sample_config, tmp_path):
     fac.scene_package_path = _write_scene_package(tmp_path / "scene")
     sample_config.render.backend = "auto"
     sample_config.gemini_polish.enabled = True
+    monkeypatch.setenv("BLUEPRINT_UNSAFE_ALLOW_SCENE_PACKAGE_IMPORT", "1")
     previous_results = {
         "s0a_scene_package": StageResult(
             stage_name="s0a_scene_package",
@@ -146,3 +148,24 @@ def test_render_backend_auto_falls_back_to_gsplat(sample_config):
     sample_config.render.backend = "auto"
 
     assert active_render_backend(sample_config, fac, {}) == "gsplat"
+
+
+def test_render_backend_auto_stays_gsplat_without_unsafe_opt_in(sample_config, tmp_path):
+    from blueprint_validation.common import StageResult
+    from blueprint_validation.stages.render_backend import active_render_backend
+
+    fac = sample_config.facilities["test_facility"]
+    fac.scene_package_path = _write_scene_package(tmp_path / "scene")
+    sample_config.scene_builder.enabled = True
+    sample_config.render.backend = "auto"
+
+    previous_results = {
+        "s0a_scene_package": StageResult(
+            stage_name="s0a_scene_package",
+            status="success",
+            elapsed_seconds=0.0,
+            outputs={"scene_package_path": str(fac.scene_package_path)},
+        )
+    }
+
+    assert active_render_backend(sample_config, fac, previous_results) == "gsplat"

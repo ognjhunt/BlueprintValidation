@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -20,11 +21,18 @@ def active_render_backend(
     backend = str(getattr(config.render, "backend", "auto") or "auto").strip().lower()
     if backend in {"gsplat", "isaac_scene"}:
         return backend
+    if not unsafe_scene_package_imports_enabled():
+        return "gsplat"
     if resolved_scene_package_path(facility, previous_results) is not None:
         return "isaac_scene"
     if bool(getattr(config.scene_builder, "enabled", False)):
         return "isaac_scene"
     return "gsplat"
+
+
+def unsafe_scene_package_imports_enabled() -> bool:
+    """Return True when unsafe executable scene package imports are explicitly allowed."""
+    return os.environ.get("BLUEPRINT_UNSAFE_ALLOW_SCENE_PACKAGE_IMPORT", "0") == "1"
 
 
 def resolved_scene_package_path(
