@@ -3612,6 +3612,20 @@ def _build_scene_locked_specs(
     profile: str,
 ) -> List[CameraPathSpec]:
     """Build deterministic target-grounded specs for fixed eye/look-at capture."""
+    profile_defaults = _scene_locked_defaults(profile)
+    default_eye_offset = np.asarray(
+        profile_defaults.get("eye_offset_m", _KITCHEN_0787_LOCKED_DEFAULT_EYE_OFFSET_M), dtype=np.float64
+    )
+    default_look_at_offset = np.asarray(
+        profile_defaults.get("look_at_offset_m", _KITCHEN_0787_LOCKED_DEFAULT_LOOK_AT_OFFSET_M), dtype=np.float64
+    )
+    default_probe_motion_radius_m = float(
+        profile_defaults.get(
+            "probe_motion_radius_m",
+            _KITCHEN_0787_LOCKED_DEFAULT_PROBE_MOTION_RADIUS_M,
+        )
+    )
+
     task_hints_path = Path(facility.task_hints_path) if facility.task_hints_path else None
     if task_hints_path is None or not task_hints_path.exists():
         logger.warning(
@@ -3682,20 +3696,16 @@ def _build_scene_locked_specs(
             eye_abs = _transform_scene_point(eye_abs, scene_transform)
             look_abs = _transform_scene_point(look_abs, scene_transform)
         else:
-            eye_abs = np.asarray(obb.center, dtype=np.float64).reshape(-1)[:3] + np.asarray(
-                _KITCHEN_0787_LOCKED_DEFAULT_EYE_OFFSET_M, dtype=np.float64
-            )
-            look_abs = np.asarray(obb.center, dtype=np.float64).reshape(-1)[:3] + np.asarray(
-                _KITCHEN_0787_LOCKED_DEFAULT_LOOK_AT_OFFSET_M, dtype=np.float64
-            )
+            eye_abs = np.asarray(obb.center, dtype=np.float64).reshape(-1)[:3] + default_eye_offset
+            look_abs = np.asarray(obb.center, dtype=np.float64).reshape(-1)[:3] + default_look_at_offset
         try:
             probe_motion_radius_m = float(
                 table_entry.get(
-                    "probe_motion_radius_m", _KITCHEN_0787_LOCKED_DEFAULT_PROBE_MOTION_RADIUS_M
+                    "probe_motion_radius_m", default_probe_motion_radius_m
                 )
             )
         except Exception:
-            probe_motion_radius_m = float(_KITCHEN_0787_LOCKED_DEFAULT_PROBE_MOTION_RADIUS_M)
+            probe_motion_radius_m = float(default_probe_motion_radius_m)
         probe_motion_radius_m = float(np.clip(probe_motion_radius_m, 0.0, 0.05))
 
         meta = {
