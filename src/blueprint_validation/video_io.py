@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -246,14 +247,24 @@ def ensure_h264_video(
     if initial_codec != "h264":
         transcoded = True
         if replace_source:
-            tmp_path = input_path.with_name(f"{input_path.stem}.__tmp_h264__.mp4")
-            transcode_mp4_to_h264(
-                input_path=input_path,
-                output_path=tmp_path,
-                crf=crf,
-                preset=preset,
+            tmp_dir = Path(
+                tempfile.mkdtemp(
+                    prefix=f".{input_path.stem}.",
+                    suffix=".h264_tmp",
+                    dir=str(input_path.parent),
+                )
             )
-            os.replace(tmp_path, input_path)
+            tmp_path = tmp_dir / f"{input_path.name}.h264.mp4"
+            try:
+                transcode_mp4_to_h264(
+                    input_path=input_path,
+                    output_path=tmp_path,
+                    crf=crf,
+                    preset=preset,
+                )
+                os.replace(tmp_path, input_path)
+            finally:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
             resolved_path = input_path
         else:
             resolved_path = output_path or input_path.with_name(f"{input_path.stem}_h264.mp4")
