@@ -11,10 +11,10 @@ facilities:
 render:
   resolution: [480, 640]
   fps: 10
-  num_frames: 13
+  num_frames: 25
   camera_height_m: 1.0
   camera_look_down_deg: 20
-  scene_aware: true
+  scene_aware: false
   task_scoped_scene_aware: false
   task_scoped_max_specs: 12
   task_scoped_context_per_target: 1
@@ -22,9 +22,9 @@ render:
   task_scoped_fallback_specs: 4
   task_scoped_profile: dreamdojo
   task_scoped_num_clips_per_path: 1
-  task_scoped_num_frames_override: 13
+  task_scoped_num_frames_override: 25
   num_clips_per_path: 1
-  collision_check: true
+  collision_check: false
   voxel_size_m: 0.08
   density_threshold: 3
   min_clearance_m: 0.12
@@ -44,10 +44,6 @@ render:
   camera_paths:
     - type: file
       path: ./camera_paths/facility_a_book_shelf_locked.json
-    - type: sweep
-      length_m: 3.0
-      height_override_m: 1.0
-      look_down_override_deg: 15.0
 
 robot_composite:
   enabled: false
@@ -76,6 +72,8 @@ enrich:
   max_source_clips: 1
   min_source_clips: 1
   min_valid_outputs: 1
+  context_frame_mode: fixed
+  context_frame_index: 12
   dynamic_variants: false
   variants:
     - name: baseline
