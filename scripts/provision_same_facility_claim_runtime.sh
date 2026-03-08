@@ -58,7 +58,7 @@ PY
 }
 
 verify_dreamdojo_import() {
-  DREAMDOJO_REPO="$ROOT_DIR/data/vendor/DreamDojo" "$PYTHON_BIN" - <<'PY'
+  DREAMDOJO_REPO="$ROOT_DIR/data/vendor/DreamDojo" TRANSFORMERS_NO_TF=1 "$PYTHON_BIN" - <<'PY'
 import os
 import sys
 from pathlib import Path
@@ -232,6 +232,8 @@ if [[ "$INSTALL_VENDOR_CUDA_EXTRAS" == "true" ]]; then
   if ! sync_vendor_optional "$dreamdojo_repo" --extra="$DREAMDOJO_EXTRA"; then
     echo "WARNING: DreamDojo CUDA extra sync failed; continuing with the base environment and import probes."
   fi
+  # Vendor sync can relax core compatibility constraints; restore the repo runtime pins before probing.
+  pip_install "numpy<2" "protobuf<5"
   verify_dreamdojo_import
   if ! verify_torchcodec_import; then
     echo "WARNING: torchcodec runtime probe failed. Stage 3 can hang on video datasets if torchcodec/FFmpeg is incompatible."
