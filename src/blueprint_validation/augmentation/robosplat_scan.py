@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -59,7 +60,8 @@ def augment_scan_only_clip(
         for frame in rgb_frames
     ]
 
-    out_name = f"{source_clip_name}_rs{augment_index:02d}"
+    safe_source_clip_name = _sanitize_output_clip_name(source_clip_name)
+    out_name = f"{safe_source_clip_name}_rs{augment_index:02d}"
     output_dir.mkdir(parents=True, exist_ok=True)
     out_rgb = output_dir / f"{out_name}.mp4"
     _write_video(out_rgb, rgb_frames, fps=fps, color=True)
@@ -93,6 +95,13 @@ def augment_scan_only_clip(
 def _stable_seed(source_clip_name: str, augment_index: int) -> int:
     digest = hashlib.sha256(f"{source_clip_name}:{augment_index}".encode("utf-8")).digest()
     return int.from_bytes(digest[:8], "big", signed=False)
+
+
+def _sanitize_output_clip_name(source_clip_name: str) -> str:
+    """Sanitize manifest clip names before using them in output file paths."""
+    leaf_name = Path(str(source_clip_name)).name
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", leaf_name).strip("._-")
+    return cleaned or "clip"
 
 
 def _sample_ops(

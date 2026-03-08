@@ -96,6 +96,54 @@ def test_stage_generates_augmented_manifest(sample_config, tmp_path):
     assert all(c["quality_gate_passed"] is True for c in augmented)
 
 
+def test_stage_sanitizes_augmented_output_names(sample_config, tmp_path):
+    from blueprint_validation.common import read_json, write_json
+    from blueprint_validation.stages.s1d_gaussian_augment import GaussianAugmentStage
+
+    sample_config.robosplat.enabled = True
+    sample_config.robosplat.backend = "legacy_scan"
+    sample_config.robosplat.variants_per_input = 1
+
+    render_dir = tmp_path / "renders"
+    rgb_path = render_dir / "clip_000.mp4"
+    _write_dummy_video(rgb_path, color=True)
+
+    write_json(
+        {
+            "facility": "Test Facility",
+            "clips": [
+                {
+                    "clip_name": "../escape/evil",
+                    "path_type": "orbit",
+                    "clip_index": 0,
+                    "num_frames": 4,
+                    "resolution": [48, 64],
+                    "fps": 5,
+                    "video_path": str(rgb_path),
+                    "depth_video_path": "",
+                }
+            ],
+        },
+        render_dir / "render_manifest.json",
+    )
+
+    stage = GaussianAugmentStage()
+    fac = list(sample_config.facilities.values())[0]
+    result = stage.run(sample_config, fac, tmp_path, {})
+    assert result.status == "success"
+
+    manifest_path = tmp_path / "gaussian_augment" / "augmented_manifest.json"
+    data = read_json(manifest_path)
+    augmented = [c for c in data["clips"] if c.get("augmentation_type") == "legacy_scan"]
+    assert len(augmented) == 1
+
+    clip_name = augmented[0]["clip_name"]
+    output_path = Path(augmented[0]["video_path"])
+    assert clip_name.startswith("evil_rs")
+    assert ".." not in clip_name
+    assert output_path.resolve().parent == (tmp_path / "gaussian_augment").resolve()
+
+
 def test_stage_auto_backend_falls_back_to_legacy(sample_config, tmp_path):
     from blueprint_validation.common import write_json
     from blueprint_validation.stages.s1d_gaussian_augment import GaussianAugmentStage
