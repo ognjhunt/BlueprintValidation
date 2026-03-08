@@ -6,6 +6,7 @@ facilities:
     name: Pilot Facility A
     ply_path: ../data/facilities/facility_a/splat.ply
     description: Single-scene cheap first pass for directional world-model uplift only.
+    video_orientation_fix: rotate180
 
 render:
   resolution: [480, 640]
