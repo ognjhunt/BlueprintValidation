@@ -523,6 +523,8 @@ class RenderStage(PipelineStage):
                     facility=facility,
                     scene_transform=(scene_T if has_transform else None),
                     profile=scene_locked_profile,
+                    occupancy=occupancy,
+                    scene_center=scene_center,
                 )
                 if not all_path_specs:
                     return StageResult(
@@ -817,6 +819,8 @@ class RenderStage(PipelineStage):
                 facility=facility,
                 scene_transform=(scene_T if has_transform else None),
                 profile=scene_locked_profile,
+                occupancy=occupancy,
+                scene_center=scene_center,
             )
         else:
             all_path_specs = base_specs + extra_specs
@@ -3617,6 +3621,8 @@ def _build_scene_locked_specs(
     facility: FacilityConfig,
     scene_transform: Optional[np.ndarray],
     profile: str,
+    occupancy: Optional[OccupancyGrid] = None,
+    scene_center: Optional[np.ndarray] = None,
 ) -> List[CameraPathSpec]:
     """Build deterministic target-grounded specs for fixed eye/look-at capture."""
     profile_defaults = _scene_locked_defaults(profile)
@@ -3703,8 +3709,23 @@ def _build_scene_locked_specs(
             eye_abs = _transform_scene_point(eye_abs, scene_transform)
             look_abs = _transform_scene_point(look_abs, scene_transform)
         else:
-            eye_abs = np.asarray(obb.center, dtype=np.float64).reshape(-1)[:3] + default_eye_offset
-            look_abs = np.asarray(obb.center, dtype=np.float64).reshape(-1)[:3] + default_look_at_offset
+            search_eye, search_look = _search_scene_locked_pose_for_target(
+                profile=profile,
+                obb=obb,
+                occupancy=occupancy,
+                scene_center=scene_center,
+                resolution=tuple(config.render.resolution),
+                num_frames=int(
+                    config.render.task_scoped_num_frames_override or config.render.num_frames
+                ),
+                min_clearance_m=float(config.render.min_clearance_m),
+            )
+            if search_eye is not None and search_look is not None:
+                eye_abs = search_eye
+                look_abs = search_look
+            else:
+                eye_abs = np.asarray(obb.center, dtype=np.float64).reshape(-1)[:3] + default_eye_offset
+                look_abs = np.asarray(obb.center, dtype=np.float64).reshape(-1)[:3] + default_look_at_offset
         try:
             probe_motion_radius_m = float(
                 table_entry.get(
@@ -3761,13 +3782,176 @@ def _build_kitchen_0787_locked_specs(
     config: ValidationConfig,
     facility: FacilityConfig,
     scene_transform: Optional[np.ndarray],
+    occupancy: Optional[OccupancyGrid] = None,
+    scene_center: Optional[np.ndarray] = None,
 ) -> List[CameraPathSpec]:
     return _build_scene_locked_specs(
         config=config,
         facility=facility,
         scene_transform=scene_transform,
         profile="kitchen_0787",
+        occupancy=occupancy,
+        scene_center=scene_center,
     )
+
+
+def _rotate_xy(vec_xy: np.ndarray, deg: float) -> np.ndarray:
+    theta = np.deg2rad(float(deg))
+    c = float(np.cos(theta))
+    s = float(np.sin(theta))
+    return np.asarray([c * vec_xy[0] - s * vec_xy[1], s * vec_xy[0] + c * vec_xy[1]], dtype=np.float64)
+
+
+def _build_locked_candidate_poses(
+    *,
+    eye: np.ndarray,
+    look_at: np.ndarray,
+    num_frames: int,
+    resolution: tuple[int, int],
+    motion_radius_m: float,
+) -> List[CameraPose]:
+    num = max(1, int(num_frames))
+    height = max(2, int(resolution[0]))
+    width = max(2, int(resolution[1]))
+    fx = fy = float(width) / float(2.0 * np.tan(np.deg2rad(55.0 / 2.0)))
+    cx, cy = float(width) / 2.0, float(height) / 2.0
+    poses: List[CameraPose] = []
+    for i in range(num):
+        frac = 0.0 if num <= 1 else float(i) / float(max(1, num - 1))
+        theta = -0.5 * np.pi + frac * np.pi
+        candidate_eye = np.asarray(eye, dtype=np.float64).copy()
+        candidate_eye[1] += motion_radius_m * np.sin(theta)
+        candidate_eye[2] += 0.35 * motion_radius_m * np.cos(theta)
+        c2w = _look_at(candidate_eye, np.asarray(look_at, dtype=np.float64))
+        poses.append(
+            CameraPose(
+                c2w=c2w,
+                fx=fx,
+                fy=fy,
+                cx=cx,
+                cy=cy,
+                width=width,
+                height=height,
+            )
+        )
+    return poses
+
+
+def _search_scene_locked_pose_for_target(
+    *,
+    profile: str,
+    obb: OrientedBoundingBox,
+    occupancy: Optional[OccupancyGrid],
+    scene_center: Optional[np.ndarray],
+    resolution: tuple[int, int],
+    num_frames: int,
+    min_clearance_m: float,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Search a small deterministic pose set around a target and choose the best view.
+
+    This is intentionally narrow and deterministic for default-scene locked capture,
+    not a generic planner.
+    """
+    profile_key = str(profile or "").strip().lower()
+    if profile_key != "facility_a":
+        return None, None
+
+    target = np.asarray(obb.center, dtype=np.float64).reshape(-1)[:3]
+    if not np.all(np.isfinite(target)):
+        return None, None
+
+    anchor = (
+        np.asarray(scene_center, dtype=np.float64).reshape(-1)[:3]
+        if scene_center is not None and np.asarray(scene_center).size >= 3
+        else np.asarray([0.0, 0.0, target[2]], dtype=np.float64)
+    )
+    base_dir_xy = target[:2] - anchor[:2]
+    if float(np.linalg.norm(base_dir_xy)) <= 1e-6:
+        base_dir_xy = np.asarray([1.0, 0.0], dtype=np.float64)
+    base_dir_xy = base_dir_xy / float(np.linalg.norm(base_dir_xy))
+
+    target_extents = np.maximum(np.asarray(obb.extents, dtype=np.float64).reshape(-1)[:3], 0.01)
+    radii = [2.2, 2.8, 3.4]
+    yaw_offsets_deg = [0.0, -18.0, 18.0, -36.0, 36.0]
+    z_offsets = [-0.45, -0.15, 0.10]
+    motion_radii = [0.0, 0.02]
+    best_score = -1e9
+    best_eye: np.ndarray | None = None
+    best_look: np.ndarray | None = None
+
+    for radius in radii:
+        for yaw_deg in yaw_offsets_deg:
+            dir_xy = _rotate_xy(base_dir_xy, yaw_deg)
+            for z_offset in z_offsets:
+                eye = np.asarray(
+                    [
+                        float(target[0] - dir_xy[0] * radius),
+                        float(target[1] - dir_xy[1] * radius),
+                        float(target[2] + z_offset),
+                    ],
+                    dtype=np.float64,
+                )
+                look_at = np.asarray([float(target[0]), float(target[1]), float(target[2])], dtype=np.float64)
+                if occupancy is not None:
+                    if not occupancy.is_free(eye, min_clearance_m=float(min_clearance_m)):
+                        continue
+                    endpoint = _resolve_target_los_endpoint(
+                        start=eye,
+                        target=target,
+                        occupancy=occupancy,
+                        min_clearance_m=float(min_clearance_m),
+                    )
+                    if not occupancy.has_line_of_sight(
+                        eye,
+                        endpoint,
+                        clearance_m=float(max(0.02, min(0.08, float(min_clearance_m) * 0.5))),
+                        endpoint_margin_m=0.08,
+                    ):
+                        continue
+                for motion_radius_m in motion_radii:
+                    poses = _build_locked_candidate_poses(
+                        eye=eye,
+                        look_at=look_at,
+                        num_frames=num_frames,
+                        resolution=resolution,
+                        motion_radius_m=float(motion_radius_m),
+                    )
+                    total_frames, visible_samples = project_target_to_poses(poses, target)
+                    visible_frames, total_frames, center_frames, angle_bins = analyze_target_visibility(
+                        total_frames=total_frames,
+                        visible_samples=visible_samples,
+                        angle_bin_deg=45.0,
+                        center_band_x=[0.25, 0.75],
+                        center_band_y=[0.25, 0.75],
+                    )
+                    visible_ratio = float(visible_frames) / float(max(total_frames, 1))
+                    center_ratio = float(center_frames) / float(max(total_frames, 1))
+                    los_ratio = _compute_target_line_of_sight_ratio(
+                        poses=poses,
+                        target_xyz=target.tolist(),
+                        occupancy=occupancy,
+                        min_clearance_m=float(min_clearance_m),
+                    )
+                    size_ratio = _estimate_target_projected_size_ratio(
+                        poses=poses,
+                        target_xyz=target.tolist(),
+                        target_extents_m=target_extents.tolist(),
+                    )
+                    dist = float(np.linalg.norm(eye - target))
+                    distance_bonus = max(0.0, 1.0 - abs(dist - 2.8) / 2.0)
+                    score = (
+                        0.35 * visible_ratio
+                        + 0.25 * center_ratio
+                        + 0.20 * min(1.0, size_ratio / 0.18)
+                        + 0.15 * los_ratio
+                        + 0.05 * distance_bonus
+                    )
+                    if score > best_score:
+                        best_score = score
+                        best_eye = eye.copy()
+                        best_look = look_at.copy()
+
+    return best_eye, best_look
 
 
 def _select_task_scoped_obbs(

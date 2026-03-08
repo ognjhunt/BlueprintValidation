@@ -16,6 +16,7 @@ render:
   camera_look_down_deg: 20
   scene_aware: false
   task_scoped_scene_aware: false
+  scene_locked_profile: facility_a
   task_scoped_max_specs: 12
   task_scoped_context_per_target: 1
   task_scoped_overview_specs: 2
@@ -24,7 +25,7 @@ render:
   task_scoped_num_clips_per_path: 1
   task_scoped_num_frames_override: 25
   num_clips_per_path: 1
-  collision_check: false
+  collision_check: true
   voxel_size_m: 0.08
   density_threshold: 3
   min_clearance_m: 0.12
@@ -40,7 +41,10 @@ render:
   stage1_coverage_center_band_y: [0.20, 0.80]
   stage1_quality_planner_enabled: false
   stage1_quality_autoretry_enabled: false
-  stage1_active_perception_enabled: false
+  stage1_active_perception_enabled: true
+  stage1_active_perception_scope: targeted
+  stage1_active_perception_max_loops: 1
+  stage1_active_perception_fail_closed: true
   camera_paths:
     - type: file
       path: ./camera_paths/facility_a_book_shelf_locked.json
