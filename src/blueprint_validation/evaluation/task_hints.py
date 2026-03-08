@@ -76,9 +76,8 @@ def tasks_from_task_hints(
         mapped = _TASK_ID_PROMPT_MAP.get(task_id)
         if mapped:
             tasks.append(mapped)
-        elif task_raw and " " in task_raw:
-            # Synthetic bootstrap may store direct prompt text in task_id.
-            tasks.append(task_raw)
+        elif task_raw:
+            logger.debug("Ignoring unknown task_id from task hints: %s", task_raw)
 
     lowered_existing = [t.lower() for t in tasks]
     has_explicit_manip = any(t.startswith("pick up ") and "_" in t for t in lowered_existing)
