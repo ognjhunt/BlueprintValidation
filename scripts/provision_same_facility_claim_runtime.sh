@@ -200,7 +200,9 @@ if [[ "$INSTALL_VENDOR_CUDA_EXTRAS" == "true" ]]; then
   if ! verify_dreamdojo_import; then
     echo "DreamDojo import failed; installing supplemental dependencies (piq, pytorch3d)..."
     pip_install --no-deps "piq==0.8.0"
-    pip_install --no-build-isolation --no-deps "git+https://github.com/facebookresearch/pytorch3d.git"
+    if ! pip_install --no-build-isolation --no-deps "git+https://github.com/facebookresearch/pytorch3d.git"; then
+      echo "WARNING: pytorch3d install failed during bootstrap; retrying DreamDojo import without it."
+    fi
     verify_dreamdojo_import
   fi
   if ! verify_torchcodec_import; then
