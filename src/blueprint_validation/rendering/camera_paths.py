@@ -260,10 +260,25 @@ def generate_path_from_spec(
     manipulation_target_z_bias_m: float = 0.0,
 ) -> List[CameraPose]:
     """Generate a camera path from a CameraPathSpec."""
+
+    def _valid_approach_point3() -> np.ndarray | None:
+        """Return a sanitized 3D approach point or None when malformed."""
+        if not isinstance(spec.approach_point, list) or len(spec.approach_point) < 3:
+            return None
+        try:
+            point3 = np.asarray(spec.approach_point[:3], dtype=np.float64)
+        except (TypeError, ValueError):
+            return None
+        if point3.shape != (3,) or not np.all(np.isfinite(point3)):
+            return None
+        return point3
+
+    approach_point3 = _valid_approach_point3()
+
     if spec.type == "orbit":
         target_point = (
-            np.asarray(spec.approach_point, dtype=np.float64)
-            if isinstance(spec.approach_point, list) and len(spec.approach_point) >= 3
+            approach_point3.copy()
+            if approach_point3 is not None
             else np.asarray(scene_center[:3], dtype=np.float64)
         )
         center_xy = target_point[:2].copy()
@@ -281,7 +296,7 @@ def generate_path_from_spec(
             else float(look_down_deg)
         )
         # Keep camera slightly above the explicit target plane for stable views.
-        if isinstance(spec.approach_point, list) and len(spec.approach_point) >= 3:
+        if approach_point3 is not None:
             effective_height = max(effective_height, float(target_point[2]) + 0.25)
         return generate_orbit(
             center=center_3d,
@@ -295,8 +310,8 @@ def generate_path_from_spec(
         )
     elif spec.type == "sweep":
         focus_point = (
-            np.asarray(spec.approach_point, dtype=np.float64)
-            if isinstance(spec.approach_point, list) and len(spec.approach_point) >= 3
+            approach_point3.copy()
+            if approach_point3 is not None
             else np.asarray(scene_center[:3], dtype=np.float64)
         )
         if start_offset is not None:
