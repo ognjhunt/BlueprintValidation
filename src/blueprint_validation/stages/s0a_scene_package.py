@@ -82,6 +82,11 @@ class ScenePackageStage(PipelineStage):
                 "scene_package_path": str(build_result.scene_root),
                 "scene_manifest_path": str(build_result.scene_manifest_path),
                 "usd_scene_path": str(build_result.usd_scene_path),
+                "visual_usd_scene_path": str(getattr(build_result, "visual_usd_scene_path", "")),
+                "physics_usd_scene_path": str(getattr(build_result, "physics_usd_scene_path", "")),
+                "replacement_manifest_path": str(getattr(build_result, "replacement_manifest_path", "")),
+                "support_surfaces_path": str(getattr(build_result, "support_surfaces_path", "")),
+                "physics_qc_path": str(getattr(build_result, "physics_qc_path", "")),
                 "task_config_path": str(build_result.task_config_path) if build_result.task_config_path else "",
                 "isaac_lab_package_root": str(build_result.isaac_lab_package_root),
                 "source": "scene_builder",
@@ -113,6 +118,8 @@ def _build_scene_package_for_facility(
 ):
     build_config = copy.deepcopy(config)
     build_config.scene_builder.source_ply_path = facility.ply_path.resolve()
+    if facility.task_hints_path is not None:
+        build_config.scene_builder.task_hints_path = facility.task_hints_path.resolve()
     if len(config.facilities) > 1:
         facility_id = sanitize_filename_component(work_dir.name, fallback="facility")
         build_config.scene_builder.output_scene_root = (

@@ -746,10 +746,13 @@ class SceneBuilderConfig:
     output_scene_root: Path = Path("./data/scene_package")
     static_collision_mode: str = "simple"
     asset_manifest_path: Optional[Path] = None
+    scene_edit_manifest_path: Optional[Path] = None
+    task_hints_path: Optional[Path] = None
     robot_type: str = "franka"
     task_template: str = "pick_place_v1"
     emit_isaac_lab: bool = True
     emit_polaris_metadata: bool = True
+    fail_on_physics_qc: bool = False
 
 
 @dataclass
@@ -1539,6 +1542,8 @@ def load_config(path: Path) -> ValidationConfig:
         sb = raw["scene_builder"]
         source_ply_path = sb.get("source_ply_path")
         asset_manifest_path = sb.get("asset_manifest_path")
+        scene_edit_manifest_path = sb.get("scene_edit_manifest_path")
+        task_hints_path = sb.get("task_hints_path")
         config.scene_builder = SceneBuilderConfig(
             enabled=bool(sb.get("enabled", False)),
             source_ply_path=(
@@ -1556,10 +1561,21 @@ def load_config(path: Path) -> ValidationConfig:
                 if asset_manifest_path is not None and str(asset_manifest_path).strip()
                 else None
             ),
+            scene_edit_manifest_path=(
+                _resolve_path(scene_edit_manifest_path, base_dir)
+                if scene_edit_manifest_path is not None and str(scene_edit_manifest_path).strip()
+                else None
+            ),
+            task_hints_path=(
+                _resolve_path(task_hints_path, base_dir)
+                if task_hints_path is not None and str(task_hints_path).strip()
+                else None
+            ),
             robot_type=str(sb.get("robot_type", "franka")).strip(),
             task_template=str(sb.get("task_template", "pick_place_v1")).strip(),
             emit_isaac_lab=bool(sb.get("emit_isaac_lab", True)),
             emit_polaris_metadata=bool(sb.get("emit_polaris_metadata", True)),
+            fail_on_physics_qc=bool(sb.get("fail_on_physics_qc", False)),
         )
 
     # Policy fine-tuning (OpenVLA-OFT adapter stage)

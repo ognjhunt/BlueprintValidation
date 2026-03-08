@@ -346,10 +346,13 @@ def test_config_parses_scene_builder_block(tmp_path):
                     "output_scene_root": str(tmp_path / "scene_pkg"),
                     "static_collision_mode": "simple",
                     "asset_manifest_path": str(tmp_path / "assets.json"),
+                    "scene_edit_manifest_path": str(tmp_path / "scene_edit.json"),
+                    "task_hints_path": str(tmp_path / "task_hints.json"),
                     "robot_type": "franka",
                     "task_template": "pick_place_v1",
                     "emit_isaac_lab": True,
                     "emit_polaris_metadata": True,
+                    "fail_on_physics_qc": True,
                 },
             }
         )
@@ -359,6 +362,9 @@ def test_config_parses_scene_builder_block(tmp_path):
     assert cfg.scene_builder.source_ply_path == Path("/tmp/source.ply")
     assert cfg.scene_builder.output_scene_root == (tmp_path / "scene_pkg").resolve()
     assert cfg.scene_builder.asset_manifest_path == (tmp_path / "assets.json").resolve()
+    assert cfg.scene_builder.scene_edit_manifest_path == (tmp_path / "scene_edit.json").resolve()
+    assert cfg.scene_builder.task_hints_path == (tmp_path / "task_hints.json").resolve()
+    assert cfg.scene_builder.fail_on_physics_qc is True
 
 
 def test_config_parses_camera_path_target_metadata(tmp_path):

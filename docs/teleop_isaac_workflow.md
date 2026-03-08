@@ -16,7 +16,7 @@ Minimum required structure:
 <scene_root>/
   assets/scene_manifest.json
   usd/scene.usda
-  isaac_lab/              # optional but recommended
+  isaac_lab/              # required for record-teleop
   geniesim/task_config.json  # optional
 ```
 
@@ -173,6 +173,6 @@ With `mode: wm_and_policy`:
 
 ## Notes
 
-- The current implementation assumes Franka-first and action-labeled teleop data already recorded in Isaac.
-- It does not yet implement a live Isaac device loop inside this repo.
-- The important new piece is the manifest contract and the downstream ingest path, so teleop data can be consumed without cross-repo glue.
+- The current implementation is Franka-first and supports in-repo live recording against Isaac Lab task packages for `keyboard`, `spacemouse`, and `vision_pro`.
+- `record-teleop` requires a runnable `isaac_lab` task package under the scene handoff; the bridge/task manifests are not enough by themselves.
+- The downstream manifest contract is still the main integration surface, so teleop data can be ingested without extra cross-repo glue once the recording bundle exists.

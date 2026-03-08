@@ -71,6 +71,104 @@ def _write_asset_manifest(path: Path, asset_path: Path) -> None:
     )
 
 
+def _write_scene_edit_manifest(path: Path) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "external_artifacts": [
+                    {
+                        "artifact_id": "book_mask",
+                        "artifact_type": "segmentation_mask",
+                        "source_tool": "saga",
+                        "path": str(path.parent / "book_mask.json"),
+                        "role": "remove_region_mask",
+                    }
+                ],
+                "remove_regions": [
+                    {
+                        "region_id": "books_cluster",
+                        "label": "books_cluster",
+                        "source": "task_hints",
+                        "source_instance_ids": ["book_a", "book_b"],
+                        "source_artifact_id": "book_mask",
+                        "replacement_scope": "object_only",
+                        "physics_authority": "visual_only",
+                        "replacement_object_id": "mug_001",
+                        "pose_alignment_confidence": 0.9,
+                        "bounding_box": {
+                            "center": [0.1, 0.2, 0.3],
+                            "extents": [0.4, 0.3, 0.3],
+                            "axes": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                        },
+                    }
+                ],
+                "support_surfaces": [
+                    {
+                        "surface_id": "counter_surface",
+                        "label": "counter_surface",
+                        "source": "task_hints",
+                        "support_role": "support_surface",
+                        "surface_class": "countertop",
+                        "physics_authority": "primitive_proxy",
+                        "proxy_shape": "box",
+                        "pose_alignment_confidence": 0.95,
+                        "thickness": 0.05,
+                        "bounding_box": {
+                            "center": [0.5, 0.2, 0.25],
+                            "extents": [0.8, 0.4, 0.05],
+                            "axes": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                        },
+                    }
+                ],
+            }
+        )
+    )
+
+
+def _write_task_hints(path: Path) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "manipulation_candidates": [
+                    {
+                        "instance_id": "book_a",
+                        "label": "book",
+                        "confidence": 0.9,
+                        "boundingBox": {
+                            "center": [0.1, 0.2, 0.3],
+                            "extents": [0.1, 0.05, 0.2],
+                            "axes": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                        },
+                    },
+                    {
+                        "instance_id": "book_b",
+                        "label": "book",
+                        "confidence": 0.9,
+                        "boundingBox": {
+                            "center": [0.18, 0.2, 0.3],
+                            "extents": [0.1, 0.05, 0.2],
+                            "axes": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                        },
+                    },
+                    {
+                        "instance_id": "cup_ignored",
+                        "label": "cup",
+                        "confidence": 0.7,
+                        "boundingBox": {
+                            "center": [1.2, 0.2, 0.3],
+                            "extents": [0.1, 0.1, 0.15],
+                            "axes": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                        },
+                    },
+                ],
+                "articulation_hints": [],
+                "navigation_hints": [],
+            }
+        )
+    )
+
+
 def test_scene_asset_manifest_rejects_missing_fields(tmp_path: Path) -> None:
     from blueprint_validation.scene_builder import SceneAssetManifestError, load_scene_asset_manifest
 
@@ -78,6 +176,36 @@ def test_scene_asset_manifest_rejects_missing_fields(tmp_path: Path) -> None:
     manifest_path.write_text(json.dumps({"schema_version": "v1", "scene_id": "a", "assets": []}))
     with pytest.raises(SceneAssetManifestError, match="task block"):
         load_scene_asset_manifest(manifest_path)
+
+
+def test_scene_edit_manifest_rejects_unknown_artifact(tmp_path: Path) -> None:
+    from blueprint_validation.scene_builder import SceneAssetManifestError, load_scene_edit_manifest
+
+    manifest_path = tmp_path / "scene_edit.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "remove_regions": [
+                    {
+                        "region_id": "books_cluster",
+                        "label": "books",
+                        "source": "task_hints",
+                        "source_artifact_id": "missing_mask",
+                        "replacement_scope": "object_only",
+                        "physics_authority": "visual_only",
+                        "bounding_box": {
+                            "center": [0.0, 0.0, 0.0],
+                            "extents": [0.2, 0.2, 0.2],
+                            "axes": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                        },
+                    }
+                ],
+            }
+        )
+    )
+    with pytest.raises(SceneAssetManifestError, match="unknown source_artifact_id"):
+        load_scene_edit_manifest(manifest_path)
 
 
 def test_build_scene_package_emits_expected_contracts(sample_config, sample_ply, tmp_path: Path) -> None:
@@ -90,15 +218,27 @@ def test_build_scene_package_emits_expected_contracts(sample_config, sample_ply,
     _write_usda_asset(asset_path)
     manifest_path = tmp_path / "assets.json"
     _write_asset_manifest(manifest_path, asset_path)
+    scene_edit_path = tmp_path / "scene_edit.json"
+    (tmp_path / "book_mask.json").write_text('{"mask": "demo"}')
+    _write_scene_edit_manifest(scene_edit_path)
+    task_hints_path = tmp_path / "task_hints.json"
+    _write_task_hints(task_hints_path)
 
     sample_config.scene_builder.enabled = True
     sample_config.scene_builder.source_ply_path = sample_ply
     sample_config.scene_builder.output_scene_root = tmp_path / "built_scene"
     sample_config.scene_builder.asset_manifest_path = manifest_path
+    sample_config.scene_builder.scene_edit_manifest_path = scene_edit_path
+    sample_config.scene_builder.task_hints_path = task_hints_path
 
     result = build_scene_package(sample_config)
     assert result.scene_manifest_path.exists()
     assert result.usd_scene_path.exists()
+    assert result.visual_usd_scene_path.exists()
+    assert result.physics_usd_scene_path.exists()
+    assert result.replacement_manifest_path.exists()
+    assert result.support_surfaces_path.exists()
+    assert result.physics_qc_path.exists()
     assert (result.scene_root / "geniesim" / "task_config.json").exists()
     payload = load_and_validate_scene_package(result.scene_root)
     assert payload["has_isaac_lab"] is True
@@ -120,6 +260,18 @@ def test_build_scene_package_emits_expected_contracts(sample_config, sample_ply,
         assert _resolve_env_action_dim(loaded.env) == 7
     finally:
         loaded.close()
+
+    replacement_manifest = json.loads(result.replacement_manifest_path.read_text())
+    assert replacement_manifest["enabled"] is True
+    assert replacement_manifest["remove_regions"][0]["replacement_object_id"] == "mug_001"
+
+    support_surfaces = json.loads(result.support_surfaces_path.read_text())
+    assert support_surfaces["enabled"] is True
+    assert support_surfaces["support_surfaces"][0]["surface_id"] == "counter_surface"
+
+    physics_qc = json.loads(result.physics_qc_path.read_text())
+    assert physics_qc["enabled"] is True
+    assert physics_qc["summary"]["blocking_failures"] == 0
 
     sample_config.facilities["test_facility"].scene_package_path = result.scene_root
     spec = resolve_polaris_scene_spec(sample_config, sample_config.facilities["test_facility"])
@@ -151,3 +303,36 @@ def test_build_scene_package_scene_manifest_matches_task_metadata(
     assert "tray_001" in object_ids
     assert task_config["suggested_tasks"][0]["target_object"] == "mug_001"
     assert task_config["suggested_tasks"][0]["goal_region"] == "tray_001"
+    assert scene_manifest["scene"]["layers"]["visual_usda_path"] == "usd/scene_visual.usda"
+    assert scene_manifest["scene"]["layers"]["physics_usda_path"] == "usd/scene_physics.usda"
+
+
+def test_build_scene_package_skips_hybrid_editing_when_isaac_disabled(
+    sample_config, sample_ply, tmp_path: Path
+) -> None:
+    from blueprint_validation.scene_builder import build_scene_package
+
+    asset_path = tmp_path / "asset.usda"
+    _write_usda_asset(asset_path)
+    manifest_path = tmp_path / "assets.json"
+    _write_asset_manifest(manifest_path, asset_path)
+
+    sample_config.scene_builder.enabled = True
+    sample_config.scene_builder.source_ply_path = sample_ply
+    sample_config.scene_builder.output_scene_root = tmp_path / "scene_pkg"
+    sample_config.scene_builder.asset_manifest_path = manifest_path
+    sample_config.scene_builder.scene_edit_manifest_path = tmp_path / "does_not_need_to_exist.json"
+    sample_config.scene_builder.task_hints_path = tmp_path / "does_not_need_to_exist_task_hints.json"
+    sample_config.scene_builder.emit_isaac_lab = False
+
+    result = build_scene_package(sample_config)
+    replacement_manifest = json.loads(result.replacement_manifest_path.read_text())
+    support_surfaces = json.loads(result.support_surfaces_path.read_text())
+    physics_qc = json.loads(result.physics_qc_path.read_text())
+
+    assert replacement_manifest["enabled"] is False
+    assert replacement_manifest["status"] == "skipped_teleop_disabled"
+    assert support_surfaces["enabled"] is False
+    assert support_surfaces["status"] == "skipped_teleop_disabled"
+    assert physics_qc["enabled"] is False
+    assert physics_qc["summary"]["status"] == "skipped_teleop_disabled"

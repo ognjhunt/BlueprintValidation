@@ -348,10 +348,13 @@ _SCENE_BUILDER_KEYS = {
     "output_scene_root",
     "static_collision_mode",
     "asset_manifest_path",
+    "scene_edit_manifest_path",
+    "task_hints_path",
     "robot_type",
     "task_template",
     "emit_isaac_lab",
     "emit_polaris_metadata",
+    "fail_on_physics_qc",
 }
 
 _CLAIM_REPLICATION_KEYS = {"training_seeds"}

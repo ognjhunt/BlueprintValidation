@@ -297,6 +297,36 @@ def check_scene_package_runtime_contract(config: ValidationConfig, facility_id: 
     )
 
 
+def check_isaac_scene_import_opt_in(config: ValidationConfig, facility_id: str) -> PreflightCheck:
+    facility = config.facilities[facility_id]
+    name = f"render:scene_package_import_opt_in:{facility_id}"
+    backend = str(getattr(config.render, "backend", "auto") or "auto").strip().lower()
+    requires_opt_in = backend == "isaac_scene"
+    has_scene_source = facility.scene_package_path is not None or bool(
+        getattr(config.scene_builder, "enabled", False)
+    )
+    if not requires_opt_in or not has_scene_source:
+        return PreflightCheck(
+            name=name,
+            passed=True,
+            detail="render backend does not require Isaac scene-package imports",
+        )
+    enabled = (os.environ.get("BLUEPRINT_UNSAFE_ALLOW_SCENE_PACKAGE_IMPORT", "0") or "").strip()
+    passed = enabled == "1"
+    return PreflightCheck(
+        name=name,
+        passed=passed,
+        detail=(
+            "BLUEPRINT_UNSAFE_ALLOW_SCENE_PACKAGE_IMPORT=1"
+            if passed
+            else (
+                "render.backend=isaac_scene imports executable Python from the scene package. "
+                "Set BLUEPRINT_UNSAFE_ALLOW_SCENE_PACKAGE_IMPORT=1 only for trusted scene packages."
+            )
+        ),
+    )
+
+
 def _canonical_policy_adapter_name(name: str) -> str:
     key = (name or "").strip().lower()
     if key in {"openvla_oft", "openvla-oft", "oft", "openvla", "open-vla"}:
@@ -1908,6 +1938,7 @@ def run_preflight(
         checks.append(check_facility_ply(fid, fconf.ply_path))
         if fconf.scene_package_path is not None:
             checks.append(check_scene_package_runtime_contract(config, fid))
+        checks.append(check_isaac_scene_import_opt_in(config, fid))
         if bool(config.eval_polaris.enabled):
             checks.append(check_polaris_scene_handoff(config, fid))
             checks.append(check_polaris_scene_package_import_opt_in(config, fid))

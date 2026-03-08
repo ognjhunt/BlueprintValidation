@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import json
 import os
 import socket
 import subprocess
@@ -260,10 +261,52 @@ def _evaluate_scene_candidate(
             output_dir=output_dir,
             client=client,
         )
+    if scene_spec.mode == "native_bundle":
+        return _evaluate_native_bundle(
+            config=config,
+            scene_spec=scene_spec,
+            candidate_label=candidate_label,
+            output_dir=output_dir,
+            client=client,
+        )
     raise RuntimeError(
         f"Live PolaRiS evaluation for environment_mode={scene_spec.mode} is not available in "
         "the current runtime. Use a native bundle or set BLUEPRINT_POLARIS_FAKE_BACKEND=1."
     )
+
+
+def _evaluate_native_bundle(
+    *,
+    config: ValidationConfig,
+    scene_spec: PolarisSceneSpec,
+    candidate_label: str,
+    output_dir: Path,
+    client: WebsocketPolicyClient,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    runtime = resolve_polaris_runtime(config)
+    if not runtime.runnable:
+        raise RuntimeError("; ".join(runtime.issues))
+    env_name = str(scene_spec.environment_name or "").strip()
+    if not env_name:
+        raise RuntimeError("native_bundle requires eval_polaris.environment_name.")
+    eval_dir = output_dir / "native_bundle_eval"
+    eval_dir.mkdir(parents=True, exist_ok=True)
+    result = _run_native_bundle_eval_subprocess(
+        repo_path=runtime.repo_path,
+        env_name=env_name,
+        bundle_root=scene_spec.scene_root,
+        output_dir=eval_dir,
+        num_rollouts=int(config.eval_polaris.num_rollouts),
+        policy_client=str(config.eval_polaris.policy_client or "OpenVLA"),
+        policy_host=str(client.host),
+        policy_port=int(client.port),
+        observation_mode=str(config.eval_polaris.observation_mode),
+        action_mode=str(config.eval_polaris.action_mode),
+        device=str(config.eval_polaris.device),
+    )
+    rows = _load_native_bundle_rows(result["results_path"])
+    video_paths = _collect_native_bundle_video_paths(eval_dir)
+    return rows, video_paths
 
 
 def _evaluate_scene_package_bridge(
@@ -469,6 +512,258 @@ def _launch_policy_server(
         time.sleep(0.1)
     _terminate_process(proc)
     raise RuntimeError("Timed out starting PolaRiS OpenVLA policy server. " + " | ".join(lines[-10:]))
+
+
+def _run_native_bundle_eval_subprocess(
+    *,
+    repo_path: Path,
+    env_name: str,
+    bundle_root: Path | None,
+    output_dir: Path,
+    num_rollouts: int,
+    policy_client: str,
+    policy_host: str,
+    policy_port: int,
+    observation_mode: str,
+    action_mode: str,
+    device: str,
+) -> dict[str, Any]:
+    eval_script = repo_path / "scripts" / "eval.py"
+    if not eval_script.exists():
+        raise RuntimeError(f"PolaRiS eval entrypoint missing: {eval_script}")
+    help_text = _capture_native_bundle_help(repo_path=repo_path, eval_script=eval_script)
+    cmd = _build_native_bundle_command(
+        repo_path=repo_path,
+        eval_script=eval_script,
+        help_text=help_text,
+        env_name=env_name,
+        bundle_root=bundle_root,
+        output_dir=output_dir,
+        num_rollouts=num_rollouts,
+        policy_client=policy_client,
+        policy_host=policy_host,
+        policy_port=policy_port,
+        observation_mode=observation_mode,
+        action_mode=action_mode,
+        device=device,
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "PYTHONPATH": _native_bundle_pythonpath(repo_path),
+            "POLARIS_ENVIRONMENT_NAME": env_name,
+            "POLARIS_NATIVE_BUNDLE_PATH": str(bundle_root) if bundle_root is not None else "",
+            "POLARIS_OUTPUT_DIR": str(output_dir),
+            "POLARIS_NUM_ROLLOUTS": str(int(num_rollouts)),
+            "POLARIS_POLICY_CLIENT": policy_client,
+            "POLARIS_POLICY_HOST": policy_host,
+            "POLARIS_POLICY_PORT": str(int(policy_port)),
+            "POLARIS_OBSERVATION_MODE": observation_mode,
+            "POLARIS_ACTION_MODE": action_mode,
+            "POLARIS_DEVICE": device,
+        }
+    )
+    proc = subprocess.run(
+        cmd,
+        cwd=repo_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        raise RuntimeError(
+            "PolaRiS native_bundle eval.py failed "
+            f"(exit={proc.returncode}): {detail[-1200:]}"
+        )
+    results_path = _find_native_bundle_results_path(output_dir)
+    return {"results_path": results_path, "stdout": proc.stdout, "stderr": proc.stderr}
+
+
+def _capture_native_bundle_help(*, repo_path: Path, eval_script: Path) -> str:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = _native_bundle_pythonpath(repo_path)
+    cmd = _python_run_eval_script(eval_script)
+    proc = subprocess.run(
+        [*cmd, "--help"],
+        cwd=repo_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return (proc.stdout or "") + "\n" + (proc.stderr or "")
+
+
+def _build_native_bundle_command(
+    *,
+    repo_path: Path,
+    eval_script: Path,
+    help_text: str,
+    env_name: str,
+    bundle_root: Path | None,
+    output_dir: Path,
+    num_rollouts: int,
+    policy_client: str,
+    policy_host: str,
+    policy_port: int,
+    observation_mode: str,
+    action_mode: str,
+    device: str,
+) -> list[str]:
+    del repo_path
+    cmd = _python_run_eval_script(eval_script)
+    _append_supported_flag(cmd, help_text, ("--environment-name", "--env-name", "--environment"), env_name)
+    if bundle_root is not None:
+        _append_supported_flag(
+            cmd,
+            help_text,
+            ("--environment-root", "--env-root", "--bundle-root"),
+            str(bundle_root),
+        )
+    _append_supported_flag(cmd, help_text, ("--output-dir", "--export-dir", "--save-dir"), str(output_dir))
+    _append_supported_flag(cmd, help_text, ("--num-rollouts", "--num_episodes", "--episodes"), str(int(num_rollouts)))
+    _append_supported_flag(cmd, help_text, ("--policy-client", "--policy_client"), policy_client)
+    _append_supported_flag(cmd, help_text, ("--policy-host", "--host"), policy_host)
+    _append_supported_flag(cmd, help_text, ("--policy-port", "--port"), str(int(policy_port)))
+    _append_supported_flag(cmd, help_text, ("--observation-mode", "--observation_mode"), observation_mode)
+    _append_supported_flag(cmd, help_text, ("--action-mode", "--action_mode"), action_mode)
+    _append_supported_flag(cmd, help_text, ("--device",), device)
+    return cmd
+
+
+def _python_run_eval_script(eval_script: Path) -> list[str]:
+    return [
+        sys.executable,
+        "-c",
+        (
+            "import runpy; "
+            "import blueprint_validation.polaris.openvla_client; "
+            f"runpy.run_path({str(eval_script)!r}, run_name='__main__')"
+        ),
+    ]
+
+
+def _native_bundle_pythonpath(repo_path: Path) -> str:
+    entries = [str(repo_path), str(repo_path / "src")]
+    existing = os.environ.get("PYTHONPATH", "")
+    if existing:
+        entries.append(existing)
+    return os.pathsep.join(entries)
+
+
+def _append_supported_flag(
+    cmd: list[str],
+    help_text: str,
+    names: tuple[str, ...],
+    value: str,
+) -> None:
+    for name in names:
+        if name in help_text:
+            cmd.extend([name, value])
+            return
+
+
+def _find_native_bundle_results_path(output_dir: Path) -> Path:
+    candidates = sorted(output_dir.rglob("*.csv")) + sorted(output_dir.rglob("*.json"))
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise RuntimeError(
+        "PolaRiS native_bundle run completed but produced no CSV/JSON results under "
+        f"{output_dir}."
+    )
+
+
+def _load_native_bundle_rows(path: Path) -> list[dict[str, Any]]:
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        return _load_native_bundle_csv_rows(path)
+    if suffix == ".json":
+        payload = json.loads(path.read_text())
+        return _normalize_native_bundle_json_rows(payload, path)
+    raise RuntimeError(f"Unsupported native_bundle result artifact: {path}")
+
+
+def _load_native_bundle_csv_rows(path: Path) -> list[dict[str, Any]]:
+    import csv
+
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    if not rows:
+        raise RuntimeError(f"Empty native_bundle CSV results: {path}")
+    normalized: list[dict[str, Any]] = []
+    for idx, row in enumerate(rows):
+        success_score = _coerce_score(row, ("success_score", "success", "task_success"), default=0.0)
+        progress = _coerce_score(row, ("progress", "mean_progress"), default=success_score)
+        normalized.append(
+            {
+                "episode": int(_coerce_score(row, ("episode", "episode_id", "rollout_index"), default=float(idx))),
+                "success": round(success_score >= 0.5, 6),
+                "success_score": round(success_score, 6),
+                "progress": round(progress, 6),
+            }
+        )
+    return normalized
+
+
+def _normalize_native_bundle_json_rows(payload: Any, path: Path) -> list[dict[str, Any]]:
+    rows: Any = None
+    if isinstance(payload, list):
+        rows = payload
+    elif isinstance(payload, dict):
+        for key in ("rows", "results", "episodes", "rollouts"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                rows = value
+                break
+    if not isinstance(rows, list) or not rows:
+        raise RuntimeError(f"Unsupported native_bundle JSON results schema: {path}")
+    normalized: list[dict[str, Any]] = []
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        success_score = _coerce_score(row, ("success_score", "success", "task_success"), default=0.0)
+        progress = _coerce_score(row, ("progress", "mean_progress"), default=success_score)
+        normalized.append(
+            {
+                "episode": int(_coerce_score(row, ("episode", "episode_id", "rollout_index"), default=float(idx))),
+                "success": round(success_score >= 0.5, 6),
+                "success_score": round(success_score, 6),
+                "progress": round(progress, 6),
+            }
+        )
+    if not normalized:
+        raise RuntimeError(f"No usable native_bundle rows found in {path}")
+    return normalized
+
+
+def _coerce_score(row: dict[str, Any], keys: tuple[str, ...], *, default: float) -> float:
+    for key in keys:
+        if key not in row:
+            continue
+        value = row.get(key)
+        if isinstance(value, bool):
+            return 1.0 if value else 0.0
+        if isinstance(value, (int, float)):
+            return float(value)
+        text = str(value or "").strip().lower()
+        if not text:
+            continue
+        if text in {"true", "yes", "success"}:
+            return 1.0
+        if text in {"false", "no", "fail", "failure"}:
+            return 0.0
+        try:
+            return float(text)
+        except ValueError:
+            continue
+    return float(default)
+
+
+def _collect_native_bundle_video_paths(output_dir: Path) -> list[str]:
+    return [str(path) for path in sorted(output_dir.rglob("*.mp4")) if path.is_file()]
 
 
 def _terminate_process(proc: subprocess.Popen[str]) -> None:

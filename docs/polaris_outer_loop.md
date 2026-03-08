@@ -39,7 +39,24 @@ eval_polaris:
 ## Scene Modes
 
 - `scene_package_bridge`: strict path for Blueprint scene packages. Primary-gate eligible only when the package and task metadata are present.
-- `native_bundle`: use an already-packaged PolaRiS environment under `hub_path`.
+- `native_bundle`: use an already-packaged PolaRiS environment under `hub_path`. The current runtime launches the external PolaRiS `scripts/eval.py` entrypoint and connects it to Blueprint's websocket-backed OpenVLA policy server.
 - `scan_only_bridge`: research/smoke only. Never primary-gate eligible.
 
 Raw scan inputs like `3dgs_compressed*.ply` stay upstream of PolaRiS until they are converted into a scene package or a native PolaRiS bundle.
+
+## Native Bundle Runtime Notes
+
+For `environment_mode: native_bundle`, the current repo expects:
+
+- `eval_polaris.repo_path` to point at a PolaRiS checkout containing `scripts/eval.py`
+- `eval_polaris.hub_path/<environment_name>/scene.usda`
+- `eval_polaris.hub_path/<environment_name>/initial_conditions.json`
+
+At runtime, Blueprint:
+
+1. starts the local websocket-backed OpenVLA policy server
+2. launches PolaRiS `scripts/eval.py` in a subprocess
+3. passes the native-bundle environment name and output directory into that subprocess
+4. normalizes the emitted CSV/JSON results back into the Stage 4f report
+
+If your PolaRiS checkout uses different CLI flag names, Blueprint adapts dynamically from `eval.py --help` for the common environment/output/policy-host/policy-port aliases.
