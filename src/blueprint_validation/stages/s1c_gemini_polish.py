@@ -11,6 +11,7 @@ from ..synthetic.gemini_image_polish import polish_clip_with_gemini
 from ..validation import load_and_validate_manifest
 from .manifest_resolution import ManifestCandidate, ManifestSource, resolve_manifest_source
 from .base import PipelineStage
+from .render_backend import active_render_backend
 
 logger = get_logger("stages.s1c_gemini_polish")
 
@@ -31,6 +32,16 @@ class GeminiPolishStage(PipelineStage):
         work_dir: Path,
         previous_results: Dict[str, StageResult],
     ) -> StageResult:
+        if active_render_backend(config, facility, previous_results) != "gsplat":
+            return StageResult(
+                stage_name=self.name,
+                status="skipped",
+                elapsed_seconds=0,
+                detail=(
+                    "Skipped by render backend: isaac_scene already uses simulator-native robot "
+                    "imagery."
+                ),
+            )
         del facility
         if not config.gemini_polish.enabled:
             return StageResult(

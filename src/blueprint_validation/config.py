@@ -81,6 +81,7 @@ class CameraPathSpec:
 
 @dataclass
 class RenderConfig:
+    backend: str = "auto"  # auto|gsplat|isaac_scene
     resolution: tuple[int, int] = (480, 640)  # H x W
     fps: int = 10
     num_frames: int = 49
@@ -1059,6 +1060,7 @@ def _resolve_eval_policy_model_fields(
 
 def _parse_render_config(raw: Dict[str, Any], base_dir: Path) -> RenderConfig:
     return RenderConfig(
+        backend=str(raw.get("backend", "auto")).strip().lower(),
         resolution=tuple(raw.get("resolution", [480, 640])),
         fps=raw.get("fps", 10),
         num_frames=raw.get("num_frames", 49),
@@ -2387,6 +2389,10 @@ def load_config(path: Path) -> ValidationConfig:
         raise ValueError("render.stage1_repeat_min_xy_jitter_m must be >= 0")
     if not (0.0 <= float(config.render.stage1_repeat_similarity_ssim_threshold) <= 1.0):
         raise ValueError("render.stage1_repeat_similarity_ssim_threshold must be in [0, 1]")
+    allowed_render_backends = {"auto", "gsplat", "isaac_scene"}
+    if str(config.render.backend) not in allowed_render_backends:
+        allowed = ", ".join(sorted(allowed_render_backends))
+        raise ValueError(f"render.backend must be one of: {allowed}")
     if not (0.0 <= float(config.eval_policy.vlm_judge.video_metadata_fps) <= 24.0):
         raise ValueError("eval_policy.vlm_judge.video_metadata_fps must be in [0, 24]")
     if bool(config.eval_policy.reliability.fail_on_short_rollout):

@@ -5,6 +5,8 @@ from __future__ import annotations
 
 FACILITY_STAGE_RESULT_NAMES = [
     "s0_task_hints_bootstrap",
+    "s0a_scene_package",
+    "s1_isaac_render",
     "s1_render",
     "s1b_robot_composite",
     "s1c_gemini_polish",

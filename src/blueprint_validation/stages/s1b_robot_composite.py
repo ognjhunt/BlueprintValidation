@@ -10,6 +10,7 @@ from ..config import FacilityConfig, ValidationConfig
 from ..synthetic.robot_compositor import composite_robot_arm_into_clip
 from ..validation import load_and_validate_manifest
 from .base import PipelineStage
+from .render_backend import active_render_backend
 
 logger = get_logger("stages.s1b_robot_composite")
 
@@ -30,6 +31,16 @@ class RobotCompositeStage(PipelineStage):
         work_dir: Path,
         previous_results: Dict[str, StageResult],
     ) -> StageResult:
+        if active_render_backend(config, facility, previous_results) != "gsplat":
+            return StageResult(
+                stage_name=self.name,
+                status="skipped",
+                elapsed_seconds=0,
+                detail=(
+                    "Skipped by render backend: isaac_scene already includes the simulator-native "
+                    "robot asset."
+                ),
+            )
         del facility, previous_results
         if not config.robot_composite.enabled:
             return StageResult(

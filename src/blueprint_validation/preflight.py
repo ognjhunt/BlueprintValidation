@@ -78,6 +78,17 @@ def _advisory_check(name: str, detail: str) -> PreflightCheck:
     return PreflightCheck(name=name, passed=True, detail=detail)
 
 
+def _may_use_gsplat_stage1(config: ValidationConfig) -> bool:
+    backend = str(getattr(config.render, "backend", "auto") or "auto").strip().lower()
+    if backend == "gsplat":
+        return True
+    if backend == "isaac_scene":
+        return False
+    if bool(getattr(config.scene_builder, "enabled", False)):
+        return False
+    return any(facility.scene_package_path is None for facility in config.facilities.values())
+
+
 def _advisory_detail(profile: PreflightProfile, detail: str) -> str:
     label = "Audit profile" if profile == "audit" else "runtime-local profile"
     return f"{label}: {detail}"
@@ -2007,7 +2018,7 @@ def run_preflight(
         factory=lambda: check_api_key_for_scope(judge_api_env, "eval_crosssite"),
     )
 
-    if config.robot_composite.enabled:
+    if config.robot_composite.enabled and _may_use_gsplat_stage1(config):
         if config.robot_composite.urdf_path is None:
             checks.append(
                 PreflightCheck(
@@ -2021,7 +2032,7 @@ def run_preflight(
                 check_path_exists(config.robot_composite.urdf_path, "robot_composite:urdf_path")
             )
 
-    if config.gemini_polish.enabled:
+    if config.gemini_polish.enabled and _may_use_gsplat_stage1(config):
         _append_profiled_check(
             checks,
             enforce=enforce_runtime_requirements,

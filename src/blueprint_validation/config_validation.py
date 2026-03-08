@@ -86,6 +86,7 @@ _CAMERA_PATH_KEYS = {
 }
 
 _RENDER_KEYS = {
+    "backend",
     "resolution",
     "fps",
     "num_frames",

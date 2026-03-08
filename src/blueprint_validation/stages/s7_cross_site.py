@@ -12,6 +12,7 @@ from ..config import FacilityConfig, ValidationConfig, VLMJudgeConfig
 from ..evaluation.cross_site import compute_cross_site_metrics
 from ..evaluation.vlm_judge import classify_facility
 from .base import PipelineStage
+from .render_backend import resolve_stage1_render_manifest_source
 
 logger = get_logger("stages.s7_cross_site")
 
@@ -143,11 +144,11 @@ def _compute_lpips_distances(
 
         for fid in facility_ids:
             fac_dir = work_dir / fid if (work_dir / fid).exists() else work_dir
-            render_manifest = fac_dir / "renders" / "render_manifest.json"
-            if not render_manifest.exists():
+            render_source = resolve_stage1_render_manifest_source(fac_dir, previous_results={})
+            if render_source is None:
                 continue
 
-            manifest = read_json(render_manifest)
+            manifest = read_json(render_source.source_manifest_path)
             frames = []
             for clip in manifest.get("clips", [])[:5]:  # Sample 5 clips
                 vpath = Path(clip["video_path"])

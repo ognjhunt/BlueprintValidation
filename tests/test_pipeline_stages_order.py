@@ -7,6 +7,8 @@ def test_pipeline_stage_smoke_imports(sample_config, tmp_path):
     """Verify core stage classes import and expose stable names."""
     from blueprint_validation.pipeline import ValidationPipeline
     from blueprint_validation.stages.s0_task_hints_bootstrap import TaskHintsBootstrapStage
+    from blueprint_validation.stages.s0a_scene_package import ScenePackageStage
+    from blueprint_validation.stages.s1_isaac_render import IsaacRenderStage
     from blueprint_validation.stages.s1f_external_interaction_ingest import (
         ExternalInteractionIngestStage,
     )
@@ -21,6 +23,8 @@ def test_pipeline_stage_smoke_imports(sample_config, tmp_path):
     ValidationPipeline(sample_config, tmp_path / "outputs")
 
     assert TaskHintsBootstrapStage().name == "s0_task_hints_bootstrap"
+    assert ScenePackageStage().name == "s0a_scene_package"
+    assert IsaacRenderStage().name == "s1_isaac_render"
     assert ExternalInteractionIngestStage().name == "s1f_external_interaction_ingest"
     assert PolicyFinetuneStage().name == "s3b_policy_finetune"
     assert PolicyRLLoopStage().name == "s3c_policy_rl_loop"
@@ -33,6 +37,8 @@ def test_pipeline_stage_smoke_imports(sample_config, tmp_path):
 def test_stage_names_are_unique():
     """All stage classes in the pipeline must have unique names."""
     from blueprint_validation.stages.s0_task_hints_bootstrap import TaskHintsBootstrapStage
+    from blueprint_validation.stages.s0a_scene_package import ScenePackageStage
+    from blueprint_validation.stages.s1_isaac_render import IsaacRenderStage
     from blueprint_validation.stages.s1_render import RenderStage
     from blueprint_validation.stages.s1b_robot_composite import RobotCompositeStage
     from blueprint_validation.stages.s1c_gemini_polish import GeminiPolishStage
@@ -58,6 +64,8 @@ def test_stage_names_are_unique():
 
     stages = [
         TaskHintsBootstrapStage(),
+        ScenePackageStage(),
+        IsaacRenderStage(),
         RenderStage(),
         RobotCompositeStage(),
         GeminiPolishStage(),
@@ -121,6 +129,8 @@ def test_pipeline_reruns_s4_after_successful_s3d(sample_config, tmp_path, monkey
             )
 
     monkeypatch.setattr(pipeline_mod, "TaskHintsBootstrapStage", lambda: OrderedStage("s0_task_hints_bootstrap"))
+    monkeypatch.setattr(pipeline_mod, "ScenePackageStage", lambda: OrderedStage("s0a_scene_package"))
+    monkeypatch.setattr(pipeline_mod, "IsaacRenderStage", lambda: OrderedStage("s1_isaac_render"))
     monkeypatch.setattr(pipeline_mod, "RenderStage", lambda: OrderedStage("s1_render"))
     monkeypatch.setattr(pipeline_mod, "RobotCompositeStage", lambda: OrderedStage("s1b_robot_composite"))
     monkeypatch.setattr(pipeline_mod, "GeminiPolishStage", lambda: OrderedStage("s1c_gemini_polish"))
@@ -159,5 +169,8 @@ def test_pipeline_reruns_s4_after_successful_s3d(sample_config, tmp_path, monkey
     second_s4 = execution_order.index("s4_policy_eval", first_s4 + 1)
     s4a = execution_order.index("s4a_rlds_export")
     s4f = execution_order.index("s4f_polaris_eval")
+    assert execution_order.index("s0_task_hints_bootstrap") < execution_order.index("s0a_scene_package")
+    assert execution_order.index("s0a_scene_package") < execution_order.index("s1_isaac_render")
+    assert execution_order.index("s1_isaac_render") < execution_order.index("s1_render")
     assert first_s4 < s3d < second_s4 < s4a
     assert execution_order.index("s4e_trained_eval") < s4f < execution_order.index("s4b_rollout_dataset")

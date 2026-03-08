@@ -162,6 +162,8 @@ def _patch_pipeline_stages_with_dummies(monkeypatch, call_counts):
 
     stage_map = {
         "TaskHintsBootstrapStage": "s0_task_hints_bootstrap",
+        "ScenePackageStage": "s0a_scene_package",
+        "IsaacRenderStage": "s1_isaac_render",
         "RenderStage": "s1_render",
         "RobotCompositeStage": "s1b_robot_composite",
         "GeminiPolishStage": "s1c_gemini_polish",
@@ -203,6 +205,8 @@ def test_pipeline_resume_reuses_success_results(sample_config, tmp_path, monkeyp
 
     first = pipeline.run_all(resume_from_results=False)
     assert first["test_facility/s6_spatial_accuracy"].status == "success"
+    assert call_counts["s0a_scene_package"] == 1
+    assert call_counts["s1_isaac_render"] == 1
     assert call_counts["s1_render"] == 1
     assert call_counts["s6_spatial_accuracy"] == 1
 
@@ -278,7 +282,9 @@ def test_pipeline_post_stage_sync_hook(sample_config, tmp_path, monkeypatch):
     pipeline.run_all(resume_from_results=False)
 
     lines = hook_log.read_text().strip().splitlines()
-    assert len(lines) == 22
+    assert len(lines) == 24
+    assert any(line.startswith("test_facility/s0a_scene_package|success") for line in lines)
+    assert any(line.startswith("test_facility/s1_isaac_render|success") for line in lines)
     assert any(line.startswith("test_facility/s1_render|success") for line in lines)
 
 
@@ -388,6 +394,8 @@ def test_pipeline_action_boost_require_full_converts_skipped_to_failed(
     monkeypatch.setattr(
         pipeline_mod, "TaskHintsBootstrapStage", lambda: DummyStage("s0_task_hints_bootstrap")
     )
+    monkeypatch.setattr(pipeline_mod, "ScenePackageStage", lambda: DummyStage("s0a_scene_package"))
+    monkeypatch.setattr(pipeline_mod, "IsaacRenderStage", lambda: DummyStage("s1_isaac_render"))
     monkeypatch.setattr(pipeline_mod, "RenderStage", lambda: DummyStage("s1_render"))
     monkeypatch.setattr(
         pipeline_mod, "RobotCompositeStage", lambda: DummyStage("s1b_robot_composite")

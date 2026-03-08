@@ -76,11 +76,32 @@ splatsim:
         load_config(config_path)
 
 
+def test_load_config_rejects_invalid_render_backend(tmp_path):
+    from blueprint_validation.config import load_config
+
+    config_path = tmp_path / "bad_render_backend.yaml"
+    config_path.write_text(
+        """
+project_name: Test
+facilities:
+  a:
+    name: A
+    ply_path: /tmp/a.ply
+render:
+  backend: usd_magic
+""".strip()
+    )
+
+    with pytest.raises(ValueError, match="render.backend"):
+        load_config(config_path)
+
+
 def test_config_defaults():
     from blueprint_validation.config import ValidationConfig
 
     config = ValidationConfig()
     assert config.schema_version == "v1"
+    assert config.render.backend == "auto"
     assert config.render.resolution == (480, 640)
     assert config.render.num_frames == 49
     assert config.render.camera_height_m == 1.2
@@ -389,6 +410,7 @@ def test_config_with_all_sections(tmp_path):
             "b": {"name": "B", "ply_path": "/tmp/b.ply"},
         },
         "render": {
+            "backend": "isaac_scene",
             "resolution": [240, 320],
             "num_frames": 10,
             "task_scoped_scene_aware": True,
@@ -589,6 +611,7 @@ def test_config_with_all_sections(tmp_path):
 
     config = load_config(config_path)
     assert len(config.facilities) == 2
+    assert config.render.backend == "isaac_scene"
     assert config.render.num_frames == 10
     assert config.render.task_scoped_scene_aware is True
     assert config.render.task_scoped_max_specs == 35

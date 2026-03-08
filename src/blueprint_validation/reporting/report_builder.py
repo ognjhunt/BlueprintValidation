@@ -481,9 +481,11 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
             lines.append("")
 
         # Render & Enrich stats
-        if "s1_render" in fac_data:
-            r = fac_data["s1_render"].get("metrics", {})
+        render_stage_name = "s1_isaac_render" if "s1_isaac_render" in fac_data else "s1_render"
+        if render_stage_name in fac_data:
+            r = fac_data[render_stage_name].get("metrics", {})
             lines.append("### Render Stats\n")
+            lines.append(f"- Stage: {render_stage_name}")
             lines.append(f"- Clips rendered: {r.get('num_clips', 'N/A')}")
             lines.append(f"- Total frames: {r.get('total_frames', 'N/A')}")
             lines.append("")

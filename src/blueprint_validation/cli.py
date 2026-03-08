@@ -84,6 +84,7 @@ def _stable_sha256(path: Path) -> str:
 
 def _stage1_code_hash(cwd: Path) -> str:
     files = [
+        cwd / "src/blueprint_validation/stages/s1_isaac_render.py",
         cwd / "src/blueprint_validation/stages/s1_render.py",
         cwd / "src/blueprint_validation/rendering/stage1_active_perception.py",
         cwd / "src/blueprint_validation/rendering/camera_paths.py",
@@ -557,7 +558,10 @@ def record_teleop(
 @click.option("--ply-path", type=click.Path(exists=True), default=None, help="Override PLY path.")
 @click.pass_context
 def render(ctx: click.Context, facility: str, ply_path: Optional[str]) -> None:
-    """Stage 1: Render PLY to video clips via gsplat."""
+    """Stage 1: Render clips using the resolved gsplat or Isaac backend."""
+    from .stages.render_backend import active_render_backend
+    from .stages.s0a_scene_package import ScenePackageStage
+    from .stages.s1_isaac_render import IsaacRenderStage
     from .stages.s1_render import RenderStage
 
     config = ctx.obj["config"]
@@ -566,10 +570,19 @@ def render(ctx: click.Context, facility: str, ply_path: Optional[str]) -> None:
         fac.ply_path = Path(ply_path)
     work_dir = _get_stage_work_dir(ctx, facility)
 
-    stage = RenderStage()
-    result = stage.execute(config, fac, work_dir, {})
-    result.save(work_dir / "s1_render_result.json")
-    click.echo(f"Render complete: {result.status} ({result.elapsed_seconds:.1f}s)")
+    previous_results = {}
+    scene_stage = ScenePackageStage()
+    scene_result = scene_stage.execute(config, fac, work_dir, previous_results)
+    scene_result.save(work_dir / "s0a_scene_package_result.json")
+    previous_results["s0a_scene_package"] = scene_result
+
+    backend = active_render_backend(config, fac, previous_results)
+    stage = IsaacRenderStage() if backend == "isaac_scene" else RenderStage()
+    result = stage.execute(config, fac, work_dir, previous_results)
+    result.save(work_dir / f"{stage.name}_result.json")
+    click.echo(
+        f"Render complete via {backend}: {result.status} ({result.elapsed_seconds:.1f}s)"
+    )
 
 
 @cli.command("geometry-canary")
@@ -1190,6 +1203,8 @@ def status(ctx: click.Context) -> None:
 
     stages = [
         "s0_task_hints_bootstrap",
+        "s0a_scene_package",
+        "s1_isaac_render",
         "s1_render",
         "s1b_robot_composite",
         "s1c_gemini_polish",

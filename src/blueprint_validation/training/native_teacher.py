@@ -20,6 +20,7 @@ from ..evaluation.rollout_state_proxy import (
 from ..evaluation.scripted_rollout_driver import run_scripted_rollout
 from ..evaluation.task_start_selector import load_initial_frames_for_assignments
 from ..evaluation.task_success import evaluate_task_success
+from ..stages.render_backend import resolve_stage1_render_manifest_source
 
 logger = get_logger("training.native_teacher")
 
@@ -230,15 +231,15 @@ def _load_train_claim_assignments(
 ) -> Tuple[Dict[str, dict], List[dict]]:
     claim_manifest_path = work_dir / "policy_eval" / "claim_manifest.json"
     claim_split_path = work_dir / "policy_eval" / "claim_split_manifest.json"
-    render_manifest_path = work_dir / "renders" / "render_manifest.json"
+    render_source = resolve_stage1_render_manifest_source(work_dir, previous_results={})
     if (
         facility.claim_benchmark_path is None
         or not claim_manifest_path.exists()
         or not claim_split_path.exists()
-        or not render_manifest_path.exists()
+        or render_source is None
     ):
         return {}, []
-    render_manifest = read_json(render_manifest_path)
+    render_manifest = read_json(render_source.source_manifest_path)
     benchmark = load_pinned_claim_benchmark(
         benchmark_path=Path(facility.claim_benchmark_path),
         render_manifest=render_manifest,

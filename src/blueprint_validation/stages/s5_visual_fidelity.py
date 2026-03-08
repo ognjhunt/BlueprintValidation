@@ -182,6 +182,10 @@ def _resolve_source_manifest_source(
                 manifest_relpath=Path("robot_composite/composited_manifest.json"),
             ),
             ManifestCandidate(
+                stage_name="s1_isaac_render",
+                manifest_relpath=Path("isaac_renders/render_manifest.json"),
+            ),
+            ManifestCandidate(
                 stage_name="s1_render",
                 manifest_relpath=Path("renders/render_manifest.json"),
             ),

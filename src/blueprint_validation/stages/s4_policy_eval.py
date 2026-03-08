@@ -71,6 +71,7 @@ from ..evaluation.stats_utils import paired_ttest_p_value
 from ..evaluation.rollout_utils import run_rollout_with_adapter
 from ..policy_adapters import get_policy_adapter
 from .base import PipelineStage
+from .render_backend import resolve_stage1_render_manifest_source
 
 logger = get_logger("stages.s4_policy_eval")
 
@@ -150,16 +151,16 @@ class PolicyEvalStage(PipelineStage):
             adapted_dir = work_dir / "finetune" / "adapted_checkpoint"
 
         # Load render manifest for initial frames
-        render_manifest_path = work_dir / "renders" / "render_manifest.json"
-        if not render_manifest_path.exists():
+        render_source = resolve_stage1_render_manifest_source(work_dir, previous_results)
+        if render_source is None:
             return StageResult(
                 stage_name=self.name,
                 status="failed",
                 elapsed_seconds=0,
                 detail="Render manifest not found. Run Stage 1 first.",
             )
-
-        render_manifest = read_json(render_manifest_path)
+        render_manifest_path = render_source.source_manifest_path
+        render_manifest = read_json(render_source.source_manifest_path)
 
         requested_rollouts = int(config.eval_policy.num_rollouts)
         shared_manifest_path = eval_dir / "shared_task_start_manifest.json"

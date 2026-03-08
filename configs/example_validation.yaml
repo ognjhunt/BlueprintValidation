@@ -103,7 +103,7 @@ robot_composite:
 
 # ---- Stage 1c: Gemini image polish ----
 gemini_polish:
-  enabled: true
+  enabled: false
   model: gemini-3.1-flash-image-preview
   api_key_env: GOOGLE_GENAI_API_KEY
   prompt: "Preserve robot arm pose and scene geometry exactly. Improve photorealism and blending quality."

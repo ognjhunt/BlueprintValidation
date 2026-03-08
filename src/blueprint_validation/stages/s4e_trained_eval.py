@@ -41,6 +41,7 @@ from ..evaluation.rollout_utils import run_rollout_with_adapter
 from ..policy_adapters import get_policy_adapter
 from ..validation import ManifestValidationError, load_and_validate_manifest
 from .base import PipelineStage
+from .render_backend import resolve_stage1_render_manifest_source
 
 logger = get_logger("stages.s4e_trained_eval")
 
@@ -163,16 +164,16 @@ class TrainedPolicyEvalStage(PipelineStage):
             )
 
         # Need initial frames from Stage 1
-        render_manifest_path = work_dir / "renders" / "render_manifest.json"
-        if not render_manifest_path.exists():
+        render_source = resolve_stage1_render_manifest_source(work_dir, previous_results)
+        if render_source is None:
             return StageResult(
                 stage_name=self.name,
                 status="failed",
                 elapsed_seconds=0,
                 detail="Render manifest not found. Run Stage 1 first.",
             )
-
-        render_manifest = read_json(render_manifest_path)
+        render_manifest_path = render_source.source_manifest_path
+        render_manifest = read_json(render_source.source_manifest_path)
 
         # Build task list (merge config + task hints)
         tasks, hint_count = _build_task_list(config, facility)

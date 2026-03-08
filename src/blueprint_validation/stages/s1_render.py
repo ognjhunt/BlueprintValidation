@@ -61,6 +61,7 @@ from ..video_io import ensure_h264_video
 from ..warmup import load_cached_clips, load_warmup_cache
 from ..validation import ManifestValidationError, load_and_validate_manifest
 from .base import PipelineStage
+from .render_backend import active_render_backend
 
 logger = get_logger("stages.s1_render")
 
@@ -318,6 +319,13 @@ class RenderStage(PipelineStage):
         work_dir: Path,
         previous_results: Dict[str, StageResult],
     ) -> StageResult:
+        if active_render_backend(config, facility, previous_results) != "gsplat":
+            return StageResult(
+                stage_name=self.name,
+                status="skipped",
+                elapsed_seconds=0,
+                detail="Render backend resolved to isaac_scene; skipping gsplat Stage-1 render.",
+            )
         if bool(config.render.stage1_strict_require_task_hints):
             if facility.task_hints_path is None or not Path(facility.task_hints_path).exists():
                 return StageResult(

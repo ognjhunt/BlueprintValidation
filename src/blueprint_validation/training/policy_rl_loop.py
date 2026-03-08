@@ -19,6 +19,7 @@ from ..evaluation.vlm_judge import (
     score_rollout_manipulation,
 )
 from ..policy_adapters import get_policy_adapter
+from ..stages.render_backend import resolve_stage1_render_manifest_source
 from .dataset_builder import build_dreamdojo_dataset
 from .dreamdojo_finetune import run_dreamdojo_finetune
 from .native_teacher import generate_correction_rollouts
@@ -678,10 +679,12 @@ def _resolve_render_manifest(work_dir: Path) -> Path:
         work_dir / "gaussian_augment" / "augmented_manifest.json",
         work_dir / "gemini_polish" / "polished_manifest.json",
         work_dir / "robot_composite" / "composited_manifest.json",
-        work_dir / "renders" / "render_manifest.json",
     ]:
         if candidate.exists():
             return candidate
+    render_source = resolve_stage1_render_manifest_source(work_dir, previous_results={})
+    if render_source is not None:
+        return render_source.source_manifest_path
     return work_dir / "renders" / "render_manifest.json"
 
 
