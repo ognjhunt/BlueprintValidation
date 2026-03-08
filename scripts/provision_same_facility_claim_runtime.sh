@@ -168,20 +168,27 @@ pip_install \
 
 if [[ "$INSTALL_VENDOR_CUDA_EXTRAS" == "true" ]]; then
   echo
-  echo "[3/5] Installing DreamDojo/Cosmos CUDA extras into the active venv"
+  echo "[3/5] Installing vendor runtime dependencies into the active venv"
   # shellcheck disable=SC1091
   source "$ROOT_DIR/.venv/bin/activate"
-  for vendor_repo in "$ROOT_DIR/data/vendor/DreamDojo" "$ROOT_DIR/data/vendor/cosmos-transfer"; do
+  cosmos_repo="$ROOT_DIR/data/vendor/cosmos-transfer"
+  dreamdojo_repo="$ROOT_DIR/data/vendor/DreamDojo"
+  for vendor_repo in "$cosmos_repo" "$dreamdojo_repo"; do
     if [[ ! -d "$vendor_repo" ]]; then
       echo "ERROR: vendor repo missing: $vendor_repo" >&2
       exit 1
     fi
-    echo "Syncing $vendor_repo with --extra=$DREAMDOJO_EXTRA"
-    (
-      cd "$vendor_repo"
-      uv sync --extra="$DREAMDOJO_EXTRA" --active --inexact
-    )
   done
+  echo "Syncing $cosmos_repo without CUDA extras to install Stage-2 dependencies"
+  (
+    cd "$cosmos_repo"
+    uv sync --active --inexact
+  )
+  echo "Syncing $dreamdojo_repo with --extra=$DREAMDOJO_EXTRA so DreamDojo owns the active cosmos CUDA runtime"
+  (
+    cd "$dreamdojo_repo"
+    uv sync --extra="$DREAMDOJO_EXTRA" --active --inexact
+  )
   if ! verify_dreamdojo_import; then
     echo "DreamDojo import failed; installing supplemental dependencies (piq, pytorch3d)..."
     pip_install --no-deps "piq==0.8.0"
