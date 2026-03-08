@@ -252,6 +252,15 @@ def _extract_json(text: str) -> Optional[object]:
 _EMPTY_DETECTION = {"scene_type": "unknown", "objects": []}
 
 
+def _candidate_detect_models(primary_model: str) -> list[str]:
+    primary = (primary_model or "").strip() or "gemini-3-flash-preview"
+    candidates = [primary]
+    for fallback in ("gemini-3.1-flash-lite-preview", "gemini-2.5-flash"):
+        if fallback not in candidates:
+            candidates.append(fallback)
+    return candidates
+
+
 def _call_gemini_detect(
     rgb_frame: np.ndarray,
     model: str = "gemini-3-flash-preview",
@@ -276,15 +285,27 @@ def _call_gemini_detect(
     client = genai.Client(api_key=api_key)
     image = Image.fromarray(rgb_frame)
 
-    try:
-        response = _generate_with_retry(
-            client,
-            model=model,
-            contents=[_VLM_SCENE_PROMPT, image],
-            max_retries=max_retries,
-        )
-    except Exception:
-        logger.warning("VLM detection API call failed", exc_info=True)
+    last_exc: Exception | None = None
+    response = None
+    for candidate_model in _candidate_detect_models(model):
+        try:
+            response = _generate_with_retry(
+                client,
+                model=candidate_model,
+                contents=[_VLM_SCENE_PROMPT, image],
+                max_retries=max_retries,
+            )
+            break
+        except Exception as exc:
+            last_exc = exc
+            logger.warning(
+                "VLM detection attempt failed for model=%s; trying next fallback if available",
+                candidate_model,
+                exc_info=True,
+            )
+            continue
+    if response is None:
+        logger.warning("VLM detection API call failed after model fallbacks", exc_info=last_exc)
         return dict(_EMPTY_DETECTION)
 
     response_text = str(getattr(response, "text", "") or "")
