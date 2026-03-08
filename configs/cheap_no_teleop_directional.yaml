@@ -5,6 +5,7 @@ facilities:
   facility_a:
     name: Pilot Facility A
     ply_path: ../data/facilities/facility_a/splat.ply
+    task_hints_path: ../data/outputs/cheap_no_teleop_directional/facility_a/bootstrap/task_targets.synthetic.json
     description: Single-scene cheap first pass for directional world-model uplift only.
 
 render:
@@ -14,7 +15,7 @@ render:
   camera_height_m: 1.0
   camera_look_down_deg: 20
   scene_aware: true
-  task_scoped_scene_aware: true
+  task_scoped_scene_aware: false
   task_scoped_max_specs: 12
   task_scoped_context_per_target: 1
   task_scoped_overview_specs: 2
@@ -27,7 +28,7 @@ render:
   voxel_size_m: 0.08
   density_threshold: 3
   min_clearance_m: 0.12
-  stage1_coverage_gate_enabled: true
+  stage1_coverage_gate_enabled: false
   stage1_coverage_min_visible_frame_ratio: 0.35
   stage1_coverage_min_approach_angle_bins: 2
   stage1_coverage_angle_bin_deg: 45
@@ -37,18 +38,16 @@ render:
   stage1_coverage_min_center_band_ratio: 0.40
   stage1_coverage_center_band_x: [0.20, 0.80]
   stage1_coverage_center_band_y: [0.20, 0.80]
-  stage1_quality_planner_enabled: true
-  stage1_quality_candidate_budget: medium
-  stage1_quality_autoretry_enabled: true
-  stage1_quality_max_regen_attempts: 2
-  stage1_quality_min_clip_score: 0.55
+  stage1_quality_planner_enabled: false
+  stage1_quality_autoretry_enabled: false
   stage1_active_perception_enabled: false
   camera_paths:
-    - type: manipulation
-      height_override_m: 0.55
-      look_down_override_deg: 40
+    - type: file
+      path: ./camera_paths/facility_a_book_shelf_locked.json
     - type: sweep
       length_m: 3.0
+      height_override_m: 1.0
+      look_down_override_deg: 15.0
 
 robot_composite:
   enabled: false
@@ -74,8 +73,9 @@ enrich:
   cosmos_repo: ../data/vendor/cosmos-transfer
   cosmos_checkpoint: ../data/checkpoints/cosmos-transfer-2.5-2b/
   num_variants_per_render: 1
-  min_source_clips: 2
-  min_valid_outputs: 2
+  max_source_clips: 1
+  min_source_clips: 1
+  min_valid_outputs: 1
   dynamic_variants: false
   variants:
     - name: baseline
