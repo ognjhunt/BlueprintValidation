@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -63,3 +66,76 @@ def test_export_rollouts_to_rlds_jsonl(tmp_path):
     assert meta["num_episodes"] == 1
     assert (out_dir / "episodes.jsonl").exists()
     assert (out_dir / "episodes_meta.json").exists()
+
+
+def test_convert_jsonl_to_tfrecord_blocks_paths_outside_dataset_root(tmp_path, monkeypatch):
+    from blueprint_validation.training.rlds_export import convert_jsonl_to_tfrecord
+
+    written_payloads = []
+
+    class _DummyWriter:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def write(self, payload):
+            written_payloads.append(payload)
+
+    class _DummyExample:
+        def __init__(self, features):
+            self.features = features
+
+        def SerializeToString(self):
+            return b"dummy"
+
+    fake_tf = SimpleNamespace(
+        io=SimpleNamespace(TFRecordWriter=_DummyWriter),
+        train=SimpleNamespace(
+            Feature=lambda **kwargs: kwargs,
+            BytesList=lambda value: value,
+            FloatList=lambda value: value,
+            Int64List=lambda value: value,
+            Features=lambda feature: feature,
+            Example=lambda features: _DummyExample(features),
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "tensorflow", fake_tf)
+
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir()
+    img = dataset_dir / "frame.jpg"
+    img.write_bytes(b"ok")
+
+    outside = tmp_path / "secret.txt"
+    outside.write_bytes(b"secret")
+
+    episode = {
+        "steps": [
+            {
+                "observation": {"image_path": str(outside)},
+                "action": [0.0],
+                "language_instruction": "ignore",
+            },
+            {
+                "observation": {"image_path": "frame.jpg"},
+                "action": [0.0],
+                "language_instruction": "use",
+            },
+        ]
+    }
+    jsonl = dataset_dir / "episodes.jsonl"
+    jsonl.write_text(f"{json.dumps(episode)}\n")
+
+    convert_jsonl_to_tfrecord(
+        train_jsonl_path=jsonl,
+        eval_jsonl_path=None,
+        output_dir=tmp_path / "out",
+        dataset_name="test_ds",
+    )
+
+    assert len(written_payloads) == 1
