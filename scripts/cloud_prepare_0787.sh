@@ -49,8 +49,13 @@ text = str(repo)
 if text not in sys.path:
     sys.path.insert(0, text)
 
-from cosmos_predict2.action_conditioned import inference as _ac_inference  # noqa: F401
-print("Verified cosmos_predict2.action_conditioned.inference import.")
+from cosmos_predict2.action_conditioned_config import (  # noqa: F401
+    ActionConditionedInferenceArguments,
+)
+from cosmos_predict2._src.predict2.inference.video2world import (  # noqa: F401
+    Video2WorldInference,
+)
+print("Verified modern DreamDojo action-conditioned imports.")
 PY
 }
 

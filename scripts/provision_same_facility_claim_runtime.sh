@@ -39,8 +39,13 @@ text = str(repo)
 if text not in sys.path:
     sys.path.insert(0, text)
 
-from cosmos_predict2.action_conditioned import inference as _ac_inference  # noqa: F401
-print("Verified cosmos_predict2.action_conditioned.inference import.")
+from cosmos_predict2.action_conditioned_config import (  # noqa: F401
+    ActionConditionedInferenceArguments,
+)
+from cosmos_predict2._src.predict2.inference.video2world import (  # noqa: F401
+    Video2WorldInference,
+)
+print("Verified modern DreamDojo action-conditioned imports.")
 PY
 }
 
@@ -197,14 +202,7 @@ if [[ "$INSTALL_VENDOR_CUDA_EXTRAS" == "true" ]]; then
   if ! sync_vendor_optional "$dreamdojo_repo" --extra="$DREAMDOJO_EXTRA"; then
     echo "WARNING: DreamDojo CUDA extra sync failed; continuing with the base environment and import probes."
   fi
-  if ! verify_dreamdojo_import; then
-    echo "DreamDojo import failed; installing supplemental dependencies (piq, pytorch3d)..."
-    pip_install --no-deps "piq==0.8.0"
-    if ! pip_install --no-build-isolation --no-deps "git+https://github.com/facebookresearch/pytorch3d.git"; then
-      echo "WARNING: pytorch3d install failed during bootstrap; retrying DreamDojo import without it."
-    fi
-    verify_dreamdojo_import
-  fi
+  verify_dreamdojo_import
   if ! verify_torchcodec_import; then
     echo "WARNING: torchcodec runtime probe failed. Stage 3 can hang on video datasets if torchcodec/FFmpeg is incompatible."
     echo "         Fix runtime libs before running finetune, or set BLUEPRINT_SKIP_TORCHCODEC_CHECK=1 only for non-video action datasets."
