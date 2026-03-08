@@ -68,8 +68,8 @@ except Exception as exc:  # pragma: no cover - runtime probe
 PY
 }
 
-if ! command -v hf >/dev/null 2>&1 && ! command -v huggingface-cli >/dev/null 2>&1; then
-  echo "HF CLI missing; installing huggingface_hub..."
+if ! python -c "import huggingface_hub" >/dev/null 2>&1; then
+  echo "huggingface_hub missing in active Python environment; installing..."
   pip_install -U huggingface_hub
 fi
 
