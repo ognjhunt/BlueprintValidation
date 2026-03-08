@@ -88,3 +88,67 @@ def test_resolver_filesystem_fallback_when_standalone(tmp_path):
     assert resolved.source_stage == "s1_render"
     assert resolved.source_manifest_path == render_manifest
 
+
+def test_resolver_ignores_outside_work_dir_manifest_path(tmp_path):
+    from blueprint_validation.common import StageResult
+    from blueprint_validation.stages.manifest_resolution import (
+        ManifestCandidate,
+        resolve_manifest_source,
+    )
+
+    in_repo_manifest = tmp_path / "renders" / "render_manifest.json"
+    in_repo_manifest.parent.mkdir(parents=True, exist_ok=True)
+    in_repo_manifest.write_text("{}")
+
+    outside_manifest = tmp_path.parent / "outside_manifest.json"
+    outside_manifest.write_text("{}")
+
+    previous_results = {
+        "s1_render": StageResult(
+            stage_name="s1_render",
+            status="success",
+            elapsed_seconds=0,
+            outputs={"manifest_path": str(outside_manifest)},
+        )
+    }
+
+    resolved = resolve_manifest_source(
+        work_dir=tmp_path,
+        previous_results=previous_results,
+        candidates=[ManifestCandidate("s1_render", Path("renders/render_manifest.json"))],
+    )
+
+    assert resolved is not None
+    assert resolved.source_mode == "previous_results"
+    assert resolved.source_manifest_path == in_repo_manifest
+
+
+def test_resolver_allows_relative_manifest_path_inside_work_dir(tmp_path):
+    from blueprint_validation.common import StageResult
+    from blueprint_validation.stages.manifest_resolution import (
+        ManifestCandidate,
+        resolve_manifest_source,
+    )
+
+    relative_manifest = tmp_path / "custom" / "resume_manifest.json"
+    relative_manifest.parent.mkdir(parents=True, exist_ok=True)
+    relative_manifest.write_text("{}")
+
+    previous_results = {
+        "s1_render": StageResult(
+            stage_name="s1_render",
+            status="success",
+            elapsed_seconds=0,
+            outputs={"manifest_path": "custom/resume_manifest.json"},
+        )
+    }
+
+    resolved = resolve_manifest_source(
+        work_dir=tmp_path,
+        previous_results=previous_results,
+        candidates=[ManifestCandidate("s1_render", Path("renders/render_manifest.json"))],
+    )
+
+    assert resolved is not None
+    assert resolved.source_mode == "previous_results"
+    assert resolved.source_manifest_path == relative_manifest
