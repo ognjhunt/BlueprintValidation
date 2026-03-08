@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import json
 import math
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List
 
 import numpy as np
+from defusedxml import ElementTree as ET
 
 from ..common import get_logger
 from ..video_io import open_mp4_writer
