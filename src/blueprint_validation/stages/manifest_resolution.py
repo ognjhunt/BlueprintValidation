@@ -54,6 +54,17 @@ def resolve_manifest_source(
         manifest_raw = stage_result.outputs.get("manifest_path")
         if manifest_raw:
             manifest_path = Path(str(manifest_raw))
+            if not manifest_path.is_absolute():
+                manifest_path = work_dir / manifest_path
+            try:
+                manifest_path.resolve().relative_to(work_dir.resolve())
+            except ValueError:
+                logger.warning(
+                    "Ignoring out-of-work-dir manifest_path from stage %s: %s",
+                    candidate.stage_name,
+                    manifest_path,
+                )
+                manifest_path = work_dir / candidate.manifest_relpath
         else:
             manifest_path = work_dir / candidate.manifest_relpath
         if manifest_path.exists():
@@ -80,4 +91,3 @@ def resolve_manifest_source(
                 source_mode="filesystem_fallback",
             )
     return None
-
