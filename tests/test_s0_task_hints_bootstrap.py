@@ -38,6 +38,7 @@ def test_bootstrap_skips_when_hints_already_exist(tmp_path):
 
 def test_bootstrap_writes_synthetic_hints_from_vlm(sample_ply, tmp_path, monkeypatch):
     config = ValidationConfig()
+    config.render.vlm_fallback = True
     fac = FacilityConfig(name="A", ply_path=sample_ply)
     stage = TaskHintsBootstrapStage()
 
@@ -123,6 +124,7 @@ def test_bootstrap_supports_supersplat_compressed_ply(tmp_path, monkeypatch):
     _write_supersplat_compressed_fixture(ply_path)
 
     config = ValidationConfig()
+    config.render.vlm_fallback = True
     fac = FacilityConfig(name="A", ply_path=ply_path)
     stage = TaskHintsBootstrapStage()
 
@@ -149,6 +151,7 @@ def test_bootstrap_supports_supersplat_compressed_ply(tmp_path, monkeypatch):
 
 def test_bootstrap_fails_when_vlm_empty_requires_manual_analysis(sample_ply, tmp_path, monkeypatch):
     config = ValidationConfig()
+    config.render.vlm_fallback = True
     fac = FacilityConfig(name="A", ply_path=sample_ply)
     stage = TaskHintsBootstrapStage()
 
@@ -164,6 +167,7 @@ def test_bootstrap_fails_when_vlm_empty_requires_manual_analysis(sample_ply, tmp
 
 def test_bootstrap_writes_centers_in_original_frame_for_y_up(sample_ply, tmp_path, monkeypatch):
     config = ValidationConfig()
+    config.render.vlm_fallback = True
     fac = FacilityConfig(name="A", ply_path=sample_ply, up_axis="y")
     stage = TaskHintsBootstrapStage()
 
@@ -192,6 +196,30 @@ def test_bootstrap_writes_centers_in_original_frame_for_y_up(sample_ply, tmp_pat
     extents = payload["manipulation_candidates"][0]["boundingBox"]["extents"]
     np.testing.assert_allclose(center, [0.0, 5.0, 0.0], atol=1e-8)
     np.testing.assert_allclose(extents, [0.2, 0.6, 0.4], atol=1e-8)
+
+
+def test_bootstrap_fails_without_vlm_fallback_and_skips_detector(sample_ply, tmp_path, monkeypatch):
+    config = ValidationConfig()
+    config.render.vlm_fallback = False
+    fac = FacilityConfig(name="A", ply_path=sample_ply)
+    stage = TaskHintsBootstrapStage()
+
+    called = False
+
+    def _should_not_call(**kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("detect_and_generate_specs should not be called")
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s0_task_hints_bootstrap.detect_and_generate_specs",
+        _should_not_call,
+    )
+
+    result = stage.execute(config, fac, tmp_path / "outputs" / "a", {})
+    assert result.status == "failed"
+    assert called is False
+    assert "render.vlm_fallback=true" in (result.detail or "")
 
 
 def test_derive_tasks_from_detections_prefers_suggestions_then_categories():
