@@ -26,8 +26,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # SSH for RunPod
 RUN mkdir -p /var/run/sshd && \
     ssh-keygen -A && \
-    sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \
-    echo 'root:root' | chpasswd
+    sed -i 's/#PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config && \
+    sed -i 's/#PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
 
 # Install uv
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
