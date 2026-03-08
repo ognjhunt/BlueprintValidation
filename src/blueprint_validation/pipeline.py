@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import time
@@ -845,11 +846,22 @@ class ValidationPipeline:
                 "Skipping shutdown trigger."
             )
             return
+        try:
+            shutdown_argv = shlex.split(shutdown_cmd)
+        except ValueError as exc:
+            logger.error("Invalid BLUEPRINT_AUTO_SHUTDOWN_CMD value %r: %s", shutdown_cmd, exc)
+            return
+        if not shutdown_argv:
+            logger.warning(
+                "BLUEPRINT_AUTO_SHUTDOWN_CMD resolved to an empty command. "
+                "Skipping shutdown trigger."
+            )
+            return
         logger.warning("Executing auto-shutdown command due to budget guard trigger.")
         try:
             subprocess.run(
-                shutdown_cmd,
-                shell=True,
+                shutdown_argv,
+                shell=False,
                 check=False,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
