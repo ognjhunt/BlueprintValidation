@@ -177,7 +177,7 @@ class RobotCompositeConfig:
 
 @dataclass
 class GeminiPolishConfig:
-    enabled: bool = True
+    enabled: bool = False
     model: str = "gemini-3.1-flash-image-preview"
     api_key_env: str = "GOOGLE_GENAI_API_KEY"
     prompt: str = (
@@ -204,7 +204,7 @@ class EnrichConfig:
     variants: List[VariantSpec] = field(default_factory=list)
     guidance: float = 7.0
     # Dynamic variant generation: use Gemini to produce scene-appropriate prompts
-    dynamic_variants: bool = True
+    dynamic_variants: bool = False
     dynamic_variants_model: str = "gemini-3-flash-preview"
     # If false, Stage 2 fails when dynamic variant generation is unavailable.
     allow_dynamic_variant_fallback: bool = True
@@ -1181,7 +1181,7 @@ def _parse_enrich_config(raw: Dict[str, Any], base_dir: Path) -> EnrichConfig:
         num_variants_per_render=raw.get("num_variants_per_render", 5),
         variants=_parse_variants(raw.get("variants", [])),
         guidance=raw.get("guidance", 7.0),
-        dynamic_variants=raw.get("dynamic_variants", True),
+        dynamic_variants=raw.get("dynamic_variants", False),
         dynamic_variants_model=raw.get("dynamic_variants_model", "gemini-3-flash-preview"),
         allow_dynamic_variant_fallback=bool(raw.get("allow_dynamic_variant_fallback", True)),
         context_frame_index=(
@@ -1282,7 +1282,7 @@ def load_config(path: Path) -> ValidationConfig:
     if "gemini_polish" in raw:
         gp = raw["gemini_polish"]
         config.gemini_polish = GeminiPolishConfig(
-            enabled=gp.get("enabled", True),
+            enabled=gp.get("enabled", False),
             model=gp.get("model", "gemini-3.1-flash-image-preview"),
             api_key_env=gp.get("api_key_env", "GOOGLE_GENAI_API_KEY"),
             prompt=gp.get("prompt", GeminiPolishConfig().prompt),

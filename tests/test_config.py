@@ -202,6 +202,8 @@ def test_config_defaults():
     assert config.action_boost.compute_profile == "standard"
     assert config.action_boost.strict_disjoint_eval is True
     assert config.policy_compare.enabled is False
+    assert config.gemini_polish.enabled is False
+    assert config.enrich.dynamic_variants is False
     assert config.policy_finetune.enabled is True
     assert config.policy_finetune.dataset_name == "bridge_orig"
     assert config.policy_finetune.recipe == "oft"
