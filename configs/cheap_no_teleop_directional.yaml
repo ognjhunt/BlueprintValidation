@@ -47,6 +47,8 @@ enrich:
   cosmos_repo: ../data/vendor/cosmos-transfer
   cosmos_checkpoint: ../data/checkpoints/cosmos-transfer-2.5-2b/
   num_variants_per_render: 1
+  min_source_clips: 2
+  min_valid_outputs: 2
   dynamic_variants: false
   variants:
     - name: baseline
