@@ -58,6 +58,18 @@ except Exception:
 PY
 }
 
+sync_vendor_optional() {
+  local repo_path="$1"
+  shift
+  if ! (
+    cd "$repo_path"
+    uv sync "$@" --active --inexact
+  ); then
+    echo "WARNING: optional vendor sync failed for $repo_path with args: $*"
+    return 1
+  fi
+}
+
 ensure_repo() {
   local target="$1"
   local url="$2"
@@ -180,15 +192,11 @@ if [[ "$INSTALL_VENDOR_CUDA_EXTRAS" == "true" ]]; then
     fi
   done
   echo "Syncing $cosmos_repo without CUDA extras to install Stage-2 dependencies"
-  (
-    cd "$cosmos_repo"
-    uv sync --active --inexact
-  )
+  sync_vendor_optional "$cosmos_repo" || true
   echo "Syncing $dreamdojo_repo with --extra=$DREAMDOJO_EXTRA so DreamDojo owns the active cosmos CUDA runtime"
-  (
-    cd "$dreamdojo_repo"
-    uv sync --extra="$DREAMDOJO_EXTRA" --active --inexact
-  )
+  if ! sync_vendor_optional "$dreamdojo_repo" --extra="$DREAMDOJO_EXTRA"; then
+    echo "WARNING: DreamDojo CUDA extra sync failed; continuing with the base environment and import probes."
+  fi
   if ! verify_dreamdojo_import; then
     echo "DreamDojo import failed; installing supplemental dependencies (piq, pytorch3d)..."
     pip_install --no-deps "piq==0.8.0"
