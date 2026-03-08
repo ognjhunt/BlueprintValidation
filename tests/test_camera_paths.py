@@ -253,3 +253,49 @@ def test_generate_path_sweep_uses_approach_point_as_focus():
         to_target = target - pose.position
         to_target = to_target / (np.linalg.norm(to_target) + 1e-8)
         assert float(np.dot(pose.forward, to_target)) > 0.99
+
+
+def test_generate_path_orbit_ignores_extra_approach_point_values():
+    from blueprint_validation.config import CameraPathSpec
+    from blueprint_validation.rendering.camera_paths import generate_path_from_spec
+
+    poses = generate_path_from_spec(
+        spec=CameraPathSpec(
+            type="orbit",
+            radius_m=2.0,
+            num_orbits=1,
+            approach_point=[5.0, -3.0, 0.8, 999.0],
+        ),
+        scene_center=np.array([0.0, 0.0, 0.0], dtype=np.float64),
+        num_frames=12,
+        camera_height=1.2,
+        look_down_deg=10.0,
+        resolution=(120, 160),
+    )
+
+    first = poses[0]
+    assert abs(float(first.position[0]) - 7.0) < 1e-6
+    assert abs(float(first.position[1]) - (-3.0)) < 1e-6
+
+
+def test_generate_path_sweep_falls_back_for_nested_approach_point():
+    from blueprint_validation.config import CameraPathSpec
+    from blueprint_validation.rendering.camera_paths import generate_path_from_spec
+
+    # Nested malformed values are treated as invalid and should fall back to scene center.
+    poses = generate_path_from_spec(
+        spec=CameraPathSpec(
+            type="sweep",
+            length_m=4.0,
+            approach_point=[[4.0], [1.5], [0.7], [2.0]],
+            height_override_m=1.4,
+        ),
+        scene_center=np.array([1.0, 2.0, 0.5], dtype=np.float64),
+        num_frames=9,
+        camera_height=1.0,
+        look_down_deg=12.0,
+        resolution=(120, 160),
+    )
+
+    assert abs(float(poses[0].position[0]) - (1.0 - 2.0)) < 1e-6
+    assert abs(float(poses[0].position[1]) - 2.0) < 1e-6
