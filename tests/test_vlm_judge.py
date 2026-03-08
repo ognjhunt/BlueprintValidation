@@ -284,3 +284,54 @@ def test_parse_stage2_quality_payload_rejects_unknown_issue_tag():
     }
     with pytest.raises(ValueError, match="Unknown issue tag"):
         _parse_stage2_quality_payload(payload)
+
+
+def test_upload_video_file_rejects_non_video_path(tmp_path):
+    from blueprint_validation.evaluation.vlm_judge import _upload_video_file
+
+    text_file = tmp_path / "secret.txt"
+    text_file.write_text("top-secret", encoding="utf-8")
+
+    class _Files:
+        def upload(self, *, file):  # pragma: no cover - should not run
+            raise AssertionError("upload should not be called")
+
+    class _Client:
+        files = _Files()
+
+    with pytest.raises(ValueError, match="video MIME type"):
+        _upload_video_file(_Client(), text_file)
+
+
+def test_upload_video_file_uploads_video_path(tmp_path, monkeypatch):
+    from blueprint_validation.evaluation import vlm_judge
+
+    video_file = tmp_path / "clip.mp4"
+    video_file.write_bytes(b"fake")
+
+    uploaded_marker = object()
+    waited_marker = object()
+
+    class _Files:
+        def __init__(self):
+            self.uploaded = None
+
+        def upload(self, *, file):
+            self.uploaded = file
+            return uploaded_marker
+
+    class _Client:
+        def __init__(self):
+            self.files = _Files()
+
+    client = _Client()
+
+    monkeypatch.setattr(
+        vlm_judge,
+        "_wait_for_uploaded_file_active",
+        lambda client_arg, uploaded: waited_marker,
+    )
+
+    out = vlm_judge._upload_video_file(client, video_file)
+    assert client.files.uploaded == str(video_file)
+    assert out is waited_marker
