@@ -230,7 +230,8 @@ class EnrichConfig:
     # Enable per-output visual-collapse heuristics (blur/green cast/low motion).
     enable_visual_collapse_gate: bool = True
     # Native-video VLM quality gate for enriched outputs (Stage 2).
-    vlm_quality_gate_enabled: bool = True
+    # Disabled by default to require explicit opt-in before external upload.
+    vlm_quality_gate_enabled: bool = False
     # Fail Stage 2 if VLM gate cannot be evaluated or clip never passes within retries.
     vlm_quality_fail_closed: bool = True
     # Enable bounded per-variant auto-regeneration for failed VLM quality checks.
@@ -1196,7 +1197,7 @@ def _parse_enrich_config(raw: Dict[str, Any], base_dir: Path) -> EnrichConfig:
         max_blur_reject_rate=float(raw.get("max_blur_reject_rate", 0.30)),
         green_frame_ratio_max=float(raw.get("green_frame_ratio_max", 0.10)),
         enable_visual_collapse_gate=bool(raw.get("enable_visual_collapse_gate", True)),
-        vlm_quality_gate_enabled=bool(raw.get("vlm_quality_gate_enabled", True)),
+        vlm_quality_gate_enabled=bool(raw.get("vlm_quality_gate_enabled", False)),
         vlm_quality_fail_closed=bool(raw.get("vlm_quality_fail_closed", True)),
         vlm_quality_autoretry_enabled=bool(raw.get("vlm_quality_autoretry_enabled", True)),
         vlm_quality_max_regen_attempts=int(raw.get("vlm_quality_max_regen_attempts", 2)),

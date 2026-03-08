@@ -163,7 +163,7 @@ def test_config_defaults():
     assert config.enrich.max_blur_reject_rate == pytest.approx(0.30)
     assert config.enrich.green_frame_ratio_max == pytest.approx(0.10)
     assert config.enrich.enable_visual_collapse_gate is True
-    assert config.enrich.vlm_quality_gate_enabled is True
+    assert config.enrich.vlm_quality_gate_enabled is False
     assert config.enrich.vlm_quality_fail_closed is True
     assert config.enrich.vlm_quality_autoretry_enabled is True
     assert config.enrich.vlm_quality_max_regen_attempts == 2
