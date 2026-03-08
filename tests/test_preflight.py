@@ -435,6 +435,23 @@ def test_check_pi05_script_contracts_pass(tmp_path):
     assert norm.passed is True
 
 
+def test_check_pi05_script_contracts_do_not_execute_scripts(tmp_path, monkeypatch):
+    import blueprint_validation.preflight as preflight
+
+    repo = tmp_path / "openpi"
+    _make_openpi_scripts(repo)
+
+    def _fail_if_called(*_args, **_kwargs):
+        raise AssertionError("subprocess.run should not be used for CLI contract checks")
+
+    monkeypatch.setattr(preflight.subprocess, "run", _fail_if_called)
+
+    train = preflight.check_pi05_train_contract(repo, "scripts/train_pytorch.py")
+    norm = preflight.check_pi05_norm_stats_contract(repo, "scripts/compute_norm_stats.py")
+    assert train.passed is True
+    assert norm.passed is True
+
+
 def test_check_pi05_script_contracts_fail_when_flags_missing(tmp_path):
     from blueprint_validation.preflight import (
         check_pi05_norm_stats_contract,

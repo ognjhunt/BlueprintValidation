@@ -1520,27 +1520,11 @@ def _extract_argparse_option_flags(path: Path) -> set[str]:
     return flags
 
 
-def _extract_help_flags(script_path: Path, cwd: Path) -> set[str]:
-    try:
-        proc = subprocess.run(
-            [sys.executable, str(script_path), "--help"],
-            capture_output=True,
-            text=True,
-            timeout=12,
-            cwd=str(cwd),
-        )
-    except Exception:
-        return set()
-    help_text = f"{proc.stdout or ''}\n{proc.stderr or ''}"
-    return set(re.findall(r"--[a-zA-Z0-9][a-zA-Z0-9_-]*", help_text))
-
-
 def _check_script_cli_contract(
     *,
     check_name: str,
     script_path: Path,
     required_flags: set[str],
-    cwd: Path,
     remediation: str,
 ) -> PreflightCheck:
     if not script_path.exists():
@@ -1551,22 +1535,14 @@ def _check_script_cli_contract(
         )
 
     ast_flags = _extract_argparse_option_flags(script_path)
-    combined_flags = set(ast_flags)
-    source = "AST"
-    if not required_flags.issubset(combined_flags):
-        help_flags = _extract_help_flags(script_path, cwd=cwd)
-        if help_flags:
-            combined_flags |= help_flags
-            source = "AST+--help" if ast_flags else "--help"
-
-    if not combined_flags:
+    if not ast_flags:
         return PreflightCheck(
             name=check_name,
             passed=False,
             detail=f"Could not determine CLI options for {script_path}",
         )
 
-    missing = sorted(required_flags - combined_flags)
+    missing = sorted(required_flags - ast_flags)
     if missing:
         return PreflightCheck(
             name=check_name,
@@ -1578,7 +1554,7 @@ def _check_script_cli_contract(
     return PreflightCheck(
         name=check_name,
         passed=True,
-        detail=f"Validated CLI contract via {source}: {script_path}",
+        detail=f"Validated CLI contract via AST: {script_path}",
     )
 
 
@@ -1588,7 +1564,6 @@ def check_pi05_train_contract(openpi_repo: Path, train_script: str) -> Preflight
         check_name="policy_adapter:pi05:train_contract",
         script_path=script_path,
         required_flags=_PI05_REQUIRED_TRAIN_FLAGS,
-        cwd=openpi_repo,
         remediation=(
             "Update policy_adapter.pi05.train_script or use a compatible OpenPI train entrypoint."
         ),
@@ -1601,7 +1576,6 @@ def check_pi05_norm_stats_contract(openpi_repo: Path, norm_stats_script: str) ->
         check_name="policy_adapter:pi05:norm_stats_contract",
         script_path=script_path,
         required_flags=_PI05_REQUIRED_NORM_STATS_FLAGS,
-        cwd=openpi_repo,
         remediation=(
             "Update policy_adapter.pi05.norm_stats_script or use a compatible OpenPI norm-stats entrypoint."
         ),
@@ -1659,7 +1633,6 @@ def check_dreamzero_train_contract(repo_path: Path, train_script: str) -> Prefli
         check_name="policy_adapter:dreamzero:train_contract",
         script_path=script_path,
         required_flags={"--base_model", "--dataset_root", "--dataset_name", "--output_dir"},
-        cwd=repo_path,
         remediation=(
             "Update policy_adapter.dreamzero.train_script or align DreamZeroPolicyAdapter.train_policy "
             "with the actual train-script CLI."
