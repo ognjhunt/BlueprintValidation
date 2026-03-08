@@ -5,6 +5,190 @@ from __future__ import annotations
 from pathlib import Path
 
 
+def test_splatsim_backend_sanitizes_generated_output_filename(sample_config, tmp_path, monkeypatch):
+    from blueprint_validation.common import read_json
+    from blueprint_validation.config import ManipulationZoneConfig
+    from blueprint_validation.synthetic.splatsim_pybullet_backend import run_splatsim_pybullet_backend
+
+    class _FakeCapture:
+        def __init__(self, *_args, **_kwargs):
+            self._frame_idx = 0
+
+        def isOpened(self):
+            return True
+
+        def get(self, prop):
+            if prop == 5:  # CAP_PROP_FPS
+                return 5
+            if prop == 3:  # CAP_PROP_FRAME_WIDTH
+                return 64
+            if prop == 4:  # CAP_PROP_FRAME_HEIGHT
+                return 48
+            return 0
+
+        def read(self):
+            import numpy as np
+
+            if self._frame_idx > 2:
+                return False, None
+            self._frame_idx += 1
+            return True, np.zeros((48, 64, 3), dtype=np.uint8)
+
+        def release(self):
+            return None
+
+    class _FakeWriter:
+        def __init__(self, path, *_args, **_kwargs):
+            self.path = Path(path)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_bytes(b"")
+
+        def write(self, _frame):
+            return None
+
+        def release(self):
+            return None
+
+    class _FakeCV2:
+        CAP_PROP_FPS = 5
+        CAP_PROP_FRAME_WIDTH = 3
+        CAP_PROP_FRAME_HEIGHT = 4
+        FONT_HERSHEY_SIMPLEX = 0
+
+        @staticmethod
+        def VideoCapture(path):
+            return _FakeCapture(path)
+
+        @staticmethod
+        def VideoWriter(path, *args, **kwargs):
+            return _FakeWriter(path, *args, **kwargs)
+
+        @staticmethod
+        def VideoWriter_fourcc(*_args):
+            return 0
+
+        @staticmethod
+        def line(*_args, **_kwargs):
+            return None
+
+        @staticmethod
+        def circle(*_args, **_kwargs):
+            return None
+
+        @staticmethod
+        def putText(*_args, **_kwargs):
+            return None
+
+    class _FakePB:
+        DIRECT = 0
+        GEOM_BOX = 1
+        GEOM_SPHERE = 2
+        POSITION_CONTROL = 3
+
+        @staticmethod
+        def connect(_mode):
+            return 1
+
+        @staticmethod
+        def setAdditionalSearchPath(*_args, **_kwargs):
+            return None
+
+        @staticmethod
+        def setGravity(*_args, **_kwargs):
+            return None
+
+        @staticmethod
+        def loadURDF(*_args, **_kwargs):
+            return 1
+
+        @staticmethod
+        def createCollisionShape(*_args, **_kwargs):
+            return 1
+
+        @staticmethod
+        def createVisualShape(*_args, **_kwargs):
+            return 1
+
+        @staticmethod
+        def createMultiBody(*_args, **_kwargs):
+            return 1
+
+        @staticmethod
+        def resetBasePositionAndOrientation(*_args, **_kwargs):
+            return None
+
+        @staticmethod
+        def setJointMotorControl2(*_args, **_kwargs):
+            return None
+
+        @staticmethod
+        def stepSimulation(*_args, **_kwargs):
+            return None
+
+        @staticmethod
+        def getBasePositionAndOrientation(*_args, **_kwargs):
+            return ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
+
+        @staticmethod
+        def disconnect(*_args, **_kwargs):
+            return None
+
+    class _FakePBData:
+        @staticmethod
+        def getDataPath():
+            return str(tmp_path)
+
+    import sys
+
+    monkeypatch.setitem(sys.modules, "cv2", _FakeCV2)
+    monkeypatch.setitem(sys.modules, "pybullet", _FakePB)
+    monkeypatch.setitem(sys.modules, "pybullet_data", _FakePBData)
+
+    source_video = tmp_path / "in.mp4"
+    source_video.write_bytes(b"x")
+
+    source_manifest = {
+        "clips": [
+            {
+                "clip_name": "../../.ssh/authorized_keys",
+                "video_path": str(source_video),
+                "depth_video_path": "",
+                "fps": 5,
+                "num_frames": 3,
+                "resolution": [48, 64],
+            }
+        ]
+    }
+    sample_config.splatsim.horizon_steps = 4
+    sample_config.splatsim.per_zone_rollouts = 1
+    sample_config.splatsim.min_successful_rollouts_per_zone = 0
+    facility = list(sample_config.facilities.values())[0]
+    facility.manipulation_zones = [
+        ManipulationZoneConfig(
+            name="zone/../../evil",
+            approach_point=[0.0, 0.0, 0.2],
+            target_point=[0.1, 0.1, 0.2],
+        )
+    ]
+
+    stage_dir = tmp_path / "stage"
+    result = run_splatsim_pybullet_backend(
+        config=sample_config,
+        facility=facility,
+        stage_dir=stage_dir,
+        source_manifest=source_manifest,
+        source_manifest_path=tmp_path / "source_manifest.json",
+    )
+
+    assert result["status"] == "success"
+    manifest = read_json(stage_dir / "interaction_manifest.json")
+    generated = manifest["clips"][1]
+    output_path = Path(generated["video_path"]).resolve()
+
+    assert ".." not in generated["clip_name"]
+    assert output_path.parent == stage_dir.resolve()
+
+
 def _write_source_manifest(path: Path) -> None:
     from blueprint_validation.common import write_json
 

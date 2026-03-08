@@ -4,11 +4,20 @@ from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
+import re
 from typing import Dict, List
 
 from ..common import write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..video_io import open_mp4_writer
+
+
+_SAFE_CLIP_TOKEN = re.compile(r"[^A-Za-z0-9_.-]+")
+
+
+def _sanitize_clip_token(value: object, default: str) -> str:
+    token = _SAFE_CLIP_TOKEN.sub("_", str(value or "")).strip("._")
+    return token or default
 
 
 def run_splatsim_pybullet_backend(
@@ -97,7 +106,9 @@ def run_splatsim_pybullet_backend(
                 successful_rollouts += 1
                 per_zone_success[zone.name] += 1
 
-            clip_name = f"{source_clip.get('clip_name', 'clip')}_s1e_{zone.name}_{rollout_idx:02d}"
+            source_clip_name = _sanitize_clip_token(source_clip.get("clip_name", "clip"), "clip")
+            zone_name = _sanitize_clip_token(zone.name, "zone")
+            clip_name = f"{source_clip_name}_s1e_{zone_name}_{rollout_idx:02d}"
             out_video = stage_dir / f"{clip_name}.mp4"
             ok = _annotate_interaction_video(
                 cv2=cv2,
