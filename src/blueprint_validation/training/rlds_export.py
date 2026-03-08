@@ -13,6 +13,15 @@ from .rollout_curriculum import RolloutBucketThresholds, bucket_rollout
 logger = get_logger("training.rlds_export")
 
 
+def _is_within_dir(path: Path, root: Path) -> bool:
+    """Return True when ``path`` resolves under ``root`` (or equals it)."""
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
 @dataclass
 class EpisodeExport:
     episode_id: str
@@ -236,12 +245,25 @@ def convert_jsonl_to_tfrecord(
         with tf.io.TFRecordWriter(str(tfrecord_path)) as writer:
             for line in jsonl_path.read_text().strip().splitlines():
                 episode = json.loads(line)
+                source_root = jsonl_path.parent.resolve()
                 for step in episode.get("steps", []):
                     image_path = step["observation"]["image_path"]
-                    if not Path(image_path).exists():
+                    image_path_obj = Path(image_path)
+                    if not image_path_obj.is_absolute():
+                        image_path_obj = (source_root / image_path_obj).resolve()
+
+                    if not _is_within_dir(image_path_obj, source_root):
+                        logger.warning(
+                            "Skipping image outside dataset root (%s): %s",
+                            source_root,
+                            image_path,
+                        )
                         continue
 
-                    image_bytes = Path(image_path).read_bytes()
+                    if not image_path_obj.exists():
+                        continue
+
+                    image_bytes = image_path_obj.read_bytes()
                     action = step["action"]
                     # Pad or truncate to 7-D for OpenVLA-OFT action interface.
                     action = (action + [0.0] * 7)[:7]
