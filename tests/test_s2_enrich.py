@@ -941,7 +941,7 @@ def test_s2_context_selection_falls_back_to_fixed_when_target_missing(
     assert result.metrics["context_selection_fixed_count"] == 1
 
 
-def test_s2_analyze_target_visibility_prefers_cached_stage1_metrics(sample_config):
+def test_s2_analyze_target_visibility_ignores_cached_stage1_metrics(sample_config, monkeypatch):
     from blueprint_validation.stages.s2_enrich import _analyze_target_visibility
 
     clip_entry = {
@@ -950,16 +950,56 @@ def test_s2_analyze_target_visibility_prefers_cached_stage1_metrics(sample_confi
         "target_center_band_ratio": 0.5,
         "target_approach_angle_bins": 4,
     }
+
+    def _fake_project_target_to_camera_path(*_args, **_kwargs):
+        return 10, [{"yaw_deg_norm": 12.0, "u_norm": 0.5, "v_norm": 0.5}]
+
+    monkeypatch.setattr(
+        "blueprint_validation.enrichment.stage2_quality.project_target_to_camera_path",
+        _fake_project_target_to_camera_path,
+    )
     visible, total, center, angle_bins = _analyze_target_visibility(
         clip_entry=clip_entry,
         target_xyz=[0.0, 0.0, 0.0],
         angle_bin_deg=45.0,
         config=sample_config,
     )
-    assert total == 20
-    assert visible == 12
-    assert center == 10
-    assert len(angle_bins) == 4
+    assert total == 10
+    assert visible == 1
+    assert center == 1
+    assert len(angle_bins) == 1
+
+
+def test_s2_coverage_gate_recomputes_blur_even_when_cached(sample_config, monkeypatch):
+    from blueprint_validation.enrichment.stage2_quality import evaluate_stage1_coverage_gate
+
+    sample_config.render.stage1_coverage_gate_enabled = True
+
+    render_manifest = {
+        "clips": [
+            {
+                "clip_name": "clip_000_manipulation",
+                "path_type": "manipulation",
+                "path_context": {"approach_point": [0.0, 0.0, 0.0]},
+                "video_path": "unused.mp4",
+                "blur_laplacian_score": 99999.0,
+            }
+        ]
+    }
+
+    monkeypatch.setattr(
+        "blueprint_validation.enrichment.stage2_quality.estimate_clip_blur_score",
+        lambda **_kwargs: 0.0,
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.enrichment.stage2_quality.analyze_target_visibility",
+        lambda **_kwargs: (10, 10, 10, {0, 1, 2}),
+    )
+
+    result = evaluate_stage1_coverage_gate(render_manifest, sample_config)
+    assert result is not None
+    assert result.passed is False
+    assert int(result.metrics["coverage_blurry_clip_count"]) == 1
 
 
 def test_s2_task_targeted_clip_selection_prefers_manipulation_clip(

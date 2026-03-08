@@ -116,17 +116,11 @@ def evaluate_stage1_coverage_gate(
             target_stats["clip_names"] = clip_names
         clip_names.append(clip_name)
 
-        blur_score = clip_entry.get("blur_laplacian_score")
-        try:
-            blur_score = float(blur_score) if blur_score is not None else None
-        except Exception:
-            blur_score = None
-        if blur_score is None:
-            blur_score = estimate_clip_blur_score(
-                video_path=Path(str(clip_entry.get("video_path", ""))),
-                sample_every_n_frames=blur_every,
-                max_samples=blur_max_samples,
-            )
+        blur_score = estimate_clip_blur_score(
+            video_path=Path(str(clip_entry.get("video_path", ""))),
+            sample_every_n_frames=blur_every,
+            max_samples=blur_max_samples,
+        )
         is_blurry = blur_score is None or blur_score < blur_min
         if is_blurry:
             target_stats["num_blurry_clips"] = int(target_stats["num_blurry_clips"]) + 1
@@ -230,31 +224,6 @@ def analyze_target_visibility(
     config: ValidationConfig,
 ) -> tuple[int, int, int, set[int]]:
     """Estimate target visibility ratio and approach-angle diversity from camera poses."""
-    cached_total = clip_entry.get("target_total_frames")
-    cached_vis_ratio = clip_entry.get("target_visibility_ratio")
-    cached_center_ratio = clip_entry.get("target_center_band_ratio")
-    cached_bins = clip_entry.get("target_approach_angle_bins")
-    try:
-        if (
-            cached_total is not None
-            and cached_vis_ratio is not None
-            and cached_center_ratio is not None
-            and cached_bins is not None
-        ):
-            total_frames = int(cached_total)
-            if total_frames > 0:
-                visible_frames = int(round(float(cached_vis_ratio) * total_frames))
-                center_band_frames = int(round(float(cached_center_ratio) * total_frames))
-                angle_bin_count = max(0, int(cached_bins))
-                return (
-                    visible_frames,
-                    total_frames,
-                    center_band_frames,
-                    set(range(angle_bin_count)),
-                )
-    except Exception:
-        pass
-
     total_frames, visible_samples = project_target_to_camera_path(clip_entry, target_xyz)
     return shared_analyze_target_visibility(
         total_frames=total_frames,
