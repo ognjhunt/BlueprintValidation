@@ -347,7 +347,9 @@ class FinetuneConfig:
 @dataclass
 class VLMJudgeConfig:
     model: str = "gemini-3-flash-preview"
-    fallback_models: List[str] = field(default_factory=lambda: ["gemini-2.5-flash"])
+    fallback_models: List[str] = field(
+        default_factory=lambda: ["gemini-3.1-flash-lite-preview", "gemini-2.5-flash"]
+    )
     api_key_env: str = "GOOGLE_GENAI_API_KEY"
     enable_agentic_vision: bool = True
     # Explicit Gemini File API video metadata FPS for scoring calls (0 disables explicit fps).

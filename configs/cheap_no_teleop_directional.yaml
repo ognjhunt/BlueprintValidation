@@ -1,0 +1,161 @@
+schema_version: v1
+project_name: Cheap No-Teleop Directional Signal
+
+facilities:
+  facility_a:
+    name: Pilot Facility A
+    ply_path: ../data/facilities/facility_a/splat.ply
+    description: Single-scene cheap first pass for directional world-model uplift only.
+
+render:
+  resolution: [480, 640]
+  fps: 10
+  num_frames: 13
+  scene_aware: false
+  num_clips_per_path: 1
+  stage1_coverage_gate_enabled: false
+  stage1_quality_planner_enabled: false
+  stage1_quality_autoretry_enabled: false
+  stage1_active_perception_enabled: false
+  camera_paths:
+    - type: orbit
+      radius_m: 2.4
+    - type: sweep
+      length_m: 4.0
+
+robot_composite:
+  enabled: false
+
+gemini_polish:
+  enabled: false
+
+robosplat:
+  enabled: false
+
+robosplat_scan:
+  enabled: false
+
+external_interaction:
+  enabled: false
+
+external_rollouts:
+  enabled: false
+  source_name: teleop
+  mode: wm_and_policy
+
+enrich:
+  cosmos_repo: ../data/vendor/cosmos-transfer
+  cosmos_checkpoint: ../data/checkpoints/cosmos-transfer-2.5-2b/
+  num_variants_per_render: 1
+  dynamic_variants: false
+  variants:
+    - name: baseline
+      prompt: Preserve scene geometry and lighting while keeping the environment stable and realistic.
+
+finetune:
+  dreamdojo_repo: ../data/vendor/DreamDojo
+  dreamdojo_checkpoint: ../data/checkpoints/DreamDojo/2B_pretrain/
+  eval_world_experiment: cosmos_predict2p5_2B_reason_embeddings_action_conditioned_rectified_flow_bridge_13frame_256x320
+  num_epochs: 1
+  batch_size: 1
+  gradient_accumulation_steps: 2
+  warmup_steps: 10
+  save_every_n_epochs: 1
+  max_training_hours: 2
+
+eval_policy:
+  mode: research
+  headline_scope: wm_uplift
+  claim_protocol: none
+  model_name: openvla/openvla-7b
+  checkpoint_path: ../data/checkpoints/openvla-7b/
+  unnorm_key: bridge_orig
+  num_rollouts: 4
+  max_steps_per_rollout: 60
+  tasks:
+    - Navigate toward the table
+  manipulation_tasks:
+    - Pick up the toaster and place it on the table
+
+eval_polaris:
+  enabled: false
+  repo_path: ../data/vendor/PolaRiS
+  hub_path: ../data/vendor/PolaRiS-Hub
+  environment_mode: scene_package_bridge
+  default_as_primary_gate: true
+  use_for_claim_gate: true
+  num_rollouts: 4
+  device: cuda
+  policy_client: OpenVLA
+  observation_mode: external_only
+  action_mode: native
+  export_dir: ../data/outputs/polaris
+  require_scene_package: true
+  require_success_correlation_metadata: true
+
+policy_finetune:
+  enabled: false
+  openvla_repo: ../data/vendor/openvla-oft
+  finetune_script: vla-scripts/finetune.py
+  dataset_name: bridge_orig
+  batch_size: 4
+  grad_accumulation_steps: 2
+  learning_rate: 5.0e-4
+  save_steps: 250
+  max_steps: 300
+  image_aug: true
+  nproc_per_node: 1
+
+policy_adapter:
+  name: openvla_oft
+  openvla:
+    openvla_repo: ../data/vendor/openvla-oft
+    finetune_script: vla-scripts/finetune.py
+    base_model_name: openvla/openvla-7b
+    base_checkpoint_path: ../data/checkpoints/openvla-7b
+
+rollout_dataset:
+  enabled: false
+  selection_mode: success_near_miss
+  near_miss_min_task_score: 5.0
+  near_miss_max_task_score: 6.99
+  export_dir: ../data/outputs/policy_datasets
+
+policy_compare:
+  enabled: false
+
+native_teacher:
+  enabled: false
+  include_generic_control: true
+  generate_corrections: true
+  planner_horizon_steps: 12
+
+action_boost:
+  enabled: false
+
+policy_rl_loop:
+  enabled: false
+
+wm_refresh_loop:
+  enabled: false
+
+eval_visual:
+  metrics: [psnr, ssim, lpips]
+  lpips_backbone: alex
+
+eval_spatial:
+  num_sample_frames: 12
+  vlm_model: gemini-3-flash-preview
+  min_valid_samples: 3
+  fail_on_reasoning_conflict: true
+
+eval_crosssite:
+  num_clips_per_model: 8
+  vlm_model: gemini-3-flash-preview
+
+cloud:
+  provider: generic
+  gpu_type: H100
+  num_gpus: 1
+  max_cost_usd: 40
+  auto_shutdown: false

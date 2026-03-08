@@ -79,10 +79,10 @@ Return ONLY a JSON array with this exact format:
 def _candidate_dynamic_models(primary_model: str) -> list[str]:
     """Build ordered candidate model list for dynamic variant generation."""
     primary = (primary_model or "").strip() or "gemini-3-flash-preview"
-    fallback = "gemini-2.5-flash"
     candidates = [primary]
-    if fallback not in candidates:
-        candidates.append(fallback)
+    for fallback in ("gemini-3.1-flash-lite-preview", "gemini-2.5-flash"):
+        if fallback not in candidates:
+            candidates.append(fallback)
     return candidates
 
 
