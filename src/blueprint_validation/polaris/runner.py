@@ -277,6 +277,12 @@ def _evaluate_scene_package_bridge(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     if scene_spec.scene_root is None:
         raise RuntimeError("scene_package_bridge requires scene_root")
+    if os.environ.get("BLUEPRINT_UNSAFE_ALLOW_SCENE_PACKAGE_IMPORT", "0") != "1":
+        raise RuntimeError(
+            "scene_package_bridge is disabled by default because it imports executable Python "
+            "from the scene package. Use native_bundle mode, or set "
+            "BLUEPRINT_UNSAFE_ALLOW_SCENE_PACKAGE_IMPORT=1 only for trusted scene packages."
+        )
     modules = _load_isaac_lab_modules()
     scene_root = scene_spec.scene_root
     if str(scene_root) not in sys.path:
