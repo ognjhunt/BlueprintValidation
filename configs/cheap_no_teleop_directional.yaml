@@ -5,7 +5,6 @@ facilities:
   facility_a:
     name: Pilot Facility A
     ply_path: ../data/facilities/facility_a/splat.ply
-    task_hints_path: ../data/outputs/cheap_no_teleop_directional/facility_a/bootstrap/task_targets.synthetic.json
     description: Single-scene cheap first pass for directional world-model uplift only.
 
 render:
