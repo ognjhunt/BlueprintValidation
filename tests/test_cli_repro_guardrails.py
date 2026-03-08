@@ -43,3 +43,19 @@ def test_cli_fails_when_pinned_commit_mismatches(monkeypatch, tmp_path):
     )
     assert result.exit_code != 0
     assert "Pinned commit mismatch" in result.output
+
+
+def test_load_local_env_defaults_uses_repo_root(monkeypatch):
+    import blueprint_validation.cli as cli_module
+
+    loaded = []
+    monkeypatch.setattr(cli_module, "_load_local_env_file", lambda path: loaded.append(path))
+
+    cli_module._load_local_env_defaults()
+
+    repo_root = cli_module.Path(cli_module.__file__).resolve().parents[2]
+    assert loaded == [
+        repo_root / "scripts" / "runtime_env.local",
+        repo_root / ".env.local",
+        repo_root / ".env",
+    ]

@@ -47,12 +47,12 @@ def _load_local_env_file(path: Path) -> None:
 
 
 def _load_local_env_defaults() -> None:
-    """Load repo-local env defaults for non-interactive runs (without overriding process env)."""
-    cwd = Path.cwd()
+    """Load env defaults from this repository root only (never from arbitrary CWD)."""
+    repo_root = Path(__file__).resolve().parents[2]
     candidates = (
-        cwd / "scripts" / "runtime_env.local",
-        cwd / ".env.local",
-        cwd / ".env",
+        repo_root / "scripts" / "runtime_env.local",
+        repo_root / ".env.local",
+        repo_root / ".env",
     )
     for candidate in candidates:
         _load_local_env_file(candidate)
