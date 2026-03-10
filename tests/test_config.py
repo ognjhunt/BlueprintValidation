@@ -2049,3 +2049,106 @@ def test_load_config_prefers_explicit_ply_path_over_bundle_default(tmp_path):
 
     config = load_config(config_path)
     assert config.facilities["opp_b"].ply_path == explicit_ply.resolve()
+
+
+def test_load_config_accepts_capture_pipeline_handoff_and_infers_bundle(tmp_path):
+    import yaml
+
+    from blueprint_validation.config import load_config
+
+    pipeline_dir = tmp_path / "scenes" / "scene_demo" / "captures" / "capture_demo" / "pipeline"
+    bundle_root = pipeline_dir / "advanced_geometry"
+    bundle_root.mkdir(parents=True)
+    (bundle_root / "3dgs_compressed.ply").write_text("ply\n")
+    (bundle_root / "labels.json").write_text("{}")
+    (bundle_root / "structure.json").write_text("{}")
+    (bundle_root / "task_targets.synthetic.json").write_text("{}")
+
+    handoff_path = pipeline_dir / "opportunity_handoff.json"
+    handoff_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "scene_id": "scene_demo",
+                "capture_id": "capture_demo",
+                "readiness_state": "ready",
+                "match_ready": True,
+                "summary": "Capture pipeline handoff",
+            }
+        )
+    )
+
+    config_path = tmp_path / "capture_pipeline.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "schema_version": "v1",
+                "qualified_opportunities": {
+                    "opp_capture": {
+                        "opportunity_handoff_path": str(handoff_path),
+                    }
+                },
+            }
+        )
+    )
+
+    config = load_config(config_path)
+    target = config.facilities["opp_capture"]
+
+    assert target.intake_mode == "qualified_opportunity"
+    assert target.opportunity_id == "scene_demo"
+    assert target.site_submission_id == "capture_demo"
+    assert target.geometry_bundle_path == bundle_root.resolve()
+    assert target.ply_path == bundle_root.resolve() / "3dgs_compressed.ply"
+    assert target.task_hints_path == bundle_root.resolve() / "task_targets.synthetic.json"
+    assert target.labels_path == bundle_root.resolve() / "labels.json"
+    assert target.structure_path == bundle_root.resolve() / "structure.json"
+
+
+def test_load_config_leaves_task_hints_unset_when_bundle_has_only_labels_and_structure(tmp_path):
+    import yaml
+
+    from blueprint_validation.config import load_config
+
+    pipeline_dir = tmp_path / "pipeline"
+    bundle_root = pipeline_dir / "advanced_geometry"
+    bundle_root.mkdir(parents=True)
+    (bundle_root / "3dgs_compressed.ply").write_text("ply\n")
+    (bundle_root / "labels.json").write_text("{}")
+    (bundle_root / "structure.json").write_text("{}")
+
+    handoff_path = pipeline_dir / "opportunity_handoff.json"
+    handoff_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "scene_id": "scene_demo",
+                "capture_id": "capture_demo",
+                "readiness_state": "ready",
+                "match_ready": True,
+            }
+        )
+    )
+
+    config_path = tmp_path / "missing_synthetic.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "schema_version": "v1",
+                "qualified_opportunities": {
+                    "opp_capture": {
+                        "opportunity_handoff_path": str(handoff_path),
+                    }
+                },
+            }
+        )
+    )
+
+    config = load_config(config_path)
+    target = config.facilities["opp_capture"]
+
+    assert target.geometry_bundle_path == bundle_root.resolve()
+    assert target.ply_path == bundle_root.resolve() / "3dgs_compressed.ply"
+    assert target.labels_path == bundle_root.resolve() / "labels.json"
+    assert target.structure_path == bundle_root.resolve() / "structure.json"
+    assert target.task_hints_path is None

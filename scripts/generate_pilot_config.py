@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import yaml
 
@@ -31,6 +31,20 @@ def _discover_run_candidates(runs_root: Path) -> List[Tuple[Path, Path]]:
         reverse=True,
     )
     return [(run_dir, payload[3]) for run_dir, payload in ranked]
+
+
+def _discover_handoff_candidates(capture_root: Path) -> List[Path]:
+    ranked: list[tuple[int, int, float, Path]] = []
+    for handoff_path in capture_root.rglob("opportunity_handoff.json"):
+        if not handoff_path.is_file():
+            continue
+        pipeline_dir = handoff_path.parent
+        bundle_root = pipeline_dir / "advanced_geometry"
+        has_bundle = int(bundle_root.is_dir())
+        has_ply = int((bundle_root / "3dgs_compressed.ply").is_file())
+        ranked.append((has_bundle, has_ply, handoff_path.stat().st_mtime, handoff_path))
+    ranked.sort(reverse=True)
+    return [path for *_score, path in ranked]
 
 
 def _latest_task_hints(runs_root: Path) -> Path | None:
@@ -83,18 +97,48 @@ def _zones_from_task_targets(task_targets_path: Path) -> List[dict]:
     return zones
 
 
-def _facility_from_run(
-    run_dir: Path,
-    ply_path: Path,
+def _candidate_hints_path(
+    *,
+    pipeline_dir: Optional[Path],
+    bundle_root: Optional[Path],
+    legacy_run_dir: Optional[Path],
+    fallback_task_hints: Path | None,
+) -> Optional[Path]:
+    candidates: list[Path] = []
+    if bundle_root is not None:
+        candidates.append(bundle_root / "task_targets.synthetic.json")
+    if pipeline_dir is not None:
+        candidates.append(pipeline_dir / "task_targets.json")
+    if legacy_run_dir is not None:
+        candidates.append(legacy_run_dir / "task_targets.json")
+    if fallback_task_hints is not None:
+        candidates.append(fallback_task_hints)
+    for candidate in candidates:
+        if candidate is not None and candidate.exists():
+            return candidate
+    return None
+
+
+def _facility_from_artifacts(
+    *,
+    pipeline_dir: Optional[Path],
+    handoff_path: Optional[Path],
+    bundle_root: Optional[Path],
+    legacy_run_dir: Optional[Path],
+    legacy_ply_path: Optional[Path],
     idx: int,
     fallback_task_hints: Path | None,
 ) -> tuple[str, dict]:
     fid = "facility_a" if idx == 0 else "facility_b"
-    task_hints_path = run_dir / "task_targets.json"
+    effective_hints = _candidate_hints_path(
+        pipeline_dir=pipeline_dir,
+        bundle_root=bundle_root,
+        legacy_run_dir=legacy_run_dir,
+        fallback_task_hints=fallback_task_hints,
+    )
 
     # Try to extract real manipulation zones from task_targets.json
     zones: List[dict] = []
-    effective_hints = task_hints_path if task_hints_path.exists() else fallback_task_hints
     if effective_hints is not None and effective_hints.exists():
         zones = _zones_from_task_targets(effective_hints)
 
@@ -110,19 +154,31 @@ def _facility_from_run(
             }
         ]
 
+    source_name = ""
+    if handoff_path is not None:
+        source_name = handoff_path.parent.name
+    elif legacy_run_dir is not None:
+        source_name = legacy_run_dir.name
+    else:
+        source_name = f"target_{idx + 1}"
+
     facility = {
-        "name": f"Auto Facility {idx + 1} ({run_dir.name})",
-        "ply_path": str(ply_path),
-        "description": f"Auto-imported from BlueprintCapturePipeline run '{run_dir.name}'.",
+        "name": f"Auto Facility {idx + 1} ({source_name})",
+        "description": f"Auto-imported from BlueprintCapturePipeline run '{source_name}'.",
         "landmarks": [],
         "floor_height_m": 0.0,
         "ceiling_height_m": 5.0,
         "manipulation_zones": zones,
     }
-    if task_hints_path.exists():
-        facility["task_hints_path"] = str(task_hints_path)
-    elif fallback_task_hints is not None:
-        facility["task_hints_path"] = str(fallback_task_hints)
+    if handoff_path is not None:
+        facility["opportunity_handoff_path"] = str(handoff_path)
+        if bundle_root is not None and bundle_root.exists():
+            facility["geometry_bundle_path"] = str(bundle_root)
+    else:
+        if legacy_ply_path is not None:
+            facility["ply_path"] = str(legacy_ply_path)
+        if effective_hints is not None:
+            facility["task_hints_path"] = str(effective_hints)
     return fid, facility
 
 
@@ -135,7 +191,7 @@ def _pick_repo_path(*candidates: Path) -> str:
 
 
 def _build_config(
-    facilities: dict,
+    qualified_opportunities: dict,
     include_cross_site: bool,
     policy_finetune_enabled: bool,
     dreamdojo_repo: str,
@@ -149,7 +205,7 @@ def _build_config(
     return {
         "schema_version": "v1",
         "project_name": "Blueprint Validation Pilot (Auto)",
-        "facilities": facilities,
+        "qualified_opportunities": qualified_opportunities,
         "render": {
             "resolution": [480, 640],
             "fps": 10,
@@ -422,23 +478,43 @@ def main() -> int:
     args = parser.parse_args()
 
     runs_root = args.capture_pipeline_root / "runs"
-    if not runs_root.exists():
-        raise SystemExit(f"Runs root not found: {runs_root}")
+    handoff_candidates = _discover_handoff_candidates(args.capture_pipeline_root)
+    ply_candidates = _discover_run_candidates(runs_root) if runs_root.exists() else []
+    if not handoff_candidates and not ply_candidates:
+        raise SystemExit(
+            "No qualified handoffs or legacy PLY outputs found under: "
+            f"{args.capture_pipeline_root}"
+        )
 
-    candidates = _discover_run_candidates(runs_root)
-    if not candidates:
-        raise SystemExit(f"No PLY outputs found under: {runs_root}")
+    fallback_task_hints = _latest_task_hints(runs_root) if runs_root.exists() else None
+    qualified_opportunities = {}
 
-    fallback_task_hints = _latest_task_hints(runs_root)
-    facilities = {}
-    for idx, (run_dir, ply_path) in enumerate(candidates[:2]):
-        fid, facility = _facility_from_run(
-            run_dir,
-            ply_path,
-            idx,
+    for idx, handoff_path in enumerate(handoff_candidates[:2]):
+        pipeline_dir = handoff_path.parent
+        bundle_root = pipeline_dir / "advanced_geometry"
+        fid, facility = _facility_from_artifacts(
+            pipeline_dir=pipeline_dir,
+            handoff_path=handoff_path,
+            bundle_root=bundle_root if bundle_root.exists() else None,
+            legacy_run_dir=None,
+            legacy_ply_path=None,
+            idx=idx,
             fallback_task_hints=fallback_task_hints,
         )
-        facilities[fid] = facility
+        qualified_opportunities[fid] = facility
+
+    if not qualified_opportunities:
+        for idx, (run_dir, ply_path) in enumerate(ply_candidates[:2]):
+            fid, facility = _facility_from_artifacts(
+                pipeline_dir=None,
+                handoff_path=None,
+                bundle_root=None,
+                legacy_run_dir=run_dir,
+                legacy_ply_path=ply_path,
+                idx=idx,
+                fallback_task_hints=fallback_task_hints,
+            )
+            qualified_opportunities[fid] = facility
 
     policy_finetune_enabled = bool(args.policy_finetune)
     dreamdojo_repo = _pick_repo_path(
@@ -462,7 +538,7 @@ def main() -> int:
         Path.cwd() / "data" / "vendor" / "openpi",
     )
 
-    include_cross_site = len(facilities) >= 2
+    include_cross_site = len(qualified_opportunities) >= 2
     policy_adapter_name = str(args.policy_adapter)
     if policy_adapter_name == "pi05" and not (
         str(args.pi05_model_ref).strip() or args.pi05_checkpoint_path
@@ -482,7 +558,7 @@ def main() -> int:
         eval_checkpoint_path = "../data/checkpoints/openvla-7b/"
 
     config = _build_config(
-        facilities,
+        qualified_opportunities,
         include_cross_site=include_cross_site,
         policy_finetune_enabled=policy_finetune_enabled,
         dreamdojo_repo=dreamdojo_repo,
@@ -501,10 +577,15 @@ def main() -> int:
     out.write_text(yaml.safe_dump(config, sort_keys=False))
 
     print(f"Wrote pilot config: {out}")
-    for fid, fcfg in facilities.items():
-        print(f"  {fid}: {fcfg['ply_path']}")
-        if "task_hints_path" in fcfg:
-            print(f"    task_hints_path: {fcfg['task_hints_path']}")
+    for fid, fcfg in qualified_opportunities.items():
+        if "opportunity_handoff_path" in fcfg:
+            print(f"  {fid}: handoff={fcfg['opportunity_handoff_path']}")
+            if "geometry_bundle_path" in fcfg:
+                print(f"    geometry_bundle_path: {fcfg['geometry_bundle_path']}")
+        else:
+            print(f"  {fid}: ply_path={fcfg['ply_path']}")
+            if "task_hints_path" in fcfg:
+                print(f"    task_hints_path: {fcfg['task_hints_path']}")
     print(f"  policy_adapter: {policy_adapter_name}")
     print(f"  eval_policy.model_name: {eval_model_name}")
     print(f"  eval_policy.checkpoint_path: {eval_checkpoint_path}")

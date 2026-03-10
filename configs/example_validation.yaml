@@ -6,6 +6,8 @@ qualified_opportunities:
   facility_a:
     name: "Warehouse A - Durham"
     opportunity_handoff_path: ./opportunity_handoff.example.json
+    # If the handoff already lives under a capture pipeline directory, Validation
+    # can infer ./advanced_geometry from the handoff location.
     geometry_bundle_path: ../data/facilities/facility_a
     # Legacy direct override remains supported when geometry is staged outside the bundle:
     # ply_path: ../data/facilities/facility_a/splat.ply
@@ -37,6 +39,9 @@ qualified_opportunities:
 
   facility_b:
     name: "Warehouse B - Raleigh"
+    # This target shows the handoff-only path: the sibling advanced_geometry/
+    # bundle can be inferred from opportunity_handoff_path when present.
+    opportunity_handoff_path: ../BlueprintCapturePipeline/scenes/scene_demo/captures/capture_demo/pipeline/opportunity_handoff.json
     geometry_bundle_path: ../data/facilities/facility_b
     # ply_path: ../data/facilities/facility_b/splat.ply
     # scene_package_path: /path/to/facility_b_scene_package

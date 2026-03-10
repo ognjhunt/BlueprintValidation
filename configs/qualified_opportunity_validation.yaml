@@ -5,6 +5,8 @@ project_name: "Blueprint Validation Post-Qualification Example"
 qualified_opportunities:
   warehouse_tote_pick_0787:
     opportunity_handoff_path: ./opportunity_handoff.example.json
+    # geometry_bundle_path can be omitted when the handoff already sits beside
+    # pipeline/advanced_geometry/.
     geometry_bundle_path: ../data/interiorgs/0787_841244
     # scene_package_path can be omitted here because the example handoff already declares it.
     claim_benchmark_path: ./benchmarks/facility_c.fixed_claim.json

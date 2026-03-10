@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 import types
 from pathlib import Path
@@ -994,3 +995,181 @@ def test_run_preflight_includes_qualified_opportunity_gate(sample_config, monkey
     by_name = {c.name: c for c in checks}
     assert by_name["qualified_opportunity:eligibility:test_facility"].passed is True
     assert by_name["intake:legacy_direct_notice:test_facility"].passed is True
+
+
+def test_task_hints_bootstrap_readiness_passes_with_labels_only_bundle(sample_config):
+    import blueprint_validation.preflight as preflight
+
+    facility = sample_config.facilities["test_facility"]
+    bundle_root = facility.ply_path.parent / "advanced_geometry"
+    bundle_root.mkdir()
+    (bundle_root / "labels.json").write_text("{}")
+    (bundle_root / "structure.json").write_text("{}")
+    facility.geometry_bundle_path = bundle_root
+    facility.labels_path = bundle_root / "labels.json"
+    facility.structure_path = bundle_root / "structure.json"
+    facility.task_hints_path = None
+
+    result = preflight.check_task_hints_bootstrap_readiness("test_facility", facility, deep_scan=False)
+    assert result.passed is True
+    assert "metadata present" in result.detail.lower()
+
+
+def test_run_preflight_accepts_capture_pipeline_handoff_with_inferred_bundle(tmp_path, monkeypatch):
+    import yaml
+
+    import blueprint_validation.preflight as preflight
+    from blueprint_validation.config import load_config
+
+    real_check_facility_ply = preflight.check_facility_ply
+    real_check_task_hints_bootstrap_readiness = preflight.check_task_hints_bootstrap_readiness
+    _patch_preflight_fast(monkeypatch, preflight)
+    monkeypatch.setattr(preflight, "check_facility_ply", real_check_facility_ply)
+    monkeypatch.setattr(
+        preflight,
+        "check_task_hints_bootstrap_readiness",
+        real_check_task_hints_bootstrap_readiness,
+    )
+
+    pipeline_dir = tmp_path / "pipeline"
+    bundle_root = pipeline_dir / "advanced_geometry"
+    bundle_root.mkdir(parents=True)
+    (bundle_root / "3dgs_compressed.ply").write_text("ply\n")
+    (bundle_root / "labels.json").write_text("{}")
+    (bundle_root / "structure.json").write_text("{}")
+
+    handoff_path = pipeline_dir / "opportunity_handoff.json"
+    handoff_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "scene_id": "scene_demo",
+                "capture_id": "capture_demo",
+                "readiness_state": "ready",
+                "match_ready": True,
+            }
+        )
+    )
+
+    config_path = tmp_path / "qualified.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "schema_version": "v1",
+                "qualified_opportunities": {
+                    "opp_capture": {"opportunity_handoff_path": str(handoff_path)}
+                },
+            }
+        )
+    )
+
+    config = load_config(config_path)
+    checks = preflight.run_preflight(config, profile="audit")
+    by_name = {c.name: c for c in checks}
+
+    assert by_name["qualified_opportunity:eligibility:opp_capture"].passed is True
+    assert by_name["ply:opp_capture"].passed is True
+    assert by_name["task_hints_bootstrap:opp_capture"].passed is True
+    assert "metadata present" in by_name["task_hints_bootstrap:opp_capture"].detail.lower()
+
+
+def test_run_preflight_fails_capture_pipeline_handoff_gate_when_not_match_ready(tmp_path, monkeypatch):
+    import yaml
+
+    import blueprint_validation.preflight as preflight
+    from blueprint_validation.config import load_config
+
+    _patch_preflight_fast(monkeypatch, preflight)
+
+    pipeline_dir = tmp_path / "pipeline"
+    bundle_root = pipeline_dir / "advanced_geometry"
+    bundle_root.mkdir(parents=True)
+    (bundle_root / "3dgs_compressed.ply").write_text("ply\n")
+
+    handoff_path = pipeline_dir / "opportunity_handoff.json"
+    handoff_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "scene_id": "scene_demo",
+                "capture_id": "capture_demo",
+                "readiness_state": "risky",
+                "match_ready": False,
+            }
+        )
+    )
+
+    config_path = tmp_path / "qualified.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "schema_version": "v1",
+                "qualified_opportunities": {
+                    "opp_capture": {"opportunity_handoff_path": str(handoff_path)}
+                },
+            }
+        )
+    )
+
+    config = load_config(config_path)
+    checks = preflight.run_preflight(config, profile="audit")
+    by_name = {c.name: c for c in checks}
+
+    assert by_name["qualified_opportunity:eligibility:opp_capture"].passed is False
+    assert "not ready" in by_name["qualified_opportunity:eligibility:opp_capture"].detail.lower()
+
+
+def test_run_preflight_reports_missing_inferred_bundle_ply_path(tmp_path, monkeypatch):
+    import yaml
+
+    import blueprint_validation.preflight as preflight
+    from blueprint_validation.config import load_config
+
+    real_check_facility_ply = preflight.check_facility_ply
+    real_check_task_hints_bootstrap_readiness = preflight.check_task_hints_bootstrap_readiness
+    _patch_preflight_fast(monkeypatch, preflight)
+    monkeypatch.setattr(preflight, "check_facility_ply", real_check_facility_ply)
+    monkeypatch.setattr(
+        preflight,
+        "check_task_hints_bootstrap_readiness",
+        real_check_task_hints_bootstrap_readiness,
+    )
+
+    pipeline_dir = tmp_path / "pipeline"
+    bundle_root = pipeline_dir / "advanced_geometry"
+    bundle_root.mkdir(parents=True)
+    (bundle_root / "labels.json").write_text("{}")
+    (bundle_root / "structure.json").write_text("{}")
+
+    handoff_path = pipeline_dir / "opportunity_handoff.json"
+    handoff_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "scene_id": "scene_demo",
+                "capture_id": "capture_demo",
+                "readiness_state": "ready",
+                "match_ready": True,
+            }
+        )
+    )
+
+    config_path = tmp_path / "qualified.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "schema_version": "v1",
+                "qualified_opportunities": {
+                    "opp_capture": {"opportunity_handoff_path": str(handoff_path)}
+                },
+            }
+        )
+    )
+
+    config = load_config(config_path)
+    checks = preflight.run_preflight(config, profile="audit")
+    by_name = {c.name: c for c in checks}
+
+    assert by_name["ply:opp_capture"].passed is False
+    assert str(bundle_root / "3dgs_compressed.ply") in by_name["ply:opp_capture"].detail
+    assert by_name["task_hints_bootstrap:opp_capture"].passed is True

@@ -34,6 +34,27 @@ def _valid_handoff() -> dict:
     }
 
 
+def _capture_pipeline_handoff() -> dict:
+    return {
+        "schema_version": "v1",
+        "lane": "qualification",
+        "scene_id": "scene-demo-001",
+        "capture_id": "capture-demo-001",
+        "routing_status": "match_ready",
+        "match_ready": True,
+        "recommended_lane": "advanced_geometry",
+        "readiness_state": "ready",
+        "confidence": 0.92,
+        "summary": "Qualified tote-pick opportunity from capture pipeline.",
+        "constraints": {
+            "environment_type_hint": "warehouse",
+            "swap_focus": ["totes"],
+            "privacy_restrictions": None,
+        },
+        "risks": [],
+    }
+
+
 def test_validate_qualified_opportunity_handoff_accepts_ready_payload():
     from blueprint_validation.validation import validate_qualified_opportunity_handoff
 
@@ -49,6 +70,27 @@ def test_validate_qualified_opportunity_handoff_accepts_non_ready_states():
         payload["qualification_state"] = state
         validated = validate_qualified_opportunity_handoff(payload)
         assert validated["qualification_state"] == state
+
+
+def test_validate_qualified_opportunity_handoff_accepts_capture_pipeline_payload():
+    from blueprint_validation.validation import validate_qualified_opportunity_handoff
+
+    payload = validate_qualified_opportunity_handoff(_capture_pipeline_handoff())
+    assert payload["qualification_state"] == "ready"
+    assert payload["downstream_evaluation_eligibility"] is True
+    assert payload["opportunity_id"] == "scene-demo-001"
+    assert payload["site_submission_id"] == "capture-demo-001"
+    assert payload["operator_approved_summary"] == "Qualified tote-pick opportunity from capture pipeline."
+
+
+def test_validate_qualified_opportunity_handoff_normalizes_capture_pipeline_fallback_summary():
+    from blueprint_validation.validation import validate_qualified_opportunity_handoff
+
+    payload = _capture_pipeline_handoff()
+    payload.pop("summary")
+
+    validated = validate_qualified_opportunity_handoff(payload)
+    assert validated["operator_approved_summary"].startswith("BlueprintCapturePipeline handoff")
 
 
 def test_validate_qualified_opportunity_handoff_rejects_missing_scoped_task_fields():

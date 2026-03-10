@@ -53,33 +53,57 @@ def _require_present(value: Any, key: str, *, where: str) -> None:
         raise QualifiedOpportunityValidationError(f"Missing non-empty '{key}'{where}")
 
 
-def validate_qualified_opportunity_handoff(
-    payload: Any,
-    *,
-    manifest_path: Path | None = None,
-) -> Dict[str, Any]:
-    """Validate the qualified opportunity handoff contract."""
-    where = f" ({manifest_path})" if manifest_path is not None else ""
-    data = _as_mapping(payload, manifest_path=manifest_path)
-
-    schema_version = _require_text(data, "schema_version", where=where)
-    if schema_version != "v1":
-        raise QualifiedOpportunityValidationError(
-            f"Unsupported qualified opportunity schema_version '{schema_version}'{where}"
-        )
-
-    _require_text(data, "site_submission_id", where=where)
-    _require_text(data, "opportunity_id", where=where)
-    qualification_state = _require_text(data, "qualification_state", where=where).lower()
+def _normalize_qualification_state(raw_value: Any, *, where: str) -> str:
+    qualification_state = str(raw_value or "").strip().lower()
     if qualification_state not in _ALLOWED_QUALIFICATION_STATES:
         allowed = ", ".join(sorted(_ALLOWED_QUALIFICATION_STATES))
         raise QualifiedOpportunityValidationError(
             f"qualification_state must be one of: {allowed}{where}"
         )
-    _require_bool(data, "downstream_evaluation_eligibility", where=where)
-    _require_text(data, "operator_approved_summary", where=where)
+    return qualification_state
 
-    scoped_task = _require_mapping(data, "scoped_task_definition", where=where)
+
+def _optional_mapping(payload: Mapping[str, Any], key: str, *, where: str) -> Dict[str, Any] | None:
+    if key not in payload or payload[key] is None:
+        return None
+    value = payload[key]
+    if not isinstance(value, Mapping):
+        raise QualifiedOpportunityValidationError(f"Missing object '{key}'{where}")
+    return dict(value)
+
+
+def _looks_like_capture_pipeline_handoff(payload: Mapping[str, Any]) -> bool:
+    return all(key in payload for key in ("scene_id", "capture_id", "readiness_state", "match_ready"))
+
+
+def _looks_like_rich_handoff(payload: Mapping[str, Any]) -> bool:
+    return any(
+        key in payload
+        for key in (
+            "qualification_state",
+            "downstream_evaluation_eligibility",
+            "scoped_task_definition",
+            "target_robot_team",
+        )
+    )
+
+
+def _validate_rich_handoff(data: Mapping[str, Any], *, where: str) -> Dict[str, Any]:
+    normalized = dict(data)
+    site_submission_id = _require_text(normalized, "site_submission_id", where=where)
+    opportunity_id = _require_text(normalized, "opportunity_id", where=where)
+    qualification_state = _normalize_qualification_state(
+        _require_text(normalized, "qualification_state", where=where),
+        where=where,
+    )
+    downstream_evaluation_eligibility = _require_bool(
+        normalized,
+        "downstream_evaluation_eligibility",
+        where=where,
+    )
+    operator_approved_summary = _require_text(normalized, "operator_approved_summary", where=where)
+
+    scoped_task = _require_mapping(normalized, "scoped_task_definition", where=where)
     _require_text(scoped_task, "task_id", where=f"{where} in scoped_task_definition")
     _require_text(
         scoped_task,
@@ -97,7 +121,7 @@ def validate_qualified_opportunity_handoff(
         where=f"{where} in scoped_task_definition",
     )
 
-    site_constraints = _require_mapping(data, "site_constraints", where=where)
+    site_constraints = _require_mapping(normalized, "site_constraints", where=where)
     for key in (
         "operating_constraints",
         "privacy_security_constraints",
@@ -109,7 +133,7 @@ def validate_qualified_opportunity_handoff(
             where=f"{where} in site_constraints",
         )
 
-    target_robot_team = _require_mapping(data, "target_robot_team", where=where)
+    target_robot_team = _require_mapping(normalized, "target_robot_team", where=where)
     for key in ("team_name_or_id", "robot_platform", "embodiment_notes"):
         _require_text(
             target_robot_team,
@@ -118,10 +142,65 @@ def validate_qualified_opportunity_handoff(
         )
 
     for optional_mapping in ("geometry_package", "scene_package"):
-        if optional_mapping in data and data[optional_mapping] is not None:
-            _require_mapping(data, optional_mapping, where=where)
+        _optional_mapping(normalized, optional_mapping, where=where)
 
-    return data
+    normalized["site_submission_id"] = site_submission_id
+    normalized["opportunity_id"] = opportunity_id
+    normalized["qualification_state"] = qualification_state
+    normalized["downstream_evaluation_eligibility"] = downstream_evaluation_eligibility
+    normalized["operator_approved_summary"] = operator_approved_summary
+    return normalized
+
+
+def _validate_capture_pipeline_handoff(data: Mapping[str, Any], *, where: str) -> Dict[str, Any]:
+    normalized = dict(data)
+    scene_id = _require_text(normalized, "scene_id", where=where)
+    capture_id = _require_text(normalized, "capture_id", where=where)
+    qualification_state = _normalize_qualification_state(
+        _require_text(normalized, "readiness_state", where=where),
+        where=where,
+    )
+    downstream_evaluation_eligibility = _require_bool(normalized, "match_ready", where=where)
+    operator_approved_summary = (
+        str(normalized.get("summary", "") or "").strip()
+        or f"BlueprintCapturePipeline handoff for scene {scene_id} capture {capture_id}"
+    )
+
+    for optional_mapping in ("constraints", "geometry_package", "scene_package"):
+        _optional_mapping(normalized, optional_mapping, where=where)
+
+    normalized["site_submission_id"] = capture_id
+    normalized["opportunity_id"] = scene_id
+    normalized["qualification_state"] = qualification_state
+    normalized["downstream_evaluation_eligibility"] = downstream_evaluation_eligibility
+    normalized["operator_approved_summary"] = operator_approved_summary
+    return normalized
+
+
+def validate_qualified_opportunity_handoff(
+    payload: Any,
+    *,
+    manifest_path: Path | None = None,
+) -> Dict[str, Any]:
+    """Validate the qualified opportunity handoff contract."""
+    where = f" ({manifest_path})" if manifest_path is not None else ""
+    data = _as_mapping(payload, manifest_path=manifest_path)
+
+    schema_version = _require_text(data, "schema_version", where=where)
+    if schema_version != "v1":
+        raise QualifiedOpportunityValidationError(
+            f"Unsupported qualified opportunity schema_version '{schema_version}'{where}"
+        )
+    if _looks_like_rich_handoff(data):
+        return _validate_rich_handoff(data, where=where)
+    if _looks_like_capture_pipeline_handoff(data):
+        return _validate_capture_pipeline_handoff(data, where=where)
+    raise QualifiedOpportunityValidationError(
+        "Qualified opportunity handoff must include either the rich downstream fields "
+        "(qualification_state, downstream_evaluation_eligibility, scoped_task_definition, "
+        "site_constraints, target_robot_team) or the BlueprintCapturePipeline fields "
+        f"(scene_id, capture_id, readiness_state, match_ready){where}"
+    )
 
 
 def load_and_validate_qualified_opportunity_handoff(path: Path) -> Dict[str, Any]:

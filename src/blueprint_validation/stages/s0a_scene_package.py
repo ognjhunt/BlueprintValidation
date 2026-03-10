@@ -116,6 +116,12 @@ def _build_scene_package_for_facility(
     facility: FacilityConfig,
     work_dir: Path,
 ):
+    if facility.ply_path is None:
+        target_name = facility.opportunity_id or facility.name or work_dir.name
+        raise ValueError(
+            "Scene-package build requires a resolved geometry PLY for "
+            f"'{target_name}'. Configure facility.geometry_bundle_path or facility.ply_path."
+        )
     build_config = copy.deepcopy(config)
     build_config.scene_builder.source_ply_path = facility.ply_path.resolve()
     if facility.task_hints_path is not None:

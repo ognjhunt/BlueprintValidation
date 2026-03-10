@@ -143,6 +143,8 @@ bash scripts/download_models.sh
 
 # Stage a qualified opportunity handoff plus optional geometry bundle
 cp /path/to/opportunity_handoff.json configs/opportunity_handoff.local.json
+# If the handoff came from BlueprintCapturePipeline and still lives beside
+# pipeline/advanced_geometry/, BlueprintValidation can infer the bundle root.
 # Optional but preferred when geometry is justified:
 #   3dgs_compressed.ply
 #   labels.json
@@ -496,8 +498,10 @@ Behavior:
 ## Manipulation-Focused Setup
 
 - Use manipulation-centric tasks in `eval_policy.tasks` (pick/place/regrasp/tote handling).
-- Reuse task inference from `BlueprintCapturePipeline` by setting `facilities.<id>.task_hints_path`
-  to that run's `task_targets.json` (Gemini+heuristic video analysis output).
+- Prefer pointing `qualified_opportunities.<id>.opportunity_handoff_path` at the
+  `BlueprintCapturePipeline` handoff and let Validation resolve
+  `advanced_geometry/task_targets.synthetic.json`, `labels.json`, and `structure.json`
+  from the sibling bundle when it exists.
 - Use close-range capture paths around task-relevant objects (totes, bins, shelf faces).
 - For synthetic robot-context data:
   - enable `robot_composite.enabled=true` and set `robot_composite.urdf_path`

@@ -863,6 +863,118 @@ def _resolve_handoff_nested_path(
     return None
 
 
+def _resolve_existing_bundle_member(bundle_root: Optional[Path], filename: str) -> Optional[Path]:
+    if bundle_root is None:
+        return None
+    candidate = bundle_root / filename
+    if candidate.exists():
+        return candidate
+    return None
+
+
+def _infer_capture_pipeline_geometry_bundle_path(
+    handoff_path: Optional[Path],
+    handoff_payload: Optional[Dict[str, Any]],
+) -> Optional[Path]:
+    if handoff_path is None or not isinstance(handoff_payload, dict):
+        return None
+    if "scene_id" not in handoff_payload or "capture_id" not in handoff_payload:
+        return None
+    candidate = handoff_path.parent / "advanced_geometry"
+    if candidate.exists():
+        return candidate.resolve()
+    return None
+
+
+def _resolve_facility_paths(
+    raw: Dict[str, Any],
+    *,
+    base_dir: Path,
+    handoff_path: Optional[Path],
+    handoff_payload: Optional[Dict[str, Any]],
+) -> Dict[str, Optional[Path]]:
+    handoff_base_dir = handoff_path.parent if handoff_path is not None else base_dir
+    handoff_geometry = (
+        dict(handoff_payload.get("geometry_package", {}))
+        if isinstance(handoff_payload, dict) and isinstance(handoff_payload.get("geometry_package"), dict)
+        else {}
+    )
+    handoff_scene = (
+        dict(handoff_payload.get("scene_package", {}))
+        if isinstance(handoff_payload, dict) and isinstance(handoff_payload.get("scene_package"), dict)
+        else {}
+    )
+
+    geometry_bundle_path = _resolve_optional_path(raw.get("geometry_bundle_path"), base_dir)
+    if geometry_bundle_path is None:
+        geometry_bundle_path = _resolve_handoff_nested_path(
+            handoff_geometry,
+            handoff_base_dir,
+            "bundle_path",
+            "root_path",
+        )
+    if geometry_bundle_path is None:
+        geometry_bundle_path = _infer_capture_pipeline_geometry_bundle_path(handoff_path, handoff_payload)
+
+    ply_path = _resolve_optional_path(raw.get("ply_path"), base_dir)
+    if ply_path is None:
+        ply_path = _resolve_handoff_nested_path(
+            handoff_geometry,
+            handoff_base_dir,
+            "ply_path",
+        )
+    if ply_path is None and geometry_bundle_path is not None:
+        ply_path = geometry_bundle_path / "3dgs_compressed.ply"
+
+    scene_package_path = _resolve_optional_path(raw.get("scene_package_path"), base_dir)
+    if scene_package_path is None:
+        scene_package_path = _resolve_handoff_nested_path(
+            handoff_scene,
+            handoff_base_dir,
+            "scene_package_path",
+            "root_path",
+            "bundle_path",
+        )
+
+    task_hints_path = _resolve_optional_path(raw.get("task_hints_path"), base_dir)
+    if task_hints_path is None:
+        task_hints_path = _resolve_handoff_nested_path(
+            handoff_geometry,
+            handoff_base_dir,
+            "task_hints_path",
+        )
+    if task_hints_path is None:
+        task_hints_path = _resolve_existing_bundle_member(
+            geometry_bundle_path,
+            "task_targets.synthetic.json",
+        )
+
+    labels_path = _resolve_handoff_nested_path(
+        handoff_geometry,
+        handoff_base_dir,
+        "labels_path",
+    )
+    if labels_path is None:
+        labels_path = _resolve_existing_bundle_member(geometry_bundle_path, "labels.json")
+
+    structure_path = _resolve_handoff_nested_path(
+        handoff_geometry,
+        handoff_base_dir,
+        "structure_path",
+    )
+    if structure_path is None:
+        structure_path = _resolve_existing_bundle_member(geometry_bundle_path, "structure.json")
+
+    return {
+        "geometry_bundle_path": geometry_bundle_path,
+        "ply_path": ply_path,
+        "scene_package_path": scene_package_path,
+        "task_hints_path": task_hints_path,
+        "labels_path": labels_path,
+        "structure_path": structure_path,
+    }
+
+
 def _merge_target_sections(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     merged: Dict[str, Dict[str, Any]] = {}
     sources: Dict[str, str] = {}
@@ -1057,77 +1169,12 @@ def _parse_facility(facility_id: str, raw: Dict[str, Any], base_dir: Path) -> Fa
         if handoff_path is not None
         else None
     )
-    handoff_base_dir = handoff_path.parent if handoff_path is not None else base_dir
-    handoff_geometry = (
-        dict(handoff_payload.get("geometry_package", {}))
-        if isinstance(handoff_payload, dict)
-        else {}
+    resolved_paths = _resolve_facility_paths(
+        raw,
+        base_dir=base_dir,
+        handoff_path=handoff_path,
+        handoff_payload=handoff_payload,
     )
-    handoff_scene = (
-        dict(handoff_payload.get("scene_package", {}))
-        if isinstance(handoff_payload, dict)
-        else {}
-    )
-    geometry_bundle_path = _resolve_optional_path(raw.get("geometry_bundle_path"), base_dir)
-    if geometry_bundle_path is None:
-        geometry_bundle_path = _resolve_handoff_nested_path(
-            handoff_geometry,
-            handoff_base_dir,
-            "bundle_path",
-            "root_path",
-        )
-
-    explicit_ply_path = _resolve_optional_path(raw.get("ply_path"), base_dir)
-    if explicit_ply_path is None:
-        explicit_ply_path = _resolve_handoff_nested_path(
-            handoff_geometry,
-            handoff_base_dir,
-            "ply_path",
-        )
-
-    ply_path = explicit_ply_path
-    if ply_path is None and geometry_bundle_path is not None:
-        ply_path = geometry_bundle_path / "3dgs_compressed.ply"
-
-    scene_package_path = _resolve_optional_path(raw.get("scene_package_path"), base_dir)
-    if scene_package_path is None:
-        scene_package_path = _resolve_handoff_nested_path(
-            handoff_scene,
-            handoff_base_dir,
-            "scene_package_path",
-            "root_path",
-            "bundle_path",
-        )
-
-    task_hints_path = _resolve_optional_path(raw.get("task_hints_path"), base_dir)
-    if task_hints_path is None:
-        task_hints_path = _resolve_handoff_nested_path(
-            handoff_geometry,
-            handoff_base_dir,
-            "task_hints_path",
-        )
-    if task_hints_path is None and geometry_bundle_path is not None:
-        task_hints_path = geometry_bundle_path / "task_targets.synthetic.json"
-
-    labels_path = _resolve_handoff_nested_path(
-        handoff_geometry,
-        handoff_base_dir,
-        "labels_path",
-    )
-    if (labels_path is None or not labels_path.exists()) and geometry_bundle_path is not None:
-        candidate = geometry_bundle_path / "labels.json"
-        if candidate.exists():
-            labels_path = candidate
-
-    structure_path = _resolve_handoff_nested_path(
-        handoff_geometry,
-        handoff_base_dir,
-        "structure_path",
-    )
-    if (structure_path is None or not structure_path.exists()) and geometry_bundle_path is not None:
-        candidate = geometry_bundle_path / "structure.json"
-        if candidate.exists():
-            structure_path = candidate
 
     claim_benchmark_value = raw.get("claim_benchmark_path")
     intake_mode = "qualified_opportunity" if handoff_path is not None else "legacy_direct"
@@ -1143,13 +1190,13 @@ def _parse_facility(facility_id: str, raw: Dict[str, Any], base_dir: Path) -> Fa
 
     return FacilityConfig(
         name=name,
-        ply_path=ply_path,
+        ply_path=resolved_paths["ply_path"],
         opportunity_handoff_path=handoff_path,
-        geometry_bundle_path=geometry_bundle_path,
-        scene_package_path=scene_package_path,
-        task_hints_path=task_hints_path,
-        labels_path=labels_path,
-        structure_path=structure_path,
+        geometry_bundle_path=resolved_paths["geometry_bundle_path"],
+        scene_package_path=resolved_paths["scene_package_path"],
+        task_hints_path=resolved_paths["task_hints_path"],
+        labels_path=resolved_paths["labels_path"],
+        structure_path=resolved_paths["structure_path"],
         claim_benchmark_path=(
             _resolve_path(claim_benchmark_value, base_dir) if claim_benchmark_value else None
         ),
