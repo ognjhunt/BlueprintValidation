@@ -1,8 +1,8 @@
 # BlueprintValidation
 
-Post-qualification evaluation and adaptation pipeline for Blueprint.
+Secondary-only post-qualification evaluation and adaptation pipeline for Blueprint.
 
-This repo is not the qualification system. It starts after a site has already been scoped and cleared for downstream evaluation.
+This repo is not the qualification system and should not be the default site-readiness path. It starts after a site has already been scoped and cleared for downstream evaluation.
 
 Current canonical executable question:
 
@@ -25,6 +25,8 @@ Preferred upstream handoff:
 - target robot/team
 - optional geometry bundle
 - optional scene package when simulator-backed evaluation is justified
+
+Thin `BlueprintCapturePipeline` handoffs remain temporary compatibility only. The intended default is the rich downstream handoff with explicit evidence links from qualification.
 
 Preferred geometry bundle format:
 

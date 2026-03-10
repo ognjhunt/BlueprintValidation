@@ -53,6 +53,8 @@ Accepted `qualification_state` values:
 
 ### Current BlueprintCapturePipeline handoff
 
+This shape is temporary compatibility only. New qualification flows should prefer the rich downstream handoff plus linked evidence artifacts.
+
 The current upstream pipeline writes a slimmer handoff under `.../pipeline/opportunity_handoff.json`.
 
 Minimum working fields:

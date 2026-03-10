@@ -149,6 +149,7 @@ def _validate_rich_handoff(data: Mapping[str, Any], *, where: str) -> Dict[str, 
     normalized["qualification_state"] = qualification_state
     normalized["downstream_evaluation_eligibility"] = downstream_evaluation_eligibility
     normalized["operator_approved_summary"] = operator_approved_summary
+    normalized["source_contract"] = "qualified_opportunity_v1"
     return normalized
 
 
@@ -174,6 +175,8 @@ def _validate_capture_pipeline_handoff(data: Mapping[str, Any], *, where: str) -
     normalized["qualification_state"] = qualification_state
     normalized["downstream_evaluation_eligibility"] = downstream_evaluation_eligibility
     normalized["operator_approved_summary"] = operator_approved_summary
+    normalized["source_contract"] = "capture_pipeline_thin_v1"
+    normalized["compatibility_mode"] = "temporary_thin_handoff"
     return normalized
 
 
