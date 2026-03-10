@@ -1896,6 +1896,7 @@ def test_load_config_accepts_qualified_opportunities_with_handoff_and_geometry_b
     (bundle_root / "3dgs_compressed.ply").write_text("ply\n")
     (bundle_root / "labels.json").write_text("{}")
     (bundle_root / "structure.json").write_text("{}")
+    (bundle_root / "holi_spatial_grounding.json").write_text("{}")
     (bundle_root / "task_targets.synthetic.json").write_text("{}")
 
     handoff_path = tmp_path / "opportunity_handoff.json"
@@ -1955,6 +1956,7 @@ def test_load_config_accepts_qualified_opportunities_with_handoff_and_geometry_b
     assert target.site_submission_id == "site-sub-001"
     assert target.ply_path == bundle_root / "3dgs_compressed.ply"
     assert target.task_hints_path == bundle_root / "task_targets.synthetic.json"
+    assert target.holi_spatial_grounding_path == bundle_root / "holi_spatial_grounding.json"
     assert target.labels_path == bundle_root / "labels.json"
     assert target.structure_path == bundle_root / "structure.json"
     assert target.qualification_state == "ready"
@@ -2062,6 +2064,7 @@ def test_load_config_accepts_capture_pipeline_handoff_and_infers_bundle(tmp_path
     (bundle_root / "3dgs_compressed.ply").write_text("ply\n")
     (bundle_root / "labels.json").write_text("{}")
     (bundle_root / "structure.json").write_text("{}")
+    (bundle_root / "holi_spatial_grounding.json").write_text("{}")
     (bundle_root / "task_targets.synthetic.json").write_text("{}")
 
     handoff_path = pipeline_dir / "opportunity_handoff.json"
@@ -2101,6 +2104,7 @@ def test_load_config_accepts_capture_pipeline_handoff_and_infers_bundle(tmp_path
     assert target.geometry_bundle_path == bundle_root.resolve()
     assert target.ply_path == bundle_root.resolve() / "3dgs_compressed.ply"
     assert target.task_hints_path == bundle_root.resolve() / "task_targets.synthetic.json"
+    assert target.holi_spatial_grounding_path == bundle_root.resolve() / "holi_spatial_grounding.json"
     assert target.labels_path == bundle_root.resolve() / "labels.json"
     assert target.structure_path == bundle_root.resolve() / "structure.json"
 

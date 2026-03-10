@@ -35,6 +35,7 @@ class FacilityConfig:
     geometry_bundle_path: Optional[Path] = None
     scene_package_path: Optional[Path] = None
     task_hints_path: Optional[Path] = None
+    holi_spatial_grounding_path: Optional[Path] = None
     labels_path: Optional[Path] = None
     structure_path: Optional[Path] = None
     claim_benchmark_path: Optional[Path] = None
@@ -949,6 +950,19 @@ def _resolve_facility_paths(
             "task_targets.synthetic.json",
         )
 
+    holi_spatial_grounding_path = _resolve_optional_path(raw.get("holi_spatial_grounding_path"), base_dir)
+    if holi_spatial_grounding_path is None:
+        holi_spatial_grounding_path = _resolve_handoff_nested_path(
+            handoff_geometry,
+            handoff_base_dir,
+            "holi_spatial_grounding_path",
+        )
+    if holi_spatial_grounding_path is None:
+        holi_spatial_grounding_path = _resolve_existing_bundle_member(
+            geometry_bundle_path,
+            "holi_spatial_grounding.json",
+        )
+
     labels_path = _resolve_handoff_nested_path(
         handoff_geometry,
         handoff_base_dir,
@@ -970,6 +984,7 @@ def _resolve_facility_paths(
         "ply_path": ply_path,
         "scene_package_path": scene_package_path,
         "task_hints_path": task_hints_path,
+        "holi_spatial_grounding_path": holi_spatial_grounding_path,
         "labels_path": labels_path,
         "structure_path": structure_path,
     }
@@ -1195,6 +1210,7 @@ def _parse_facility(facility_id: str, raw: Dict[str, Any], base_dir: Path) -> Fa
         geometry_bundle_path=resolved_paths["geometry_bundle_path"],
         scene_package_path=resolved_paths["scene_package_path"],
         task_hints_path=resolved_paths["task_hints_path"],
+        holi_spatial_grounding_path=resolved_paths["holi_spatial_grounding_path"],
         labels_path=resolved_paths["labels_path"],
         structure_path=resolved_paths["structure_path"],
         claim_benchmark_path=(

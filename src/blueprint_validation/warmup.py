@@ -433,7 +433,10 @@ def warmup_facility(
     obbs_raw: Optional[List] = None
     if facility.task_hints_path and facility.task_hints_path.exists():
         try:
-            obbs_raw = load_obbs_from_task_targets(facility.task_hints_path)
+            obbs_raw = load_obbs_from_task_targets(
+                facility.task_hints_path,
+                grounding_path=facility.holi_spatial_grounding_path,
+            )
         except Exception:
             logger.warning(
                 "Failed loading OBBs for warmup orientation scoring from %s",

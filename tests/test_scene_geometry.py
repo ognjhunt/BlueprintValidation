@@ -106,6 +106,38 @@ def test_load_obbs_missing_bbox(tmp_path):
     assert obbs[0].label == "valid"
 
 
+def test_load_obbs_uses_holi_sidecar_when_bbox_missing(tmp_path):
+    from blueprint_validation.rendering.scene_geometry import load_obbs_from_task_targets
+
+    data = _make_task_targets(
+        manipulation_candidates=[
+            {"label": "mug", "instance_id": "mug_1"},
+        ],
+    )
+    path = tmp_path / "task_targets.json"
+    path.write_text(json.dumps(data))
+    grounding_path = tmp_path / "holi_spatial_grounding.json"
+    grounding_path.write_text(
+        json.dumps(
+            {
+                "grounded_objects": [
+                    {
+                        "object_id": "mug_1",
+                        "label": "mug",
+                        "confidence": 0.91,
+                        "boundingBox": {"center": [0.1, 0.2, 0.3], "extents": [0.2, 0.2, 0.2]},
+                    }
+                ]
+            }
+        )
+    )
+
+    obbs = load_obbs_from_task_targets(path, grounding_path=grounding_path)
+    assert len(obbs) == 1
+    np.testing.assert_allclose(obbs[0].center, [0.1, 0.2, 0.3])
+    assert obbs[0].confidence == pytest.approx(0.91)
+
+
 def test_load_obbs_axes_identity_default(tmp_path):
     from blueprint_validation.rendering.scene_geometry import load_obbs_from_task_targets
 

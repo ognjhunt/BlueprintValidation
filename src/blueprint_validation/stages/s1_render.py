@@ -231,7 +231,10 @@ class RenderStage(PipelineStage):
 
         # Primary path: load OBBs from task_targets.json
         if facility.task_hints_path and facility.task_hints_path.exists():
-            obbs = load_obbs_from_task_targets(facility.task_hints_path)
+            obbs = load_obbs_from_task_targets(
+                facility.task_hints_path,
+                grounding_path=facility.holi_spatial_grounding_path,
+            )
             if obbs:
                 if scene_T is not None:
                     obbs = transform_obbs(obbs, scene_T)
@@ -407,7 +410,10 @@ class RenderStage(PipelineStage):
         obbs_for_orientation: Optional[List[OrientedBoundingBox]] = None
         if facility.task_hints_path and facility.task_hints_path.exists():
             try:
-                obbs_for_orientation = load_obbs_from_task_targets(facility.task_hints_path)
+                obbs_for_orientation = load_obbs_from_task_targets(
+                    facility.task_hints_path,
+                    grounding_path=facility.holi_spatial_grounding_path,
+                )
             except Exception:
                 logger.warning(
                     "Failed loading OBBs for orientation scoring from %s",
@@ -772,7 +778,10 @@ class RenderStage(PipelineStage):
         obbs_for_orientation: Optional[List[OrientedBoundingBox]] = None
         if facility.task_hints_path and facility.task_hints_path.exists():
             try:
-                obbs_for_orientation = load_obbs_from_task_targets(facility.task_hints_path)
+                obbs_for_orientation = load_obbs_from_task_targets(
+                    facility.task_hints_path,
+                    grounding_path=facility.holi_spatial_grounding_path,
+                )
             except Exception:
                 logger.warning(
                     "Failed loading OBBs for geometry canary orientation scoring from %s",
@@ -3881,7 +3890,10 @@ def _build_scene_locked_specs(
         return []
 
     try:
-        obbs = load_obbs_from_task_targets(task_hints_path)
+        obbs = load_obbs_from_task_targets(
+            task_hints_path,
+            grounding_path=facility.holi_spatial_grounding_path,
+        )
     except Exception:
         logger.warning(
             "%s scene-locked mode failed to load OBBs from %s",

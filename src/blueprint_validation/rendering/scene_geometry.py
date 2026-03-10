@@ -568,10 +568,53 @@ class OccupancyGrid:
 _IDENTITY_AXES = np.eye(3, dtype=np.float64)
 
 
-def load_obbs_from_task_targets(path: Path) -> List[OrientedBoundingBox]:
+def _load_holi_grounding_index(path: Path | None) -> tuple[Dict[str, Dict[str, Any]], Dict[str, List[Dict[str, Any]]]]:
+    by_id: Dict[str, Dict[str, Any]] = {}
+    by_label: Dict[str, List[Dict[str, Any]]] = {}
+    if path is None or not path.exists():
+        return by_id, by_label
+    try:
+        payload = json.loads(path.read_text())
+    except Exception:
+        logger.warning("Failed loading Holi grounding sidecar from %s", path, exc_info=True)
+        return by_id, by_label
+
+    grounded = payload.get("grounded_objects") if isinstance(payload.get("grounded_objects"), list) else []
+    for item in grounded:
+        if not isinstance(item, dict):
+            continue
+        object_id = str(item.get("object_id") or item.get("instance_id") or "").strip()
+        label = str(item.get("label") or "").strip().lower()
+        if object_id and object_id not in by_id:
+            by_id[object_id] = item
+        if label:
+            by_label.setdefault(label, []).append(item)
+    return by_id, by_label
+
+
+def _resolve_grounded_overlay(
+    entry: Dict[str, Any],
+    *,
+    by_id: Dict[str, Dict[str, Any]],
+    by_label: Dict[str, List[Dict[str, Any]]],
+) -> Dict[str, Any] | None:
+    instance_id = str(entry.get("instance_id") or entry.get("object_id") or "").strip()
+    if instance_id and instance_id in by_id:
+        return by_id[instance_id]
+    label = str(entry.get("label") or "").strip().lower()
+    options = by_label.get(label, [])
+    return options[0] if len(options) == 1 else None
+
+
+def load_obbs_from_task_targets(path: Path, grounding_path: Path | None = None) -> List[OrientedBoundingBox]:
     """Parse task_targets.json and extract OBBs from hint candidate groups."""
     with open(path) as f:
         data = json.load(f)
+
+    if grounding_path is None:
+        sibling = path.parent / "holi_spatial_grounding.json"
+        grounding_path = sibling if sibling.exists() else None
+    grounding_by_id, grounding_by_label = _load_holi_grounding_index(grounding_path)
 
     obbs: List[OrientedBoundingBox] = []
 
@@ -581,7 +624,14 @@ def load_obbs_from_task_targets(path: Path) -> List[OrientedBoundingBox]:
         ("navigation", "navigation_hints"),
     ]:
         for entry in data.get(key, []):
+            overlay = _resolve_grounded_overlay(
+                entry,
+                by_id=grounding_by_id,
+                by_label=grounding_by_label,
+            )
             bbox = entry.get("boundingBox") or entry.get("obb")
+            if bbox is None and overlay is not None:
+                bbox = overlay.get("boundingBox") or overlay.get("obb")
             if bbox is None:
                 logger.warning(
                     "Skipping %s entry '%s' — no boundingBox/obb field",
@@ -601,12 +651,12 @@ def load_obbs_from_task_targets(path: Path) -> List[OrientedBoundingBox]:
 
             obbs.append(
                 OrientedBoundingBox(
-                    instance_id=entry.get("instance_id", entry.get("label", "unknown")),
-                    label=entry.get("label", "unknown"),
+                    instance_id=str(entry.get("instance_id") or entry.get("object_id") or entry.get("label") or "unknown"),
+                    label=str(entry.get("label") or (overlay.get("label") if overlay else "unknown")),
                     center=center,
                     extents=extents,
                     axes=axes,
-                    confidence=float(entry.get("confidence", 1.0)),
+                    confidence=float(entry.get("confidence") or (overlay.get("confidence") if overlay else 1.0) or 1.0),
                     category=category,
                 )
             )

@@ -151,7 +151,10 @@ def _resolve_object_centers(
             if facility.task_hints_path is None or not facility.task_hints_path.exists():
                 continue
             try:
-                obbs = load_obbs_from_task_targets(facility.task_hints_path)
+                obbs = load_obbs_from_task_targets(
+                    facility.task_hints_path,
+                    grounding_path=facility.holi_spatial_grounding_path,
+                )
                 centers = [np.asarray(obb.center, dtype=np.float32) for obb in obbs]
                 if centers:
                     return centers, "task_hints_obb"

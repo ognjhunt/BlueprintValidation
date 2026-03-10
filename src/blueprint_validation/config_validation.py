@@ -45,6 +45,7 @@ _FACILITY_KEYS = {
     "geometry_bundle_path",
     "scene_package_path",
     "task_hints_path",
+    "holi_spatial_grounding_path",
     "claim_benchmark_path",
     "description",
     "landmarks",
