@@ -72,3 +72,120 @@ def test_geometry_canary_command_invokes_stage(monkeypatch, tmp_path):
     assert int(captured["probe_frames_override"]) == 10
     assert bool(captured["targeted_only"]) is False
     assert "Geometry canary complete" in result.output
+
+
+def test_geometry_canary_accepts_opportunity_alias(monkeypatch, tmp_path):
+    import blueprint_validation.cli as cli_module
+    import blueprint_validation.stages.s1_render as s1_render_module
+    from blueprint_validation.config import CameraPathSpec, FacilityConfig, RenderConfig, ValidationConfig
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("schema_version: v1\n")
+    ply_path = tmp_path / "scene.ply"
+    ply_path.write_bytes(b"ply\n")
+    cfg = ValidationConfig(
+        project_name="Test",
+        facilities={
+            "opp_eval": FacilityConfig(
+                name="Qualified Opp",
+                ply_path=ply_path,
+                description="test",
+            )
+        },
+        render=RenderConfig(
+            resolution=(120, 160),
+            camera_paths=[CameraPathSpec(type="orbit", radius_m=2.0)],
+        ),
+    )
+    monkeypatch.setattr(cli_module, "load_config", lambda _path: cfg)
+
+    class FakeRenderStage:
+        def run_geometry_canary(self, **kwargs):
+            return {
+                "num_rows": 1,
+                "num_target_grounded_rows": 1,
+                "first6_target_grounded_rows": 1,
+                "first6_target_missing_count": 0,
+                "rows_path": str(tmp_path / "rows.jsonl"),
+                "summary_path": str(tmp_path / "summary.json"),
+            }
+
+    monkeypatch.setattr(s1_render_module, "RenderStage", FakeRenderStage)
+
+    result = CliRunner().invoke(
+        cli_module.cli,
+        [
+            "--config",
+            str(config_path),
+            "geometry-canary",
+            "--opportunity",
+            "opp_eval",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Geometry canary complete" in result.output
+
+
+def test_render_command_keeps_legacy_ply_override(monkeypatch, tmp_path):
+    import blueprint_validation.cli as cli_module
+    import blueprint_validation.stages.render_backend as render_backend_module
+    import blueprint_validation.stages.s0a_scene_package as scene_package_module
+    import blueprint_validation.stages.s1_render as s1_render_module
+    from blueprint_validation.common import StageResult
+    from blueprint_validation.config import CameraPathSpec, FacilityConfig, RenderConfig, ValidationConfig
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("schema_version: v1\n")
+    default_ply = tmp_path / "default_scene.ply"
+    default_ply.write_bytes(b"ply\n")
+    override_ply = tmp_path / "override_scene.ply"
+    override_ply.write_bytes(b"ply\n")
+    cfg = ValidationConfig(
+        project_name="Test",
+        facilities={
+            "opp_eval": FacilityConfig(
+                name="Qualified Opp",
+                ply_path=default_ply,
+                description="test",
+            )
+        },
+        render=RenderConfig(
+            resolution=(120, 160),
+            camera_paths=[CameraPathSpec(type="orbit", radius_m=2.0)],
+        ),
+    )
+    monkeypatch.setattr(cli_module, "load_config", lambda _path: cfg)
+    monkeypatch.setattr(render_backend_module, "active_render_backend", lambda *a, **k: "gsplat")
+
+    class FakeScenePackageStage:
+        def execute(self, *_args, **_kwargs):
+            return StageResult(stage_name="s0a_scene_package", status="skipped", elapsed_seconds=0.0)
+
+    seen: dict[str, object] = {}
+
+    class FakeRenderStage:
+        name = "s1_render"
+
+        def execute(self, _config, facility, _work_dir, _previous_results):
+            seen["ply_path"] = facility.ply_path
+            return StageResult(stage_name="s1_render", status="success", elapsed_seconds=0.0)
+
+    monkeypatch.setattr(scene_package_module, "ScenePackageStage", FakeScenePackageStage)
+    monkeypatch.setattr(s1_render_module, "RenderStage", FakeRenderStage)
+
+    result = CliRunner().invoke(
+        cli_module.cli,
+        [
+            "--config",
+            str(config_path),
+            "render",
+            "--opportunity",
+            "opp_eval",
+            "--ply-path",
+            str(override_ply),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert seen["ply_path"] == override_ply

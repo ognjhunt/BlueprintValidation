@@ -847,11 +847,29 @@ class TaskHintsBootstrapStage(PipelineStage):
                 },
             )
 
+        if facility.ply_path is None:
+            if facility.scene_package_path is not None:
+                return StageResult(
+                    stage_name=self.name,
+                    status="skipped",
+                    elapsed_seconds=0,
+                    detail=(
+                        "No geometry bundle resolved; skipping Stage 0 bootstrap because "
+                        "this evaluation target relies on a scene package."
+                    ),
+                )
+            return StageResult(
+                stage_name=self.name,
+                status="failed",
+                elapsed_seconds=0,
+                detail="No geometry PLY resolved for Stage 0 bootstrap.",
+            )
+
         # --- Priority 0: InteriorGS direct metadata ingestion ---
         # labels.json and structure.json sit alongside the PLY file.
         # When present, skip the VLM entirely — the ground truth is already there.
-        labels_path = facility.ply_path.parent / "labels.json"
-        structure_path = facility.ply_path.parent / "structure.json"
+        labels_path = facility.labels_path or (facility.ply_path.parent / "labels.json")
+        structure_path = facility.structure_path or (facility.ply_path.parent / "structure.json")
         if labels_path.exists():
             logger.info("InteriorGS labels.json found at %s — using direct ingestion", labels_path)
             try:

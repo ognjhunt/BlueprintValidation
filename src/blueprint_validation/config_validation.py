@@ -10,6 +10,7 @@ _TOP_LEVEL_KEYS = {
     "schema_version",
     "project_name",
     "facilities",
+    "qualified_opportunities",
     "render",
     "robot_composite",
     "gemini_polish",
@@ -40,6 +41,8 @@ _TOP_LEVEL_KEYS = {
 _FACILITY_KEYS = {
     "name",
     "ply_path",
+    "opportunity_handoff_path",
+    "geometry_bundle_path",
     "scene_package_path",
     "task_hints_path",
     "claim_benchmark_path",
@@ -637,11 +640,17 @@ def validate_config_keys(raw: Mapping[str, object], *, config_path: Path) -> Non
     unknown_keys: list[str] = []
     _collect_unknown_keys(raw, _TOP_LEVEL_KEYS, "", unknown_keys)
 
-    facilities = _expect_mapping(raw["facilities"], "facilities") if "facilities" in raw else None
-    if facilities is not None:
-        for facility_id, facility_raw in facilities.items():
-            facility = _expect_mapping(facility_raw, f"facilities.{facility_id}")
-            facility_prefix = _format_path("facilities", facility_id)
+    for collection_name in ("qualified_opportunities", "facilities"):
+        collection = (
+            _expect_mapping(raw[collection_name], collection_name)
+            if collection_name in raw
+            else None
+        )
+        if collection is None:
+            continue
+        for facility_id, facility_raw in collection.items():
+            facility = _expect_mapping(facility_raw, f"{collection_name}.{facility_id}")
+            facility_prefix = _format_path(collection_name, facility_id)
             _collect_unknown_keys(facility, _FACILITY_KEYS, facility_prefix, unknown_keys)
             zones = facility.get("manipulation_zones")
             if zones is not None:

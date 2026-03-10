@@ -1,17 +1,19 @@
 schema_version: v1
 project_name: "Blueprint Validation Pilot"
 
-# ---- Facilities ----
-facilities:
+# ---- Qualified Opportunities (preferred intake) ----
+qualified_opportunities:
   facility_a:
     name: "Warehouse A - Durham"
-    ply_path: ../data/facilities/facility_a/splat.ply
+    opportunity_handoff_path: ./opportunity_handoff.example.json
+    geometry_bundle_path: ../data/facilities/facility_a
+    # Legacy direct override remains supported when geometry is staged outside the bundle:
+    # ply_path: ../data/facilities/facility_a/splat.ply
     # scene_package_path: /path/to/facility_a_scene_package
     claim_benchmark_path: ./benchmarks/facility_a.fixed_claim.json
-    # Optional: BlueprintCapturePipeline task_targets.json generated from source video.
-    # When present, Stage 4 auto-injects additional manipulation/articulation tasks.
-    # task_hints_path: /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/runs/<run>/task_targets.json
-    description: "Large warehouse with shelving racks, loading dock, concrete floors"
+    # Optional legacy override if task hints are staged outside the bundle:
+    # task_hints_path: /path/to/task_targets.synthetic.json
+    description: "Qualified warehouse opportunity for downstream tote-pick evaluation"
     landmarks:
       - "loading dock on east wall"
       - "shelving racks in center"
@@ -35,11 +37,11 @@ facilities:
 
   facility_b:
     name: "Warehouse B - Raleigh"
-    ply_path: ../data/facilities/facility_b/splat.ply
+    geometry_bundle_path: ../data/facilities/facility_b
+    # ply_path: ../data/facilities/facility_b/splat.ply
     # scene_package_path: /path/to/facility_b_scene_package
     claim_benchmark_path: ./benchmarks/facility_b.fixed_claim.json
-    # task_hints_path: /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/runs/<run>/task_targets.json
-    description: "Smaller warehouse with conveyor system, narrow aisles"
+    description: "Second qualified warehouse opportunity used for downstream evaluation"
     landmarks:
       - "conveyor belt along south wall"
       - "narrow aisles between racks"

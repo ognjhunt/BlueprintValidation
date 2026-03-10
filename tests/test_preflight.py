@@ -942,3 +942,55 @@ def test_preflight_module_import_is_lazy_for_heavy_helpers(monkeypatch):
 
     module = importlib.import_module("blueprint_validation.preflight")
     assert hasattr(module, "run_preflight")
+
+
+def test_check_qualified_opportunity_handoff_gate_passes_for_ready_target(sample_config):
+    import blueprint_validation.preflight as preflight
+
+    facility = sample_config.facilities["test_facility"]
+    facility.opportunity_handoff_path = Path("/tmp/opportunity_handoff.json")
+    facility.qualification_state = "ready"
+    facility.downstream_evaluation_eligibility = True
+
+    result = preflight.check_qualified_opportunity_handoff_gate("test_facility", facility)
+    assert result.passed is True
+    assert "accepted" in result.detail.lower()
+
+
+def test_check_qualified_opportunity_handoff_gate_fails_for_non_ready_target(sample_config):
+    import blueprint_validation.preflight as preflight
+
+    facility = sample_config.facilities["test_facility"]
+    facility.opportunity_handoff_path = Path("/tmp/opportunity_handoff.json")
+    facility.qualification_state = "risky"
+    facility.downstream_evaluation_eligibility = False
+
+    result = preflight.check_qualified_opportunity_handoff_gate("test_facility", facility)
+    assert result.passed is False
+    assert "not ready" in result.detail.lower()
+
+
+def test_check_legacy_intake_notice_is_advisory_for_legacy_targets(sample_config):
+    import blueprint_validation.preflight as preflight
+
+    facility = sample_config.facilities["test_facility"]
+    facility.opportunity_handoff_path = None
+
+    result = preflight.check_legacy_intake_notice("test_facility", facility)
+    assert result.passed is True
+    assert "legacy direct geometry intake" in result.detail.lower()
+
+
+def test_run_preflight_includes_qualified_opportunity_gate(sample_config, monkeypatch):
+    import blueprint_validation.preflight as preflight
+
+    _patch_preflight_fast(monkeypatch, preflight)
+    facility = sample_config.facilities["test_facility"]
+    facility.opportunity_handoff_path = Path("/tmp/opportunity_handoff.json")
+    facility.qualification_state = "ready"
+    facility.downstream_evaluation_eligibility = True
+
+    checks = preflight.run_preflight(sample_config, profile="audit")
+    by_name = {c.name: c for c in checks}
+    assert by_name["qualified_opportunity:eligibility:test_facility"].passed is True
+    assert by_name["intake:legacy_direct_notice:test_facility"].passed is True

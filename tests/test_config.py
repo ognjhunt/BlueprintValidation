@@ -1,5 +1,6 @@
 """Tests for configuration loading and validation."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -1883,3 +1884,168 @@ def test_config_rejects_fixed_claim_protocol_without_benchmark_manifest(tmp_path
 
     with pytest.raises(ValueError, match="claim_benchmark_path"):
         load_config(config_path)
+
+
+def test_load_config_accepts_qualified_opportunities_with_handoff_and_geometry_bundle(tmp_path):
+    import yaml
+
+    from blueprint_validation.config import load_config
+
+    bundle_root = tmp_path / "bundle"
+    bundle_root.mkdir(parents=True)
+    (bundle_root / "3dgs_compressed.ply").write_text("ply\n")
+    (bundle_root / "labels.json").write_text("{}")
+    (bundle_root / "structure.json").write_text("{}")
+    (bundle_root / "task_targets.synthetic.json").write_text("{}")
+
+    handoff_path = tmp_path / "opportunity_handoff.json"
+    handoff_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "site_submission_id": "site-sub-001",
+                "opportunity_id": "opp-001",
+                "qualification_state": "ready",
+                "downstream_evaluation_eligibility": True,
+                "operator_approved_summary": "Qualified warehouse tote-pick lane",
+                "scoped_task_definition": {
+                    "task_id": "task-001",
+                    "scoped_task_statement": "Pick tote from shelf bay 3",
+                    "success_criteria": ["grasp tote", "clear shelf", "stage at handoff point"],
+                    "in_scope_zone": "bay-3",
+                },
+                "site_constraints": {
+                    "operating_constraints": ["night shift only"],
+                    "privacy_security_constraints": ["no worker faces"],
+                    "known_blockers": ["reflective wrap on two pallets"],
+                },
+                "target_robot_team": {
+                    "team_name_or_id": "team-alpha",
+                    "robot_platform": "franka_panda",
+                    "embodiment_notes": "fixed-base arm on mobile cart",
+                },
+            }
+        )
+    )
+
+    config_path = tmp_path / "qualified.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "schema_version": "v1",
+                "project_name": "Qualified Intake",
+                "qualified_opportunities": {
+                    "opp_a": {
+                        "opportunity_handoff_path": str(handoff_path),
+                        "geometry_bundle_path": str(bundle_root),
+                        "claim_benchmark_path": str(tmp_path / "claim.json"),
+                    }
+                },
+            }
+        )
+    )
+    (tmp_path / "claim.json").write_text('{"version": 1, "task_specs": [], "assignments": []}')
+
+    config = load_config(config_path)
+
+    target = config.facilities["opp_a"]
+    assert config.qualified_opportunities is config.facilities
+    assert target.uses_qualified_handoff is True
+    assert target.opportunity_id == "opp-001"
+    assert target.site_submission_id == "site-sub-001"
+    assert target.ply_path == bundle_root / "3dgs_compressed.ply"
+    assert target.task_hints_path == bundle_root / "task_targets.synthetic.json"
+    assert target.labels_path == bundle_root / "labels.json"
+    assert target.structure_path == bundle_root / "structure.json"
+    assert target.qualification_state == "ready"
+    assert target.downstream_evaluation_eligibility is True
+
+
+def test_load_config_rejects_conflicting_facilities_and_qualified_opportunities(tmp_path):
+    import yaml
+
+    from blueprint_validation.config import load_config
+
+    config_path = tmp_path / "conflict.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "schema_version": "v1",
+                "facilities": {
+                    "shared": {
+                        "name": "Legacy Target",
+                        "ply_path": str(tmp_path / "legacy.ply"),
+                    }
+                },
+                "qualified_opportunities": {
+                    "shared": {
+                        "name": "Qualified Target",
+                        "ply_path": str(tmp_path / "qualified.ply"),
+                    }
+                },
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="defined differently"):
+        load_config(config_path)
+
+
+def test_load_config_prefers_explicit_ply_path_over_bundle_default(tmp_path):
+    import yaml
+
+    from blueprint_validation.config import load_config
+
+    bundle_root = tmp_path / "bundle"
+    bundle_root.mkdir(parents=True)
+    explicit_ply = tmp_path / "custom_scene.ply"
+    explicit_ply.write_text("ply\n")
+
+    handoff_path = tmp_path / "opportunity_handoff.json"
+    handoff_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "site_submission_id": "site-sub-002",
+                "opportunity_id": "opp-002",
+                "qualification_state": "ready",
+                "downstream_evaluation_eligibility": True,
+                "operator_approved_summary": "Qualified scene",
+                "scoped_task_definition": {
+                    "task_id": "task-002",
+                    "scoped_task_statement": "Inspect handoff station",
+                    "success_criteria": ["capture station"],
+                    "in_scope_zone": "handoff-station",
+                },
+                "site_constraints": {
+                    "operating_constraints": ["weekends only"],
+                    "privacy_security_constraints": ["badge-only area"],
+                    "known_blockers": ["none"],
+                },
+                "target_robot_team": {
+                    "team_name_or_id": "team-beta",
+                    "robot_platform": "openvla",
+                    "embodiment_notes": "camera-first validation",
+                },
+            }
+        )
+    )
+
+    config_path = tmp_path / "explicit_ply.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "schema_version": "v1",
+                "qualified_opportunities": {
+                    "opp_b": {
+                        "opportunity_handoff_path": str(handoff_path),
+                        "geometry_bundle_path": str(bundle_root),
+                        "ply_path": str(explicit_ply),
+                    }
+                }
+            }
+        )
+    )
+
+    config = load_config(config_path)
+    assert config.facilities["opp_b"].ply_path == explicit_ply.resolve()

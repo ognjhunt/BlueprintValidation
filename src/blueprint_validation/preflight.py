@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Callable, List, Literal, cast
 
 from .common import PreflightCheck, get_logger
-from .config import ValidationConfig
+from .config import FacilityConfig, ValidationConfig
 from .evaluation.claim_benchmark import (
     claim_benchmark_alignment_failures,
     claim_benchmark_strictness_failures,
@@ -1317,7 +1317,13 @@ def check_dreamzero_runtime_contract(
                 pass
 
 
-def check_facility_ply(facility_id: str, ply_path: Path) -> PreflightCheck:
+def check_facility_ply(facility_id: str, ply_path: Path | None) -> PreflightCheck:
+    if ply_path is None:
+        return PreflightCheck(
+            name=f"ply:{facility_id}",
+            passed=False,
+            detail="No geometry PLY resolved for this evaluation target.",
+        )
     if ply_path.exists() and ply_path.stat().st_size > 0:
         size_mb = ply_path.stat().st_size / (1024**2)
         return PreflightCheck(
@@ -1347,12 +1353,27 @@ def check_task_hints_bootstrap_readiness(
             detail=f"Existing task hints: {facility.task_hints_path}",
         )
 
-    labels_path = facility.ply_path.parent / "labels.json"
-    if labels_path.exists():
+    labels_path = getattr(facility, "labels_path", None)
+    if labels_path is None and getattr(facility, "ply_path", None) is not None:
+        labels_path = facility.ply_path.parent / "labels.json"
+    if labels_path is not None and labels_path.exists():
         return PreflightCheck(
             name=name,
             passed=True,
             detail=f"InteriorGS metadata present: {labels_path}",
+        )
+
+    if getattr(facility, "ply_path", None) is None:
+        if getattr(facility, "scene_package_path", None) is not None:
+            return PreflightCheck(
+                name=name,
+                passed=True,
+                detail="Scene-package intake: Stage 0 task-hints bootstrap skipped without geometry.",
+            )
+        return PreflightCheck(
+            name=name,
+            passed=False,
+            detail="No geometry PLY resolved for Stage 0 bootstrap.",
         )
 
     if not facility.ply_path.exists():
@@ -1394,6 +1415,50 @@ def check_task_hints_bootstrap_readiness(
         detail=(
             f"PLY bootstrap path ready ({len(means)} points, colors="
             f"{'yes' if colors is not None else 'no'})"
+        ),
+    )
+
+
+def check_qualified_opportunity_handoff_gate(
+    facility_id: str,
+    facility: FacilityConfig,
+) -> PreflightCheck:
+    name = f"qualified_opportunity:eligibility:{facility_id}"
+    if not getattr(facility, "uses_qualified_handoff", False):
+        return PreflightCheck(
+            name=name,
+            passed=True,
+            detail="Legacy direct intake in use; no qualified opportunity handoff configured.",
+        )
+
+    qualification_state = str(getattr(facility, "qualification_state", "") or "").strip().lower()
+    eligible = getattr(facility, "downstream_evaluation_eligibility", None)
+    passed = qualification_state == "ready" and eligible is True
+    detail = (
+        f"qualification_state={qualification_state or 'unknown'} "
+        f"downstream_evaluation_eligibility={eligible}"
+    )
+    if passed:
+        detail = f"Qualified opportunity accepted: {detail}"
+    else:
+        detail = f"Qualified opportunity is not ready for downstream evaluation: {detail}"
+    return PreflightCheck(name=name, passed=passed, detail=detail)
+
+
+def check_legacy_intake_notice(facility_id: str, facility: FacilityConfig) -> PreflightCheck:
+    name = f"intake:legacy_direct_notice:{facility_id}"
+    if getattr(facility, "uses_qualified_handoff", False):
+        return PreflightCheck(
+            name=name,
+            passed=True,
+            detail="Qualified opportunity handoff configured.",
+        )
+    return PreflightCheck(
+        name=name,
+        passed=True,
+        detail=(
+            "Legacy direct geometry intake is still supported, but it bypasses the "
+            "qualification handoff and is deprecated as the default intake path."
         ),
     )
 
@@ -1963,7 +2028,20 @@ def run_preflight(
         checks.append(check_polaris_runtime(config))
 
     for fid, fconf in config.facilities.items():
-        checks.append(check_facility_ply(fid, fconf.ply_path))
+        checks.append(check_qualified_opportunity_handoff_gate(fid, fconf))
+        checks.append(check_legacy_intake_notice(fid, fconf))
+        if fconf.ply_path is not None:
+            checks.append(check_facility_ply(fid, fconf.ply_path))
+        elif fconf.scene_package_path is not None:
+            checks.append(
+                PreflightCheck(
+                    name=f"ply:{fid}",
+                    passed=True,
+                    detail="No geometry PLY resolved; scene-package-only intake accepted.",
+                )
+            )
+        else:
+            checks.append(check_facility_ply(fid, fconf.ply_path))
         if fconf.scene_package_path is not None:
             checks.append(check_scene_package_runtime_contract(config, fid))
         checks.append(check_isaac_scene_import_opt_in(config, fid))

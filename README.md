@@ -1,22 +1,45 @@
 # BlueprintValidation
 
-Gaussian splat to robot adaptation pipeline with world-model inner-loop training and PolaRiS final-gate evaluation.
+Post-qualification evaluation and adaptation pipeline for Blueprint.
+
+This repo is not the qualification system. It starts after a site has already been scoped and cleared for downstream evaluation.
 
 Current canonical executable question:
 
-> Which policy should we trust for this exact deployment scene: frozen OpenVLA or the scene-adapted OpenVLA candidate?
+> For this already-qualified opportunity, how should we evaluate or adapt a specific robot stack against the scoped task and site constraints?
 
 Default answer path in this repo:
 
 - world model / DreamDojo = fast inner loop for scene adaptation, synthetic rollouts, and policy improvement
 - PolaRiS = default outer-loop evaluator and final deployment gate when enabled and valid
 
-World-model stages remain central to the product. The change is that world-model evidence is now supporting by default for the final recommendation when `eval_polaris.enabled=true` and `eval_polaris.default_as_primary_gate=true`.
+World-model stages remain central to the product. The change is that they now sit behind a qualification-first handoff model, and their evidence becomes supporting by default when `eval_polaris.enabled=true` and `eval_polaris.default_as_primary_gate=true`.
+
+## Preferred Intake
+
+Preferred upstream handoff:
+
+- `opportunity_handoff.json`
+- scoped task definition
+- site constraints
+- target robot/team
+- optional geometry bundle
+- optional scene package when simulator-backed evaluation is justified
+
+Preferred geometry bundle format:
+
+- `3dgs_compressed.ply`
+- `labels.json`
+- `structure.json`
+- `task_targets.synthetic.json`
+
+See [docs/qualified_opportunity_handoff.md](docs/qualified_opportunity_handoff.md) and [configs/qualified_opportunity_validation.yaml](configs/qualified_opportunity_validation.yaml).
 
 ## Pipeline
 
 ```
-PLY file (from BlueprintCapturePipeline)
+Qualified opportunity handoff
+  + optional geometry bundle / scene package
   → Stage 1: Render video clips at robot-height via gsplat
   → Stage 1b (optional): Composite URDF robot arm with camera extrinsics
   → Stage 1c (optional): Gemini image polish on composited clips
@@ -43,7 +66,7 @@ PLY file (from BlueprintCapturePipeline)
 
 Note: Stage 3d (`wm_refresh_loop.enabled`) is now enabled by default and runs in WM-only scope.
 
-For the default deployment recommendation path, enable `eval_polaris` and point each facility at a validated `scene_package_path`. In that mode, Stage 4f (`s4f_polaris_eval`) is the primary gate for the report headline and deployment recommendation, while Stages 4/4e/4d remain supporting world-model evidence.
+For the default deployment recommendation path, enable `eval_polaris` and point each qualified opportunity at a validated `scene_package_path`. In that mode, Stage 4f (`s4f_polaris_eval`) is the primary gate for the report headline and deployment recommendation, while Stages 4/4e/4d remain supporting world-model evidence.
 
 For the legacy fixed-world same-facility WM-only claim path, use `eval_policy.claim_protocol=fixed_same_facility_uplift` together with `eval_policy.primary_endpoint=task_success`, `eval_policy.freeze_world_snapshot=true`, `eval_policy.split_strategy=disjoint_tasks_and_starts`, and a pinned `facility.claim_benchmark_path`.
 
@@ -118,15 +141,23 @@ uv sync --extra rlds
 # Download model weights (~30GB)
 bash scripts/download_models.sh
 
-# Place same-facility claim assets
-cp /path/to/facility_a.ply data/facilities/facility_a/splat.ply
-# Optional but recommended if you already have curated task hints:
-cp /path/to/facility_a_task_targets.synthetic.json data/outputs/same_facility_first/facility_a/bootstrap/task_targets.synthetic.json
+# Stage a qualified opportunity handoff plus optional geometry bundle
+cp /path/to/opportunity_handoff.json configs/opportunity_handoff.local.json
+# Optional but preferred when geometry is justified:
+#   3dgs_compressed.ply
+#   labels.json
+#   structure.json
+#   task_targets.synthetic.json
+mkdir -p data/interiorgs/warehouse_tote_pick_0787
+cp /path/to/3dgs_compressed.ply data/interiorgs/warehouse_tote_pick_0787/
+cp /path/to/labels.json data/interiorgs/warehouse_tote_pick_0787/
+cp /path/to/structure.json data/interiorgs/warehouse_tote_pick_0787/
+cp /path/to/task_targets.synthetic.json data/interiorgs/warehouse_tote_pick_0787/
 
 # Run preflight checks
-blueprint-validate --config configs/same_facility_policy_uplift_openvla.yaml preflight
+blueprint-validate --config configs/qualified_opportunity_validation.yaml preflight
 # For pre-GPU audits (no CUDA yet):
-blueprint-validate --config configs/same_facility_policy_uplift_openvla.yaml preflight --profile audit
+blueprint-validate --config configs/qualified_opportunity_validation.yaml preflight --profile audit
 
 # Optional: source runtime secrets from a local untracked file
 # cp scripts/runtime_env.example scripts/runtime_env.local
@@ -137,30 +168,30 @@ blueprint-validate --config configs/same_facility_policy_uplift_openvla.yaml pre
 bash scripts/provision_same_facility_claim_runtime.sh
 
 # Run full pipeline
-blueprint-validate --config configs/same_facility_policy_uplift_openvla.yaml --work-dir data/outputs/same_facility_first run-all
+blueprint-validate --config configs/qualified_opportunity_validation.yaml --work-dir data/outputs/post_qualification run-all
 # Resume mode: skip stages with successful/skipped *_result.json files
-blueprint-validate --config configs/same_facility_policy_uplift_openvla.yaml --work-dir data/outputs/same_facility_first run-all --resume
+blueprint-validate --config configs/qualified_opportunity_validation.yaml --work-dir data/outputs/post_qualification run-all --resume
 
 # Or run stages individually
-blueprint-validate --config configs/same_facility_policy_uplift_openvla.yaml render --facility facility_a
-blueprint-validate compose-robot --facility facility_a    # optional
-blueprint-validate polish-gemini --facility facility_a    # optional
-blueprint-validate augment-gaussian --facility facility_a # optional Stage 1d (full RoboSplat default)
-blueprint-validate augment-robosplat --facility facility_a # alias
-blueprint-validate ingest-external-interaction --facility facility_a # optional Stage 1f
-blueprint-validate ingest-external-rollouts --facility facility_a # optional Stage 1g
-blueprint-validate enrich --facility facility_a
-blueprint-validate finetune --facility facility_a
-blueprint-validate eval-policy --facility facility_a
-blueprint-validate export-rlds --facility facility_a      # optional Stage 4a
-blueprint-validate finetune-policy --facility facility_a  # optional
-blueprint-validate rl-loop-policy --facility facility_a   # optional Stage 3c
-blueprint-validate eval-trained-policy --facility facility_a  # optional Stage 4e
-blueprint-validate export-rollouts --facility facility_a
-blueprint-validate train-policy-pair --facility facility_a
-blueprint-validate eval-policy-pair --facility facility_a
-blueprint-validate eval-visual --facility facility_a
-blueprint-validate eval-spatial --facility facility_a
+blueprint-validate --config configs/qualified_opportunity_validation.yaml render --opportunity warehouse_tote_pick_0787
+blueprint-validate compose-robot --opportunity warehouse_tote_pick_0787    # optional
+blueprint-validate polish-gemini --opportunity warehouse_tote_pick_0787    # optional
+blueprint-validate augment-gaussian --opportunity warehouse_tote_pick_0787 # optional Stage 1d
+blueprint-validate augment-robosplat --opportunity warehouse_tote_pick_0787 # alias
+blueprint-validate ingest-external-interaction --opportunity warehouse_tote_pick_0787 # optional
+blueprint-validate ingest-external-rollouts --opportunity warehouse_tote_pick_0787 # optional
+blueprint-validate enrich --opportunity warehouse_tote_pick_0787
+blueprint-validate finetune --opportunity warehouse_tote_pick_0787
+blueprint-validate eval-policy --opportunity warehouse_tote_pick_0787
+blueprint-validate export-rlds --opportunity warehouse_tote_pick_0787      # optional
+blueprint-validate finetune-policy --opportunity warehouse_tote_pick_0787  # optional
+blueprint-validate rl-loop-policy --opportunity warehouse_tote_pick_0787   # optional
+blueprint-validate eval-trained-policy --opportunity warehouse_tote_pick_0787  # optional
+blueprint-validate export-rollouts --opportunity warehouse_tote_pick_0787
+blueprint-validate train-policy-pair --opportunity warehouse_tote_pick_0787
+blueprint-validate eval-policy-pair --opportunity warehouse_tote_pick_0787
+blueprint-validate eval-visual --opportunity warehouse_tote_pick_0787
+blueprint-validate eval-spatial --opportunity warehouse_tote_pick_0787
 blueprint-validate eval-crosssite
 blueprint-validate report
 ```

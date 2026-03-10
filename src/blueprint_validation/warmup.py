@@ -404,7 +404,7 @@ def warmup_facility(
 
     summary: Dict = {
         "facility": facility.name,
-        "ply_path": str(facility.ply_path),
+        "ply_path": str(facility.ply_path) if facility.ply_path is not None else "",
         "quality_cache_key": _quality_cache_key(
             config=config,
             task_hints_path=facility.task_hints_path,
@@ -412,6 +412,13 @@ def warmup_facility(
     }
 
     # 1. Load PLY as numpy (CPU-only, no torch)
+    if facility.ply_path is None:
+        logger.warning("No PLY resolved for %s — skipping geometry warmup", facility.name)
+        summary["ply_loaded"] = False
+        summary["elapsed_seconds"] = round(time.time() - t0, 2)
+        write_json(summary, cache_dir / CACHE_MANIFEST)
+        return summary
+
     if not facility.ply_path.exists():
         logger.warning("PLY file not found: %s — skipping geometry warmup", facility.ply_path)
         summary["ply_loaded"] = False

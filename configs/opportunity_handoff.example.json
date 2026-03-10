@@ -1,0 +1,43 @@
+{
+  "schema_version": "v1",
+  "site_submission_id": "site-sub-0787",
+  "opportunity_id": "warehouse_tote_pick_0787",
+  "qualification_state": "ready",
+  "downstream_evaluation_eligibility": true,
+  "operator_approved_summary": "Qualified tote-pick opportunity for downstream stack evaluation.",
+  "scoped_task_definition": {
+    "task_id": "tote_pick_shelf_bay_3",
+    "scoped_task_statement": "Pick a tote from shelf bay 3 and stage it at the outbound handoff point.",
+    "success_criteria": [
+      "Robot acquires tote handles",
+      "Tote clears shelf geometry",
+      "Tote reaches outbound handoff point"
+    ],
+    "in_scope_zone": "shelf_bay_3_and_outbound_handoff"
+  },
+  "site_constraints": {
+    "operating_constraints": [
+      "Night shift only",
+      "Aisle must stay clear for pedestrian traffic"
+    ],
+    "privacy_security_constraints": [
+      "No worker faces in shareable outputs"
+    ],
+    "known_blockers": [
+      "Reflective wrap on pallet edge"
+    ]
+  },
+  "target_robot_team": {
+    "team_name_or_id": "team_alpha",
+    "robot_platform": "franka_panda",
+    "embodiment_notes": "Fixed-base arm on a mobile cart with wrist RGB camera."
+  },
+  "geometry_package": {
+    "bundle_path": "../data/interiorgs/0787_841244"
+  },
+  "scene_package": {
+    "scene_package_path": "../data/scene_packages/warehouse_tote_pick_0787"
+  },
+  "recommended_next_step": "Run stack-specific evaluation against the qualified tote-pick zone.",
+  "disclosure_level": "internal_review"
+}

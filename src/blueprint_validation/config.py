@@ -10,6 +10,9 @@ import warnings
 import yaml
 
 from .config_validation import validate_config_keys
+from .validation.qualified_opportunity import (
+    load_and_validate_qualified_opportunity_handoff,
+)
 
 
 @dataclass
@@ -27,9 +30,13 @@ class ManipulationZoneConfig:
 @dataclass
 class FacilityConfig:
     name: str
-    ply_path: Path
+    ply_path: Optional[Path] = None
+    opportunity_handoff_path: Optional[Path] = None
+    geometry_bundle_path: Optional[Path] = None
     scene_package_path: Optional[Path] = None
     task_hints_path: Optional[Path] = None
+    labels_path: Optional[Path] = None
+    structure_path: Optional[Path] = None
     claim_benchmark_path: Optional[Path] = None
     description: str = ""
     landmarks: List[str] = field(default_factory=list)
@@ -44,6 +51,16 @@ class FacilityConfig:
     # Stage-2 correction for RGB/depth control orientation.
     # Allowed: none|rotate180|hflip|vflip|hvflip
     video_orientation_fix: str = "none"
+    intake_mode: str = "legacy_direct"
+    qualification_state: Optional[str] = None
+    downstream_evaluation_eligibility: Optional[bool] = None
+    opportunity_id: str = ""
+    site_submission_id: str = ""
+    opportunity_handoff: Optional[Dict[str, Any]] = None
+
+    @property
+    def uses_qualified_handoff(self) -> bool:
+        return self.opportunity_handoff_path is not None
 
 
 @dataclass
@@ -805,12 +822,67 @@ class ValidationConfig:
     eval_crosssite: CrossSiteConfig = field(default_factory=CrossSiteConfig)
     cloud: CloudConfig = field(default_factory=CloudConfig)
 
+    @property
+    def qualified_opportunities(self) -> Dict[str, FacilityConfig]:
+        """Preferred public alias for downstream evaluation targets."""
+        return self.facilities
+
 
 def _resolve_path(path_value: str | Path, base_dir: Path) -> Path:
     path = Path(path_value)
     if not path.is_absolute():
         path = (base_dir / path).resolve()
     return path
+
+
+def _resolve_optional_path(path_value: Any, base_dir: Path) -> Optional[Path]:
+    if path_value is None:
+        return None
+    raw = str(path_value).strip()
+    if not raw:
+        return None
+    return _resolve_path(raw, base_dir)
+
+
+def _mapping_text(payload: Dict[str, Any], key: str) -> str:
+    return str(payload.get(key, "") or "").strip()
+
+
+def _resolve_handoff_nested_path(
+    payload: Optional[Dict[str, Any]],
+    base_dir: Path,
+    *keys: str,
+) -> Optional[Path]:
+    if not isinstance(payload, dict):
+        return None
+    for key in keys:
+        value = payload.get(key)
+        resolved = _resolve_optional_path(value, base_dir)
+        if resolved is not None:
+            return resolved
+    return None
+
+
+def _merge_target_sections(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    merged: Dict[str, Dict[str, Any]] = {}
+    sources: Dict[str, str] = {}
+    for section_name in ("qualified_opportunities", "facilities"):
+        section = raw.get(section_name, {}) or {}
+        if not isinstance(section, dict):
+            continue
+        for target_id, target_raw in section.items():
+            target_mapping = dict(target_raw)
+            if target_id in merged:
+                if merged[target_id] != target_mapping:
+                    raise ValueError(
+                        "Config target "
+                        f"'{target_id}' is defined differently in both "
+                        f"{sources[target_id]} and {section_name}"
+                    )
+                continue
+            merged[target_id] = target_mapping
+            sources[target_id] = section_name
+    return merged
 
 
 def _parse_manipulation_zones(raw_list: List[Dict[str, Any]]) -> List[ManipulationZoneConfig]:
@@ -978,21 +1050,110 @@ def _min_sign_flip_seed_count(p_value_threshold: float) -> int:
     return 65
 
 
-def _parse_facility(raw: Dict[str, Any], base_dir: Path) -> FacilityConfig:
-    scene_package_value = raw.get("scene_package_path")
-    task_hints_value = raw.get("task_hints_path")
+def _parse_facility(facility_id: str, raw: Dict[str, Any], base_dir: Path) -> FacilityConfig:
+    handoff_path = _resolve_optional_path(raw.get("opportunity_handoff_path"), base_dir)
+    handoff_payload = (
+        load_and_validate_qualified_opportunity_handoff(handoff_path)
+        if handoff_path is not None
+        else None
+    )
+    handoff_base_dir = handoff_path.parent if handoff_path is not None else base_dir
+    handoff_geometry = (
+        dict(handoff_payload.get("geometry_package", {}))
+        if isinstance(handoff_payload, dict)
+        else {}
+    )
+    handoff_scene = (
+        dict(handoff_payload.get("scene_package", {}))
+        if isinstance(handoff_payload, dict)
+        else {}
+    )
+    geometry_bundle_path = _resolve_optional_path(raw.get("geometry_bundle_path"), base_dir)
+    if geometry_bundle_path is None:
+        geometry_bundle_path = _resolve_handoff_nested_path(
+            handoff_geometry,
+            handoff_base_dir,
+            "bundle_path",
+            "root_path",
+        )
+
+    explicit_ply_path = _resolve_optional_path(raw.get("ply_path"), base_dir)
+    if explicit_ply_path is None:
+        explicit_ply_path = _resolve_handoff_nested_path(
+            handoff_geometry,
+            handoff_base_dir,
+            "ply_path",
+        )
+
+    ply_path = explicit_ply_path
+    if ply_path is None and geometry_bundle_path is not None:
+        ply_path = geometry_bundle_path / "3dgs_compressed.ply"
+
+    scene_package_path = _resolve_optional_path(raw.get("scene_package_path"), base_dir)
+    if scene_package_path is None:
+        scene_package_path = _resolve_handoff_nested_path(
+            handoff_scene,
+            handoff_base_dir,
+            "scene_package_path",
+            "root_path",
+            "bundle_path",
+        )
+
+    task_hints_path = _resolve_optional_path(raw.get("task_hints_path"), base_dir)
+    if task_hints_path is None:
+        task_hints_path = _resolve_handoff_nested_path(
+            handoff_geometry,
+            handoff_base_dir,
+            "task_hints_path",
+        )
+    if task_hints_path is None and geometry_bundle_path is not None:
+        task_hints_path = geometry_bundle_path / "task_targets.synthetic.json"
+
+    labels_path = _resolve_handoff_nested_path(
+        handoff_geometry,
+        handoff_base_dir,
+        "labels_path",
+    )
+    if (labels_path is None or not labels_path.exists()) and geometry_bundle_path is not None:
+        candidate = geometry_bundle_path / "labels.json"
+        if candidate.exists():
+            labels_path = candidate
+
+    structure_path = _resolve_handoff_nested_path(
+        handoff_geometry,
+        handoff_base_dir,
+        "structure_path",
+    )
+    if (structure_path is None or not structure_path.exists()) and geometry_bundle_path is not None:
+        candidate = geometry_bundle_path / "structure.json"
+        if candidate.exists():
+            structure_path = candidate
+
     claim_benchmark_value = raw.get("claim_benchmark_path")
+    intake_mode = "qualified_opportunity" if handoff_path is not None else "legacy_direct"
+    name = _mapping_text(raw, "name")
+    if not name and handoff_payload is not None:
+        name = _mapping_text(handoff_payload, "opportunity_id")
+    if not name:
+        name = facility_id
+
+    description = str(raw.get("description", "") or "").strip()
+    if not description and handoff_payload is not None:
+        description = _mapping_text(handoff_payload, "operator_approved_summary")
+
     return FacilityConfig(
-        name=raw["name"],
-        ply_path=_resolve_path(raw["ply_path"], base_dir),
-        scene_package_path=(
-            _resolve_path(scene_package_value, base_dir) if scene_package_value else None
-        ),
-        task_hints_path=_resolve_path(task_hints_value, base_dir) if task_hints_value else None,
+        name=name,
+        ply_path=ply_path,
+        opportunity_handoff_path=handoff_path,
+        geometry_bundle_path=geometry_bundle_path,
+        scene_package_path=scene_package_path,
+        task_hints_path=task_hints_path,
+        labels_path=labels_path,
+        structure_path=structure_path,
         claim_benchmark_path=(
             _resolve_path(claim_benchmark_value, base_dir) if claim_benchmark_value else None
         ),
-        description=raw.get("description", ""),
+        description=description,
         landmarks=raw.get("landmarks", []),
         floor_height_m=raw.get("floor_height_m", 0.0),
         ceiling_height_m=raw.get("ceiling_height_m", 5.0),
@@ -1000,6 +1161,29 @@ def _parse_facility(raw: Dict[str, Any], base_dir: Path) -> FacilityConfig:
         up_axis=str(raw.get("up_axis", "auto")).strip(),
         scene_rotation_deg=_parse_scene_rotation_deg(raw.get("scene_rotation_deg")),
         video_orientation_fix=_parse_video_orientation_fix(raw.get("video_orientation_fix", "none")),
+        intake_mode=intake_mode,
+        qualification_state=(
+            str(handoff_payload.get("qualification_state")).strip()
+            if isinstance(handoff_payload, dict) and handoff_payload.get("qualification_state") is not None
+            else None
+        ),
+        downstream_evaluation_eligibility=(
+            bool(handoff_payload.get("downstream_evaluation_eligibility"))
+            if isinstance(handoff_payload, dict)
+            and handoff_payload.get("downstream_evaluation_eligibility") is not None
+            else None
+        ),
+        opportunity_id=(
+            _mapping_text(handoff_payload, "opportunity_id")
+            if isinstance(handoff_payload, dict)
+            else ""
+        ),
+        site_submission_id=(
+            _mapping_text(handoff_payload, "site_submission_id")
+            if isinstance(handoff_payload, dict)
+            else ""
+        ),
+        opportunity_handoff=handoff_payload,
     )
 
 
@@ -1259,9 +1443,9 @@ def load_config(path: Path) -> ValidationConfig:
         project_name=raw.get("project_name", ""),
     )
 
-    # Facilities
-    for fid, fdata in raw.get("facilities", {}).items():
-        config.facilities[fid] = _parse_facility(fdata, base_dir)
+    # Evaluation targets (preferred key: qualified_opportunities; legacy alias: facilities)
+    for fid, fdata in _merge_target_sections(raw).items():
+        config.facilities[fid] = _parse_facility(fid, fdata, base_dir)
 
     # Render
     if "render" in raw:

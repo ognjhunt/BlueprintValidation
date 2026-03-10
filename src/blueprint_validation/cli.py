@@ -153,7 +153,7 @@ def _enforce_repro_guardrails(config_path: Path) -> None:
 @click.option("--dry-run", is_flag=True, default=False, help="Print actions without executing.")
 @click.pass_context
 def cli(ctx: click.Context, config_path: str, work_dir: str, verbose: bool, dry_run: bool) -> None:
-    """BlueprintValidation: Gaussian splat to robot world model validation pipeline."""
+    """BlueprintValidation: post-qualification evaluation and adaptation pipeline."""
     setup_logging(verbose)
     _load_local_env_defaults()
     _enforce_repro_guardrails(Path(config_path))
@@ -206,7 +206,10 @@ def _get_facility(ctx: click.Context, facility_id: str):
     config = ctx.obj["config"]
     if facility_id not in config.facilities:
         available = ", ".join(config.facilities.keys()) or "(none)"
-        click.echo(f"Unknown facility '{facility_id}'. Available: {available}", err=True)
+        click.echo(
+            f"Unknown evaluation target '{facility_id}'. Available: {available}",
+            err=True,
+        )
         sys.exit(1)
     return config.facilities[facility_id]
 
@@ -229,6 +232,22 @@ def _parse_key_value_pairs(values: tuple[str, ...]) -> dict[str, str]:
             raise click.ClickException(f"Expected KEY=VALUE format, got '{item}'.")
         payload[key] = value
     return payload
+
+
+def _target_option(*, required: bool = True, help_text: str | None = None):
+    default_help = (
+        "Qualified opportunity / evaluation target ID."
+        if required
+        else "Qualified opportunity / evaluation target ID (omit to target all configured entries)."
+    )
+    return click.option(
+        "--opportunity",
+        "--facility",
+        "facility",
+        required=required,
+        default=None,
+        help=(help_text or default_help) + " Legacy alias retained: --facility.",
+    )
 
 
 @cli.command()
@@ -559,8 +578,13 @@ def record_teleop(
 
 
 @cli.command()
-@click.option("--facility", required=True, help="Facility ID to render.")
-@click.option("--ply-path", type=click.Path(exists=True), default=None, help="Override PLY path.")
+@_target_option(help_text="Qualified opportunity / evaluation target ID to render.")
+@click.option(
+    "--ply-path",
+    type=click.Path(exists=True),
+    default=None,
+    help="Legacy direct-geometry override for the resolved evaluation target PLY.",
+)
 @click.pass_context
 def render(ctx: click.Context, facility: str, ply_path: Optional[str]) -> None:
     """Stage 1: Render clips using the resolved gsplat or Isaac backend."""
@@ -591,7 +615,7 @@ def render(ctx: click.Context, facility: str, ply_path: Optional[str]) -> None:
 
 
 @cli.command("geometry-canary")
-@click.option("--facility", required=True, help="Facility ID to evaluate.")
+@_target_option(help_text="Qualified opportunity / evaluation target ID to evaluate.")
 @click.option(
     "--max-clips",
     type=int,
@@ -649,7 +673,7 @@ def geometry_canary(
 
 
 @cli.command("post-s1-audit")
-@click.option("--facility", required=True, help="Facility ID to audit.")
+@_target_option(help_text="Qualified opportunity / evaluation target ID to audit.")
 @click.option(
     "--geometry-max-clips",
     type=int,
@@ -712,7 +736,7 @@ def post_s1_audit(
 
 
 @cli.command("compose-robot")
-@click.option("--facility", required=True, help="Facility ID.")
+@_target_option()
 @click.pass_context
 def compose_robot(ctx: click.Context, facility: str) -> None:
     """Stage 1b: Composite URDF robot arm into rendered clips."""
@@ -729,7 +753,7 @@ def compose_robot(ctx: click.Context, facility: str) -> None:
 
 
 @cli.command("polish-gemini")
-@click.option("--facility", required=True, help="Facility ID.")
+@_target_option()
 @click.pass_context
 def polish_gemini(ctx: click.Context, facility: str) -> None:
     """Stage 1c: Optional Gemini image polish for composited clips."""
@@ -746,7 +770,7 @@ def polish_gemini(ctx: click.Context, facility: str) -> None:
 
 
 @cli.command("augment-gaussian")
-@click.option("--facility", required=True, help="Facility ID.")
+@_target_option()
 @click.pass_context
 def augment_gaussian(ctx: click.Context, facility: str) -> None:
     """Stage 1d: Full RoboSplat-default augmentation."""
@@ -763,7 +787,7 @@ def augment_gaussian(ctx: click.Context, facility: str) -> None:
 
 
 @cli.command("augment-robosplat")
-@click.option("--facility", required=True, help="Facility ID.")
+@_target_option()
 @click.pass_context
 def augment_robosplat(ctx: click.Context, facility: str) -> None:
     """Alias for Stage 1d full RoboSplat augmentation."""
@@ -780,7 +804,7 @@ def augment_robosplat(ctx: click.Context, facility: str) -> None:
 
 
 @cli.command("ingest-external-interaction")
-@click.option("--facility", required=True, help="Facility ID.")
+@_target_option()
 @click.pass_context
 def ingest_external_interaction(ctx: click.Context, facility: str) -> None:
     """Stage 1f: Ingest external interaction manifest into stage-1 source format."""
@@ -799,7 +823,7 @@ def ingest_external_interaction(ctx: click.Context, facility: str) -> None:
 
 
 @cli.command("ingest-external-rollouts")
-@click.option("--facility", required=True, help="Facility ID.")
+@_target_option()
 @click.pass_context
 def ingest_external_rollouts(ctx: click.Context, facility: str) -> None:
     """Stage 1g: Ingest external teleop rollouts into action-labeled rows."""
@@ -818,7 +842,7 @@ def ingest_external_rollouts(ctx: click.Context, facility: str) -> None:
 
 
 @cli.command()
-@click.option("--facility", required=True, help="Facility ID.")
+@_target_option()
 @click.pass_context
 def enrich(ctx: click.Context, facility: str) -> None:
     """Stage 2: Cosmos Transfer 2.5 enrichment."""
@@ -835,7 +859,7 @@ def enrich(ctx: click.Context, facility: str) -> None:
 
 
 @cli.command()
-@click.option("--facility", required=True, help="Facility ID.")
+@_target_option()
 @click.pass_context
 def finetune(ctx: click.Context, facility: str) -> None:
     """Stage 3: DreamDojo fine-tuning."""
@@ -852,7 +876,7 @@ def finetune(ctx: click.Context, facility: str) -> None:
 
 
 @cli.command("finetune-policy")
-@click.option("--facility", required=True, help="Facility ID.")
+@_target_option()
 @click.pass_context
 def finetune_policy(ctx: click.Context, facility: str) -> None:
     """Optional Stage 3b: OpenVLA-OFT policy fine-tuning."""
@@ -869,7 +893,7 @@ def finetune_policy(ctx: click.Context, facility: str) -> None:
 
 
 @cli.command("rl-loop-policy")
-@click.option("--facility", required=True, help="Facility ID.")
+@_target_option()
 @click.pass_context
 def rl_loop_policy(ctx: click.Context, facility: str) -> None:
     """Stage 3c: World-VLA-Loop-style policy RL loop."""
@@ -886,7 +910,7 @@ def rl_loop_policy(ctx: click.Context, facility: str) -> None:
 
 
 @cli.command("eval-policy")
-@click.option("--facility", required=True, help="Facility ID.")
+@_target_option()
 @click.pass_context
 def eval_policy(ctx: click.Context, facility: str) -> None:
     """Stage 4: OpenVLA-OFT policy evaluation with VLM judge scoring."""
@@ -903,7 +927,7 @@ def eval_policy(ctx: click.Context, facility: str) -> None:
 
 
 @cli.command("export-rlds")
-@click.option("--facility", required=True, help="Facility ID.")
+@_target_option()
 @click.pass_context
 def export_rlds(ctx: click.Context, facility: str) -> None:
     """Stage 4a: Export adapted rollouts to RLDS TFRecord dataset."""
@@ -920,7 +944,7 @@ def export_rlds(ctx: click.Context, facility: str) -> None:
 
 
 @cli.command("export-rollouts")
-@click.option("--facility", required=True, help="Facility ID.")
+@_target_option()
 @click.pass_context
 def export_rollouts(ctx: click.Context, facility: str) -> None:
     """Stage 4b: Export rollouts to RLDS-style datasets."""
@@ -937,7 +961,7 @@ def export_rollouts(ctx: click.Context, facility: str) -> None:
 
 
 @cli.command("train-policy-pair")
-@click.option("--facility", required=True, help="Facility ID.")
+@_target_option()
 @click.pass_context
 def train_policy_pair(ctx: click.Context, facility: str) -> None:
     """Stage 4c: Train policy_base and policy_site from paired datasets."""
@@ -954,7 +978,7 @@ def train_policy_pair(ctx: click.Context, facility: str) -> None:
 
 
 @cli.command("eval-policy-pair")
-@click.option("--facility", required=True, help="Facility ID.")
+@_target_option()
 @click.pass_context
 def eval_policy_pair(ctx: click.Context, facility: str) -> None:
     """Stage 4d: Evaluate policy_base vs policy_site on heldout rollouts."""
@@ -971,7 +995,7 @@ def eval_policy_pair(ctx: click.Context, facility: str) -> None:
 
 
 @cli.command("eval-trained-policy")
-@click.option("--facility", required=True, help="Facility ID.")
+@_target_option()
 @click.pass_context
 def eval_trained_policy(ctx: click.Context, facility: str) -> None:
     """Stage 4e: Evaluate Stage 3b fine-tuned policy in adapted world model."""
@@ -988,7 +1012,7 @@ def eval_trained_policy(ctx: click.Context, facility: str) -> None:
 
 
 @cli.command("eval-visual")
-@click.option("--facility", required=True, help="Facility ID.")
+@_target_option()
 @click.pass_context
 def eval_visual(ctx: click.Context, facility: str) -> None:
     """Stage 5: Visual fidelity metrics (PSNR/SSIM/LPIPS)."""
@@ -1005,7 +1029,7 @@ def eval_visual(ctx: click.Context, facility: str) -> None:
 
 
 @cli.command("eval-spatial")
-@click.option("--facility", required=True, help="Facility ID.")
+@_target_option()
 @click.pass_context
 def eval_spatial(ctx: click.Context, facility: str) -> None:
     """Stage 6: Spatial accuracy verification."""
@@ -1045,7 +1069,7 @@ def eval_crosssite(ctx: click.Context) -> None:
 
 
 @cli.command()
-@click.option("--facility", default=None, help="Facility ID (omit to warmup all facilities).")
+@_target_option(required=False)
 @click.pass_context
 def warmup(ctx: click.Context, facility: str | None) -> None:
     """Pre-compute CPU-only artifacts (occupancy grids, camera paths, variant prompts).
@@ -1079,7 +1103,10 @@ def warmup(ctx: click.Context, facility: str | None) -> None:
 
 
 @cli.command("bootstrap-task-hints")
-@click.option("--facility", default=None, help="Facility ID (omit to bootstrap all facilities).")
+@_target_option(
+    required=False,
+    help_text="Qualified opportunity / evaluation target ID (omit to bootstrap all configured entries).",
+)
 @click.pass_context
 def bootstrap_task_hints(ctx: click.Context, facility: str | None) -> None:
     """Stage 0: Bootstrap synthetic task_targets.json when source hints are missing."""
