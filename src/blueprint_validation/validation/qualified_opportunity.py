@@ -133,13 +133,14 @@ def _validate_rich_handoff(data: Mapping[str, Any], *, where: str) -> Dict[str, 
             where=f"{where} in site_constraints",
         )
 
-    target_robot_team = _require_mapping(normalized, "target_robot_team", where=where)
-    for key in ("team_name_or_id", "robot_platform", "embodiment_notes"):
-        _require_text(
-            target_robot_team,
-            key,
-            where=f"{where} in target_robot_team",
-        )
+    target_robot_team = _optional_mapping(normalized, "target_robot_team", where=where)
+    if target_robot_team is not None:
+        for key in ("team_name_or_id", "robot_platform", "embodiment_notes"):
+            _require_text(
+                target_robot_team,
+                key,
+                where=f"{where} in target_robot_team",
+            )
 
     for optional_mapping in ("geometry_package", "scene_package"):
         _optional_mapping(normalized, optional_mapping, where=where)
@@ -149,6 +150,9 @@ def _validate_rich_handoff(data: Mapping[str, Any], *, where: str) -> Dict[str, 
     normalized["qualification_state"] = qualification_state
     normalized["downstream_evaluation_eligibility"] = downstream_evaluation_eligibility
     normalized["operator_approved_summary"] = operator_approved_summary
+    normalized["qualification_focus"] = str(normalized.get("qualification_focus") or "neutral_site_readiness").strip() or "neutral_site_readiness"
+    normalized["target_robot_team"] = target_robot_team
+    normalized["requires_robot_team_for_execution"] = target_robot_team is None
     normalized["source_contract"] = "qualified_opportunity_v1"
     return normalized
 
@@ -176,7 +180,7 @@ def _validate_capture_pipeline_handoff(data: Mapping[str, Any], *, where: str) -
     normalized["downstream_evaluation_eligibility"] = downstream_evaluation_eligibility
     normalized["operator_approved_summary"] = operator_approved_summary
     normalized["source_contract"] = "capture_pipeline_thin_v1"
-    normalized["compatibility_mode"] = "temporary_thin_handoff"
+    normalized["compatibility_mode"] = "legacy_thin_handoff"
     return normalized
 
 
@@ -201,7 +205,7 @@ def validate_qualified_opportunity_handoff(
     raise QualifiedOpportunityValidationError(
         "Qualified opportunity handoff must include either the rich downstream fields "
         "(qualification_state, downstream_evaluation_eligibility, scoped_task_definition, "
-        "site_constraints, target_robot_team) or the BlueprintCapturePipeline fields "
+        "site_constraints, optional target_robot_team) or the BlueprintCapturePipeline fields "
         f"(scene_id, capture_id, readiness_state, match_ready){where}"
     )
 

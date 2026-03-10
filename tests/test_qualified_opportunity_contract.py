@@ -72,6 +72,17 @@ def test_validate_qualified_opportunity_handoff_accepts_non_ready_states():
         assert validated["qualification_state"] == state
 
 
+def test_validate_qualified_opportunity_handoff_allows_neutral_qualification_without_robot_team():
+    from blueprint_validation.validation import validate_qualified_opportunity_handoff
+
+    payload = _valid_handoff()
+    payload.pop("target_robot_team")
+
+    validated = validate_qualified_opportunity_handoff(payload)
+    assert validated["requires_robot_team_for_execution"] is True
+    assert validated["target_robot_team"] is None
+
+
 def test_validate_qualified_opportunity_handoff_accepts_capture_pipeline_payload():
     from blueprint_validation.validation import validate_qualified_opportunity_handoff
 
@@ -124,6 +135,21 @@ def test_validate_qualified_opportunity_handoff_rejects_missing_robot_team_field
 
     with pytest.raises(QualifiedOpportunityValidationError, match="robot_platform"):
         validate_qualified_opportunity_handoff(payload)
+
+
+def test_build_lightweight_downstream_review_for_neutral_handoff():
+    from blueprint_validation.validation import build_lightweight_downstream_review
+    from blueprint_validation.validation import validate_qualified_opportunity_handoff
+
+    payload = _valid_handoff()
+    payload.pop("target_robot_team")
+    payload["geometry_package"] = {"bundle_path": "../geometry/demo"}
+    validated = validate_qualified_opportunity_handoff(payload)
+    review = build_lightweight_downstream_review(validated)
+
+    assert review["review_mode"] == "lightweight_advisory"
+    assert review["has_geometry_bundle"] is True
+    assert review["can_run_full_pipeline"] is False
 
 
 def test_load_and_validate_qualified_opportunity_handoff_from_disk(tmp_path):

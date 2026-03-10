@@ -2,11 +2,11 @@
 
 `BlueprintValidation` now sits after qualification, not before it.
 
-The preferred intake is a qualified opportunity handoff plus the smallest set of downstream assets needed for evaluation:
+The preferred intake is a rich qualified opportunity handoff plus the smallest set of downstream assets needed for evaluation:
 
 - scoped task definition
 - site constraints
-- target robot/team
+- optional target robot/team
 - optional geometry bundle
 - optional scene package when simulator-backed evaluation is justified
 
@@ -25,7 +25,6 @@ Required top-level fields:
 - `operator_approved_summary`
 - `scoped_task_definition`
 - `site_constraints`
-- `target_robot_team`
 
 Required nested fields:
 
@@ -36,9 +35,6 @@ Required nested fields:
 - `site_constraints.operating_constraints`
 - `site_constraints.privacy_security_constraints`
 - `site_constraints.known_blockers`
-- `target_robot_team.team_name_or_id`
-- `target_robot_team.robot_platform`
-- `target_robot_team.embodiment_notes`
 
 Accepted `qualification_state` values:
 
@@ -46,14 +42,16 @@ Accepted `qualification_state` values:
 - `risky`
 - `not_ready_yet`
 
-`BlueprintValidation` preflight only accepts the handoff for downstream execution when:
+When `target_robot_team` is omitted, the handoff is still valid as a neutral qualification-first handoff but only supports lightweight downstream advisory review. Full downstream execution requires `target_robot_team`.
+
+`BlueprintValidation` preflight only accepts the handoff for full downstream execution when:
 
 - `qualification_state == "ready"`
 - `downstream_evaluation_eligibility == true`
 
-### Current BlueprintCapturePipeline handoff
+### Legacy thin BlueprintCapturePipeline handoff
 
-This shape is temporary compatibility only. New qualification flows should prefer the rich downstream handoff plus linked evidence artifacts.
+This shape is compatibility-only. New qualification flows should prefer the rich handoff plus linked evidence artifacts.
 
 The current upstream pipeline writes a slimmer handoff under `.../pipeline/opportunity_handoff.json`.
 

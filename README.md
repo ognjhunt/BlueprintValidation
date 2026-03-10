@@ -2,7 +2,7 @@
 
 Secondary-only post-qualification evaluation and adaptation pipeline for Blueprint.
 
-This repo is not the qualification system and should not be the default site-readiness path. It starts after a site has already been scoped and cleared for downstream evaluation.
+This repo is not the qualification system and should not be the default site-readiness path. It starts after a site has already been scoped and cleared for downstream evaluation, or in lightweight advisory mode when a qualified opportunity needs a bounded downstream review without the full DreamDojo/PolaRiS stack.
 
 Current canonical executable question:
 
@@ -10,8 +10,8 @@ Current canonical executable question:
 
 Default answer path in this repo:
 
-- world model / DreamDojo = fast inner loop for scene adaptation, synthetic rollouts, and policy improvement
-- PolaRiS = default outer-loop evaluator and final deployment gate when enabled and valid
+- world model / DreamDojo = optional downstream adaptation/evidence path
+- PolaRiS = optional downstream outer-loop evaluator when the scene package and target robot stack justify it
 
 World-model stages remain central to the product. The change is that they now sit behind a qualification-first handoff model, and their evidence becomes supporting by default when `eval_polaris.enabled=true` and `eval_polaris.default_as_primary_gate=true`.
 
