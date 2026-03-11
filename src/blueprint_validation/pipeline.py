@@ -17,6 +17,7 @@ from .config import ValidationConfig
 from .evaluation.policy_eval_matrix import build_policy_eval_matrix_artifact
 from .stages.s0_task_hints_bootstrap import TaskHintsBootstrapStage
 from .stages.s0a_scene_package import ScenePackageStage
+from .stages.s0b_scene_memory_runtime import SceneMemoryRuntimeStage
 from .stages.s1_isaac_render import IsaacRenderStage
 from .stages.s1_render import RenderStage
 from .stages.s1b_robot_composite import RobotCompositeStage
@@ -163,6 +164,7 @@ class ValidationPipeline:
         per_facility_stages = [
             TaskHintsBootstrapStage(),  # S0: bootstrap synthetic task hints if missing
             ScenePackageStage(),  # S0a: resolve or build scene package for Isaac-backed paths
+            SceneMemoryRuntimeStage(),  # S0b: pick active scene-memory runtime adapters
             IsaacRenderStage(),  # S1 (Isaac): scene-package -> scripted simulator clips
             RenderStage(),  # S1: splat -> video clips
             RobotCompositeStage(),  # S1b: URDF robot arm composite

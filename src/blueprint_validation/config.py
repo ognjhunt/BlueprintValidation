@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import warnings
@@ -31,13 +32,20 @@ class ManipulationZoneConfig:
 class FacilityConfig:
     name: str
     ply_path: Optional[Path] = None
+    evaluation_prep_path: Optional[Path] = None
+    scene_memory_bundle_path: Optional[Path] = None
+    preview_simulation_path: Optional[Path] = None
     opportunity_handoff_path: Optional[Path] = None
     geometry_bundle_path: Optional[Path] = None
     scene_package_path: Optional[Path] = None
+    scene_memory_adapter_manifests: Dict[str, Path] = field(default_factory=dict)
     task_hints_path: Optional[Path] = None
     holi_spatial_grounding_path: Optional[Path] = None
     labels_path: Optional[Path] = None
     structure_path: Optional[Path] = None
+    task_anchor_manifest_path: Optional[Path] = None
+    object_geometry_manifest_path: Optional[Path] = None
+    review_queue_path: Optional[Path] = None
     claim_benchmark_path: Optional[Path] = None
     description: str = ""
     landmarks: List[str] = field(default_factory=list)
@@ -61,7 +69,11 @@ class FacilityConfig:
 
     @property
     def uses_qualified_handoff(self) -> bool:
-        return self.opportunity_handoff_path is not None
+        return self.opportunity_handoff_path is not None or self.evaluation_prep_path is not None
+
+    @property
+    def has_scene_memory_bundle(self) -> bool:
+        return self.scene_memory_bundle_path is not None
 
 
 @dataclass
@@ -286,6 +298,32 @@ class EnrichConfig:
     min_frame0_ssim: float = 0.0
     # Delete generated output files rejected by the frame-0 SSIM gate.
     delete_rejected_outputs: bool = False
+
+
+@dataclass
+class SceneMemoryBackendRuntimeConfig:
+    enabled: bool = True
+    allow_runtime_execution: bool = False
+    repo_path: Optional[Path] = None
+    python_executable: Optional[Path] = None
+    inference_script: Optional[str] = None
+    checkpoint_path: Optional[Path] = None
+
+
+@dataclass
+class SceneMemoryRuntimeConfig:
+    enabled: bool = True
+    preferred_backends: List[str] = field(
+        default_factory=lambda: ["neoverse", "gen3c", "cosmos_transfer"]
+    )
+    watchlist_backends: List[str] = field(default_factory=lambda: ["3dsceneprompt"])
+    allow_backend_fallback: bool = True
+    neoverse: SceneMemoryBackendRuntimeConfig = field(
+        default_factory=lambda: SceneMemoryBackendRuntimeConfig(inference_script="inference.py")
+    )
+    gen3c: SceneMemoryBackendRuntimeConfig = field(
+        default_factory=lambda: SceneMemoryBackendRuntimeConfig(inference_script="inference.py")
+    )
 
 
 @dataclass
@@ -801,6 +839,9 @@ class ValidationConfig:
     robot_composite: RobotCompositeConfig = field(default_factory=RobotCompositeConfig)
     gemini_polish: GeminiPolishConfig = field(default_factory=GeminiPolishConfig)
     enrich: EnrichConfig = field(default_factory=EnrichConfig)
+    scene_memory_runtime: SceneMemoryRuntimeConfig = field(
+        default_factory=SceneMemoryRuntimeConfig
+    )
     finetune: FinetuneConfig = field(default_factory=FinetuneConfig)
     eval_policy: PolicyEvalConfig = field(default_factory=PolicyEvalConfig)
     eval_polaris: PolarisEvalConfig = field(default_factory=PolarisEvalConfig)
@@ -873,6 +914,33 @@ def _resolve_existing_bundle_member(bundle_root: Optional[Path], filename: str) 
     return None
 
 
+def _load_evaluation_prep_manifest(path: Optional[Path]) -> Optional[Dict[str, Any]]:
+    if path is None or not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if str(payload.get("schema_version") or "").strip() != "v1":
+        return None
+    return payload
+
+
+def _resolve_evaluation_prep_artifact(
+    payload: Optional[Dict[str, Any]],
+    base_dir: Path,
+    key: str,
+) -> Optional[Path]:
+    if not isinstance(payload, dict):
+        return None
+    artifacts = payload.get("artifacts")
+    if not isinstance(artifacts, dict):
+        return None
+    return _resolve_optional_path(artifacts.get(key), base_dir)
+
+
 def _infer_capture_pipeline_geometry_bundle_path(
     handoff_path: Optional[Path],
     handoff_payload: Optional[Dict[str, Any]],
@@ -887,14 +955,77 @@ def _infer_capture_pipeline_geometry_bundle_path(
     return None
 
 
+def _infer_capture_pipeline_evaluation_prep_path(
+    handoff_path: Optional[Path],
+) -> Optional[Path]:
+    if handoff_path is None:
+        return None
+    candidate = handoff_path.parent / "evaluation_prep" / "evaluation_prep_manifest.json"
+    if candidate.exists():
+        return candidate.resolve()
+    return None
+
+
+def _infer_capture_pipeline_scene_memory_bundle_path(
+    handoff_path: Optional[Path],
+) -> Optional[Path]:
+    if handoff_path is None:
+        return None
+    candidate = handoff_path.parent / "scene_memory"
+    manifest = candidate / "scene_memory_manifest.json"
+    if manifest.exists():
+        return candidate.resolve()
+    return None
+
+
+def _infer_capture_pipeline_preview_simulation_path(
+    handoff_path: Optional[Path],
+) -> Optional[Path]:
+    if handoff_path is None:
+        return None
+    candidate = handoff_path.parent / "preview_simulation"
+    manifest = candidate / "preview_simulation_manifest.json"
+    if manifest.exists():
+        return candidate.resolve()
+    return None
+
+
+def _resolve_scene_memory_adapter_manifests(
+    raw: Dict[str, Any],
+    *,
+    base_dir: Path,
+    scene_memory_bundle_path: Optional[Path],
+) -> Dict[str, Path]:
+    resolved: Dict[str, Path] = {}
+    raw_mapping = (
+        dict(raw.get("scene_memory_adapter_manifests", {}))
+        if isinstance(raw.get("scene_memory_adapter_manifests"), dict)
+        else {}
+    )
+    for adapter_id, raw_path in raw_mapping.items():
+        path = _resolve_optional_path(raw_path, base_dir)
+        if path is not None:
+            resolved[str(adapter_id)] = path
+    if scene_memory_bundle_path is not None:
+        adapter_dir = scene_memory_bundle_path / "adapter_manifests"
+        for adapter_id in ("gen3c", "neoverse", "cosmos_transfer"):
+            path = adapter_dir / f"{adapter_id}.json"
+            if path.exists():
+                resolved.setdefault(adapter_id, path.resolve())
+    return resolved
+
+
 def _resolve_facility_paths(
     raw: Dict[str, Any],
     *,
     base_dir: Path,
+    evaluation_prep_path: Optional[Path],
+    evaluation_prep_payload: Optional[Dict[str, Any]],
     handoff_path: Optional[Path],
     handoff_payload: Optional[Dict[str, Any]],
 ) -> Dict[str, Optional[Path]]:
-    handoff_base_dir = handoff_path.parent if handoff_path is not None else base_dir
+    prep_base_dir = evaluation_prep_path.parent if evaluation_prep_path is not None else base_dir
+    handoff_base_dir = handoff_path.parent if handoff_path is not None else prep_base_dir
     handoff_geometry = (
         dict(handoff_payload.get("geometry_package", {}))
         if isinstance(handoff_payload, dict) and isinstance(handoff_payload.get("geometry_package"), dict)
@@ -905,8 +1036,28 @@ def _resolve_facility_paths(
         if isinstance(handoff_payload, dict) and isinstance(handoff_payload.get("scene_package"), dict)
         else {}
     )
+    handoff_scene_memory = (
+        dict(handoff_payload.get("scene_memory_package", {}))
+        if isinstance(handoff_payload, dict) and isinstance(handoff_payload.get("scene_memory_package"), dict)
+        else {}
+    )
+    evaluation_geometry_manifest_path = _resolve_evaluation_prep_artifact(
+        evaluation_prep_payload,
+        prep_base_dir,
+        "geometry_bundle_manifest",
+    )
+    evaluation_geometry = (
+        _load_evaluation_prep_manifest(evaluation_geometry_manifest_path)
+        if evaluation_geometry_manifest_path is not None
+        else None
+    )
 
     geometry_bundle_path = _resolve_optional_path(raw.get("geometry_bundle_path"), base_dir)
+    if geometry_bundle_path is None:
+        geometry_bundle_path = _resolve_optional_path(
+            (evaluation_geometry or {}).get("bundle_path"),
+            prep_base_dir,
+        )
     if geometry_bundle_path is None:
         geometry_bundle_path = _resolve_handoff_nested_path(
             handoff_geometry,
@@ -917,7 +1068,24 @@ def _resolve_facility_paths(
     if geometry_bundle_path is None:
         geometry_bundle_path = _infer_capture_pipeline_geometry_bundle_path(handoff_path, handoff_payload)
 
+    scene_memory_bundle_path = _resolve_optional_path(raw.get("scene_memory_bundle_path"), base_dir)
+    if scene_memory_bundle_path is None:
+        scene_memory_bundle_path = _resolve_handoff_nested_path(
+            handoff_scene_memory,
+            handoff_base_dir,
+            "bundle_path",
+            "root_path",
+        )
+    if scene_memory_bundle_path is None:
+        scene_memory_bundle_path = _infer_capture_pipeline_scene_memory_bundle_path(handoff_path)
+
+    preview_simulation_path = _resolve_optional_path(raw.get("preview_simulation_path"), base_dir)
+    if preview_simulation_path is None:
+        preview_simulation_path = _infer_capture_pipeline_preview_simulation_path(handoff_path)
+
     ply_path = _resolve_optional_path(raw.get("ply_path"), base_dir)
+    if ply_path is None:
+        ply_path = _resolve_optional_path((evaluation_geometry or {}).get("ply_path"), prep_base_dir)
     if ply_path is None:
         ply_path = _resolve_handoff_nested_path(
             handoff_geometry,
@@ -939,6 +1107,8 @@ def _resolve_facility_paths(
 
     task_hints_path = _resolve_optional_path(raw.get("task_hints_path"), base_dir)
     if task_hints_path is None:
+        task_hints_path = _resolve_optional_path((evaluation_geometry or {}).get("task_hints_path"), prep_base_dir)
+    if task_hints_path is None:
         task_hints_path = _resolve_handoff_nested_path(
             handoff_geometry,
             handoff_base_dir,
@@ -952,6 +1122,11 @@ def _resolve_facility_paths(
 
     holi_spatial_grounding_path = _resolve_optional_path(raw.get("holi_spatial_grounding_path"), base_dir)
     if holi_spatial_grounding_path is None:
+        holi_spatial_grounding_path = _resolve_optional_path(
+            (evaluation_geometry or {}).get("holi_spatial_grounding_path"),
+            prep_base_dir,
+        )
+    if holi_spatial_grounding_path is None:
         holi_spatial_grounding_path = _resolve_handoff_nested_path(
             handoff_geometry,
             handoff_base_dir,
@@ -963,23 +1138,46 @@ def _resolve_facility_paths(
             "holi_spatial_grounding.json",
         )
 
-    labels_path = _resolve_handoff_nested_path(
-        handoff_geometry,
-        handoff_base_dir,
-        "labels_path",
-    )
+    labels_path = _resolve_optional_path((evaluation_geometry or {}).get("labels_path"), prep_base_dir)
+    if labels_path is None:
+        labels_path = _resolve_handoff_nested_path(
+            handoff_geometry,
+            handoff_base_dir,
+            "labels_path",
+        )
     if labels_path is None:
         labels_path = _resolve_existing_bundle_member(geometry_bundle_path, "labels.json")
 
-    structure_path = _resolve_handoff_nested_path(
-        handoff_geometry,
-        handoff_base_dir,
-        "structure_path",
-    )
+    structure_path = _resolve_optional_path((evaluation_geometry or {}).get("structure_path"), prep_base_dir)
+    if structure_path is None:
+        structure_path = _resolve_handoff_nested_path(
+            handoff_geometry,
+            handoff_base_dir,
+            "structure_path",
+        )
     if structure_path is None:
         structure_path = _resolve_existing_bundle_member(geometry_bundle_path, "structure.json")
 
+    task_anchor_manifest_path = _resolve_evaluation_prep_artifact(
+        evaluation_prep_payload,
+        prep_base_dir,
+        "task_anchor_manifest",
+    )
+    object_geometry_manifest_path = _resolve_evaluation_prep_artifact(
+        evaluation_prep_payload,
+        prep_base_dir,
+        "object_geometry_manifest",
+    )
+    review_queue_path = _resolve_evaluation_prep_artifact(
+        evaluation_prep_payload,
+        prep_base_dir,
+        "review_queue",
+    )
+
     return {
+        "evaluation_prep_path": evaluation_prep_path,
+        "scene_memory_bundle_path": scene_memory_bundle_path,
+        "preview_simulation_path": preview_simulation_path,
         "geometry_bundle_path": geometry_bundle_path,
         "ply_path": ply_path,
         "scene_package_path": scene_package_path,
@@ -987,6 +1185,9 @@ def _resolve_facility_paths(
         "holi_spatial_grounding_path": holi_spatial_grounding_path,
         "labels_path": labels_path,
         "structure_path": structure_path,
+        "task_anchor_manifest_path": task_anchor_manifest_path,
+        "object_geometry_manifest_path": object_geometry_manifest_path,
+        "review_queue_path": review_queue_path,
     }
 
 
@@ -1178,7 +1379,17 @@ def _min_sign_flip_seed_count(p_value_threshold: float) -> int:
 
 
 def _parse_facility(facility_id: str, raw: Dict[str, Any], base_dir: Path) -> FacilityConfig:
+    evaluation_prep_path = _resolve_optional_path(raw.get("evaluation_prep_path"), base_dir)
     handoff_path = _resolve_optional_path(raw.get("opportunity_handoff_path"), base_dir)
+    if evaluation_prep_path is None:
+        evaluation_prep_path = _infer_capture_pipeline_evaluation_prep_path(handoff_path)
+    evaluation_prep_payload = _load_evaluation_prep_manifest(evaluation_prep_path)
+    if handoff_path is None:
+        handoff_path = _resolve_evaluation_prep_artifact(
+            evaluation_prep_payload,
+            evaluation_prep_path.parent if evaluation_prep_path is not None else base_dir,
+            "qualified_opportunity_handoff",
+        )
     handoff_payload = (
         load_and_validate_qualified_opportunity_handoff(handoff_path)
         if handoff_path is not None
@@ -1187,6 +1398,8 @@ def _parse_facility(facility_id: str, raw: Dict[str, Any], base_dir: Path) -> Fa
     resolved_paths = _resolve_facility_paths(
         raw,
         base_dir=base_dir,
+        evaluation_prep_path=evaluation_prep_path,
+        evaluation_prep_payload=evaluation_prep_payload,
         handoff_path=handoff_path,
         handoff_payload=handoff_payload,
     )
@@ -1203,16 +1416,29 @@ def _parse_facility(facility_id: str, raw: Dict[str, Any], base_dir: Path) -> Fa
     if not description and handoff_payload is not None:
         description = _mapping_text(handoff_payload, "operator_approved_summary")
 
+    scene_memory_adapter_manifests = _resolve_scene_memory_adapter_manifests(
+        raw,
+        base_dir=base_dir,
+        scene_memory_bundle_path=resolved_paths["scene_memory_bundle_path"],
+    )
+
     return FacilityConfig(
         name=name,
         ply_path=resolved_paths["ply_path"],
+        evaluation_prep_path=resolved_paths["evaluation_prep_path"],
+        scene_memory_bundle_path=resolved_paths["scene_memory_bundle_path"],
+        preview_simulation_path=resolved_paths["preview_simulation_path"],
         opportunity_handoff_path=handoff_path,
         geometry_bundle_path=resolved_paths["geometry_bundle_path"],
         scene_package_path=resolved_paths["scene_package_path"],
+        scene_memory_adapter_manifests=scene_memory_adapter_manifests,
         task_hints_path=resolved_paths["task_hints_path"],
         holi_spatial_grounding_path=resolved_paths["holi_spatial_grounding_path"],
         labels_path=resolved_paths["labels_path"],
         structure_path=resolved_paths["structure_path"],
+        task_anchor_manifest_path=resolved_paths["task_anchor_manifest_path"],
+        object_geometry_manifest_path=resolved_paths["object_geometry_manifest_path"],
+        review_queue_path=resolved_paths["review_queue_path"],
         claim_benchmark_path=(
             _resolve_path(claim_benchmark_value, base_dir) if claim_benchmark_value else None
         ),
@@ -1488,6 +1714,58 @@ def _parse_enrich_config(raw: Dict[str, Any], base_dir: Path) -> EnrichConfig:
     )
 
 
+def _parse_scene_memory_backend_runtime_config(
+    raw: Dict[str, Any],
+    *,
+    base_dir: Path,
+    default_inference_script: Optional[str] = None,
+) -> SceneMemoryBackendRuntimeConfig:
+    repo_path_raw = raw.get("repo_path")
+    python_raw = raw.get("python_executable")
+    checkpoint_raw = raw.get("checkpoint_path")
+    inference_script_raw = raw.get("inference_script", default_inference_script)
+    inference_script = None
+    if inference_script_raw is not None:
+        text = str(inference_script_raw).strip()
+        inference_script = text or None
+    return SceneMemoryBackendRuntimeConfig(
+        enabled=bool(raw.get("enabled", True)),
+        allow_runtime_execution=bool(raw.get("allow_runtime_execution", False)),
+        repo_path=_resolve_optional_path(repo_path_raw, base_dir),
+        python_executable=_resolve_optional_path(python_raw, base_dir),
+        inference_script=inference_script,
+        checkpoint_path=_resolve_optional_path(checkpoint_raw, base_dir),
+    )
+
+
+def _parse_scene_memory_runtime_config(
+    raw: Dict[str, Any],
+    base_dir: Path,
+) -> SceneMemoryRuntimeConfig:
+    return SceneMemoryRuntimeConfig(
+        enabled=bool(raw.get("enabled", True)),
+        preferred_backends=[str(v).strip().lower() for v in raw.get(
+            "preferred_backends",
+            SceneMemoryRuntimeConfig().preferred_backends,
+        ) if str(v).strip()],
+        watchlist_backends=[str(v).strip().lower() for v in raw.get(
+            "watchlist_backends",
+            SceneMemoryRuntimeConfig().watchlist_backends,
+        ) if str(v).strip()],
+        allow_backend_fallback=bool(raw.get("allow_backend_fallback", True)),
+        neoverse=_parse_scene_memory_backend_runtime_config(
+            dict(raw.get("neoverse", {}) or {}),
+            base_dir=base_dir,
+            default_inference_script="inference.py",
+        ),
+        gen3c=_parse_scene_memory_backend_runtime_config(
+            dict(raw.get("gen3c", {}) or {}),
+            base_dir=base_dir,
+            default_inference_script="inference.py",
+        ),
+    )
+
+
 def load_config(path: Path) -> ValidationConfig:
     """Load and parse a YAML config file into a ValidationConfig."""
     config_path = path.resolve()
@@ -1517,6 +1795,12 @@ def load_config(path: Path) -> ValidationConfig:
     # Enrich
     if "enrich" in raw:
         config.enrich = _parse_enrich_config(raw["enrich"], base_dir)
+
+    if "scene_memory_runtime" in raw:
+        config.scene_memory_runtime = _parse_scene_memory_runtime_config(
+            raw["scene_memory_runtime"],
+            base_dir,
+        )
 
     if "robot_composite" in raw:
         rc = raw["robot_composite"]
@@ -2664,6 +2948,36 @@ def load_config(path: Path) -> ValidationConfig:
         )
     if not (0.0 <= float(config.eval_policy.vlm_judge.video_metadata_fps) <= 24.0):
         raise ValueError("eval_policy.vlm_judge.video_metadata_fps must be in [0, 24]")
+    allowed_scene_memory_runtime_backends = {
+        "neoverse",
+        "gen3c",
+        "cosmos_transfer",
+        "3dsceneprompt",
+    }
+    if not config.scene_memory_runtime.preferred_backends:
+        raise ValueError("scene_memory_runtime.preferred_backends must not be empty")
+    invalid_preferred_runtime_backends = [
+        backend
+        for backend in config.scene_memory_runtime.preferred_backends
+        if backend not in allowed_scene_memory_runtime_backends
+    ]
+    if invalid_preferred_runtime_backends:
+        allowed = ", ".join(sorted(allowed_scene_memory_runtime_backends))
+        raise ValueError(
+            "scene_memory_runtime.preferred_backends contains unsupported backends: "
+            f"{', '.join(invalid_preferred_runtime_backends)}. Allowed: {allowed}"
+        )
+    invalid_watchlist_runtime_backends = [
+        backend
+        for backend in config.scene_memory_runtime.watchlist_backends
+        if backend not in allowed_scene_memory_runtime_backends
+    ]
+    if invalid_watchlist_runtime_backends:
+        allowed = ", ".join(sorted(allowed_scene_memory_runtime_backends))
+        raise ValueError(
+            "scene_memory_runtime.watchlist_backends contains unsupported backends: "
+            f"{', '.join(invalid_watchlist_runtime_backends)}. Allowed: {allowed}"
+        )
     if bool(config.eval_policy.reliability.fail_on_short_rollout):
         eval_mode = (config.eval_policy.mode or "claim").strip().lower()
         effective_max_steps = int(config.eval_policy.max_steps_per_rollout)

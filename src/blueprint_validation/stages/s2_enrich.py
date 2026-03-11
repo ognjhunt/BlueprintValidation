@@ -118,6 +118,8 @@ class EnrichStage(PipelineStage):
     ) -> StageResult:
         enrich_dir = work_dir / "enriched"
         enrich_dir.mkdir(parents=True, exist_ok=True)
+        runtime_stage = previous_results.get("s0b_scene_memory_runtime")
+        runtime_outputs = dict(runtime_stage.outputs) if runtime_stage is not None else {}
 
         def _failed_result(
             *,
@@ -974,6 +976,12 @@ class EnrichStage(PipelineStage):
             "multi_view_context_offsets": [int(v) for v in config.enrich.multi_view_context_offsets],
             "scene_index_enabled": bool(config.enrich.scene_index_enabled),
             "scene_index_path": str(scene_index_path) if scene_index_path is not None else None,
+            "scene_memory_runtime": {
+                "selected_backend": runtime_outputs.get("selected_backend"),
+                "secondary_backend": runtime_outputs.get("secondary_backend"),
+                "fallback_backend": runtime_outputs.get("fallback_backend"),
+                "available_backends": runtime_outputs.get("available_backends"),
+            },
             "clips": manifest_entries,
         }
         write_json(manifest, manifest_path)
@@ -1003,6 +1011,8 @@ class EnrichStage(PipelineStage):
                 "num_selected_source_clips": len(source_clips),
                 "selected_source_clips": selected_clip_names,
                 "selected_source_target_distribution": selected_clip_target_distribution,
+                "scene_memory_runtime_backend": runtime_outputs.get("selected_backend"),
+                "scene_memory_runtime_secondary_backend": runtime_outputs.get("secondary_backend"),
                 "error_code": stage_error_code,
                 "error_codes": list(stage_fail_error_codes) if stage_status == "failed" else None,
                 **coverage_outputs,
@@ -1051,6 +1061,7 @@ class EnrichStage(PipelineStage):
                 "num_scene_index_retrievals": total_scene_index_retrievals,
                 "num_selected_source_clips": len(source_clips),
                 "selected_source_target_distribution": selected_clip_target_distribution,
+                "scene_memory_runtime_backend": runtime_outputs.get("selected_backend"),
                 "source_clip_selection_mode": clip_selection_meta.get("selection_mode"),
                 "source_clip_selection_fallback": clip_selection_meta.get("fallback"),
                 "source_clip_selection_fail_closed": bool(clip_selection_meta.get("fail_closed")),

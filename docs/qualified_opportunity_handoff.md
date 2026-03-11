@@ -7,6 +7,8 @@ The preferred intake is a rich qualified opportunity handoff plus the smallest s
 - scoped task definition
 - site constraints
 - optional target robot/team
+- preferred scene-memory bundle
+- optional preview simulation package
 - optional geometry bundle
 - optional scene package when simulator-backed evaluation is justified
 
@@ -71,7 +73,28 @@ Optional fields such as `summary`, `constraints`, `routing_status`, and `recomme
 - `downstream_evaluation_eligibility <- match_ready`
 - `operator_approved_summary <- summary` or a generated fallback
 
-## Preferred Geometry Bundle
+## Preferred Scene-Memory Bundle
+
+Preferred when the upstream pipeline emitted canonical scene-memory artifacts:
+
+- `scene_memory/scene_memory_manifest.json`
+- `scene_memory/conditioning_bundle.json`
+- optional `scene_memory/adapter_manifests/gen3c.json`
+- optional `scene_memory/adapter_manifests/neoverse.json`
+- optional `scene_memory/adapter_manifests/cosmos_transfer.json`
+- optional `preview_simulation/preview_simulation_manifest.json`
+
+These inputs are preferred because they preserve the qualification-backed canonical scene substrate while allowing multiple downstream generation backends.
+
+Default downstream runtime order in `BlueprintValidation`:
+
+- `neoverse`
+- `gen3c`
+- `cosmos_transfer`
+
+`3dsceneprompt` is treated as a watchlist backend and is not selected by default until its public runtime is mature enough for production use.
+
+## Legacy Geometry Bundle
 
 When geometry is justified, prefer an InteriorGS-like bundle instead of a naked PLY:
 
@@ -123,6 +146,10 @@ If `task_targets.synthetic.json` is missing but `labels.json` and `structure.jso
   },
   "geometry_package": {
     "bundle_path": "../data/interiorgs/0787_841244"
+  },
+  "scene_memory_package": {
+    "bundle_path": "../pipeline/scene_memory",
+    "scene_memory_manifest_path": "../pipeline/scene_memory/scene_memory_manifest.json"
   },
   "scene_package": {
     "scene_package_path": "../data/scene_packages/warehouse_tote_pick_0787"

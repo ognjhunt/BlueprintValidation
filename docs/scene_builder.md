@@ -1,15 +1,17 @@
 # Direct Scene Builder
 
-This repo can now build a minimal scene package directly from:
+This repo can build a minimal scene package directly from:
 
 - one raw scene PLY
 - a small config-driven set of local USD/USDZ task assets
 
-The builder is intended for the v1 path:
+The builder is intended as a legacy/contact-critical adapter path:
 
 - static room/background from the PLY
 - only a few explicit imported manipulable assets
 - enough package structure for teleop and the strict PolaRiS scene bridge
+
+It is no longer the default downstream product path. Preferred intake is now the canonical `scene_memory_bundle`, with scene-package generation reserved for contact-critical validation.
 
 ## Command
 

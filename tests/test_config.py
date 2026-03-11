@@ -147,13 +147,23 @@ def test_config_defaults():
     assert config.render.manipulation_random_xy_offset_m == pytest.approx(0.0)
     assert config.render.non_manipulation_random_xy_offset_m == pytest.approx(1.0)
     assert config.render.manipulation_target_z_bias_m == pytest.approx(0.0)
+    assert config.scene_memory_runtime.enabled is True
+    assert config.scene_memory_runtime.preferred_backends == [
+        "neoverse",
+        "gen3c",
+        "cosmos_transfer",
+    ]
+    assert config.scene_memory_runtime.watchlist_backends == ["3dsceneprompt"]
     assert config.finetune.num_epochs == 50
     assert config.finetune.use_lora is True
     assert config.finetune.lora_rank == 32
     assert config.finetune.video_dataset_backend == "opencv"
     assert config.finetune.probe_dataloader_sample is True
     assert config.eval_policy.vlm_judge.model == "gemini-3-flash-preview"
-    assert config.eval_policy.vlm_judge.fallback_models == ["gemini-2.5-flash"]
+    assert config.eval_policy.vlm_judge.fallback_models == [
+        "gemini-3.1-flash-lite-preview",
+        "gemini-2.5-flash",
+    ]
     assert config.eval_policy.model_name == "openvla/openvla-7b"
     assert str(config.eval_policy.checkpoint_path).endswith("data/checkpoints/openvla-7b")
     assert config.eval_policy.unnorm_key == "bridge_orig"
@@ -2109,6 +2119,116 @@ def test_load_config_accepts_capture_pipeline_handoff_and_infers_bundle(tmp_path
     assert target.structure_path == bundle_root.resolve() / "structure.json"
 
 
+def test_load_config_accepts_evaluation_prep_and_resolves_downstream_artifacts(tmp_path):
+    import yaml
+
+    from blueprint_validation.config import load_config
+
+    eval_root = tmp_path / "pipeline" / "evaluation_prep"
+    eval_root.mkdir(parents=True)
+    bundle_root = tmp_path / "pipeline" / "advanced_geometry"
+    bundle_root.mkdir(parents=True)
+    (bundle_root / "3dgs_compressed.ply").write_text("ply\n")
+    (bundle_root / "labels.json").write_text("{}")
+    (bundle_root / "structure.json").write_text("{}")
+    (bundle_root / "task_targets.synthetic.json").write_text("{}")
+
+    handoff_path = eval_root / "qualified_opportunity_handoff.json"
+    handoff_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "site_submission_id": "site-sub-eval",
+                "opportunity_id": "opp-eval",
+                "qualification_state": "ready",
+                "downstream_evaluation_eligibility": True,
+                "operator_approved_summary": "Ready for downstream validation.",
+                "scoped_task_definition": {
+                    "task_id": "task-eval",
+                    "scoped_task_statement": "Open and close the fridge door",
+                    "success_criteria": ["door opens", "door closes"],
+                    "in_scope_zone": "fridge-zone",
+                },
+                "site_constraints": {
+                    "operating_constraints": ["daytime"],
+                    "privacy_security_constraints": ["no pii"],
+                    "known_blockers": ["none"],
+                },
+            }
+        )
+    )
+    (eval_root / "task_anchor_manifest.json").write_text('{"schema_version":"v1","tasks":[]}')
+    (eval_root / "object_geometry_manifest.json").write_text('{"schema_version":"v1","objects":[]}')
+    (eval_root / "review_queue.json").write_text('{"schema_version":"v1","items":[]}')
+    (eval_root / "geometry_bundle_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "status": "complete",
+                "bundle_path": "../advanced_geometry",
+                "ply_path": "../advanced_geometry/3dgs_compressed.ply",
+                "labels_path": "../advanced_geometry/labels.json",
+                "structure_path": "../advanced_geometry/structure.json",
+                "task_hints_path": "../advanced_geometry/task_targets.synthetic.json",
+            }
+        )
+    )
+    (eval_root / "evaluation_prep_summary.json").write_text('{"schema_version":"v1"}')
+    (eval_root / "evaluation_prep_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "site_submission_id": "site-sub-eval",
+                "opportunity_id": "opp-eval",
+                "scene_id": "scene_eval",
+                "capture_id": "cap_eval",
+                "qualification_state": "ready",
+                "downstream_evaluation_eligibility": True,
+                "readiness_state": "ready",
+                "task_ids": ["task-eval"],
+                "task_categories": ["open_close"],
+                "source_handoff_path": "../opportunity_handoff.json",
+                "status": "ready_for_validation",
+                "degradation_reasons": [],
+                "artifacts": {
+                    "qualified_opportunity_handoff": "qualified_opportunity_handoff.json",
+                    "geometry_bundle_manifest": "geometry_bundle_manifest.json",
+                    "task_anchor_manifest": "task_anchor_manifest.json",
+                    "object_geometry_manifest": "object_geometry_manifest.json",
+                    "review_queue": "review_queue.json",
+                    "evaluation_prep_summary": "evaluation_prep_summary.json",
+                },
+            }
+        )
+    )
+
+    config_path = tmp_path / "eval_prep.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "schema_version": "v1",
+                "qualified_opportunities": {
+                    "opp_eval": {
+                        "evaluation_prep_path": str(eval_root / "evaluation_prep_manifest.json"),
+                    }
+                },
+            }
+        )
+    )
+
+    config = load_config(config_path)
+    target = config.facilities["opp_eval"]
+    assert target.evaluation_prep_path == (eval_root / "evaluation_prep_manifest.json").resolve()
+    assert target.opportunity_handoff_path == handoff_path.resolve()
+    assert target.ply_path == (bundle_root / "3dgs_compressed.ply").resolve()
+    assert target.task_hints_path == (bundle_root / "task_targets.synthetic.json").resolve()
+    assert target.task_anchor_manifest_path == (eval_root / "task_anchor_manifest.json").resolve()
+    assert target.object_geometry_manifest_path == (eval_root / "object_geometry_manifest.json").resolve()
+    assert target.review_queue_path == (eval_root / "review_queue.json").resolve()
+    assert target.qualification_state == "ready"
+    assert target.downstream_evaluation_eligibility is True
+
+
 def test_load_config_leaves_task_hints_unset_when_bundle_has_only_labels_and_structure(tmp_path):
     import yaml
 
@@ -2156,3 +2276,57 @@ def test_load_config_leaves_task_hints_unset_when_bundle_has_only_labels_and_str
     assert target.labels_path == bundle_root.resolve() / "labels.json"
     assert target.structure_path == bundle_root.resolve() / "structure.json"
     assert target.task_hints_path is None
+
+
+def test_load_config_infers_scene_memory_bundle_and_preview_paths_from_pipeline_handoff(tmp_path):
+    import yaml
+
+    from blueprint_validation.config import load_config
+
+    pipeline_dir = tmp_path / "pipeline"
+    scene_memory_dir = pipeline_dir / "scene_memory"
+    preview_dir = pipeline_dir / "preview_simulation"
+    adapter_dir = scene_memory_dir / "adapter_manifests"
+    adapter_dir.mkdir(parents=True)
+    preview_dir.mkdir(parents=True)
+
+    (scene_memory_dir / "scene_memory_manifest.json").write_text("{}")
+    (preview_dir / "preview_simulation_manifest.json").write_text("{}")
+    (adapter_dir / "gen3c.json").write_text("{}")
+    (adapter_dir / "neoverse.json").write_text("{}")
+
+    handoff_path = pipeline_dir / "opportunity_handoff.json"
+    handoff_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "scene_id": "scene_demo",
+                "capture_id": "capture_demo",
+                "readiness_state": "ready",
+                "match_ready": True,
+            }
+        )
+    )
+
+    config_path = tmp_path / "scene_memory.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "schema_version": "v1",
+                "qualified_opportunities": {
+                    "opp_capture": {
+                        "opportunity_handoff_path": str(handoff_path),
+                    }
+                },
+            }
+        )
+    )
+
+    config = load_config(config_path)
+    target = config.facilities["opp_capture"]
+
+    assert target.scene_memory_bundle_path == scene_memory_dir.resolve()
+    assert target.preview_simulation_path == preview_dir.resolve()
+    assert target.scene_memory_adapter_manifests["gen3c"] == (adapter_dir / "gen3c.json").resolve()
+    assert target.scene_memory_adapter_manifests["neoverse"] == (adapter_dir / "neoverse.json").resolve()
+    assert target.has_scene_memory_bundle is True

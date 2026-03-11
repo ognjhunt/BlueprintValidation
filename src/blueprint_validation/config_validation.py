@@ -15,6 +15,7 @@ _TOP_LEVEL_KEYS = {
     "robot_composite",
     "gemini_polish",
     "enrich",
+    "scene_memory_runtime",
     "finetune",
     "eval_policy",
     "eval_polaris",
@@ -41,6 +42,10 @@ _TOP_LEVEL_KEYS = {
 _FACILITY_KEYS = {
     "name",
     "ply_path",
+    "evaluation_prep_path",
+    "scene_memory_bundle_path",
+    "preview_simulation_path",
+    "scene_memory_adapter_manifests",
     "opportunity_handoff_path",
     "geometry_bundle_path",
     "scene_package_path",
@@ -359,6 +364,23 @@ _SCENE_BUILDER_KEYS = {
     "emit_isaac_lab",
     "emit_polaris_metadata",
     "fail_on_physics_qc",
+}
+
+_SCENE_MEMORY_RUNTIME_KEYS = {
+    "enabled",
+    "preferred_backends",
+    "watchlist_backends",
+    "allow_backend_fallback",
+    "neoverse",
+    "gen3c",
+}
+_SCENE_MEMORY_RUNTIME_BACKEND_KEYS = {
+    "enabled",
+    "allow_runtime_execution",
+    "repo_path",
+    "python_executable",
+    "inference_script",
+    "checkpoint_path",
 }
 
 _CLAIM_REPLICATION_KEYS = {"training_seeds"}
@@ -691,6 +713,22 @@ def validate_config_keys(raw: Mapping[str, object], *, config_path: Path) -> Non
 
     _validate_mapping_section(raw, "robot_composite", _ROBOT_COMPOSITE_KEYS, unknown_keys)
     _validate_mapping_section(raw, "gemini_polish", _GEMINI_POLISH_KEYS, unknown_keys)
+    scene_memory_runtime = _validate_mapping_section(
+        raw, "scene_memory_runtime", _SCENE_MEMORY_RUNTIME_KEYS, unknown_keys
+    )
+    if scene_memory_runtime is not None:
+        for nested_key in ("neoverse", "gen3c"):
+            if scene_memory_runtime.get(nested_key) is not None:
+                nested_mapping = _expect_mapping(
+                    scene_memory_runtime[nested_key],
+                    f"scene_memory_runtime.{nested_key}",
+                )
+                _collect_unknown_keys(
+                    nested_mapping,
+                    _SCENE_MEMORY_RUNTIME_BACKEND_KEYS,
+                    f"scene_memory_runtime.{nested_key}",
+                    unknown_keys,
+                )
 
     finetune = _validate_mapping_section(raw, "finetune", _FINETUNE_KEYS, unknown_keys)
     if finetune is not None and finetune.get("dataset_quality") is not None:

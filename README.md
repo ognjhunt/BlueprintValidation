@@ -1,6 +1,6 @@
 # BlueprintValidation
 
-Secondary-only post-qualification evaluation and adaptation pipeline for Blueprint.
+Secondary-only post-qualification scene-derivation, evaluation, and adaptation pipeline for Blueprint.
 
 This repo is not the qualification system and should not be the default site-readiness path. It starts after a site has already been scoped and cleared for downstream evaluation, or in lightweight advisory mode when a qualified opportunity needs a bounded downstream review without the full DreamDojo/PolaRiS stack.
 
@@ -23,12 +23,28 @@ Preferred upstream handoff:
 - scoped task definition
 - site constraints
 - target robot/team
+- preferred `scene_memory_bundle`
+- optional preview simulation package
 - optional geometry bundle
 - optional scene package when simulator-backed evaluation is justified
 
 Thin `BlueprintCapturePipeline` handoffs remain temporary compatibility only. The intended default is the rich downstream handoff with explicit evidence links from qualification.
 
-Preferred geometry bundle format:
+Preferred scene-memory intake:
+
+- `scene_memory/scene_memory_manifest.json`
+- `scene_memory/conditioning_bundle.json`
+- optional `scene_memory/adapter_manifests/{gen3c,neoverse,cosmos_transfer}.json`
+- optional `preview_simulation/preview_simulation_manifest.json`
+
+Default runtime policy for scene-memory-backed work:
+
+- `NeoVerse` is the primary scene-specific runtime when its adapter manifest is present.
+- `GEN3C` is the secondary runtime when `NeoVerse` is unavailable or explicitly bypassed.
+- `Cosmos Transfer` remains the fallback enrichment/runtime path.
+- `3DScenePrompt` stays on the watchlist and is not selected as an active runtime by default.
+
+Legacy geometry bundle format:
 
 - `3dgs_compressed.ply`
 - `labels.json`
@@ -41,7 +57,9 @@ See [docs/qualified_opportunity_handoff.md](docs/qualified_opportunity_handoff.m
 
 ```
 Qualified opportunity handoff
+  + preferred scene-memory bundle / optional preview simulation
   + optional geometry bundle / scene package
+  → Stage 0b: Resolve active scene-memory runtime (`NeoVerse` → `GEN3C` → `Cosmos`)
   → Stage 1: Render video clips at robot-height via gsplat
   → Stage 1b (optional): Composite URDF robot arm with camera extrinsics
   → Stage 1c (optional): Gemini image polish on composited clips
@@ -75,6 +93,8 @@ For the legacy fixed-world same-facility WM-only claim path, use `eval_policy.cl
 ## Scene-Memory Mapping (Stage 1/2/3)
 
 DreamDojo in this pipeline does not maintain an explicit persistent global 3D scene map during generation. It conditions on provided video/context controls, so memory is mostly local/temporal unless we pass broader context.
+
+This repo therefore treats `scene_memory_bundle` as the preferred canonical intake and uses legacy splat/scene-package paths as adapters.
 
 - Stage 1 + Stage 2 are the current practical memory approximation:
   - Stage 1 provides broad camera coverage of the site (many trajectories/targets).
