@@ -5,6 +5,7 @@ from __future__ import annotations
 from ..config import PolicyAdapterConfig
 from .base import PolicyAdapter
 from .dreamzero_adapter import DreamZeroPolicyAdapter
+from .mock_adapter import MockPolicyAdapter
 from .openvla_oft_adapter import OpenVLAOFTPolicyAdapter
 from .pi05_adapter import Pi05PolicyAdapter
 
@@ -18,7 +19,9 @@ def get_policy_adapter(adapter_config: PolicyAdapterConfig) -> PolicyAdapter:
         return Pi05PolicyAdapter(adapter_config)
     if key in {"dreamzero", "dream-zero", "dz"}:
         return DreamZeroPolicyAdapter(adapter_config)
+    if key in {"mock", "session_mock", "test"}:
+        return MockPolicyAdapter(adapter_config)
     raise ValueError(
         "Unsupported policy adapter: "
-        f"{adapter_config.name}. Supported adapters: openvla_oft, pi05, dreamzero"
+        f"{adapter_config.name}. Supported adapters: openvla_oft, pi05, dreamzero, mock"
     )

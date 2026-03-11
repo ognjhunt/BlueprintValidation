@@ -1313,6 +1313,173 @@ def status(ctx: click.Context) -> None:
         click.echo("\nCross-site: not started")
 
 
+@cli.group("session")
+def session_group() -> None:
+    """Hosted-session runtime commands for WebApp orchestration."""
+
+
+@session_group.command("create")
+@click.option("--session-id", required=True)
+@click.option("--session-work-dir", type=click.Path(file_okay=False), required=True)
+@click.option("--runtime-manifest", type=click.Path(exists=True), required=True)
+@click.option("--robot", required=True)
+@click.option("--task", required=True)
+@click.option("--scenario", required=True)
+@click.option("--policy-json", required=True, help="JSON payload describing adapter/model/checkpoint.")
+@click.option("--notes", default="", show_default=True)
+@click.pass_context
+def session_create(
+    ctx: click.Context,
+    session_id: str,
+    session_work_dir: str,
+    runtime_manifest: str,
+    robot: str,
+    task: str,
+    scenario: str,
+    policy_json: str,
+    notes: str,
+) -> None:
+    from .hosted_session import HostedSessionError, create_session
+
+    try:
+        payload = create_session(
+            config=ctx.obj["config"],
+            session_id=session_id,
+            session_work_dir=Path(session_work_dir),
+            runtime_manifest_path=Path(runtime_manifest),
+            robot=robot,
+            task=task,
+            scenario=scenario,
+            policy_payload=json.loads(policy_json),
+            notes=notes,
+        )
+    except (HostedSessionError, json.JSONDecodeError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(payload))
+
+
+@session_group.command("reset")
+@click.option("--session-id", required=True)
+@click.option("--session-work-dir", type=click.Path(file_okay=False), required=True)
+@click.option("--task-id", default=None)
+@click.option("--scenario", default=None)
+@click.option("--start-state", default=None)
+@click.option("--seed", type=int, default=None)
+@click.pass_context
+def session_reset(
+    ctx: click.Context,
+    session_id: str,
+    session_work_dir: str,
+    task_id: Optional[str],
+    scenario: Optional[str],
+    start_state: Optional[str],
+    seed: Optional[int],
+) -> None:
+    from .hosted_session import HostedSessionError, reset_session
+
+    try:
+        payload = reset_session(
+            config=ctx.obj["config"],
+            session_id=session_id,
+            session_work_dir=Path(session_work_dir),
+            task_id=task_id,
+            scenario=scenario,
+            start_state=start_state,
+            seed=seed,
+        )
+    except HostedSessionError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(payload))
+
+
+@session_group.command("step")
+@click.option("--session-id", required=True)
+@click.option("--session-work-dir", type=click.Path(file_okay=False), required=True)
+@click.option("--episode-id", required=True)
+@click.option("--action-json", default=None)
+@click.option("--auto-policy/--no-auto-policy", default=True, show_default=True)
+@click.pass_context
+def session_step(
+    ctx: click.Context,
+    session_id: str,
+    session_work_dir: str,
+    episode_id: str,
+    action_json: Optional[str],
+    auto_policy: bool,
+) -> None:
+    from .hosted_session import HostedSessionError, step_session
+
+    try:
+        payload = step_session(
+            config=ctx.obj["config"],
+            session_work_dir=Path(session_work_dir),
+            episode_id=episode_id,
+            action=json.loads(action_json) if action_json else None,
+            auto_policy=auto_policy,
+        )
+    except (HostedSessionError, json.JSONDecodeError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(payload))
+
+
+@session_group.command("run-batch")
+@click.option("--session-id", required=True)
+@click.option("--session-work-dir", type=click.Path(file_okay=False), required=True)
+@click.option("--num-episodes", type=int, required=True)
+@click.option("--task-id", default=None)
+@click.option("--scenario", default=None)
+@click.option("--seed", type=int, default=None)
+@click.option("--max-steps", type=int, default=None)
+@click.pass_context
+def session_run_batch(
+    ctx: click.Context,
+    session_id: str,
+    session_work_dir: str,
+    num_episodes: int,
+    task_id: Optional[str],
+    scenario: Optional[str],
+    seed: Optional[int],
+    max_steps: Optional[int],
+) -> None:
+    from .hosted_session import HostedSessionError, run_batch
+
+    try:
+        payload = run_batch(
+            config=ctx.obj["config"],
+            session_work_dir=Path(session_work_dir),
+            num_episodes=num_episodes,
+            task_id=task_id,
+            scenario=scenario,
+            seed=seed,
+            max_steps=max_steps,
+        )
+    except HostedSessionError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(payload))
+
+
+@session_group.command("stop")
+@click.option("--session-id", required=True)
+@click.option("--session-work-dir", type=click.Path(file_okay=False), required=True)
+def session_stop(session_id: str, session_work_dir: str) -> None:
+    from .hosted_session import stop_session
+
+    payload = stop_session(session_work_dir=Path(session_work_dir))
+    payload["sessionId"] = session_id
+    click.echo(json.dumps(payload))
+
+
+@session_group.command("export")
+@click.option("--session-id", required=True)
+@click.option("--session-work-dir", type=click.Path(file_okay=False), required=True)
+def session_export(session_id: str, session_work_dir: str) -> None:
+    from .hosted_session import export_session
+
+    payload = export_session(session_work_dir=Path(session_work_dir))
+    payload["sessionId"] = session_id
+    click.echo(json.dumps(payload))
+
+
 def main() -> None:
     cli()
 
