@@ -1,21 +1,44 @@
 # Platform Context
 
-This repo is one part of a four-repo system.
+<!-- SHARED_PLATFORM_CONTEXT_START -->
+## Shared Platform Doctrine
 
-## System Framing
+### System Framing
 
-- `BlueprintCapture` creates the raw evidence package.
-- `BlueprintCapturePipeline` creates the qualification record and canonical scene-memory bundle.
-- `Blueprint-WebApp` is the operating system around qualification records and derived assets.
-- `BlueprintValidation` is the post-qualification scene-derivation and evaluation engine.
+- `BlueprintCapture` captures raw evidence packages.
+- `BlueprintCapturePipeline` converts evidence plus intake into qualification artifacts, readiness decisions, and handoffs.
+- `Blueprint-WebApp` is the operating and commercial system around qualification records and derived downstream lanes.
+- `BlueprintValidation` performs post-qualification scene derivation, robot evaluation, adaptation, and tuning work.
 
 This platform is qualification-first.
 
-Canonical scene doctrine:
+### Truth Hierarchy
 
-- capture-backed scene memory is the preferred downstream input
-- generated rollouts and world-model outputs are supporting evidence by default
-- stricter validation paths such as PolaRiS or Isaac-backed scene packages remain the place for contact-critical claims
+- qualification records, readiness decisions, and supporting evidence links are authoritative
+- capture-backed scene memory is the preferred downstream substrate when deeper technical work is justified
+- preview simulations, world-model outputs, and world-model-trained policies are derived downstream assets; they do not rewrite qualification truth
+
+### Product Stack
+
+1. primary product: site qualification / readiness pack
+2. secondary product: qualified opportunity exchange for robot teams
+3. third product: scene memory / preview simulation / robot eval package
+4. fourth product: world-model-based adaptation, managed tuning, training data, licensing
+
+### Downstream Training Rule
+
+- world-model RL and world-model-based post-training are first-class downstream paths for site adaptation, checkpoint ranking, synthetic rollout generation, and bounded robot-team evaluation
+- those paths sit behind qualification and do not by themselves replace stricter validation for contact-critical, safety-critical, or contractual deployment claims
+- Isaac-backed, physics-backed, or otherwise stricter validation remains the higher-trust lane when reproducibility, contact fidelity, or formal signoff matters
+
+### Data Rule
+
+- passive site capture and walkthrough evidence are valuable context for scene memory, preview simulation, and downstream conditioning
+- strong robot adaptation gains usually require action-conditioned robot interaction data such as play, teleop logs, or task rollouts; site video alone is usually not enough for reliable policy training from scratch
+- derived assets may inform routing and downstream work, but they must not mutate qualification state or source-of-truth readiness records
+<!-- SHARED_PLATFORM_CONTEXT_END -->
+
+This repo is the post-qualification evaluation and adaptation engine.
 
 ## What This Repo Owns
 
@@ -37,7 +60,7 @@ The correct stack is:
 1. primary product: site qualification / readiness pack
 2. secondary product: qualified opportunity exchange
 3. third product: scene memory / preview simulation / evaluation package
-4. fourth product: scenario generation / managed tuning / licensing
+4. fourth product: world-model-based adaptation / managed tuning / training data / licensing
 
 This repo lives in steps 3 and 4.
 
@@ -48,6 +71,6 @@ When making changes here, optimize for:
 1. post-qualification evaluation discipline
 2. scene-memory-first intake compatibility
 3. clean dataset and rollout contracts
-4. explicit separation between supporting world-model evidence and stronger validation gates
+4. explicit separation between downstream world-model evidence and stronger validation gates
 
 Do not let generated rollouts replace qualification evidence or authoritative readiness records.

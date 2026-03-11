@@ -10,10 +10,10 @@ Current canonical executable question:
 
 Default answer path in this repo:
 
-- world model / DreamDojo = optional downstream adaptation/evidence path
-- PolaRiS = optional downstream outer-loop evaluator when the scene package and target robot stack justify it
+- world model / DreamDojo = first-class downstream adaptation, RL post-training, and bounded evidence path
+- PolaRiS = stricter downstream outer-loop evaluator when the scene package and target robot stack justify it
 
-World-model stages remain central to the product. The change is that they now sit behind a qualification-first handoff model, and their evidence becomes supporting by default when `eval_polaris.enabled=true` and `eval_polaris.default_as_primary_gate=true`.
+World-model stages remain central to the product. The change is that they now sit behind a qualification-first handoff model, and their outputs remain derived downstream assets rather than qualification truth. Passive site capture helps with conditioning, but meaningful robot adaptation usually depends on action-conditioned robot data such as play, teleop logs, or task rollouts. When `eval_polaris.enabled=true` and `eval_polaris.default_as_primary_gate=true`, world-model evidence stays supporting and PolaRiS becomes the report's primary validation gate.
 
 ## Preferred Intake
 
