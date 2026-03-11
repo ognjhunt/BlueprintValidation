@@ -178,9 +178,9 @@ def test_pipeline_reruns_s4_after_successful_s3d(sample_config, tmp_path, monkey
     second_s4 = execution_order.index("s4_policy_eval", first_s4 + 1)
     s4a = execution_order.index("s4a_rlds_export")
     s4f = execution_order.index("s4f_polaris_eval")
-    assert execution_order.index("s0_task_hints_bootstrap") < execution_order.index("s0a_scene_package")
-    assert execution_order.index("s0a_scene_package") < execution_order.index("s0b_scene_memory_runtime")
-    assert execution_order.index("s0b_scene_memory_runtime") < execution_order.index("s1_isaac_render")
+    assert execution_order.index("s0_task_hints_bootstrap") < execution_order.index("s0b_scene_memory_runtime")
+    assert execution_order.index("s0b_scene_memory_runtime") < execution_order.index("s0a_scene_package")
+    assert execution_order.index("s0a_scene_package") < execution_order.index("s1_isaac_render")
     assert execution_order.index("s1_isaac_render") < execution_order.index("s1_render")
     assert first_s4 < s3d < second_s4 < s4a
     assert execution_order.index("s4e_trained_eval") < s4f < execution_order.index("s4b_rollout_dataset")

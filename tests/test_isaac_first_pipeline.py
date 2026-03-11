@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -98,6 +99,21 @@ def test_isaac_render_stage_runs_from_scene_package(sample_config, tmp_path, mon
     fac = sample_config.facilities["test_facility"]
     scene_root = _write_scene_package(tmp_path / "scene")
     fac.scene_package_path = scene_root
+    fac.scene_memory_bundle_path = tmp_path / "scene_memory"
+    runtime_dir = tmp_path / "scene_memory_runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    runtime_path = runtime_dir / "runtime_selection.json"
+    runtime_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "selected_backend": "neoverse",
+                "secondary_backend": "gen3c",
+                "fallback_backend": "cosmos_transfer",
+                "available_backends": ["neoverse", "gen3c", "cosmos_transfer"],
+            }
+        )
+    )
 
     sample_config.render.backend = "auto"
     monkeypatch.setenv("BLUEPRINT_UNSAFE_ALLOW_SCENE_PACKAGE_IMPORT", "1")
@@ -127,12 +143,22 @@ def test_isaac_render_stage_runs_from_scene_package(sample_config, tmp_path, mon
             status="success",
             elapsed_seconds=0.0,
             outputs={"scene_package_path": str(scene_root)},
-        )
+        ),
+        "s0b_scene_memory_runtime": StageResult(
+            stage_name="s0b_scene_memory_runtime",
+            status="success",
+            elapsed_seconds=0.0,
+            outputs={"runtime_selection_path": str(runtime_path)},
+        ),
     }
     result = IsaacRenderStage().run(sample_config, fac, tmp_path, previous_results)
 
     assert result.status == "success"
     assert result.metrics["render_backend"] == "isaac_scene"
+    assert result.outputs["scene_memory_runtime_backend"] == "neoverse"
+    manifest = json.loads(Path(result.outputs["manifest_path"]).read_text())
+    assert manifest["scene_memory_runtime"]["selected_backend"] == "neoverse"
+    assert manifest["intake_lineage"]["preferred_intake_kind"] == "scene_memory_bundle"
     assert result.outputs["manifest_path"].endswith("isaac_renders/render_manifest.json")
 
 

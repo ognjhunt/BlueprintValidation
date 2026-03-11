@@ -1,9 +1,12 @@
 schema_version: v1
 project_name: Same-Facility Policy Uplift (OpenVLA, Cloud)
 
+# Legacy geometry-backed cloud profile. Preferred canonical intake is a
+# qualified handoff plus scene_memory_bundle; keep this config for adapter/fallback use.
 facilities:
   facility_a:
     name: Facility A
+    # scene_memory_bundle_path: /models/pipeline/scene_memory
     ply_path: /app/data/facilities/facility_a/splat.ply
     # Set before enabling eval_polaris or Isaac-backed teleop recording.
     # scene_package_path: /models/scene_packages/facility_a

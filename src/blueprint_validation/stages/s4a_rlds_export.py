@@ -8,6 +8,11 @@ from typing import Dict, List
 from ..common import StageResult, get_logger, read_json, write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..evaluation.claim_protocol import claim_protocol_enabled
+from ..intake_metadata import (
+    resolve_intake_lineage,
+    resolve_scene_memory_runtime_metadata,
+    summarize_scene_memory_runtime,
+)
 from ..training.native_teacher import generate_correction_rollouts, generate_teacher_rollouts
 from ..training.external_rollouts import load_external_rollouts_for_policy
 from ..training.rlds_export import (
@@ -237,6 +242,15 @@ class RLDSExportStage(PipelineStage):
 
         stage_dir = work_dir / "rlds_export"
         stage_dir.mkdir(parents=True, exist_ok=True)
+        intake_lineage = resolve_intake_lineage(facility)
+        runtime_summary = summarize_scene_memory_runtime(
+            resolve_scene_memory_runtime_metadata(
+                config,
+                facility,
+                work_dir=work_dir,
+                previous_results=previous_results,
+            )
+        )
 
         dataset_name = config.rollout_dataset.adapted_dataset_name
         threshold = config.rollout_dataset.task_score_threshold
@@ -248,9 +262,13 @@ class RLDSExportStage(PipelineStage):
         split_manifest = {
             "train_pair_ids": list(curriculum_manifest.get("train_pair_ids", curriculum_result.get("train_pair_ids", []))),
             "eval_pair_ids": list(curriculum_manifest.get("eval_pair_ids", curriculum_result.get("eval_pair_ids", []))),
+            "intake_lineage": intake_lineage,
+            "scene_memory_runtime": runtime_summary,
         }
         write_json(split_manifest, split_manifest_path)
         curriculum_manifest_path = stage_dir / "curriculum_manifest.json"
+        curriculum_manifest["intake_lineage"] = intake_lineage
+        curriculum_manifest["scene_memory_runtime"] = runtime_summary
         write_json(curriculum_manifest, curriculum_manifest_path)
 
         external_rollouts = load_external_rollouts_for_policy(config, previous_results)
@@ -279,10 +297,14 @@ class RLDSExportStage(PipelineStage):
                 outputs={
                     "split_manifest_path": str(split_manifest_path),
                     "curriculum_manifest_path": str(curriculum_manifest_path),
+                    "intake_kind": intake_lineage.get("preferred_intake_kind"),
+                    "scene_memory_runtime_backend": runtime_summary.get("selected_backend"),
                 },
                 metrics={
                     "total_adapted_rollouts": len(adapted_rollouts_all),
                     "requested_rollouts_per_condition": int(config.eval_policy.num_rollouts),
+                    "intake_kind": intake_lineage.get("preferred_intake_kind"),
+                    "scene_memory_runtime_backend": runtime_summary.get("selected_backend"),
                     **filter_counts,
                 },
             )
@@ -296,9 +318,13 @@ class RLDSExportStage(PipelineStage):
                 outputs={
                     "split_manifest_path": str(split_manifest_path),
                     "curriculum_manifest_path": str(curriculum_manifest_path),
+                    "intake_kind": intake_lineage.get("preferred_intake_kind"),
+                    "scene_memory_runtime_backend": runtime_summary.get("selected_backend"),
                 },
                 metrics={
                     "total_adapted_rollouts": len(adapted_rollouts_all),
+                    "intake_kind": intake_lineage.get("preferred_intake_kind"),
+                    "scene_memory_runtime_backend": runtime_summary.get("selected_backend"),
                     **filter_counts,
                 },
             )
@@ -343,6 +369,8 @@ class RLDSExportStage(PipelineStage):
                 ),
                 metrics={
                     "total_adapted_rollouts": len(adapted_rollouts_all),
+                    "intake_kind": intake_lineage.get("preferred_intake_kind"),
+                    "scene_memory_runtime_backend": runtime_summary.get("selected_backend"),
                     **filter_counts,
                 },
             )
@@ -373,6 +401,10 @@ class RLDSExportStage(PipelineStage):
                 "eval_jsonl": str(eval_dir / "episodes.jsonl"),
                 "split_manifest_path": str(split_manifest_path),
                 "curriculum_manifest_path": str(curriculum_manifest_path),
+                "intake_kind": intake_lineage.get("preferred_intake_kind"),
+                "intake_lineage": intake_lineage,
+                "scene_memory_runtime": runtime_summary,
+                "scene_memory_runtime_backend": runtime_summary.get("selected_backend"),
             },
             metrics={
                 "num_train_episodes": num_train,
@@ -410,6 +442,8 @@ class RLDSExportStage(PipelineStage):
                 "require_consistent_action_dim": (
                     config.rollout_dataset.require_consistent_action_dim
                 ),
+                "intake_kind": intake_lineage.get("preferred_intake_kind"),
+                "scene_memory_runtime_backend": runtime_summary.get("selected_backend"),
                 **filter_counts,
             },
         )

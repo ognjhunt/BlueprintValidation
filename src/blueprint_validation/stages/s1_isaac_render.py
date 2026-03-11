@@ -9,6 +9,11 @@ import numpy as np
 
 from ..common import StageResult, write_json
 from ..config import FacilityConfig, ValidationConfig
+from ..intake_metadata import (
+    resolve_intake_lineage,
+    resolve_scene_memory_runtime_metadata,
+    summarize_scene_memory_runtime,
+)
 from ..teleop.contracts import load_and_validate_scene_package
 from ..teleop.runtime import (
     IsaacTeleopRuntimeError,
@@ -33,7 +38,7 @@ class IsaacRenderStage(PipelineStage):
 
     @property
     def description(self) -> str:
-        return "Render scripted Stage-1 clips from an Isaac scene package"
+        return "Render strict simulator Stage-1 clips from an Isaac scene package"
 
     def run(
         self,
@@ -74,6 +79,15 @@ class IsaacRenderStage(PipelineStage):
         render_dir = work_dir / "isaac_renders"
         render_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = render_dir / "render_manifest.json"
+        intake_lineage = resolve_intake_lineage(facility)
+        runtime_summary = summarize_scene_memory_runtime(
+            resolve_scene_memory_runtime_metadata(
+                config,
+                facility,
+                work_dir=work_dir,
+                previous_results=previous_results,
+            )
+        )
 
         try:
             manifest_entries = _render_scripted_isaac_clips(
@@ -107,6 +121,8 @@ class IsaacRenderStage(PipelineStage):
             "render_backend": "isaac_scene",
             "num_clips": len(manifest_entries),
             "scene_id": str(task_payload.get("scene_id", "") or scene_root.name),
+            "intake_lineage": intake_lineage,
+            "scene_memory_runtime": runtime_summary,
             "clips": manifest_entries,
         }
         write_json(manifest, manifest_path)
@@ -119,12 +135,18 @@ class IsaacRenderStage(PipelineStage):
                 "manifest_path": str(manifest_path),
                 "scene_package_path": str(scene_root),
                 "num_clips": len(manifest_entries),
+                "intake_kind": intake_lineage["preferred_intake_kind"],
+                "intake_lineage": intake_lineage,
+                "scene_memory_runtime": runtime_summary,
+                "scene_memory_runtime_backend": runtime_summary.get("selected_backend"),
             },
             metrics={
                 "num_clips": len(manifest_entries),
                 "total_frames": sum(int(entry.get("num_frames", 0) or 0) for entry in manifest_entries),
                 "render_backend": "isaac_scene",
                 "scene_package_path": str(scene_root),
+                "intake_kind": intake_lineage["preferred_intake_kind"],
+                "scene_memory_runtime_backend": runtime_summary.get("selected_backend"),
             },
         )
 

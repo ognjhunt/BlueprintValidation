@@ -8,13 +8,13 @@ This is a planning note for a future pipeline, not a recommendation to change th
 
 The idea is simple: keep the parts of this repo that already work, then add the missing middle layer that current papers only solve in pieces. That middle layer is where the robot gets grounded into the scene, where the task contact zone becomes simulator-ready, and where closed-loop rollouts become more action-valid than the current world-model-only path.
 
-For now, the repo should still treat the existing DreamDojo/Cosmos world-model-first pipeline as the default.
+For now, the repo should still treat the qualified-handoff plus scene-memory-first pipeline as the default, with geometry bundles only as legacy adapters and scene packages only as stricter fallback paths.
 
 ## The Main Idea In One Line
 
-Take the current pipeline:
+Take the current legacy geometry-forward pipeline:
 
-`splat -> render -> enrich -> world-model finetune -> synthetic rollouts -> policy finetune/eval`
+`scene_memory / geometry adapter -> render -> enrich -> world-model finetune -> synthetic rollouts -> policy finetune/eval`
 
 Then add three missing capabilities in the middle:
 

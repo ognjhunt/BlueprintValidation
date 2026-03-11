@@ -14,6 +14,11 @@ from ..common import (
     write_json,
 )
 from ..config import FacilityConfig, ValidationConfig
+from ..intake_metadata import (
+    resolve_intake_lineage,
+    resolve_scene_memory_runtime_metadata,
+    summarize_scene_memory_runtime,
+)
 from ..enrichment.cosmos_runner import enrich_clip
 from ..enrichment.scene_index import build_scene_index, query_nearest_context_candidates
 from ..enrichment.stage2_quality import (
@@ -118,8 +123,15 @@ class EnrichStage(PipelineStage):
     ) -> StageResult:
         enrich_dir = work_dir / "enriched"
         enrich_dir.mkdir(parents=True, exist_ok=True)
-        runtime_stage = previous_results.get("s0b_scene_memory_runtime")
-        runtime_outputs = dict(runtime_stage.outputs) if runtime_stage is not None else {}
+        runtime_summary = summarize_scene_memory_runtime(
+            resolve_scene_memory_runtime_metadata(
+                config,
+                facility,
+                work_dir=work_dir,
+                previous_results=previous_results,
+            )
+        )
+        intake_lineage = resolve_intake_lineage(facility)
 
         def _failed_result(
             *,
@@ -165,6 +177,10 @@ class EnrichStage(PipelineStage):
                 outputs=source.to_metadata(),
                 metrics=source.to_metadata(),
             )
+        if isinstance(render_manifest.get("intake_lineage"), dict):
+            intake_lineage = dict(render_manifest.get("intake_lineage", {}) or {})
+        if isinstance(render_manifest.get("scene_memory_runtime"), dict):
+            runtime_summary = dict(render_manifest.get("scene_memory_runtime", {}) or {})
         if (
             str(getattr(config.eval_policy, "claim_protocol", "none") or "none").strip().lower()
             == "fixed_same_facility_uplift"
@@ -976,12 +992,8 @@ class EnrichStage(PipelineStage):
             "multi_view_context_offsets": [int(v) for v in config.enrich.multi_view_context_offsets],
             "scene_index_enabled": bool(config.enrich.scene_index_enabled),
             "scene_index_path": str(scene_index_path) if scene_index_path is not None else None,
-            "scene_memory_runtime": {
-                "selected_backend": runtime_outputs.get("selected_backend"),
-                "secondary_backend": runtime_outputs.get("secondary_backend"),
-                "fallback_backend": runtime_outputs.get("fallback_backend"),
-                "available_backends": runtime_outputs.get("available_backends"),
-            },
+            "intake_lineage": intake_lineage,
+            "scene_memory_runtime": runtime_summary,
             "clips": manifest_entries,
         }
         write_json(manifest, manifest_path)
@@ -1011,8 +1023,11 @@ class EnrichStage(PipelineStage):
                 "num_selected_source_clips": len(source_clips),
                 "selected_source_clips": selected_clip_names,
                 "selected_source_target_distribution": selected_clip_target_distribution,
-                "scene_memory_runtime_backend": runtime_outputs.get("selected_backend"),
-                "scene_memory_runtime_secondary_backend": runtime_outputs.get("secondary_backend"),
+                "intake_kind": intake_lineage.get("preferred_intake_kind"),
+                "intake_lineage": intake_lineage,
+                "scene_memory_runtime": runtime_summary,
+                "scene_memory_runtime_backend": runtime_summary.get("selected_backend"),
+                "scene_memory_runtime_secondary_backend": runtime_summary.get("secondary_backend"),
                 "error_code": stage_error_code,
                 "error_codes": list(stage_fail_error_codes) if stage_status == "failed" else None,
                 **coverage_outputs,
@@ -1061,7 +1076,8 @@ class EnrichStage(PipelineStage):
                 "num_scene_index_retrievals": total_scene_index_retrievals,
                 "num_selected_source_clips": len(source_clips),
                 "selected_source_target_distribution": selected_clip_target_distribution,
-                "scene_memory_runtime_backend": runtime_outputs.get("selected_backend"),
+                "intake_kind": intake_lineage.get("preferred_intake_kind"),
+                "scene_memory_runtime_backend": runtime_summary.get("selected_backend"),
                 "source_clip_selection_mode": clip_selection_meta.get("selection_mode"),
                 "source_clip_selection_fallback": clip_selection_meta.get("fallback"),
                 "source_clip_selection_fail_closed": bool(clip_selection_meta.get("fail_closed")),

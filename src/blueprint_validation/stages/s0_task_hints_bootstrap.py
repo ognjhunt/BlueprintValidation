@@ -812,7 +812,7 @@ class TaskHintsBootstrapStage(PipelineStage):
 
     @property
     def description(self) -> str:
-        return "Bootstrap synthetic task_targets.json from first-pass VLM detections"
+        return "Bootstrap geometry fallback task hints when legacy bundles lack source metadata"
 
     def run(
         self,

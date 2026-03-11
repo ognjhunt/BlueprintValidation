@@ -1,14 +1,18 @@
 schema_version: v1
 project_name: "Blueprint Validation Post-Qualification Example"
 
-# Preferred intake: qualified opportunity handoff plus optional geometry / scene packages.
+# Preferred intake: qualified opportunity handoff plus scene-memory first,
+# with geometry and scene packages reserved for adapters or stricter paths.
 qualified_opportunities:
   warehouse_tote_pick_0787:
     opportunity_handoff_path: ./opportunity_handoff.example.json
-    # geometry_bundle_path can be omitted when the handoff already sits beside
-    # pipeline/advanced_geometry/.
+    # Preferred canonical handoff path:
+    # scene_memory_bundle_path: ../pipeline/scene_memory
+    # Legacy geometry adapter path can be omitted when the handoff already sits
+    # beside pipeline/advanced_geometry/.
     geometry_bundle_path: ../data/interiorgs/0787_841244
-    # scene_package_path can be omitted here because the example handoff already declares it.
+    # scene_package_path remains optional and should only be set for stricter
+    # simulator-backed evaluation or contact-critical claims.
     claim_benchmark_path: ./benchmarks/facility_c.fixed_claim.json
     # Legacy direct overrides remain supported when you need them:
     # ply_path: ../data/interiorgs/0787_841244/3dgs_compressed.ply

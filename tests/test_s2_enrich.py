@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Dict
@@ -197,11 +198,37 @@ def test_s2_enrich_reads_robosplat_manifest(sample_config, tmp_path, monkeypatch
 
     stage = EnrichStage()
     fac = list(sample_config.facilities.values())[0]
-    result = stage.run(sample_config, fac, work_dir, {})
+    fac.scene_memory_bundle_path = work_dir / "scene_memory"
+    runtime_dir = work_dir / "scene_memory_runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    runtime_path = runtime_dir / "runtime_selection.json"
+    runtime_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "selected_backend": "neoverse",
+                "secondary_backend": "gen3c",
+                "fallback_backend": "cosmos_transfer",
+                "available_backends": ["neoverse", "gen3c", "cosmos_transfer"],
+            }
+        )
+    )
+    result = stage.run(
+        sample_config,
+        fac,
+        work_dir,
+        {
+            "s0b_scene_memory_runtime": SimpleNamespace(
+                outputs={"runtime_selection_path": str(runtime_path)}
+            )
+        },
+    )
     assert result.status == "success"
     manifest = read_json(work_dir / "enriched" / "enriched_manifest.json")
     assert manifest["num_clips"] == 1
     assert manifest["clips"][0]["clip_name"] == "clip_000_rb00"
+    assert manifest["scene_memory_runtime"]["selected_backend"] == "neoverse"
+    assert manifest["intake_lineage"]["preferred_intake_kind"] == "scene_memory_bundle"
 
 
 def test_s2_manifest_resolution_prefers_s1d(tmp_path):

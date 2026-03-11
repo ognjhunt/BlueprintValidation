@@ -1,6 +1,8 @@
 schema_version: v1
 project_name: Investor-Grade Policy Uplift (OpenVLA)
 
+# Legacy geometry-backed portfolio profile. Prefer scene_memory_bundle-backed
+# qualified handoffs for new runs; keep these PLY paths as supported adapters.
 facilities:
   facility_a:
     name: Facility A

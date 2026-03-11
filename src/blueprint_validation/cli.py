@@ -220,6 +220,34 @@ def _get_stage_work_dir(ctx: click.Context, facility_id: str) -> Path:
     return work_dir
 
 
+def _bootstrap_scene_memory_runtime_stage(
+    config,
+    facility,
+    work_dir: Path,
+    previous_results: dict,
+) -> None:
+    from .stages.s0b_scene_memory_runtime import SceneMemoryRuntimeStage
+
+    runtime_stage = SceneMemoryRuntimeStage()
+    runtime_result = runtime_stage.execute(config, facility, work_dir, previous_results)
+    runtime_result.save(work_dir / "s0b_scene_memory_runtime_result.json")
+    previous_results["s0b_scene_memory_runtime"] = runtime_result
+
+
+def _bootstrap_scene_package_stage(
+    config,
+    facility,
+    work_dir: Path,
+    previous_results: dict,
+) -> None:
+    from .stages.s0a_scene_package import ScenePackageStage
+
+    scene_stage = ScenePackageStage()
+    scene_result = scene_stage.execute(config, facility, work_dir, previous_results)
+    scene_result.save(work_dir / "s0a_scene_package_result.json")
+    previous_results["s0a_scene_package"] = scene_result
+
+
 def _parse_key_value_pairs(values: tuple[str, ...]) -> dict[str, str]:
     payload: dict[str, str] = {}
     for item in values:
@@ -589,7 +617,6 @@ def record_teleop(
 def render(ctx: click.Context, facility: str, ply_path: Optional[str]) -> None:
     """Stage 1: Render clips using the resolved gsplat or Isaac backend."""
     from .stages.render_backend import active_render_backend
-    from .stages.s0a_scene_package import ScenePackageStage
     from .stages.s1_isaac_render import IsaacRenderStage
     from .stages.s1_render import RenderStage
 
@@ -600,10 +627,8 @@ def render(ctx: click.Context, facility: str, ply_path: Optional[str]) -> None:
     work_dir = _get_stage_work_dir(ctx, facility)
 
     previous_results = {}
-    scene_stage = ScenePackageStage()
-    scene_result = scene_stage.execute(config, fac, work_dir, previous_results)
-    scene_result.save(work_dir / "s0a_scene_package_result.json")
-    previous_results["s0a_scene_package"] = scene_result
+    _bootstrap_scene_memory_runtime_stage(config, fac, work_dir, previous_results)
+    _bootstrap_scene_package_stage(config, fac, work_dir, previous_results)
 
     backend = active_render_backend(config, fac, previous_results)
     stage = IsaacRenderStage() if backend == "isaac_scene" else RenderStage()
@@ -852,8 +877,10 @@ def enrich(ctx: click.Context, facility: str) -> None:
     fac = _get_facility(ctx, facility)
     work_dir = _get_stage_work_dir(ctx, facility)
 
+    previous_results = {}
+    _bootstrap_scene_memory_runtime_stage(config, fac, work_dir, previous_results)
     stage = EnrichStage()
-    result = stage.execute(config, fac, work_dir, {})
+    result = stage.execute(config, fac, work_dir, previous_results)
     result.save(work_dir / "s2_enrich_result.json")
     click.echo(f"Enrich complete: {result.status} ({result.elapsed_seconds:.1f}s)")
 
@@ -920,8 +947,10 @@ def eval_policy(ctx: click.Context, facility: str) -> None:
     fac = _get_facility(ctx, facility)
     work_dir = _get_stage_work_dir(ctx, facility)
 
+    previous_results = {}
+    _bootstrap_scene_memory_runtime_stage(config, fac, work_dir, previous_results)
     stage = PolicyEvalStage()
-    result = stage.execute(config, fac, work_dir, {})
+    result = stage.execute(config, fac, work_dir, previous_results)
     result.save(work_dir / "s4_policy_eval_result.json")
     click.echo(f"Policy eval complete: {result.status} ({result.elapsed_seconds:.1f}s)")
 
@@ -937,8 +966,10 @@ def export_rlds(ctx: click.Context, facility: str) -> None:
     fac = _get_facility(ctx, facility)
     work_dir = _get_stage_work_dir(ctx, facility)
 
+    previous_results = {}
+    _bootstrap_scene_memory_runtime_stage(config, fac, work_dir, previous_results)
     stage = RLDSExportStage()
-    result = stage.execute(config, fac, work_dir, {})
+    result = stage.execute(config, fac, work_dir, previous_results)
     result.save(work_dir / "s4a_rlds_export_result.json")
     click.echo(f"RLDS export complete: {result.status} ({result.elapsed_seconds:.1f}s)")
 
@@ -954,8 +985,10 @@ def export_rollouts(ctx: click.Context, facility: str) -> None:
     fac = _get_facility(ctx, facility)
     work_dir = _get_stage_work_dir(ctx, facility)
 
+    previous_results = {}
+    _bootstrap_scene_memory_runtime_stage(config, fac, work_dir, previous_results)
     stage = RolloutDatasetStage()
-    result = stage.execute(config, fac, work_dir, {})
+    result = stage.execute(config, fac, work_dir, previous_results)
     result.save(work_dir / "s4b_rollout_dataset_result.json")
     click.echo(f"Rollout export complete: {result.status} ({result.elapsed_seconds:.1f}s)")
 
@@ -988,8 +1021,10 @@ def eval_policy_pair(ctx: click.Context, facility: str) -> None:
     fac = _get_facility(ctx, facility)
     work_dir = _get_stage_work_dir(ctx, facility)
 
+    previous_results = {}
+    _bootstrap_scene_memory_runtime_stage(config, fac, work_dir, previous_results)
     stage = PolicyPairEvalStage()
-    result = stage.execute(config, fac, work_dir, {})
+    result = stage.execute(config, fac, work_dir, previous_results)
     result.save(work_dir / "s4d_policy_pair_eval_result.json")
     click.echo(f"Policy pair eval complete: {result.status} ({result.elapsed_seconds:.1f}s)")
 
@@ -1005,8 +1040,10 @@ def eval_trained_policy(ctx: click.Context, facility: str) -> None:
     fac = _get_facility(ctx, facility)
     work_dir = _get_stage_work_dir(ctx, facility)
 
+    previous_results = {}
+    _bootstrap_scene_memory_runtime_stage(config, fac, work_dir, previous_results)
     stage = TrainedPolicyEvalStage()
-    result = stage.execute(config, fac, work_dir, {})
+    result = stage.execute(config, fac, work_dir, previous_results)
     result.save(work_dir / "s4e_trained_eval_result.json")
     click.echo(f"Trained policy eval complete: {result.status} ({result.elapsed_seconds:.1f}s)")
 

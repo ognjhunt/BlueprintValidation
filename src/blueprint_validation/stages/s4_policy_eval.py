@@ -11,6 +11,11 @@ import numpy as np
 
 from ..common import StageResult, get_logger, read_json, write_json
 from ..config import FacilityConfig, ValidationConfig
+from ..intake_metadata import (
+    resolve_intake_lineage,
+    resolve_scene_memory_runtime_metadata,
+    summarize_scene_memory_runtime,
+)
 from ..evaluation.openvla_runner import (
     load_dreamdojo_world_model,
 )
@@ -74,6 +79,30 @@ from .base import PipelineStage
 from .render_backend import resolve_stage1_render_manifest_source
 
 logger = get_logger("stages.s4_policy_eval")
+
+
+def _resolve_stage_lineage(
+    *,
+    config: ValidationConfig,
+    facility: FacilityConfig,
+    work_dir: Path,
+    render_manifest: dict,
+    previous_results: Dict[str, StageResult],
+) -> tuple[Dict[str, object], Dict[str, object]]:
+    intake_lineage = resolve_intake_lineage(facility)
+    if isinstance(render_manifest.get("intake_lineage"), dict):
+        intake_lineage = dict(render_manifest.get("intake_lineage", {}) or {})
+    runtime_summary = summarize_scene_memory_runtime(
+        resolve_scene_memory_runtime_metadata(
+            config,
+            facility,
+            work_dir=work_dir,
+            previous_results=previous_results,
+        )
+    )
+    if isinstance(render_manifest.get("scene_memory_runtime"), dict):
+        runtime_summary = dict(render_manifest.get("scene_memory_runtime", {}) or {})
+    return intake_lineage, runtime_summary
 
 
 class PolicyEvalStage(PipelineStage):
@@ -161,6 +190,13 @@ class PolicyEvalStage(PipelineStage):
             )
         render_manifest_path = render_source.source_manifest_path
         render_manifest = read_json(render_source.source_manifest_path)
+        intake_lineage, runtime_summary = _resolve_stage_lineage(
+            config=config,
+            facility=facility,
+            work_dir=work_dir,
+            render_manifest=render_manifest,
+            previous_results=previous_results,
+        )
 
         requested_rollouts = int(config.eval_policy.num_rollouts)
         shared_manifest_path = eval_dir / "shared_task_start_manifest.json"
@@ -587,6 +623,8 @@ class PolicyEvalStage(PipelineStage):
                 min_rollout_frames=min_rollout_frames,
                 min_rollout_steps=min_rollout_steps,
                 fail_on_short_rollout=fail_on_short_rollout,
+                intake_lineage=intake_lineage,
+                runtime_summary=runtime_summary,
             )
 
         policy_adapter = get_policy_adapter(config.policy_adapter)
@@ -1033,6 +1071,10 @@ class PolicyEvalStage(PipelineStage):
             "claim_benchmark_path": str(claim_benchmark_path) if claim_benchmark_path else "",
             "claim_benchmark_manifest_hash": claim_benchmark_manifest_hash or "",
             "num_claim_state_failures": len(claim_state_failures),
+            "intake_kind": intake_lineage.get("preferred_intake_kind"),
+            "intake_lineage": intake_lineage,
+            "scene_memory_runtime": runtime_summary,
+            "scene_memory_runtime_backend": runtime_summary.get("selected_backend"),
         }
 
         write_json(metrics, eval_dir / "policy_eval_report.json")
@@ -1081,6 +1123,10 @@ class PolicyEvalStage(PipelineStage):
                 "report_path": str(eval_dir / "policy_eval_report.json"),
                 "shared_task_start_manifest": str(shared_manifest_path),
                 "judge_audit_csv": str(audit_csv_path),
+                "intake_kind": intake_lineage.get("preferred_intake_kind"),
+                "intake_lineage": intake_lineage,
+                "scene_memory_runtime": runtime_summary,
+                "scene_memory_runtime_backend": runtime_summary.get("selected_backend"),
             },
             metrics=metrics,
             detail="\n".join(line for line in detail_lines if line),
@@ -1119,6 +1165,8 @@ def _run_world_model_only_eval(
     min_rollout_frames: int,
     min_rollout_steps: int,
     fail_on_short_rollout: bool,
+    intake_lineage: Dict[str, object],
+    runtime_summary: Dict[str, object],
 ) -> StageResult:
     rollout_driver = (config.eval_policy.rollout_driver or "scripted").strip().lower()
     claim_state_failures: List[str] = []
@@ -1630,6 +1678,10 @@ def _run_world_model_only_eval(
         "claim_benchmark_path": str(claim_benchmark_path) if claim_benchmark_path else "",
         "claim_benchmark_manifest_hash": claim_benchmark_manifest_hash or "",
         "num_claim_state_failures": len(claim_state_failures),
+        "intake_kind": intake_lineage.get("preferred_intake_kind"),
+        "intake_lineage": intake_lineage,
+        "scene_memory_runtime": runtime_summary,
+        "scene_memory_runtime_backend": runtime_summary.get("selected_backend"),
     }
     write_json(metrics, eval_dir / "policy_eval_report.json")
     detail_lines = list(scoring_failures[:5])
@@ -1671,13 +1723,17 @@ def _run_world_model_only_eval(
             else "failed"
         ),
         elapsed_seconds=0,
-        outputs={
-            "eval_dir": str(eval_dir),
-            "scores_path": str(eval_dir / "vlm_scores.json"),
-            "report_path": str(eval_dir / "policy_eval_report.json"),
-            "shared_task_start_manifest": str(shared_manifest_path),
-            "judge_audit_csv": str(audit_csv_path),
-        },
+            outputs={
+                "eval_dir": str(eval_dir),
+                "scores_path": str(eval_dir / "vlm_scores.json"),
+                "report_path": str(eval_dir / "policy_eval_report.json"),
+                "shared_task_start_manifest": str(shared_manifest_path),
+                "judge_audit_csv": str(audit_csv_path),
+                "intake_kind": intake_lineage.get("preferred_intake_kind"),
+                "intake_lineage": intake_lineage,
+                "scene_memory_runtime": runtime_summary,
+                "scene_memory_runtime_backend": runtime_summary.get("selected_backend"),
+            },
         metrics=metrics,
         detail="\n".join(line for line in detail_lines if line),
     )

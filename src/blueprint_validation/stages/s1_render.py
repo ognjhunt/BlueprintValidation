@@ -25,6 +25,11 @@ from ..evaluation.expected_focus import build_expected_focus_text as _build_expe
 from ..evaluation.task_hints import tasks_from_task_hints
 from ..evaluation.vlm_judge import Stage1ProbeScore, score_stage1_probe
 from ..enrichment.stage2_quality import evaluate_stage1_coverage_gate
+from ..intake_metadata import (
+    resolve_intake_lineage,
+    resolve_scene_memory_runtime_metadata,
+    summarize_scene_memory_runtime,
+)
 from ..rendering.camera_paths import CameraPose, _look_at, generate_path_from_spec, save_path_to_json
 from ..rendering.camera_quality_planner import (
     plan_best_camera_spec,  # noqa: F401
@@ -204,7 +209,7 @@ class RenderStage(PipelineStage):
 
     @property
     def description(self) -> str:
-        return "Render PLY Gaussian splat to video clips at robot-height perspectives"
+        return "Render legacy geometry-backed Stage-1 clips from the resolved bundle adapter"
 
     def _build_scene_aware_specs(
         self,
@@ -374,6 +379,15 @@ class RenderStage(PipelineStage):
 
         render_dir = work_dir / "renders"
         render_dir.mkdir(parents=True, exist_ok=True)
+        intake_lineage = resolve_intake_lineage(facility)
+        runtime_summary = summarize_scene_memory_runtime(
+            resolve_scene_memory_runtime_metadata(
+                config,
+                facility,
+                work_dir=work_dir,
+                previous_results=previous_results,
+            )
+        )
         probe_scores_path = (
             work_dir / "s1_probe_scores.jsonl"
             if bool(config.render.stage1_active_perception_enabled)
@@ -659,6 +673,8 @@ class RenderStage(PipelineStage):
                 "num_clips": len(manifest_entries),
                 "scene_aware": config.render.scene_aware,
                 "scene_aware_specs": extra_specs_count,
+                "intake_lineage": intake_lineage,
+                "scene_memory_runtime": runtime_summary,
                 "git_commit": stage1_run_metadata["git_commit"],
                 "config_hash": stage1_run_metadata["config_hash"],
                 "stage1_code_hash": stage1_run_metadata["stage1_code_hash"],
@@ -675,6 +691,10 @@ class RenderStage(PipelineStage):
                     "manifest_path": str(manifest_path),
                     "num_clips": len(manifest_entries),
                     "resolved_up_axis": facility.up_axis,
+                    "intake_kind": intake_lineage["preferred_intake_kind"],
+                    "intake_lineage": intake_lineage,
+                    "scene_memory_runtime": runtime_summary,
+                    "scene_memory_runtime_backend": runtime_summary.get("selected_backend"),
                     "error_code": "s1_quality_gate_failed",
                 },
                 metrics={
@@ -683,6 +703,7 @@ class RenderStage(PipelineStage):
                     "resolution": list(resolution),
                     "scene_aware_specs": extra_specs_count,
                     "resolved_up_axis": facility.up_axis,
+                    "intake_kind": intake_lineage["preferred_intake_kind"],
                     "orientation_candidates": orientation_meta.get("orientation_candidates"),
                     "orientation_score_selected": orientation_meta.get("orientation_score_selected"),
                     "orientation_score_runner_up": orientation_meta.get("orientation_score_runner_up"),
@@ -692,6 +713,7 @@ class RenderStage(PipelineStage):
                     "config_hash": stage1_run_metadata["config_hash"],
                     "stage1_code_hash": stage1_run_metadata["stage1_code_hash"],
                     "active_model_used": stage1_run_metadata["active_model_used"],
+                    "scene_memory_runtime_backend": runtime_summary.get("selected_backend"),
                     "error_code": "s1_quality_gate_failed",
                     **quality_summary,
                 },
@@ -706,6 +728,8 @@ class RenderStage(PipelineStage):
             "num_clips": len(manifest_entries),
             "scene_aware": config.render.scene_aware,
             "scene_aware_specs": extra_specs_count,
+            "intake_lineage": intake_lineage,
+            "scene_memory_runtime": runtime_summary,
             "git_commit": stage1_run_metadata["git_commit"],
             "config_hash": stage1_run_metadata["config_hash"],
             "stage1_code_hash": stage1_run_metadata["stage1_code_hash"],
@@ -723,6 +747,10 @@ class RenderStage(PipelineStage):
                 "manifest_path": str(manifest_path),
                 "num_clips": len(manifest_entries),
                 "resolved_up_axis": facility.up_axis,
+                "intake_kind": intake_lineage["preferred_intake_kind"],
+                "intake_lineage": intake_lineage,
+                "scene_memory_runtime": runtime_summary,
+                "scene_memory_runtime_backend": runtime_summary.get("selected_backend"),
             },
             metrics={
                 "num_clips": len(manifest_entries),
@@ -730,6 +758,7 @@ class RenderStage(PipelineStage):
                 "resolution": list(resolution),
                 "scene_aware_specs": extra_specs_count,
                 "resolved_up_axis": facility.up_axis,
+                "intake_kind": intake_lineage["preferred_intake_kind"],
                 "orientation_candidates": orientation_meta.get("orientation_candidates"),
                 "orientation_score_selected": orientation_meta.get("orientation_score_selected"),
                 "orientation_score_runner_up": orientation_meta.get("orientation_score_runner_up"),
@@ -739,6 +768,7 @@ class RenderStage(PipelineStage):
                 "config_hash": stage1_run_metadata["config_hash"],
                 "stage1_code_hash": stage1_run_metadata["stage1_code_hash"],
                 "active_model_used": stage1_run_metadata["active_model_used"],
+                "scene_memory_runtime_backend": runtime_summary.get("selected_backend"),
                 **quality_summary,
             },
         )

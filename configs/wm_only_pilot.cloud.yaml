@@ -1,9 +1,12 @@
 schema_version: v1
 project_name: "WM-Only Pilot (Budget-Capped)"
 
+# Legacy geometry-backed pilot profile. Preferred canonical intake is a
+# qualified handoff plus scene_memory_bundle; keep this config for fallback/debug use.
 facilities:
   kitchen_0787:
     name: "Kitchen Scene 0787 (InteriorGS)"
+    # scene_memory_bundle_path: /app/data/interiorgs/0787_841244/scene_memory
     ply_path: /app/data/interiorgs/0787_841244/3dgs_compressed.ply
     task_hints_path: /app/data/interiorgs/0787_841244/task_targets.synthetic.json
     description: >

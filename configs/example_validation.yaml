@@ -6,12 +6,14 @@ qualified_opportunities:
   facility_a:
     name: "Warehouse A - Durham"
     opportunity_handoff_path: ./opportunity_handoff.example.json
+    # Preferred canonical intake when staged explicitly:
+    # scene_memory_bundle_path: ../BlueprintCapturePipeline/scenes/scene_demo/captures/capture_demo/pipeline/scene_memory
     # If the handoff already lives under a capture pipeline directory, Validation
-    # can infer ./advanced_geometry from the handoff location.
+    # can infer ./advanced_geometry from the handoff location as a legacy adapter.
     geometry_bundle_path: ../data/facilities/facility_a
     # Legacy direct override remains supported when geometry is staged outside the bundle:
     # ply_path: ../data/facilities/facility_a/splat.ply
-    # scene_package_path: /path/to/facility_a_scene_package
+    # scene_package_path: /path/to/facility_a_scene_package   # strict fallback only
     claim_benchmark_path: ./benchmarks/facility_a.fixed_claim.json
     # Optional legacy override if task hints are staged outside the bundle:
     # task_hints_path: /path/to/task_targets.synthetic.json
@@ -39,12 +41,12 @@ qualified_opportunities:
 
   facility_b:
     name: "Warehouse B - Raleigh"
-    # This target shows the handoff-only path: the sibling advanced_geometry/
-    # bundle can be inferred from opportunity_handoff_path when present.
+    # This target shows the handoff-only path: sibling scene_memory/ is preferred
+    # when present, and advanced_geometry/ remains a supported adapter.
     opportunity_handoff_path: ../BlueprintCapturePipeline/scenes/scene_demo/captures/capture_demo/pipeline/opportunity_handoff.json
     geometry_bundle_path: ../data/facilities/facility_b
     # ply_path: ../data/facilities/facility_b/splat.ply
-    # scene_package_path: /path/to/facility_b_scene_package
+    # scene_package_path: /path/to/facility_b_scene_package   # strict fallback only
     claim_benchmark_path: ./benchmarks/facility_b.fixed_claim.json
     description: "Second qualified warehouse opportunity used for downstream evaluation"
     landmarks:
@@ -58,7 +60,7 @@ qualified_opportunities:
         approach_point: [4.0, 0.0, 0.9]
         target_point: [4.0, 0.5, 0.9]
 
-# ---- Stage 1: Render ----
+# ---- Stage 1: Render legacy geometry adapters or strict simulator clips ----
 render:
   resolution: [480, 640]
   fps: 10

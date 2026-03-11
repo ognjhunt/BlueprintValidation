@@ -14,9 +14,28 @@ def test_report_builder_markdown(tmp_path, sample_config):
     # Create mock stage results
     write_json(
         {
+            "stage_name": "s0b_scene_memory_runtime",
+            "status": "success",
+            "elapsed_seconds": 0.1,
+            "outputs": {
+                "selected_backend": "neoverse",
+                "secondary_backend": "gen3c",
+                "fallback_backend": "cosmos_transfer",
+            },
+        },
+        fac_dir / "s0b_scene_memory_runtime_result.json",
+    )
+    write_json(
+        {
             "stage_name": "s1_render",
             "status": "success",
             "elapsed_seconds": 10.5,
+            "outputs": {
+                "intake_lineage": {
+                    "preferred_intake_kind": "scene_memory_bundle",
+                    "intake_mode": "qualified_opportunity",
+                }
+            },
             "metrics": {"num_clips": 6, "total_frames": 294},
         },
         fac_dir / "s1_render_result.json",
@@ -67,6 +86,8 @@ def test_report_builder_markdown(tmp_path, sample_config):
     assert result.exists()
     content = result.read_text()
     assert "Validation Report" in content
+    assert "### Intake And Runtime" in content
+    assert "Selected scene-memory runtime: neoverse" in content
     assert "Supporting Evidence: Frozen Policy Baseline vs Adapted World Model" in content
     assert "RoboSplat Augmentation" in content
     assert "Policy RL Loop" in content

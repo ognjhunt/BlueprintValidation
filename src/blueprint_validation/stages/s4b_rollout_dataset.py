@@ -12,6 +12,11 @@ import numpy as np
 from ..common import StageResult, get_logger, read_json, write_json
 from ..config import FacilityConfig, ValidationConfig
 from ..evaluation.claim_protocol import claim_protocol_enabled
+from ..intake_metadata import (
+    resolve_intake_lineage,
+    resolve_scene_memory_runtime_metadata,
+    summarize_scene_memory_runtime,
+)
 from ..training.external_rollouts import load_external_rollouts_for_policy
 from ..training.native_teacher import generate_correction_rollouts, generate_teacher_rollouts
 from ..training.rlds_export import export_rollouts_to_rlds_jsonl
@@ -101,6 +106,19 @@ class RolloutDatasetStage(PipelineStage):
             )
         eval_report_path = work_dir / "policy_eval" / "policy_eval_report.json"
         eval_report = read_json(eval_report_path) if eval_report_path.exists() else {}
+        intake_lineage = resolve_intake_lineage(facility)
+        runtime_summary = summarize_scene_memory_runtime(
+            resolve_scene_memory_runtime_metadata(
+                config,
+                facility,
+                work_dir=work_dir,
+                previous_results=previous_results,
+            )
+        )
+        if isinstance(eval_report.get("intake_lineage"), dict):
+            intake_lineage = dict(eval_report.get("intake_lineage", {}) or {})
+        if isinstance(eval_report.get("scene_memory_runtime"), dict):
+            runtime_summary = dict(eval_report.get("scene_memory_runtime", {}) or {})
         claim_mode = bool(eval_report.get("claim_mode", False))
         action_contract = eval_report.get("action_contract", {})
         reliability_gate = eval_report.get("reliability_gate", {})
@@ -319,6 +337,8 @@ class RolloutDatasetStage(PipelineStage):
             "claim_manifest_path": str(claim_manifest_path) if claim_manifest_path.exists() else "",
             "generic_control_mode": generic_control_mode,
             "investor_grade_generic_control": generic_control_mode == "leave_one_facility_out",
+            "intake_lineage": intake_lineage,
+            "scene_memory_runtime": runtime_summary,
             "dataset_lineage": {
                 "world_snapshot_hash": str(
                     claim_manifest.get("world_snapshot_hash", "")
@@ -344,6 +364,10 @@ class RolloutDatasetStage(PipelineStage):
                 "generic_control_dataset_root": str(generic_root),
                 "adapted_dataset_root": str(adapted_root),
                 "summary_path": str(dataset_root / "dataset_export_summary.json"),
+                "intake_kind": intake_lineage.get("preferred_intake_kind"),
+                "intake_lineage": intake_lineage,
+                "scene_memory_runtime": runtime_summary,
+                "scene_memory_runtime_backend": runtime_summary.get("selected_backend"),
             },
             metrics={
                 "num_pairs_input": min(len(baseline), len(adapted)),
@@ -354,6 +378,8 @@ class RolloutDatasetStage(PipelineStage):
                 "generic_control_train_episodes": generic_control_train_meta["num_episodes"],
                 "adapted_train_episodes": adapted_train_meta["num_episodes"],
                 "investor_grade_generic_control": generic_control_mode == "leave_one_facility_out",
+                "intake_kind": intake_lineage.get("preferred_intake_kind"),
+                "scene_memory_runtime_backend": runtime_summary.get("selected_backend"),
             },
         )
 

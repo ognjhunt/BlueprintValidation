@@ -20,7 +20,7 @@ class ScenePackageStage(PipelineStage):
 
     @property
     def description(self) -> str:
-        return "Resolve an existing scene package or build one for Isaac-backed stages"
+        return "Resolve or build a strict scene package for Isaac/PolaRiS fallback paths"
 
     def run(
         self,

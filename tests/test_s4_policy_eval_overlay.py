@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -25,9 +26,38 @@ def test_wm_only_overlay_marker_mode_scores_overlay_video(sample_config, tmp_pat
     fac = sample_config.facilities["test_facility"]
     work_dir = tmp_path / "outputs" / "test_facility"
     (work_dir / "finetune" / "adapted_checkpoint").mkdir(parents=True, exist_ok=True)
+    fac.scene_memory_bundle_path = work_dir / "scene_memory"
+    runtime_dir = work_dir / "scene_memory_runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    runtime_path = runtime_dir / "runtime_selection.json"
+    runtime_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "selected_backend": "neoverse",
+                "secondary_backend": "gen3c",
+                "fallback_backend": "cosmos_transfer",
+                "available_backends": ["neoverse", "gen3c", "cosmos_transfer"],
+            }
+        )
+    )
     render_dir = work_dir / "renders"
     render_dir.mkdir(parents=True, exist_ok=True)
-    write_json({"clips": []}, render_dir / "render_manifest.json")
+    write_json(
+        {
+            "clips": [],
+            "intake_lineage": {
+                "preferred_intake_kind": "scene_memory_bundle",
+                "intake_mode": "qualified_opportunity",
+            },
+            "scene_memory_runtime": {
+                "selected_backend": "neoverse",
+                "secondary_backend": "gen3c",
+                "fallback_backend": "cosmos_transfer",
+            },
+        },
+        render_dir / "render_manifest.json",
+    )
 
     frame = np.zeros((16, 16, 3), dtype=np.uint8)
     monkeypatch.setattr(
@@ -138,7 +168,13 @@ def test_wm_only_overlay_marker_mode_scores_overlay_video(sample_config, tmp_pat
                 status="success",
                 elapsed_seconds=0.0,
                 outputs={"adapted_checkpoint_path": str(work_dir / "finetune" / "adapted_checkpoint")},
-            )
+            ),
+            "s0b_scene_memory_runtime": StageResult(
+                stage_name="s0b_scene_memory_runtime",
+                status="success",
+                elapsed_seconds=0.0,
+                outputs={"runtime_selection_path": str(runtime_path)},
+            ),
         },
     )
     assert result.status == "success"
@@ -146,3 +182,5 @@ def test_wm_only_overlay_marker_mode_scores_overlay_video(sample_config, tmp_pat
     assert scores
     assert scores[0]["overlay_mode"] == "overlay_marker"
     assert scores[0]["overlay_video_path"] is not None
+    assert result.metrics["scene_memory_runtime_backend"] == "neoverse"
+    assert result.metrics["intake_kind"] == "scene_memory_bundle"

@@ -135,3 +135,97 @@ def test_run_all_skip_preflight_bypasses_gate(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert calls["preflight"] == 0
     assert calls["run_all"] == 1
+
+
+def test_cli_enrich_bootstraps_scene_memory_runtime(monkeypatch, tmp_path, sample_config):
+    import blueprint_validation.cli as cli_module
+    from blueprint_validation.common import StageResult
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("schema_version: v1\n")
+    sample_config.facilities = {"demo": sample_config.facilities["test_facility"]}
+    calls = {"runtime": 0, "enrich": 0}
+
+    monkeypatch.setattr(cli_module, "load_config", lambda _path: sample_config)
+
+    class _DummyRuntimeStage:
+        def execute(self, config, facility, work_dir, previous_results):
+            del config, facility, work_dir
+            calls["runtime"] += 1
+            assert previous_results == {}
+            return StageResult(
+                "s0b_scene_memory_runtime",
+                "success",
+                0.0,
+                outputs={"runtime_selection_path": str(tmp_path / "runtime_selection.json")},
+            )
+
+    class _DummyEnrichStage:
+        def execute(self, config, facility, work_dir, previous_results):
+            del config, facility, work_dir
+            calls["enrich"] += 1
+            assert "s0b_scene_memory_runtime" in previous_results
+            return StageResult("s2_enrich", "success", 0.0)
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s0b_scene_memory_runtime.SceneMemoryRuntimeStage",
+        _DummyRuntimeStage,
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s2_enrich.EnrichStage",
+        _DummyEnrichStage,
+    )
+
+    result = CliRunner().invoke(
+        cli_module.cli,
+        ["--config", str(config_path), "enrich", "--opportunity", "demo"],
+    )
+    assert result.exit_code == 0
+    assert calls == {"runtime": 1, "enrich": 1}
+
+
+def test_cli_eval_policy_bootstraps_scene_memory_runtime(monkeypatch, tmp_path, sample_config):
+    import blueprint_validation.cli as cli_module
+    from blueprint_validation.common import StageResult
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("schema_version: v1\n")
+    sample_config.facilities = {"demo": sample_config.facilities["test_facility"]}
+    calls = {"runtime": 0, "eval": 0}
+
+    monkeypatch.setattr(cli_module, "load_config", lambda _path: sample_config)
+
+    class _DummyRuntimeStage:
+        def execute(self, config, facility, work_dir, previous_results):
+            del config, facility, work_dir
+            calls["runtime"] += 1
+            assert previous_results == {}
+            return StageResult(
+                "s0b_scene_memory_runtime",
+                "success",
+                0.0,
+                outputs={"runtime_selection_path": str(tmp_path / "runtime_selection.json")},
+            )
+
+    class _DummyPolicyEvalStage:
+        def execute(self, config, facility, work_dir, previous_results):
+            del config, facility, work_dir
+            calls["eval"] += 1
+            assert "s0b_scene_memory_runtime" in previous_results
+            return StageResult("s4_policy_eval", "success", 0.0)
+
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s0b_scene_memory_runtime.SceneMemoryRuntimeStage",
+        _DummyRuntimeStage,
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.stages.s4_policy_eval.PolicyEvalStage",
+        _DummyPolicyEvalStage,
+    )
+
+    result = CliRunner().invoke(
+        cli_module.cli,
+        ["--config", str(config_path), "eval-policy", "--opportunity", "demo"],
+    )
+    assert result.exit_code == 0
+    assert calls == {"runtime": 1, "eval": 1}

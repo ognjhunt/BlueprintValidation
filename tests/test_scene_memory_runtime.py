@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from blueprint_validation.scene_memory_runtime import resolve_scene_memory_runtime_plan
+from blueprint_validation.intake_metadata import resolve_scene_memory_runtime_metadata
 from blueprint_validation.stages.s0b_scene_memory_runtime import SceneMemoryRuntimeStage
 from blueprint_validation.config import load_config
 
@@ -116,3 +117,32 @@ scene_memory_runtime:
     assert config.scene_memory_runtime.neoverse.allow_runtime_execution is True
     assert str(config.scene_memory_runtime.neoverse.repo_path).endswith("/vendor/neoverse")
     assert config.scene_memory_runtime.gen3c.inference_script == "launch/inference.py"
+
+
+def test_runtime_metadata_prefers_existing_runtime_selection_file(sample_config, tmp_path):
+    facility = sample_config.facilities["test_facility"]
+    facility.scene_memory_bundle_path = tmp_path / "scene_memory"
+    selection_path = tmp_path / "scene_memory_runtime" / "runtime_selection.json"
+    selection_path.parent.mkdir(parents=True, exist_ok=True)
+    selection_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "selected_backend": "gen3c",
+                "secondary_backend": "cosmos_transfer",
+                "fallback_backend": None,
+                "available_backends": ["gen3c", "cosmos_transfer"],
+                "selection_reason": "cached runtime selection",
+            }
+        )
+    )
+
+    runtime = resolve_scene_memory_runtime_metadata(
+        sample_config,
+        facility,
+        work_dir=tmp_path,
+        previous_results={},
+    )
+
+    assert runtime["selected_backend"] == "gen3c"
+    assert runtime["selection_reason"] == "cached runtime selection"

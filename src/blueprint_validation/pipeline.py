@@ -163,10 +163,10 @@ class ValidationPipeline:
         # Per-facility stages (1-6)
         per_facility_stages = [
             TaskHintsBootstrapStage(),  # S0: bootstrap synthetic task hints if missing
-            ScenePackageStage(),  # S0a: resolve or build scene package for Isaac-backed paths
             SceneMemoryRuntimeStage(),  # S0b: pick active scene-memory runtime adapters
+            ScenePackageStage(),  # S0a: resolve or build strict scene package for Isaac-backed paths
             IsaacRenderStage(),  # S1 (Isaac): scene-package -> scripted simulator clips
-            RenderStage(),  # S1: splat -> video clips
+            RenderStage(),  # S1: legacy geometry-backed Stage-1 render
             RobotCompositeStage(),  # S1b: URDF robot arm composite
             GeminiPolishStage(),  # S1c: optional Gemini photorealism polish
             GaussianAugmentStage(),  # S1d: Full RoboSplat-default augmentation

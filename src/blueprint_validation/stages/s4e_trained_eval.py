@@ -9,6 +9,11 @@ import numpy as np
 
 from ..common import StageResult, get_logger, read_json, write_json
 from ..config import FacilityConfig, ValidationConfig
+from ..intake_metadata import (
+    resolve_intake_lineage,
+    resolve_scene_memory_runtime_metadata,
+    summarize_scene_memory_runtime,
+)
 from ..evaluation.claim_protocol import paired_eval_key
 from ..evaluation.openvla_runner import (
     load_dreamdojo_world_model,
@@ -174,6 +179,19 @@ class TrainedPolicyEvalStage(PipelineStage):
             )
         render_manifest_path = render_source.source_manifest_path
         render_manifest = read_json(render_source.source_manifest_path)
+        intake_lineage = resolve_intake_lineage(facility)
+        if isinstance(render_manifest.get("intake_lineage"), dict):
+            intake_lineage = dict(render_manifest.get("intake_lineage", {}) or {})
+        runtime_summary = summarize_scene_memory_runtime(
+            resolve_scene_memory_runtime_metadata(
+                config,
+                facility,
+                work_dir=work_dir,
+                previous_results=previous_results,
+            )
+        )
+        if isinstance(render_manifest.get("scene_memory_runtime"), dict):
+            runtime_summary = dict(render_manifest.get("scene_memory_runtime", {}) or {})
 
         # Build task list (merge config + task hints)
         tasks, hint_count = _build_task_list(config, facility)
@@ -473,6 +491,10 @@ class TrainedPolicyEvalStage(PipelineStage):
             "split_manifest_path": str(split_manifest_path) if split_manifest_path else "",
             "pairwise": pairwise,
             "judge_audit_csv": str(audit_csv_path),
+            "intake_kind": intake_lineage.get("preferred_intake_kind"),
+            "intake_lineage": intake_lineage,
+            "scene_memory_runtime": runtime_summary,
+            "scene_memory_runtime_backend": runtime_summary.get("selected_backend"),
         }
         eval_only_tasks = {
             str(task).strip()
@@ -564,6 +586,10 @@ class TrainedPolicyEvalStage(PipelineStage):
                 "shared_task_start_manifest": str(shared_manifest_path),
                 "judge_audit_csv": str(audit_csv_path),
                 "split_manifest_path": str(split_manifest_path) if split_manifest_path else "",
+                "intake_kind": intake_lineage.get("preferred_intake_kind"),
+                "intake_lineage": intake_lineage,
+                "scene_memory_runtime": runtime_summary,
+                "scene_memory_runtime_backend": runtime_summary.get("selected_backend"),
             },
             metrics=metrics,
             detail="\n".join((structural_failure_reasons + scoring_failures)[:5]),

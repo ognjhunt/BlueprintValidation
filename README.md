@@ -58,9 +58,10 @@ See [docs/qualified_opportunity_handoff.md](docs/qualified_opportunity_handoff.m
 ```
 Qualified opportunity handoff
   + preferred scene-memory bundle / optional preview simulation
-  + optional geometry bundle / scene package
+  + optional geometry bundle adapter / strict scene package fallback
   → Stage 0b: Resolve active scene-memory runtime (`NeoVerse` → `GEN3C` → `Cosmos`)
-  → Stage 1: Render video clips at robot-height via gsplat
+  → Stage 0a: Resolve strict scene package only when Isaac/PolaRiS is justified
+  → Stage 1: Render legacy geometry-backed clips via gsplat, or strict simulator clips via Isaac
   → Stage 1b (optional): Composite URDF robot arm with camera extrinsics
   → Stage 1c (optional): Gemini image polish on composited clips
   → Stage 1d (optional): Full RoboSplat-default 3D Gaussian augmentation (hybrid fallback)
@@ -127,7 +128,7 @@ To move closer to full-scene memory behavior:
   - [docs/vision_pro_sample_client_hook.md](docs/vision_pro_sample_client_hook.md)
 - PolaRiS setup and scene handoff:
   - [docs/polaris_outer_loop.md](docs/polaris_outer_loop.md)
-- Direct PLY-to-scene-package builder:
+- Legacy PLY-to-scene-package builder:
   - [docs/scene_builder.md](docs/scene_builder.md)
 
 ## Full Action-Success Boost
@@ -163,20 +164,19 @@ uv sync --extra rlds
 # Download model weights (~30GB)
 bash scripts/download_models.sh
 
-# Stage a qualified opportunity handoff plus optional geometry bundle
+# Stage a qualified opportunity handoff plus the preferred scene-memory bundle
 cp /path/to/opportunity_handoff.json configs/opportunity_handoff.local.json
-# If the handoff came from BlueprintCapturePipeline and still lives beside
-# pipeline/advanced_geometry/, BlueprintValidation can infer the bundle root.
-# Optional but preferred when geometry is justified:
-#   3dgs_compressed.ply
-#   labels.json
-#   structure.json
-#   task_targets.synthetic.json
-mkdir -p data/interiorgs/warehouse_tote_pick_0787
-cp /path/to/3dgs_compressed.ply data/interiorgs/warehouse_tote_pick_0787/
-cp /path/to/labels.json data/interiorgs/warehouse_tote_pick_0787/
-cp /path/to/structure.json data/interiorgs/warehouse_tote_pick_0787/
-cp /path/to/task_targets.synthetic.json data/interiorgs/warehouse_tote_pick_0787/
+# Preferred canonical intake:
+#   pipeline/scene_memory/scene_memory_manifest.json
+#   pipeline/scene_memory/conditioning_bundle.json
+#   pipeline/scene_memory/adapter_manifests/{neoverse,gen3c,cosmos_transfer}.json
+#   pipeline/preview_simulation/preview_simulation_manifest.json   # optional
+#
+# Optional legacy geometry adapter only when scene-memory is missing or insufficient:
+#   pipeline/advanced_geometry/3dgs_compressed.ply
+#   pipeline/advanced_geometry/labels.json
+#   pipeline/advanced_geometry/structure.json
+#   pipeline/advanced_geometry/task_targets.synthetic.json
 
 # Run preflight checks
 blueprint-validate --config configs/qualified_opportunity_validation.yaml preflight
@@ -197,6 +197,8 @@ blueprint-validate --config configs/qualified_opportunity_validation.yaml --work
 blueprint-validate --config configs/qualified_opportunity_validation.yaml --work-dir data/outputs/post_qualification run-all --resume
 
 # Or run stages individually
+# `render`, `enrich`, and the Stage 4 commands resolve scene-memory runtime
+# selection first, then fall back to legacy geometry or strict scene-package paths.
 blueprint-validate --config configs/qualified_opportunity_validation.yaml render --opportunity warehouse_tote_pick_0787
 blueprint-validate compose-robot --opportunity warehouse_tote_pick_0787    # optional
 blueprint-validate polish-gemini --opportunity warehouse_tote_pick_0787    # optional
@@ -235,7 +237,7 @@ The repo pins `numpy<2` because the current TensorFlow 2.15 runtime used by roll
 
 Notes:
 - `cloud_launch.sh` now defaults to the same-facility claim path via `configs/same_facility_policy_uplift_openvla.cloud.yaml`.
-- Stage facility assets explicitly before cloud prep:
+- Legacy geometry assets remain supported before cloud prep when scene-memory is unavailable:
   - `FACILITY_A_SPLAT_SOURCE=/path/to/facility_a/splat.ply`
   - optional: `FACILITY_A_TASK_HINTS_SOURCE=/path/to/task_targets.synthetic.json`
 - `run-all` now executes preflight by default; use `--skip-preflight` only if you are intentionally bypassing the gate.

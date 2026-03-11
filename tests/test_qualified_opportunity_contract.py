@@ -143,11 +143,13 @@ def test_build_lightweight_downstream_review_for_neutral_handoff():
 
     payload = _valid_handoff()
     payload.pop("target_robot_team")
+    payload["scene_memory_package"] = {"bundle_path": "../scene_memory/demo"}
     payload["geometry_package"] = {"bundle_path": "../geometry/demo"}
     validated = validate_qualified_opportunity_handoff(payload)
     review = build_lightweight_downstream_review(validated)
 
     assert review["review_mode"] == "lightweight_advisory"
+    assert review["has_scene_memory_bundle"] is True
     assert review["has_geometry_bundle"] is True
     assert review["can_run_full_pipeline"] is False
 

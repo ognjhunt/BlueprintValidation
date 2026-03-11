@@ -157,6 +157,46 @@ def _append_s4_policy_eval_section(
         lines.append("")
 
 
+def _append_scene_runtime_section(lines: list[str], fac_data: Dict[str, Any]) -> None:
+    runtime_stage = fac_data.get("s0b_scene_memory_runtime", {}) or {}
+    runtime_outputs = runtime_stage.get("outputs", {}) or {}
+    runtime_metrics = runtime_stage.get("metrics", {}) or {}
+
+    intake_lineage = None
+    for stage_name in ("s1_isaac_render", "s1_render", "s2_enrich", "s4_policy_eval"):
+        payload = fac_data.get(stage_name, {}) or {}
+        outputs = payload.get("outputs", {}) or {}
+        metrics = payload.get("metrics", {}) or {}
+        if isinstance(outputs.get("intake_lineage"), dict):
+            intake_lineage = outputs.get("intake_lineage")
+            break
+        if isinstance(metrics.get("intake_lineage"), dict):
+            intake_lineage = metrics.get("intake_lineage")
+            break
+
+    if not runtime_stage and not intake_lineage:
+        return
+
+    lines.append("### Intake And Runtime\n")
+    if isinstance(intake_lineage, dict):
+        lines.append(
+            f"- Preferred intake: {intake_lineage.get('preferred_intake_kind', 'N/A')}"
+        )
+        lines.append(f"- Intake mode: {intake_lineage.get('intake_mode', 'N/A')}")
+    if runtime_stage:
+        lines.append(f"- Runtime stage status: {runtime_stage.get('status', 'N/A')}")
+        lines.append(
+            f"- Selected scene-memory runtime: {runtime_outputs.get('selected_backend', 'N/A')}"
+        )
+        lines.append(
+            f"- Secondary runtime: {runtime_outputs.get('secondary_backend', 'N/A')}"
+        )
+        lines.append(
+            f"- Fallback runtime: {runtime_outputs.get('fallback_backend', 'N/A')}"
+        )
+    lines.append("")
+
+
 def _append_s4e_trained_eval_section(
     lines: list[str], fac_data: Dict[str, Any], *, primary: bool
 ) -> None:
@@ -465,6 +505,7 @@ def _render_markdown(data: Dict[str, Any], config: ValidationConfig) -> str:
         fac_config = config.facilities.get(fid)
         fac_name = fac_config.name if fac_config else fid
         lines.append(f"\n## Facility: {fac_name}\n")
+        _append_scene_runtime_section(lines, fac_data)
 
         polaris_primary = bool(config.eval_polaris.enabled) and bool(
             config.eval_polaris.default_as_primary_gate

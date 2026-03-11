@@ -63,6 +63,7 @@ class SceneMemoryRuntimeStage(PipelineStage):
             detail=str(detail),
             outputs={
                 "runtime_selection_path": str(selection_path),
+                "scene_memory_runtime": runtime_plan,
                 "selected_backend": selected_backend,
                 "secondary_backend": runtime_plan.get("secondary_backend"),
                 "fallback_backend": runtime_plan.get("fallback_backend"),
@@ -74,6 +75,7 @@ class SceneMemoryRuntimeStage(PipelineStage):
             metrics={
                 "num_available_backends": len(available_backends),
                 "has_selected_backend": bool(selected_backend),
+                "scene_memory_runtime_backend": selected_backend,
                 "num_skipped_watchlist_backends": len(
                     list(runtime_plan.get("skipped_watchlist_backends", []) or [])
                 ),

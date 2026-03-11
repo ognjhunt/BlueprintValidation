@@ -94,6 +94,8 @@ Default downstream runtime order in `BlueprintValidation`:
 
 `3dsceneprompt` is treated as a watchlist backend and is not selected by default until its public runtime is mature enough for production use.
 
+`scene_memory_package` is a first-class optional handoff mapping and should be present whenever the upstream pipeline emitted the canonical bundle.
+
 ## Legacy Geometry Bundle
 
 When geometry is justified, prefer an InteriorGS-like bundle instead of a naked PLY:
@@ -103,7 +105,7 @@ When geometry is justified, prefer an InteriorGS-like bundle instead of a naked 
 - `structure.json`
 - `task_targets.synthetic.json`
 
-This bundle is preferred because downstream evaluation needs object locations and structure context for:
+This bundle remains a supported adapter because downstream evaluation may still need object locations and structure context for:
 
 - targeted camera planning
 - task-local bootstrapping
@@ -144,12 +146,12 @@ If `task_targets.synthetic.json` is missing but `labels.json` and `structure.jso
     "robot_platform": "franka_panda",
     "embodiment_notes": "Fixed-base arm on a mobile cart with wrist RGB camera."
   },
-  "geometry_package": {
-    "bundle_path": "../data/interiorgs/0787_841244"
-  },
   "scene_memory_package": {
     "bundle_path": "../pipeline/scene_memory",
     "scene_memory_manifest_path": "../pipeline/scene_memory/scene_memory_manifest.json"
+  },
+  "geometry_package": {
+    "bundle_path": "../data/interiorgs/0787_841244"
   },
   "scene_package": {
     "scene_package_path": "../data/scene_packages/warehouse_tote_pick_0787"
@@ -165,7 +167,9 @@ Use `qualified_opportunities` as the preferred top-level config key:
 qualified_opportunities:
   warehouse_tote_pick_0787:
     opportunity_handoff_path: ./opportunity_handoff.example.json
-    # Optional when the handoff already sits beside ./advanced_geometry/
+    # Preferred when the handoff already points at ./scene_memory/
+    # scene_memory_bundle_path: ../pipeline/scene_memory
+    # Optional legacy geometry adapter when the handoff already sits beside ./advanced_geometry/
     geometry_bundle_path: ../data/interiorgs/0787_841244
 ```
 
@@ -177,13 +181,22 @@ Legacy compatibility remains available:
 
 ## Minimal Working Intake
 
-For a handoff produced by `BlueprintCapturePipeline`, the simplest working layout is:
+For a handoff produced by `BlueprintCapturePipeline`, the preferred working layout is:
 
 ```text
 pipeline/
   opportunity_handoff.json
+  scene_memory/
+    scene_memory_manifest.json
+    conditioning_bundle.json
+    adapter_manifests/
+      neoverse.json
+      gen3c.json
+      cosmos_transfer.json
+  preview_simulation/
+    preview_simulation_manifest.json   # optional
   advanced_geometry/
-    3dgs_compressed.ply
+    3dgs_compressed.ply           # legacy adapter only
     labels.json
     structure.json
     task_targets.synthetic.json   # optional if labels/structure are present

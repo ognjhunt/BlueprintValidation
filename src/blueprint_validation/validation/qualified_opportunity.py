@@ -142,7 +142,7 @@ def _validate_rich_handoff(data: Mapping[str, Any], *, where: str) -> Dict[str, 
                 where=f"{where} in target_robot_team",
             )
 
-    for optional_mapping in ("geometry_package", "scene_package"):
+    for optional_mapping in ("scene_memory_package", "geometry_package", "scene_package"):
         _optional_mapping(normalized, optional_mapping, where=where)
 
     normalized["site_submission_id"] = site_submission_id
@@ -171,7 +171,7 @@ def _validate_capture_pipeline_handoff(data: Mapping[str, Any], *, where: str) -
         or f"BlueprintCapturePipeline handoff for scene {scene_id} capture {capture_id}"
     )
 
-    for optional_mapping in ("constraints", "geometry_package", "scene_package"):
+    for optional_mapping in ("constraints", "scene_memory_package", "geometry_package", "scene_package"):
         _optional_mapping(normalized, optional_mapping, where=where)
 
     normalized["site_submission_id"] = capture_id
