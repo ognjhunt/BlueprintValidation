@@ -8,6 +8,7 @@ from typing import Any, Dict
 
 from ..common import get_logger, read_json, write_json, write_text_atomic
 from ..config import ValidationConfig
+from ..public_contract import build_standardized_eval_report
 from .stage_catalog import FACILITY_STAGE_RESULT_NAMES
 
 logger = get_logger("reporting.report_builder")
@@ -29,6 +30,9 @@ def build_report(
     """
     # Collect all results
     report_data = _collect_results(config, work_dir)
+    standardized_report = build_standardized_eval_report(report_data)
+    standardized_output_path = output_path.with_name("standardized_eval_report.json")
+    write_json(standardized_report, standardized_output_path)
 
     if fmt == "json":
         output_path = output_path.with_suffix(".json")

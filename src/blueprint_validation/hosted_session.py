@@ -12,6 +12,7 @@ import numpy as np
 
 from .config import FacilityConfig, PolicyAdapterConfig, ValidationConfig
 from .policy_adapters import get_policy_adapter
+from .public_contract import public_runtime_label
 from .scene_memory_runtime import resolve_scene_memory_runtime_plan
 
 
@@ -207,6 +208,7 @@ def create_session(
         "session_id": session_id,
         "runtime_manifest_path": str(runtime_manifest_path),
         "runtime_backend_selected": backend,
+        "runtime_backend_public_name": public_runtime_label(backend),
         "status": "ready",
         "robot": robot,
         "task": task,
@@ -225,6 +227,7 @@ def create_session(
     return {
         "session_id": session_id,
         "runtime_backend_selected": backend,
+        "runtime_backend_public_name": public_runtime_label(backend),
         "status": "ready",
         "artifact_uris": session_state["artifact_uris"],
     }
