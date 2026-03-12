@@ -18,6 +18,7 @@ keywords = [
 dependencies = [
     "click>=8.0",
     "pyyaml>=6.0",
+    "fastapi>=0.115.0",
     "numpy>=1.24.0,<2",
     "Pillow>=10.0.0",
     "torch>=2.2.0",
@@ -36,6 +37,7 @@ dependencies = [
     "jinja2>=3.1.0",
     "opencv-python>=4.8.0",
     "defusedxml>=0.7.1",
+    "uvicorn>=0.30.0",
 ]
 
 [project.optional-dependencies]
@@ -58,6 +60,7 @@ dev = [
 
 [project.scripts]
 blueprint-validate = "blueprint_validation.cli:main"
+blueprint-neoverse-runtime = "blueprint_validation.neoverse_runtime_service:main"
 
 [project.urls]
 Repository = "https://github.com/ognjhunt/BlueprintValidation"
