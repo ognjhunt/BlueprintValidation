@@ -9,6 +9,8 @@ from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
+from .site_world_intake import normalize_trajectory_payload
+
 try:
     from websockets.sync.client import connect as websocket_connect
 except Exception:  # pragma: no cover - optional dependency
@@ -158,13 +160,7 @@ class NeoVerseRuntimeClient:
                 "canonical_package_uri": canonical_package_uri,
                 "canonical_package_version": canonical_package_version,
                 "prompt": prompt,
-                "trajectory": (
-                    dict(trajectory)
-                    if isinstance(trajectory, Mapping)
-                    else str(trajectory)
-                    if trajectory is not None
-                    else None
-                ),
+                "trajectory": normalize_trajectory_payload(trajectory),
                 "presentation_model": presentation_model,
                 "debug_mode": debug_mode,
                 "unsafe_allow_blocked_site_world": bool(unsafe_allow_blocked_site_world),

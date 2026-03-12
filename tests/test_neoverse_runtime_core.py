@@ -355,3 +355,70 @@ def test_runtime_store_blocks_ungrounded_site_world_without_unsafe_override(tmp_
     assert registration["status"] == "blocked"
     assert health["launchable"] is False
     assert "runtime_grounding:empty_object_index" in health["blockers"]
+
+
+def test_runtime_store_blocks_when_manifest_reports_ungrounded(tmp_path: Path) -> None:
+    spec = _build_runtime_ready_spec(tmp_path)
+    manifest_path = Path(str(spec["runtime_layer_policy"]["protected_regions_manifest_path"]))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["grounding_status"] = "ungrounded"
+    manifest["ungrounded_reason"] = "empty_object_index"
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    _refresh_canonical_package_version(spec)
+
+    store = NeoVerseRuntimeStore(tmp_path / "runtime", base_url="http://runtime.local")
+    registration = store.build_site_world(spec)
+    health = store.load_site_world_health(str(registration["site_world_id"]))
+
+    assert registration["status"] == "blocked"
+    assert health["launchable"] is False
+    assert "runtime_grounding:empty_object_index" in health["blockers"]
+
+
+def test_runtime_store_prefers_spec_metadata_when_registration_is_thin(tmp_path: Path) -> None:
+    spec = _build_runtime_ready_spec(tmp_path)
+    store = NeoVerseRuntimeStore(tmp_path / "runtime", base_url="http://runtime.local")
+    registration = store.build_site_world(spec)
+    site_world_id = str(registration["site_world_id"])
+
+    registration_path = tmp_path / "runtime" / "site_worlds" / site_world_id / "site_world_registration.json"
+    thin_registration = json.loads(registration_path.read_text(encoding="utf-8"))
+    thin_registration["canonical_package_uri"] = "gs://stale/spec.json"
+    thin_registration["canonical_package_version"] = "stale-version"
+    thin_registration["task_catalog"] = []
+    thin_registration["scenario_catalog"] = []
+    thin_registration["start_state_catalog"] = []
+    thin_registration["robot_profiles"] = []
+    registration_path.write_text(json.dumps(thin_registration, indent=2), encoding="utf-8")
+
+    session = store.create_session(
+        site_world_id,
+        session_id="session-thin-registration",
+        robot_profile_id="mobile_manipulator_rgb_v1",
+        task_id="task-1",
+        scenario_id="scenario-default",
+        start_state_id="start-default",
+        canonical_package_uri=spec["canonical_package_uri"],
+        canonical_package_version=spec["canonical_package_version"],
+    )
+
+    assert session["session_id"] == "session-thin-registration"
+    assert session["canonical_package_version"] == spec["canonical_package_version"]
+    assert session["observation_cameras"][0]["id"] == "head_rgb"
+
+
+def test_runtime_store_reset_rejects_unknown_catalog_ids(tmp_path: Path) -> None:
+    spec = _build_runtime_ready_spec(tmp_path)
+    store = NeoVerseRuntimeStore(tmp_path / "runtime", base_url="http://runtime.local")
+    registration = store.build_site_world(spec)
+    store.create_session(
+        str(registration["site_world_id"]),
+        session_id="session-reset-invalid",
+        robot_profile_id="mobile_manipulator_rgb_v1",
+        task_id="task-1",
+        scenario_id="scenario-default",
+        start_state_id="start-default",
+    )
+
+    with pytest.raises(RuntimeError, match="unknown task"):
+        store.reset_session("session-reset-invalid", task_id="missing-task")

@@ -25,6 +25,7 @@ from .runtime_layer_grounding import (
     validate_runtime_layer_spec,
     verify_canonical_package_version,
 )
+from .site_world_intake import SiteWorldIntakeError, load_site_world_bundle, normalize_trajectory_payload
 
 
 def _utc_now_iso() -> str:
@@ -174,7 +175,12 @@ class NeoVerseRuntimeStore:
     def _session_state_path(self, session_id: str) -> Path:
         return self._session_dir(session_id) / "session_state.json"
 
-    def validate_spec(self, spec: Mapping[str, Any]) -> RuntimeValidationResult:
+    def validate_spec(
+        self,
+        spec: Mapping[str, Any],
+        *,
+        protected_regions_manifest: Mapping[str, Any] | None = None,
+    ) -> RuntimeValidationResult:
         blockers: list[str] = []
         warnings: list[str] = []
         blockers.extend(validate_runtime_layer_spec(spec))
@@ -190,11 +196,17 @@ class NeoVerseRuntimeStore:
         if not bool(spec.get("downstream_evaluation_eligibility")):
             blockers.append("downstream_evaluation_eligibility:false")
         grounding_status = str(
-            runtime_layer_policy.get("grounding_status") or spec.get("grounding_status") or ""
+            (protected_regions_manifest or {}).get("grounding_status")
+            or runtime_layer_policy.get("grounding_status")
+            or spec.get("grounding_status")
+            or ""
         ).strip().lower()
         if grounding_status == "ungrounded":
             reason = str(
-                runtime_layer_policy.get("ungrounded_reason") or spec.get("ungrounded_reason") or "ungrounded"
+                (protected_regions_manifest or {}).get("ungrounded_reason")
+                or runtime_layer_policy.get("ungrounded_reason")
+                or spec.get("ungrounded_reason")
+                or "ungrounded"
             ).strip()
             blockers.append(f"runtime_grounding:{reason or 'ungrounded'}")
 
@@ -252,7 +264,6 @@ class NeoVerseRuntimeStore:
         cache_dir = site_world_dir / "cache" / build_id
         cache_dir.mkdir(parents=True, exist_ok=True)
 
-        validation = self.validate_spec(spec)
         conditioning_map = dict(spec.get("conditioning") or {}) if isinstance(spec.get("conditioning"), Mapping) else {}
         local_map = dict(conditioning_map.get("local_paths") or {}) if isinstance(conditioning_map.get("local_paths"), Mapping) else {}
         conditioning_source = _preferred_local_path(
@@ -273,6 +284,10 @@ class NeoVerseRuntimeStore:
         _save_frame(seed_frame_path, source_frame)
 
         runtime_layer_bundle = load_runtime_layer_bundle(spec)
+        validation = self.validate_spec(
+            spec,
+            protected_regions_manifest=runtime_layer_bundle["protected_regions_manifest"],
+        )
         version_error = verify_canonical_package_version(
             spec=spec,
             protected_regions_manifest=runtime_layer_bundle["protected_regions_manifest"],
@@ -355,6 +370,18 @@ class NeoVerseRuntimeStore:
             raise FileNotFoundError(site_world_id)
         return _read_json(path)
 
+    def _load_site_world_bundle(self, site_world_id: str) -> Dict[str, Any]:
+        try:
+            bundle = load_site_world_bundle(self._site_world_state_path(site_world_id), require_spec=True)
+        except SiteWorldIntakeError as exc:
+            raise RuntimeError(str(exc)) from exc
+        return {
+            "registration": bundle.registration,
+            "health": bundle.health,
+            "spec": bundle.spec,
+            "resolved": bundle.resolved,
+        }
+
     def load_site_world_health(self, site_world_id: str) -> Dict[str, Any]:
         path = self._site_world_health_path(site_world_id)
         if not path.is_file():
@@ -386,12 +413,15 @@ class NeoVerseRuntimeStore:
         canonical_package_uri: str | None = None,
         canonical_package_version: str | None = None,
         prompt: str | None = None,
-        trajectory: Mapping[str, Any] | None = None,
+        trajectory: Mapping[str, Any] | str | None = None,
         presentation_model: str | None = None,
         debug_mode: bool | None = None,
         unsafe_allow_blocked_site_world: bool = False,
     ) -> Dict[str, Any]:
-        registration = self.load_site_world(site_world_id)
+        bundle = self._load_site_world_bundle(site_world_id)
+        registration = bundle["registration"]
+        site_world = bundle["resolved"]
+        site_world_spec = bundle["spec"]
         health = self.load_site_world_health(site_world_id)
         allow_blocked_site_world = bool(unsafe_allow_blocked_site_world) or _env_truthy(
             "BLUEPRINT_UNSAFE_ALLOW_BLOCKED_SITE_WORLD"
@@ -399,18 +429,18 @@ class NeoVerseRuntimeStore:
         if not bool(health.get("launchable")) and not allow_blocked_site_world:
             raise RuntimeError(f"site world {site_world_id} is not launchable")
 
-        site_world_spec = _read_json(self._site_world_spec_path(site_world_id))
-        expected_package_uri = str(registration.get("canonical_package_uri") or site_world_spec.get("canonical_package_uri") or "").strip()
-        expected_package_version = str(registration.get("canonical_package_version") or site_world_spec.get("canonical_package_version") or "").strip()
+        expected_package_uri = str(site_world.get("canonical_package_uri") or "").strip()
+        expected_package_version = str(site_world.get("canonical_package_version") or "").strip()
         if canonical_package_uri and expected_package_uri and str(canonical_package_uri).strip() != expected_package_uri:
             raise RuntimeError("canonical_package_uri_mismatch")
         if canonical_package_version and expected_package_version and str(canonical_package_version).strip() != expected_package_version:
             raise RuntimeError("canonical_package_version_mismatch")
 
-        robot_profile = self._catalog_entry(registration.get("robot_profiles", []), robot_profile_id, label="robot profile")
-        task_entry = self._catalog_entry(registration.get("task_catalog", []), task_id, label="task")
-        scenario_entry = self._catalog_entry(registration.get("scenario_catalog", []), scenario_id, label="scenario")
-        start_state_entry = self._catalog_entry(registration.get("start_state_catalog", []), start_state_id, label="start state")
+        robot_profile = self._catalog_entry(site_world.get("robot_profiles", []), robot_profile_id, label="robot profile")
+        task_entry = self._catalog_entry(site_world.get("task_catalog", []), task_id, label="task")
+        scenario_entry = self._catalog_entry(site_world.get("scenario_catalog", []), scenario_id, label="scenario")
+        start_state_entry = self._catalog_entry(site_world.get("start_state_catalog", []), start_state_id, label="start state")
+        trajectory_payload = normalize_trajectory_payload(trajectory)
         session_id = str(session_id or _stable_id("session", site_world_id, robot_profile_id, task_id, _utc_now_iso())).strip()
         session_dir = self._session_dir(session_id)
         session_dir.mkdir(parents=True, exist_ok=True)
@@ -432,7 +462,7 @@ class NeoVerseRuntimeStore:
             "notes": notes,
             "presentation_config": {
                 "prompt": prompt,
-                "trajectory": dict(trajectory or {}) if trajectory is not None else {},
+                "trajectory": trajectory_payload,
                 "presentation_model": presentation_model or "runtime_default",
                 "debug_mode": bool(debug_mode),
                 "unsafe_allow_blocked_site_world": allow_blocked_site_world,
@@ -460,7 +490,7 @@ class NeoVerseRuntimeStore:
                 "canonical_package_uri": expected_package_uri,
                 "canonical_package_version": expected_package_version,
                 "prompt": prompt,
-                "trajectory": dict(trajectory or {}) if trajectory is not None else {},
+                "trajectory": trajectory_payload,
                 "presentation_model": presentation_model or "runtime_default",
                 "debug_mode": bool(debug_mode),
                 "quality_flags": session_state["quality_flags"],
@@ -534,7 +564,9 @@ class NeoVerseRuntimeStore:
             composite = composite_runtime_layer(
                 canonical_frame=canonical_camera_frame,
                 protected_regions_manifest=runtime_layer_bundle["protected_regions_manifest"],
+                canonical_render_policy=runtime_layer_bundle["canonical_render_policy"],
                 presentation_config=presentation_config,
+                presentation_variance_policy=runtime_layer_bundle["presentation_variance_policy"],
                 session_dir=session_dir,
                 step_index=step_index,
                 camera_id=camera_id,
@@ -632,13 +664,14 @@ class NeoVerseRuntimeStore:
         start_state_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         session_state = self.load_session(session_id)
-        registration = self.load_site_world(str(session_state.get("site_world_id") or ""))
+        bundle = self._load_site_world_bundle(str(session_state.get("site_world_id") or ""))
+        site_world = bundle["resolved"]
         if task_id:
-            session_state["task"] = self._catalog_entry(registration.get("task_catalog", []), task_id, label="task")
+            session_state["task"] = self._catalog_entry(site_world.get("task_catalog", []), task_id, label="task")
         if scenario_id:
-            session_state["scenario"] = self._catalog_entry(registration.get("scenario_catalog", []), scenario_id, label="scenario")
+            session_state["scenario"] = self._catalog_entry(site_world.get("scenario_catalog", []), scenario_id, label="scenario")
         if start_state_id:
-            session_state["start_state"] = self._catalog_entry(registration.get("start_state_catalog", []), start_state_id, label="start state")
+            session_state["start_state"] = self._catalog_entry(site_world.get("start_state_catalog", []), start_state_id, label="start state")
         session_state["step_index"] = 0
         session_state["done"] = False
         session_state["success"] = None

@@ -12,6 +12,7 @@ import uvicorn
 import asyncio
 
 from .neoverse_runtime_core import NeoVerseRuntimeStore
+from .site_world_intake import normalize_trajectory_payload
 
 
 def _runtime_store() -> NeoVerseRuntimeStore:
@@ -116,6 +117,7 @@ def get_site_world_health(site_world_id: str) -> Dict[str, Any]:
 @app.post("/v1/site-worlds/{site_world_id}/sessions")
 def create_session(site_world_id: str, request: SessionCreateRequest) -> Dict[str, Any]:
     try:
+        trajectory = normalize_trajectory_payload(request.trajectory)
         return dict(
             STORE.create_session(
                 site_world_id,
@@ -128,7 +130,7 @@ def create_session(site_world_id: str, request: SessionCreateRequest) -> Dict[st
                 canonical_package_uri=request.canonical_package_uri,
                 canonical_package_version=request.canonical_package_version,
                 prompt=request.prompt,
-                trajectory=request.trajectory,
+                trajectory=trajectory,
                 presentation_model=request.presentation_model,
                 debug_mode=request.debug_mode,
                 unsafe_allow_blocked_site_world=request.unsafe_allow_blocked_site_world,

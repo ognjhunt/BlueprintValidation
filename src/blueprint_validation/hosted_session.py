@@ -14,6 +14,7 @@ from .config import PolicyAdapterConfig, ValidationConfig
 from .neoverse_runtime_client import NeoVerseRuntimeClient, NeoVerseRuntimeClientConfig
 from .policy_adapters import get_policy_adapter
 from .public_contract import public_runtime_label
+from .site_world_intake import SiteWorldIntakeError, load_site_world_bundle
 from .training.rlds_export import export_rollouts_to_rlds_jsonl
 
 
@@ -103,84 +104,6 @@ def _write_video(frame_paths: Sequence[str], output_path: Path) -> None:
     writer.release()
 
 
-def _adjacent_site_world_paths(registration_path: Path) -> tuple[Path, Path]:
-    root = registration_path.parent
-    return root / "site_world_health.json", root / "site_world_spec.json"
-
-
-def _optional_path(value: Any) -> Optional[Path]:
-    text = str(value or "").strip()
-    if not text or text.startswith("gs://") or text.startswith("http://") or text.startswith("https://"):
-        return None
-    return Path(text).resolve()
-
-
-def _grounding_summary(spec: Mapping[str, Any]) -> Dict[str, Any]:
-    conditioning = dict(spec.get("conditioning") or {}) if isinstance(spec.get("conditioning"), Mapping) else {}
-    local_paths = dict(conditioning.get("local_paths") or {}) if isinstance(conditioning.get("local_paths"), Mapping) else {}
-    geometry = dict(spec.get("geometry") or {}) if isinstance(spec.get("geometry"), Mapping) else {}
-    qualification_references = (
-        dict(spec.get("qualification_references") or {})
-        if isinstance(spec.get("qualification_references"), Mapping)
-        else {}
-    )
-    visuals = [
-        _optional_path(local_paths.get("keyframe_path")),
-        _optional_path(local_paths.get("raw_video_path")),
-        _optional_path(conditioning.get("keyframe_uri")),
-        _optional_path(conditioning.get("raw_video_uri")),
-    ]
-    arkit_poses = _optional_path(local_paths.get("arkit_poses_path")) or _optional_path(conditioning.get("arkit_poses_uri"))
-    arkit_intrinsics = _optional_path(local_paths.get("arkit_intrinsics_path")) or _optional_path(conditioning.get("arkit_intrinsics_uri"))
-    depth_path = _optional_path(local_paths.get("depth_path")) or _optional_path(conditioning.get("depth_uri"))
-    occupancy_path = _optional_path(local_paths.get("occupancy_path")) or _optional_path(geometry.get("occupancy_path"))
-    collision_path = _optional_path(local_paths.get("collision_path")) or _optional_path(geometry.get("collision_path"))
-    object_index_path = _optional_path(local_paths.get("object_index_path")) or _optional_path(geometry.get("object_index_path"))
-    object_geometry_path = _optional_path(local_paths.get("object_geometry_manifest_path")) or _optional_path(geometry.get("object_geometry_manifest_path"))
-    checks = {
-        "visual_source": any(path is not None and path.exists() for path in visuals),
-        "arkit_poses": bool(arkit_poses and arkit_poses.exists()),
-        "arkit_intrinsics": bool(arkit_intrinsics and arkit_intrinsics.exists()),
-        "depth": bool(depth_path and depth_path.exists()),
-        "occupancy": bool(occupancy_path and occupancy_path.exists()),
-        "collision": bool(collision_path and collision_path.exists()),
-        "object_index": bool(object_index_path and object_index_path.exists()),
-        "object_geometry": bool(object_geometry_path and object_geometry_path.exists()),
-        "qualification_refs": bool(qualification_references),
-    }
-    missing_required = [key for key in ("visual_source", "arkit_poses", "arkit_intrinsics") if not checks[key]]
-    missing_optional = [key for key in ("depth", "occupancy", "collision", "object_index", "object_geometry") if not checks[key]]
-    return {
-        "checks": checks,
-        "missing_required": missing_required,
-        "missing_optional": missing_optional,
-        "qualification_state": str(spec.get("qualification_state") or ""),
-        "downstream_evaluation_eligibility": spec.get("downstream_evaluation_eligibility"),
-        "task_catalog_count": len(list(spec.get("task_catalog", []) or [])),
-        "scenario_catalog_count": len(list(spec.get("scenario_catalog", []) or [])),
-        "start_state_catalog_count": len(list(spec.get("start_state_catalog", []) or [])),
-        "robot_profile_count": len(list(spec.get("robot_profiles", []) or [])),
-    }
-
-
-def _load_site_world_bundle(registration_path: Path) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
-    registration = _read_json(registration_path)
-    health_path, spec_path = _adjacent_site_world_paths(registration_path)
-    health = _read_json(health_path) if health_path.exists() else {}
-    spec = _read_json(spec_path) if spec_path.exists() else {}
-    return registration, health, spec, _grounding_summary(spec) if spec else {
-        "checks": {},
-        "missing_required": [],
-        "missing_optional": [],
-        "qualification_state": "",
-        "downstream_evaluation_eligibility": None,
-        "task_catalog_count": 0,
-        "scenario_catalog_count": 0,
-        "start_state_catalog_count": 0,
-        "robot_profile_count": 0,
-    }
-
-
 def _resolve_runtime_client(
     config: ValidationConfig,
     registration: Mapping[str, Any],
@@ -239,6 +162,13 @@ def _policy_load_args(
     checkpoint_path = Path(checkpoint_value).resolve() if checkpoint_value else config.eval_policy.checkpoint_path
     device = str(policy_payload.get("device") or "cpu")
     return model_name, checkpoint_path, device
+
+
+def _catalog_entry(entries: Sequence[Mapping[str, Any]], selected_id: str, label: str) -> Dict[str, Any]:
+    for entry in entries:
+        if str(entry.get("id") or entry.get("task_id") or "").strip() == selected_id:
+            return dict(entry)
+    raise HostedSessionError(f"Unsupported {label}: {selected_id}")
 
 
 def _materialize_observation(
@@ -374,7 +304,15 @@ def create_session(
     notes: str = "",
     unsafe_allow_blocked_site_world: bool = False,
 ) -> Dict[str, Any]:
-    registration, health, spec, grounding = _load_site_world_bundle(registration_path)
+    try:
+        bundle = load_site_world_bundle(registration_path, require_spec=True)
+    except SiteWorldIntakeError as exc:
+        raise HostedSessionError(str(exc)) from exc
+    registration = bundle.registration
+    health = bundle.health
+    spec = bundle.spec
+    site_world = bundle.resolved
+    grounding = bundle.grounding
     if not registration.get("site_world_id"):
         raise HostedSessionError(f"Invalid site-world registration: {registration_path}")
     allow_blocked_site_world = bool(unsafe_allow_blocked_site_world) or _env_truthy(
@@ -384,23 +322,17 @@ def create_session(
         blockers = ", ".join(str(item) for item in health.get("blockers", []) if str(item).strip())
         raise HostedSessionError(f"Site world is not launchable: {blockers or 'unknown blockers'}")
 
-    robot_profiles = [dict(item) for item in registration.get("robot_profiles", []) if isinstance(item, Mapping)]
-    task_entries = [dict(item) for item in registration.get("task_catalog", []) if isinstance(item, Mapping)]
-    scenario_entries = [dict(item) for item in registration.get("scenario_catalog", []) if isinstance(item, Mapping)]
-    start_state_entries = [dict(item) for item in registration.get("start_state_catalog", []) if isinstance(item, Mapping)]
+    robot_profiles = [dict(item) for item in site_world.get("robot_profiles", []) if isinstance(item, Mapping)]
+    task_entries = [dict(item) for item in site_world.get("task_catalog", []) if isinstance(item, Mapping)]
+    scenario_entries = [dict(item) for item in site_world.get("scenario_catalog", []) if isinstance(item, Mapping)]
+    start_state_entries = [dict(item) for item in site_world.get("start_state_catalog", []) if isinstance(item, Mapping)]
 
-    def _find(entries: Sequence[Mapping[str, Any]], selected_id: str, label: str) -> Dict[str, Any]:
-        for entry in entries:
-            if str(entry.get("id") or entry.get("task_id") or "").strip() == selected_id:
-                return dict(entry)
-        raise HostedSessionError(f"Unsupported {label}: {selected_id}")
-
-    robot_profile = _find(robot_profiles, robot_profile_id, "robot profile")
+    robot_profile = _catalog_entry(robot_profiles, robot_profile_id, "robot profile")
     if isinstance(robot_profile_override, Mapping):
         robot_profile.update(dict(robot_profile_override))
-    task_entry = _find(task_entries, task_id, "task")
-    scenario_entry = _find(scenario_entries, scenario_id, "scenario")
-    start_state_entry = _find(start_state_entries, start_state_id, "start state")
+    task_entry = _catalog_entry(task_entries, task_id, "task")
+    scenario_entry = _catalog_entry(scenario_entries, scenario_id, "scenario")
+    start_state_entry = _catalog_entry(start_state_entries, start_state_id, "start state")
 
     session_work_dir.mkdir(parents=True, exist_ok=True)
     _rollouts_dir(session_work_dir).mkdir(parents=True, exist_ok=True)
@@ -444,6 +376,7 @@ def create_session(
         "start_state": dict(start_state_entry),
         "notes": notes,
         "policy": dict(policy_payload or {}),
+        "site_world_spec_path": str(bundle.spec_path),
         "unsafe_allow_blocked_site_world": allow_blocked_site_world,
         "export_modes": [str(item) for item in export_modes if str(item).strip()],
         "current_episode_id": None,
@@ -501,7 +434,13 @@ def reset_session(
     del seed
     session_state = _read_json(_session_state_path(session_work_dir))
     registration_path = Path(str(session_state["site_world_registration_path"]))
-    registration, _health, _spec, grounding = _load_site_world_bundle(registration_path)
+    try:
+        bundle = load_site_world_bundle(registration_path, require_spec=True)
+    except SiteWorldIntakeError as exc:
+        raise HostedSessionError(str(exc)) from exc
+    registration = bundle.registration
+    site_world = bundle.resolved
+    grounding = bundle.grounding
     client = _resolve_runtime_client(config, registration)
     remote_session_id = str(session_state.get("remote_session_id") or session_id)
 
@@ -509,19 +448,22 @@ def reset_session(
     scenario_entry = dict(session_state.get("scenario") or {})
     start_state_entry = dict(session_state.get("start_state") or {})
     if task_id:
-        task_entry = next(
-            (dict(item) for item in registration.get("task_catalog", []) if isinstance(item, Mapping) and str(item.get("id") or item.get("task_id") or "").strip() == task_id),
-            task_entry,
+        task_entry = _catalog_entry(
+            [dict(item) for item in site_world.get("task_catalog", []) if isinstance(item, Mapping)],
+            task_id,
+            "task",
         )
     if scenario_id:
-        scenario_entry = next(
-            (dict(item) for item in registration.get("scenario_catalog", []) if isinstance(item, Mapping) and str(item.get("id") or "").strip() == scenario_id),
-            scenario_entry,
+        scenario_entry = _catalog_entry(
+            [dict(item) for item in site_world.get("scenario_catalog", []) if isinstance(item, Mapping)],
+            scenario_id,
+            "scenario",
         )
     if start_state_id:
-        start_state_entry = next(
-            (dict(item) for item in registration.get("start_state_catalog", []) if isinstance(item, Mapping) and str(item.get("id") or "").strip() == start_state_id),
-            start_state_entry,
+        start_state_entry = _catalog_entry(
+            [dict(item) for item in site_world.get("start_state_catalog", []) if isinstance(item, Mapping)],
+            start_state_id,
+            "start state",
         )
 
     reset_payload = client.reset_session(

@@ -144,7 +144,7 @@ def test_runtime_client_covers_json_and_bytes(monkeypatch):
     assert session_request is not None
     assert session_request["canonical_package_version"] == "pkg-v1"
     assert session_request["presentation_model"] == "model-a"
-    assert session_request["trajectory"] == "static"
+    assert session_request["trajectory"] == {"trajectory": "static"}
     assert session_request["debug_mode"] is True
     assert session_request["unsafe_allow_blocked_site_world"] is True
 

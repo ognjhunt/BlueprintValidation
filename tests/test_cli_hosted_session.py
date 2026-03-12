@@ -172,6 +172,32 @@ def test_hosted_session_cli_flow(monkeypatch, tmp_path, sample_config):
             "capture_id": "cap-1",
             "site_submission_id": "site-sub-1",
             "runtime_base_url": "http://runtime.local",
+            "canonical_package_version": "stale-version",
+            "task_catalog": [],
+            "scenario_catalog": [],
+            "start_state_catalog": [],
+            "robot_profiles": [],
+        },
+    )
+    _write_json(
+        health_path,
+        {
+            "schema_version": "v1",
+            "site_world_id": "siteworld-1",
+            "build_id": "build-1",
+            "launchable": True,
+            "healthy": True,
+            "blockers": [],
+            "warnings": [],
+        },
+    )
+    _write_json(
+        spec_path,
+        {
+            "schema_version": "v1",
+            "canonical_package_version": "pkg-v1",
+            "qualification_state": "ready",
+            "downstream_evaluation_eligibility": True,
             "task_catalog": [
                 {
                     "id": "task-1",
@@ -195,26 +221,6 @@ def test_hosted_session_cli_flow(monkeypatch, tmp_path, sample_config):
                     "default_policy_adapter": "mock",
                 }
             ],
-        },
-    )
-    _write_json(
-        health_path,
-        {
-            "schema_version": "v1",
-            "site_world_id": "siteworld-1",
-            "build_id": "build-1",
-            "launchable": True,
-            "healthy": True,
-            "blockers": [],
-            "warnings": [],
-        },
-    )
-    _write_json(
-        spec_path,
-        {
-            "schema_version": "v1",
-            "qualification_state": "ready",
-            "downstream_evaluation_eligibility": True,
             "conditioning": {
                 "local_paths": {
                     "keyframe_path": str(keyframe_path),
@@ -366,6 +372,76 @@ def test_hosted_session_cli_flow(monkeypatch, tmp_path, sample_config):
     export_payload = json.loads(export.output)
     assert export_payload["artifact_uris"]["export_manifest"].endswith("export_manifest.json")
     assert export_payload["artifact_uris"]["rlds_dataset"].endswith("rlds_manifest.json")
+
+    invalid_reset = runner.invoke(
+        cli_module.cli,
+        [
+            "--config",
+            str(config_path),
+            "session",
+            "reset",
+            "--session-id",
+            "session-1",
+            "--session-work-dir",
+            str(work_dir),
+            "--task-id",
+            "missing-task",
+        ],
+    )
+    assert invalid_reset.exit_code != 0
+    assert "Unsupported task: missing-task" in invalid_reset.output
+
+
+def test_hosted_session_cli_requires_adjacent_spec(monkeypatch, tmp_path, sample_config):
+    import blueprint_validation.cli as cli_module
+    import blueprint_validation.hosted_session as hosted_session_module
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("schema_version: v1\n", encoding="utf-8")
+    monkeypatch.setattr(cli_module, "load_config", lambda _path: sample_config)
+    sample_config.scene_memory_runtime.neoverse.repo_path = None
+
+    runtime_root = tmp_path / "site-world"
+    registration_path = runtime_root / "site_world_registration.json"
+    _write_json(
+        registration_path,
+        {
+            "schema_version": "v1",
+            "site_world_id": "siteworld-1",
+            "runtime_base_url": "http://runtime.local",
+        },
+    )
+
+    fake_client = _FakeRuntimeClient()
+    monkeypatch.setattr(hosted_session_module, "_resolve_runtime_client", lambda config, registration: fake_client)
+
+    runner = CliRunner()
+    create = runner.invoke(
+        cli_module.cli,
+        [
+            "--config",
+            str(config_path),
+            "session",
+            "create",
+            "--session-id",
+            "session-missing-spec",
+            "--session-work-dir",
+            str(tmp_path / "session-work"),
+            "--site-world-registration",
+            str(registration_path),
+            "--robot-profile-id",
+            "mobile_manipulator_rgb_v1",
+            "--task-id",
+            "task-1",
+            "--scenario-id",
+            "scenario-normal",
+            "--start-state-id",
+            "start-dock",
+        ],
+    )
+
+    assert create.exit_code != 0
+    assert "adjacent site-world spec not found" in create.output
 
 
 def test_hosted_session_cli_requires_explicit_unsafe_flag_for_blocked_site_world(monkeypatch, tmp_path, sample_config):

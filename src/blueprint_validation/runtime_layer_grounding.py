@@ -14,6 +14,8 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     cv2 = None
 
+from .site_world_intake import normalize_trajectory_payload
+
 
 PROTECTED_OBSERVED_THRESHOLD = 0.85
 PROTECTED_RECONSTRUCTED_THRESHOLD = 0.80
@@ -229,22 +231,35 @@ def build_target_view_masks(
     grounding_status = str(protected_regions_manifest.get("grounding_status") or "").strip().lower()
     if grounding_status == "ungrounded":
         locked = np.zeros(frame_shape, dtype=bool)
+        blocked = np.zeros(frame_shape, dtype=bool)
         uncertain = np.zeros(frame_shape, dtype=bool)
         editable = np.zeros(frame_shape, dtype=bool)
         if allow_ungrounded_editable:
             editable[:] = True
         else:
             uncertain[:] = True
-        return {"locked_mask": locked, "uncertain_mask": uncertain, "editable_mask": editable}
+        return {
+            "locked_mask": locked,
+            "blocked_mask": blocked,
+            "uncertain_mask": uncertain,
+            "editable_mask": editable,
+            "unprojectable_region_count": 0,
+        }
     extents = _bbox_extents(regions)
     locked = np.zeros(frame_shape, dtype=bool)
+    blocked = np.zeros(frame_shape, dtype=bool)
     uncertain = np.zeros(frame_shape, dtype=bool)
     editable = np.zeros(frame_shape, dtype=bool)
+    unprojectable_regions = 0
     for region in regions:
         rect = _region_rect(region, frame_shape, extents)
         classification = str(region.get("classification") or "editable").strip().lower()
         if rect is None:
-            editable[:] = True
+            unprojectable_regions += 1
+            if classification == "locked" or bool(region.get("task_critical")):
+                blocked[:] = True
+            else:
+                uncertain[:] = True
             continue
         x0, y0, x1, y1 = rect
         if classification == "locked":
@@ -256,10 +271,80 @@ def build_target_view_masks(
         if classification == "locked" and bool(region.get("task_critical")) and cv2 is not None:
             kernel = np.ones((2 * TASK_CRITICAL_DILATION_PX + 1, 2 * TASK_CRITICAL_DILATION_PX + 1), dtype=np.uint8)
             locked = cv2.dilate(locked.astype(np.uint8), kernel, iterations=1).astype(bool)
-    editable = np.logical_or(editable, ~(np.logical_or(locked, uncertain)))
-    editable = np.logical_and(editable, ~locked)
-    uncertain = np.logical_and(uncertain, ~locked)
-    return {"locked_mask": locked, "uncertain_mask": uncertain, "editable_mask": editable}
+    non_editable = np.logical_or(np.logical_or(locked, blocked), uncertain)
+    editable = np.logical_or(editable, ~non_editable)
+    editable = np.logical_and(editable, ~np.logical_or(locked, blocked))
+    uncertain = np.logical_and(uncertain, ~np.logical_or(locked, blocked))
+    return {
+        "locked_mask": locked,
+        "blocked_mask": blocked,
+        "uncertain_mask": uncertain,
+        "editable_mask": editable,
+        "unprojectable_region_count": unprojectable_regions,
+    }
+
+
+def _policy_retry_budget(canonical_render_policy: Mapping[str, Any]) -> int:
+    fallback_behavior = (
+        dict(canonical_render_policy.get("fallback_behavior") or {})
+        if isinstance(canonical_render_policy.get("fallback_behavior"), Mapping)
+        else {}
+    )
+    raw = fallback_behavior.get("retry_budget", canonical_render_policy.get("retry_budget", LOCK_VIOLATION_RETRY_BUDGET))
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return LOCK_VIOLATION_RETRY_BUDGET
+
+
+def _policy_fallback_mode(canonical_render_policy: Mapping[str, Any]) -> str:
+    fallback_behavior = (
+        dict(canonical_render_policy.get("fallback_behavior") or {})
+        if isinstance(canonical_render_policy.get("fallback_behavior"), Mapping)
+        else {}
+    )
+    value = str(
+        fallback_behavior.get("on_locked_region_violation")
+        or canonical_render_policy.get("fallback_mode")
+        or "canonical_only"
+    ).strip().lower()
+    return value or "canonical_only"
+
+
+def _policy_degraded_threshold(canonical_render_policy: Mapping[str, Any]) -> float:
+    raw = canonical_render_policy.get("degraded_quality_threshold", DEGRADED_EDITABLE_RATIO_THRESHOLD)
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return DEGRADED_EDITABLE_RATIO_THRESHOLD
+
+
+def _sanitized_presentation_config(
+    presentation_config: Mapping[str, Any],
+    presentation_variance_policy: Mapping[str, Any],
+) -> Dict[str, Any]:
+    allowed = {
+        str(item).strip()
+        for item in presentation_variance_policy.get("allowed_variable_inputs", []) or []
+        if str(item).strip()
+    }
+    if not allowed:
+        allowed = {"prompt", "presentation_model", "trajectory"}
+    return {
+        "prompt": str(presentation_config.get("prompt") or "") if "prompt" in allowed else "",
+        "presentation_model": (
+            str(presentation_config.get("presentation_model") or "")
+            if "presentation_model" in allowed
+            else ""
+        ),
+        "trajectory": (
+            normalize_trajectory_payload(presentation_config.get("trajectory"))
+            if "trajectory" in allowed
+            else {"trajectory": "static"}
+        ),
+        "debug_mode": bool(presentation_config.get("debug_mode")),
+        "unsafe_allow_blocked_site_world": bool(presentation_config.get("unsafe_allow_blocked_site_world")),
+    }
 
 
 def _effect_strength(config: Mapping[str, Any], step_index: int) -> int:
@@ -292,22 +377,32 @@ def composite_runtime_layer(
     *,
     canonical_frame: np.ndarray,
     protected_regions_manifest: Mapping[str, Any],
+    canonical_render_policy: Mapping[str, Any],
     presentation_config: Mapping[str, Any],
+    presentation_variance_policy: Mapping[str, Any],
     session_dir: Path,
     step_index: int,
     camera_id: str,
 ) -> Dict[str, Any]:
-    allow_ungrounded_editable = bool(presentation_config.get("unsafe_allow_blocked_site_world"))
+    runtime_presentation_config = _sanitized_presentation_config(
+        presentation_config,
+        presentation_variance_policy,
+    )
+    allow_ungrounded_editable = bool(runtime_presentation_config.get("unsafe_allow_blocked_site_world"))
     masks = build_target_view_masks(
         protected_regions_manifest=protected_regions_manifest,
         frame_shape=canonical_frame.shape[:2],
         allow_ungrounded_editable=allow_ungrounded_editable,
     )
     locked_mask = masks["locked_mask"]
+    blocked_mask = masks["blocked_mask"]
     uncertain_mask = masks["uncertain_mask"]
     editable_mask = masks["editable_mask"]
+    unprojectable_region_count = int(masks.get("unprojectable_region_count", 0) or 0)
     grounding_status = str(protected_regions_manifest.get("grounding_status") or "grounded").strip().lower()
     ungrounded_reason = str(protected_regions_manifest.get("ungrounded_reason") or "ungrounded").strip()
+    fallback_mode = _policy_fallback_mode(canonical_render_policy)
+    retry_budget = _policy_retry_budget(canonical_render_policy)
 
     attempt = 0
     violations: list[Dict[str, Any]] = []
@@ -320,21 +415,25 @@ def composite_runtime_layer(
             "fallback_mode": "ungrounded_canonical_only",
             "grounding_status": "ungrounded",
             "ungrounded_reason": ungrounded_reason,
+            "unprojectable_region_count": unprojectable_region_count,
         }
     else:
-        while attempt <= LOCK_VIOLATION_RETRY_BUDGET:
+        while attempt <= retry_budget:
             candidate = _generator_candidate(
                 canonical_frame,
-                config=presentation_config,
+                config=runtime_presentation_config,
                 editable_mask=editable_mask,
                 step_index=step_index,
                 strict_editable_only=attempt > 0,
             )
-            touched_locked = bool(np.any(np.any(candidate != canonical_frame, axis=2) & locked_mask))
-            if touched_locked:
-                violations.append({"attempt": attempt + 1, "reason": "locked_region_modified"})
+            changed_pixels = np.any(candidate != canonical_frame, axis=2)
+            touched_locked = bool(np.any(changed_pixels & locked_mask))
+            touched_blocked = bool(np.any(changed_pixels & blocked_mask))
+            if touched_locked or touched_blocked:
+                reason = "locked_region_modified" if touched_locked else "unprojectable_region_blocked"
+                violations.append({"attempt": attempt + 1, "reason": reason, "fallback_mode": fallback_mode})
                 attempt += 1
-                if attempt > LOCK_VIOLATION_RETRY_BUDGET:
+                if attempt > retry_budget:
                     final_frame = canonical_frame.copy()
                     break
                 continue
@@ -343,27 +442,33 @@ def composite_runtime_layer(
             break
 
         editable_ratio = float(editable_mask.sum()) / float(max(1, editable_mask.size))
+        degraded_threshold = _policy_degraded_threshold(canonical_render_policy)
         quality_flags = {
-            "presentation_quality": "degraded" if editable_ratio > DEGRADED_EDITABLE_RATIO_THRESHOLD else "normal",
+            "presentation_quality": "degraded" if editable_ratio > degraded_threshold else "normal",
             "editable_ratio": round(editable_ratio, 4),
             "locked_ratio": round(float(locked_mask.sum()) / float(max(1, locked_mask.size)), 4),
+            "fallback_mode": fallback_mode if violations else None,
             "grounding_status": grounding_status or "grounded",
             "unsafe_editable_override": bool(allow_ungrounded_editable and grounding_status == "ungrounded"),
+            "unprojectable_region_count": unprojectable_region_count,
         }
     debug_artifacts: Dict[str, str] = {}
-    if bool(presentation_config.get("debug_mode")):
+    if bool(runtime_presentation_config.get("debug_mode")):
         debug_dir = session_dir / "debug" / f"step_{step_index:03d}" / camera_id
         canonical_path = debug_dir / "canonical_only.png"
         locked_path = debug_dir / "locked_mask.png"
+        blocked_path = debug_dir / "blocked_mask.png"
         editable_path = debug_dir / "editable_mask.png"
         composite_path = debug_dir / "final_composite.png"
         _save_rgb(canonical_path, canonical_frame)
         _save_mask_png(locked_path, locked_mask)
+        _save_mask_png(blocked_path, blocked_mask)
         _save_mask_png(editable_path, editable_mask)
         _save_rgb(composite_path, final_frame)
         debug_artifacts = {
             "canonical_only": str(canonical_path),
             "locked_mask": str(locked_path),
+            "blocked_mask": str(blocked_path),
             "editable_mask": str(editable_path),
             "final_composite": str(composite_path),
         }
@@ -371,6 +476,7 @@ def composite_runtime_layer(
     return {
         "frame": final_frame,
         "locked_mask": locked_mask,
+        "blocked_mask": blocked_mask,
         "uncertain_mask": uncertain_mask,
         "editable_mask": editable_mask,
         "quality_flags": quality_flags,
