@@ -19,6 +19,14 @@ qualified_opportunities:
     # task_hints_path: ../data/interiorgs/0787_841244/task_targets.synthetic.json
     description: "Qualified tote-pick opportunity routed from the upstream qualification pipeline."
 
+scene_memory_runtime:
+  preferred_backends: [neoverse, gen3c, cosmos_transfer]
+  neoverse:
+    allow_runtime_execution: true
+    repo_path: ../data/vendor/neoverse
+    python_executable: ../.venv/bin/python
+    checkpoint_path: ../data/checkpoints/neoverse/
+
 render:
   backend: auto
   resolution: [480, 640]

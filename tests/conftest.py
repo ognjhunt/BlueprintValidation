@@ -148,14 +148,16 @@ def sample_config(tmp_path):
     claim_benchmark_path.write_text('{"version": 1, "task_specs": [], "assignments": []}')
     neoverse_repo = tmp_path / "vendor" / "neoverse"
     neoverse_repo.mkdir(parents=True, exist_ok=True)
-    (neoverse_repo / "dummy_neoverse_runtime.py").write_text(
+    (neoverse_repo / "neoverse").mkdir(parents=True, exist_ok=True)
+    (neoverse_repo / "neoverse" / "__init__.py").write_text("", encoding="utf-8")
+    (neoverse_repo / "neoverse" / "runtime.py").write_text(
         """
 from __future__ import annotations
 
 import numpy as np
 
 
-class DummyNeoVerseRuntime:
+class HostedNeoVerseRuntime:
     def __init__(self, **kwargs):
         self.kwargs = kwargs
 
@@ -234,8 +236,6 @@ class DummyNeoVerseRuntime:
     cfg.wm_refresh_loop.backfill_from_stage2_vlm_passed = False
     cfg.scene_memory_runtime.neoverse.allow_runtime_execution = True
     cfg.scene_memory_runtime.neoverse.repo_path = neoverse_repo
-    cfg.scene_memory_runtime.neoverse.hosted_runtime_module = "dummy_neoverse_runtime"
-    cfg.scene_memory_runtime.neoverse.hosted_runtime_class = "DummyNeoVerseRuntime"
     return cfg
 
 

@@ -19,6 +19,12 @@ DREAMDOJO_REF="${DREAMDOJO_REF:-7f3379bcb831147c0cc170e79ba08471ad186497}"
 COSMOS_REF="${COSMOS_REF:-c9ad44b7283613618d57c1e4c9991916907d4f4b}"
 OPENVLA_REF="${OPENVLA_REF:-e4287e94541f459edc4feabc4e181f537cd569a8}"
 OPENPI_REF="${OPENPI_REF:-}"
+NEOVERSE_REPO_URL="${NEOVERSE_REPO_URL:-}"
+NEOVERSE_REPO_REF="${NEOVERSE_REPO_REF:-main}"
+NEOVERSE_REPO_PATH="${NEOVERSE_REPO_PATH:-$ROOT_DIR/data/vendor/neoverse}"
+NEOVERSE_PYTHON_EXECUTABLE="${NEOVERSE_PYTHON_EXECUTABLE:-$(command -v python || true)}"
+NEOVERSE_CHECKPOINT_PATH="${NEOVERSE_CHECKPOINT_PATH:-$CHECKPOINT_DIR/neoverse}"
+RUNTIME_ENV_LOCAL="${RUNTIME_ENV_LOCAL:-$ROOT_DIR/scripts/runtime_env.local}"
 
 if [ -f "$ROOT_DIR/scripts/runtime_env.local" ]; then
   # shellcheck disable=SC1091
@@ -86,6 +92,10 @@ if [ -z "${GOOGLE_GENAI_API_KEY:-}" ]; then
   echo "GOOGLE_GENAI_API_KEY is required for judge/spatial/cross-site evaluations."
   exit 1
 fi
+if [ ! -d "$NEOVERSE_REPO_PATH" ] && [ ! -d "/opt/neoverse" ] && [ -z "$NEOVERSE_REPO_URL" ]; then
+  echo "NeoVerse runtime not installed; set NEOVERSE_REPO_URL or preinstall /opt/neoverse."
+  exit 1
+fi
 
 if command -v hf >/dev/null 2>&1; then
   HF_AUTH_CMD=(hf auth)
@@ -139,7 +149,18 @@ ensure_repo() {
   local opt_src="$2"
   local url="$3"
   local ref="$4"
-  if [ -d "$target/.git" ] || [ -f "$target/pyproject.toml" ]; then
+  if [ -d "$target/.git" ]; then
+    git -C "$target" fetch origin
+    if [ -n "$ref" ]; then
+      git -C "$target" checkout "$ref"
+      git -C "$target" pull --ff-only origin "$ref" || true
+    fi
+    if [ -f "$target/.gitmodules" ]; then
+      git -C "$target" submodule update --init --recursive
+    fi
+    return 0
+  fi
+  if [ -f "$target/pyproject.toml" ]; then
     return 0
   fi
   mkdir -p "$(dirname "$target")"
@@ -157,11 +178,47 @@ ensure_repo() {
   fi
 }
 
+upsert_runtime_env() {
+  local key="$1"
+  local value="$2"
+  mkdir -p "$(dirname "$RUNTIME_ENV_LOCAL")"
+  python - "$RUNTIME_ENV_LOCAL" "$key" "$value" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+key = sys.argv[2]
+value = sys.argv[3]
+lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+prefix = f"export {key}="
+new_line = f'export {key}="{value}"'
+for index, line in enumerate(lines):
+    if line.startswith(prefix):
+        lines[index] = new_line
+        break
+else:
+    lines.append(new_line)
+path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
+}
+
+persist_neoverse_runtime_env() {
+  upsert_runtime_env "NEOVERSE_REPO_PATH" "$NEOVERSE_REPO_PATH"
+  if [ -n "$NEOVERSE_PYTHON_EXECUTABLE" ]; then
+    upsert_runtime_env "NEOVERSE_PYTHON_EXECUTABLE" "$NEOVERSE_PYTHON_EXECUTABLE"
+  fi
+  if [ -n "$NEOVERSE_CHECKPOINT_PATH" ]; then
+    upsert_runtime_env "NEOVERSE_CHECKPOINT_PATH" "$NEOVERSE_CHECKPOINT_PATH"
+  fi
+}
+
 echo "Ensuring vendor repos..."
 ensure_repo "$ROOT_DIR/data/vendor/DreamDojo" "/opt/DreamDojo" "https://github.com/NVIDIA/DreamDojo.git" "$DREAMDOJO_REF"
 ensure_repo "$ROOT_DIR/data/vendor/cosmos-transfer" "/opt/cosmos-transfer" "https://github.com/nvidia-cosmos/cosmos-transfer2.5.git" "$COSMOS_REF"
 ensure_repo "$ROOT_DIR/data/vendor/openvla-oft" "/opt/openvla-oft" "https://github.com/moojink/openvla-oft.git" "$OPENVLA_REF"
 ensure_repo "$ROOT_DIR/data/vendor/openpi" "/opt/openpi" "https://github.com/Physical-Intelligence/openpi.git" "$OPENPI_REF"
+ensure_repo "$NEOVERSE_REPO_PATH" "/opt/neoverse" "$NEOVERSE_REPO_URL" "$NEOVERSE_REPO_REF"
+persist_neoverse_runtime_env
 
 if [ "$INSTALL_COSMOS_RUNTIME_DEPS" = "true" ]; then
   echo "Installing Cosmos runtime dependencies (sam2, natsort)..."

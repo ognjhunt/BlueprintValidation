@@ -13,6 +13,14 @@ export B2_APPLICATION_KEY="K000..."
 export ENABLE_B2_SYNC="true"
 export RCLONE_OPERATION="sync"  # set to "copy" if your B2 key cannot delete files
 
+# NeoVerse hosted-session runtime bootstrap
+# These are expected to be written/populated by first-boot provisioning.
+# export NEOVERSE_REPO_URL="git@github.com:your-org/NeoVerse.git"
+# export NEOVERSE_REPO_REF="main"
+# export NEOVERSE_REPO_PATH="/app/data/vendor/neoverse"
+# export NEOVERSE_PYTHON_EXECUTABLE="/app/.venv/bin/python"
+# export NEOVERSE_CHECKPOINT_PATH="/models/checkpoints/neoverse/"
+
 # Optional Isaac teleop runtime hints (remote GPU box)
 # export ISAACLAB_PYTHON="/path/to/isaac-sim/python.sh"
 # export ISAAC_SIM_ROOT="/path/to/isaac-sim"

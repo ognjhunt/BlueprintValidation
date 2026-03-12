@@ -60,6 +60,14 @@ qualified_opportunities:
         approach_point: [4.0, 0.0, 0.9]
         target_point: [4.0, 0.5, 0.9]
 
+scene_memory_runtime:
+  preferred_backends: [neoverse, gen3c, cosmos_transfer]
+  neoverse:
+    allow_runtime_execution: true
+    repo_path: /app/data/vendor/neoverse
+    python_executable: /app/.venv/bin/python
+    checkpoint_path: /models/checkpoints/neoverse/
+
 # ---- Stage 1: Render legacy geometry adapters or strict simulator clips ----
 render:
   resolution: [480, 640]

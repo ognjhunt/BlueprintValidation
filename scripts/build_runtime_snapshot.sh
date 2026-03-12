@@ -18,6 +18,8 @@ COSMOS_REPO_URL="${COSMOS_REPO_URL:-https://github.com/nvidia-cosmos/cosmos-tran
 COSMOS_REF="${COSMOS_REF:-c9ad44b7283613618d57c1e4c9991916907d4f4b}"
 OPENVLA_REPO_URL="${OPENVLA_REPO_URL:-https://github.com/moojink/openvla-oft.git}"
 OPENVLA_REF="${OPENVLA_REF:-e4287e94541f459edc4feabc4e181f537cd569a8}"
+NEOVERSE_REPO_URL="${NEOVERSE_REPO_URL:-}"
+NEOVERSE_REPO_REF="${NEOVERSE_REPO_REF:-main}"
 
 if [[ -n "$DOCKERHUB_IMAGE" ]]; then
   IMAGE_REF="$DOCKERHUB_IMAGE:$TAG"
@@ -35,7 +37,7 @@ esac
 
 if [[ "$VENDOR_STRATEGY" == "vendored" ]]; then
   missing=0
-  for repo in DreamDojo cosmos-transfer openvla-oft; do
+  for repo in DreamDojo cosmos-transfer openvla-oft neoverse; do
     if [[ ! -d "$ROOT_DIR/data/vendor/$repo" ]]; then
       echo "ERROR: missing vendored repo for VENDOR_STRATEGY=vendored: $ROOT_DIR/data/vendor/$repo" >&2
       missing=1
@@ -52,6 +54,11 @@ echo "  Dockerfile: $DOCKERFILE"
 echo "  Image:      $IMAGE_REF"
 echo "  Vendor strategy: $VENDOR_STRATEGY"
 
+if [[ "$VENDOR_STRATEGY" != "vendored" && -z "$NEOVERSE_REPO_URL" ]]; then
+  echo "ERROR: set NEOVERSE_REPO_URL when building a runtime snapshot with clone/auto vendor strategy." >&2
+  exit 1
+fi
+
 DOCKER_BUILDKIT=1 docker build \
   -f "$ROOT_DIR/$DOCKERFILE" \
   -t "$IMAGE_REF" \
@@ -62,6 +69,8 @@ DOCKER_BUILDKIT=1 docker build \
   --build-arg COSMOS_REF="$COSMOS_REF" \
   --build-arg OPENVLA_REPO_URL="$OPENVLA_REPO_URL" \
   --build-arg OPENVLA_REF="$OPENVLA_REF" \
+  --build-arg NEOVERSE_REPO_URL="$NEOVERSE_REPO_URL" \
+  --build-arg NEOVERSE_REPO_REF="$NEOVERSE_REPO_REF" \
   "$ROOT_DIR"
 
 if [[ "$PUSH" == "true" ]]; then

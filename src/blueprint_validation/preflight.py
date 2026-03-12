@@ -15,6 +15,12 @@ from typing import Callable, List, Literal, cast
 
 from .common import PreflightCheck, get_logger
 from .config import FacilityConfig, ValidationConfig
+from .neoverse_hosted_runtime import (
+    NEOVERSE_REPO_REF,
+    NEOVERSE_REPO_URL,
+    NEOVERSE_RUNTIME_LABEL,
+    validate_neoverse_runtime_contract,
+)
 from .evaluation.claim_benchmark import (
     claim_benchmark_alignment_failures,
     claim_benchmark_strictness_failures,
@@ -330,40 +336,42 @@ def check_isaac_scene_import_opt_in(config: ValidationConfig, facility_id: str) 
 def check_neoverse_hosted_runtime_contract(config: ValidationConfig) -> PreflightCheck:
     runtime = config.scene_memory_runtime.neoverse
     name = "scene_memory_runtime:neoverse:hosted_runtime_contract"
+    bootstrap_hint = (
+        "NeoVerse runtime not installed; run bootstrap with NEOVERSE_REPO_URL/NEOVERSE_REPO_REF "
+        f"for the pinned {NEOVERSE_RUNTIME_LABEL} runtime."
+    )
     if not bool(runtime.enabled):
         return PreflightCheck(name=name, passed=False, detail="NeoVerse runtime is disabled.")
     if not bool(runtime.allow_runtime_execution):
         return PreflightCheck(
             name=name,
             passed=False,
-            detail=(
-                "Set scene_memory_runtime.neoverse.allow_runtime_execution=true for hosted-session launch."
-            ),
+            detail=bootstrap_hint,
         )
     if runtime.repo_path is None or not runtime.repo_path.exists():
         return PreflightCheck(
             name=name,
             passed=False,
-            detail="scene_memory_runtime.neoverse.repo_path is missing or does not exist.",
+            detail=bootstrap_hint,
         )
-    if not str(runtime.hosted_runtime_module or "").strip():
+    try:
+        result = validate_neoverse_runtime_contract(
+            repo_path=runtime.repo_path,
+            python_executable=runtime.python_executable,
+            inference_script=runtime.inference_script,
+        )
+    except Exception as exc:
         return PreflightCheck(
             name=name,
             passed=False,
-            detail="scene_memory_runtime.neoverse.hosted_runtime_module must be set.",
-        )
-    if not str(runtime.hosted_runtime_class or "").strip():
-        return PreflightCheck(
-            name=name,
-            passed=False,
-            detail="scene_memory_runtime.neoverse.hosted_runtime_class must be set.",
+            detail=f"{bootstrap_hint} Contract validation failed: {type(exc).__name__}: {exc}",
         )
     return PreflightCheck(
         name=name,
         passed=True,
         detail=(
-            f"{runtime.hosted_runtime_module}.{runtime.hosted_runtime_class} "
-            f"from {runtime.repo_path}"
+            f"{result['runtime_label']} from {result['repo_path']} "
+            f"(expected repo {NEOVERSE_REPO_URL} @ {NEOVERSE_REPO_REF})"
         ),
     )
 

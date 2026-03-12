@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import warnings
@@ -308,8 +309,6 @@ class SceneMemoryBackendRuntimeConfig:
     python_executable: Optional[Path] = None
     inference_script: Optional[str] = None
     checkpoint_path: Optional[Path] = None
-    hosted_runtime_module: Optional[str] = None
-    hosted_runtime_class: Optional[str] = None
 
 
 @dataclass
@@ -1726,8 +1725,6 @@ def _parse_scene_memory_backend_runtime_config(
     python_raw = raw.get("python_executable")
     checkpoint_raw = raw.get("checkpoint_path")
     inference_script_raw = raw.get("inference_script", default_inference_script)
-    hosted_runtime_module_raw = raw.get("hosted_runtime_module")
-    hosted_runtime_class_raw = raw.get("hosted_runtime_class")
     inference_script = None
     if inference_script_raw is not None:
         text = str(inference_script_raw).strip()
@@ -1739,14 +1736,6 @@ def _parse_scene_memory_backend_runtime_config(
         python_executable=_resolve_optional_path(python_raw, base_dir),
         inference_script=inference_script,
         checkpoint_path=_resolve_optional_path(checkpoint_raw, base_dir),
-        hosted_runtime_module=(
-            str(hosted_runtime_module_raw).strip() if hosted_runtime_module_raw is not None else None
-        )
-        or None,
-        hosted_runtime_class=(
-            str(hosted_runtime_class_raw).strip() if hosted_runtime_class_raw is not None else None
-        )
-        or None,
     )
 
 
@@ -1776,6 +1765,39 @@ def _parse_scene_memory_runtime_config(
             default_inference_script="inference.py",
         ),
     )
+
+
+def _env_text(name: str) -> Optional[str]:
+    value = str(os.environ.get(name, "") or "").strip()
+    return value or None
+
+
+def _apply_scene_memory_runtime_env_overrides(
+    config: SceneMemoryRuntimeConfig,
+    *,
+    base_dir: Path,
+) -> None:
+    runtime = config.neoverse
+    repo_path = _env_text("NEOVERSE_REPO_PATH")
+    python_executable = _env_text("NEOVERSE_PYTHON_EXECUTABLE")
+    checkpoint_path = _env_text("NEOVERSE_CHECKPOINT_PATH")
+
+    override_present = any(
+        value is not None
+        for value in (
+            repo_path,
+            python_executable,
+            checkpoint_path,
+        )
+    )
+    if repo_path is not None:
+        runtime.repo_path = _resolve_path(repo_path, base_dir)
+    if python_executable is not None:
+        runtime.python_executable = _resolve_path(python_executable, base_dir)
+    if checkpoint_path is not None:
+        runtime.checkpoint_path = _resolve_path(checkpoint_path, base_dir)
+    if override_present:
+        runtime.allow_runtime_execution = True
 
 
 def load_config(path: Path) -> ValidationConfig:
@@ -1813,6 +1835,10 @@ def load_config(path: Path) -> ValidationConfig:
             raw["scene_memory_runtime"],
             base_dir,
         )
+    _apply_scene_memory_runtime_env_overrides(
+        config.scene_memory_runtime,
+        base_dir=base_dir,
+    )
 
     if "robot_composite" in raw:
         rc = raw["robot_composite"]

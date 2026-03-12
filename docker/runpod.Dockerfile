@@ -14,6 +14,8 @@ ARG COSMOS_REPO_URL=https://github.com/nvidia-cosmos/cosmos-transfer2.5.git
 ARG COSMOS_REF=c9ad44b7283613618d57c1e4c9991916907d4f4b
 ARG OPENVLA_REPO_URL=https://github.com/moojink/openvla-oft.git
 ARG OPENVLA_REF=e4287e94541f459edc4feabc4e181f537cd569a8
+ARG NEOVERSE_REPO_URL=
+ARG NEOVERSE_REPO_REF=main
 
 # System packages
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -112,10 +114,16 @@ resolve_vendor_or_clone() {
 resolve_vendor_or_clone "DreamDojo" "${DREAMDOJO_REPO_URL}" "${DREAMDOJO_REF}"
 resolve_vendor_or_clone "cosmos-transfer" "${COSMOS_REPO_URL}" "${COSMOS_REF}"
 resolve_vendor_or_clone "openvla-oft" "${OPENVLA_REPO_URL}" "${OPENVLA_REF}"
+if [ -z "${NEOVERSE_REPO_URL}" ] && [ ! -d "/buildctx/data/vendor/neoverse" ]; then
+    echo "NEOVERSE_REPO_URL must be set (or data/vendor/neoverse provided) for runtime image builds." >&2
+    exit 1
+fi
+resolve_vendor_or_clone "neoverse" "${NEOVERSE_REPO_URL}" "${NEOVERSE_REPO_REF}"
 
 ln -sfn /app/data/vendor/DreamDojo /opt/DreamDojo
 ln -sfn /app/data/vendor/cosmos-transfer /opt/cosmos-transfer
 ln -sfn /app/data/vendor/openvla-oft /opt/openvla-oft
+ln -sfn /app/data/vendor/neoverse /opt/neoverse
 EOF
 
 RUN if [ "$(uname -m)" = "x86_64" ]; then . /app/.venv/bin/activate && uv pip install -e /opt/DreamDojo; else echo "Skipping DreamDojo editable install on $(uname -m)"; fi
@@ -123,6 +131,7 @@ RUN if [ "$(uname -m)" = "x86_64" ]; then . /app/.venv/bin/activate && uv pip in
 ENV DREAMDOJO_ROOT=/opt/DreamDojo
 ENV COSMOS_ROOT=/opt/cosmos-transfer
 ENV OPENVLA_ROOT=/opt/openvla-oft
+ENV NEOVERSE_ROOT=/opt/neoverse
 
 EXPOSE 22
 

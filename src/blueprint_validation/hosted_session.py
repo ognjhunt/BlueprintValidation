@@ -5,8 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import sys
-from importlib import import_module
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
@@ -14,6 +12,9 @@ import cv2
 import numpy as np
 
 from .config import FacilityConfig, PolicyAdapterConfig, ValidationConfig
+from .neoverse_hosted_runtime import (
+    NeoVerseHostedRuntime,
+)
 from .policy_adapters import get_policy_adapter
 from .public_contract import public_runtime_label
 from .scene_memory_runtime import resolve_scene_memory_runtime_plan
@@ -344,35 +345,19 @@ class NeoVerseHostedAdapter(HostedWorldModelAdapter):
             raise HostedSessionError("NeoVerse hosted runtime execution is disabled in Validation config.")
         if runtime_cfg.repo_path is None or not runtime_cfg.repo_path.exists():
             raise HostedSessionError("NeoVerse hosted runtime repo_path is missing or does not exist.")
-        if not str(runtime_cfg.hosted_runtime_module or "").strip():
-            raise HostedSessionError("NeoVerse hosted_runtime_module is not configured.")
-        if not str(runtime_cfg.hosted_runtime_class or "").strip():
-            raise HostedSessionError("NeoVerse hosted_runtime_class is not configured.")
-        repo_path = runtime_cfg.repo_path
-        for candidate in (repo_path, repo_path / "src"):
-            candidate_text = str(candidate)
-            if candidate.exists() and candidate_text not in sys.path:
-                sys.path.insert(0, candidate_text)
-        module = import_module(str(runtime_cfg.hosted_runtime_module))
-        runtime_cls = getattr(module, str(runtime_cfg.hosted_runtime_class), None)
-        if runtime_cls is None:
-            raise HostedSessionError(
-                "NeoVerse hosted runtime class not found: "
-                f"{runtime_cfg.hosted_runtime_module}.{runtime_cfg.hosted_runtime_class}"
-            )
         kwargs = {
             "scene_memory_manifest_uri": runtime_manifest.get("scene_memory_manifest_uri"),
             "conditioning_bundle_uri": runtime_manifest.get("conditioning_bundle_uri"),
             "preview_simulation_manifest_uri": runtime_manifest.get("preview_simulation_manifest_uri"),
             "runtime_manifest": dict(runtime_manifest),
-            "repo_path": str(repo_path),
+            "repo_path": str(runtime_cfg.repo_path),
+            "python_executable": (
+                str(runtime_cfg.python_executable) if runtime_cfg.python_executable is not None else None
+            ),
             "inference_script": runtime_cfg.inference_script,
             "checkpoint_path": str(runtime_cfg.checkpoint_path) if runtime_cfg.checkpoint_path else None,
         }
-        try:
-            self.runtime = runtime_cls(**kwargs)
-        except TypeError:
-            self.runtime = runtime_cls()
+        self.runtime = NeoVerseHostedRuntime(**kwargs)
 
     def _call(self, method_names: Sequence[str], *, session_context: Mapping[str, Any], **kwargs: Any) -> Dict[str, Any]:
         for method_name in method_names:
@@ -601,6 +586,7 @@ def create_session(
     notes: str = "",
 ) -> Dict[str, Any]:
     runtime_manifest = _read_json(runtime_manifest_path)
+    runtime_manifest.setdefault("runtime_manifest_path", str(runtime_manifest_path))
     backend = _resolve_backend(config, runtime_manifest)
     adapter = _resolve_world_model_adapter(config=config, runtime_manifest=runtime_manifest)
     task_entries = _task_entries(runtime_manifest)
@@ -689,7 +675,9 @@ def reset_session(
 ) -> Dict[str, Any]:
     del seed
     session_state = _read_json(_session_state_path(session_work_dir))
-    runtime_manifest = _read_json(Path(str(session_state["runtime_manifest_path"])))
+    runtime_manifest_path = Path(str(session_state["runtime_manifest_path"]))
+    runtime_manifest = _read_json(runtime_manifest_path)
+    runtime_manifest.setdefault("runtime_manifest_path", str(runtime_manifest_path))
     adapter = _resolve_world_model_adapter(config=config, runtime_manifest=runtime_manifest)
     task_entries = _task_entries(runtime_manifest)
     scenario_entries = _catalog_entries(
@@ -786,7 +774,9 @@ def step_session(
     auto_policy: bool,
 ) -> Dict[str, Any]:
     session_state = _read_json(_session_state_path(session_work_dir))
-    runtime_manifest = _read_json(Path(str(session_state["runtime_manifest_path"])))
+    runtime_manifest_path = Path(str(session_state["runtime_manifest_path"]))
+    runtime_manifest = _read_json(runtime_manifest_path)
+    runtime_manifest.setdefault("runtime_manifest_path", str(runtime_manifest_path))
     adapter = _resolve_world_model_adapter(config=config, runtime_manifest=runtime_manifest)
     episode_state = _read_json(_episode_state_path(session_work_dir))
     if episode_state.get("episode_id") != episode_id:
@@ -889,7 +879,9 @@ def run_batch(
 ) -> Dict[str, Any]:
     del seed
     session_state = _read_json(_session_state_path(session_work_dir))
-    runtime_manifest = _read_json(Path(str(session_state["runtime_manifest_path"])))
+    runtime_manifest_path = Path(str(session_state["runtime_manifest_path"]))
+    runtime_manifest = _read_json(runtime_manifest_path)
+    runtime_manifest.setdefault("runtime_manifest_path", str(runtime_manifest_path))
     assignments: List[Dict[str, Any]] = []
     failures: List[str] = []
     max_steps_value = int(max_steps or 6)

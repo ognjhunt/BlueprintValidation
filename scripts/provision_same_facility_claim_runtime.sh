@@ -23,6 +23,12 @@ COSMOS_REPO_URL="${COSMOS_REPO_URL:-https://github.com/nvidia-cosmos/cosmos-tran
 COSMOS_REF="${COSMOS_REF:-c9ad44b7283613618d57c1e4c9991916907d4f4b}"
 OPENVLA_REPO_URL="${OPENVLA_REPO_URL:-https://github.com/moojink/openvla-oft.git}"
 OPENVLA_REF="${OPENVLA_REF:-e4287e94541f459edc4feabc4e181f537cd569a8}"
+NEOVERSE_REPO_URL="${NEOVERSE_REPO_URL:-}"
+NEOVERSE_REPO_REF="${NEOVERSE_REPO_REF:-main}"
+NEOVERSE_REPO_PATH="${NEOVERSE_REPO_PATH:-$ROOT_DIR/data/vendor/neoverse}"
+NEOVERSE_PYTHON_EXECUTABLE="${NEOVERSE_PYTHON_EXECUTABLE:-$PYTHON_BIN}"
+NEOVERSE_CHECKPOINT_PATH="${NEOVERSE_CHECKPOINT_PATH:-$CHECKPOINT_DIR/neoverse}"
+RUNTIME_ENV_LOCAL="${RUNTIME_ENV_LOCAL:-$ROOT_DIR/scripts/runtime_env.local}"
 
 pip_install() {
   uv pip install --python "$PYTHON_BIN" "$@"
@@ -108,8 +114,17 @@ ensure_repo() {
   local target="$1"
   local url="$2"
   local ref="$3"
+  local opt_src="${4:-}"
 
   if [[ -d "$target/.git" ]]; then
+    git -C "$target" fetch origin
+    if [[ -n "$ref" ]]; then
+      git -C "$target" checkout "$ref"
+      git -C "$target" pull --ff-only origin "$ref" || true
+    fi
+    if [[ -f "$target/.gitmodules" ]]; then
+      git -C "$target" submodule update --init --recursive
+    fi
     return 0
   fi
   if [[ -f "$target/pyproject.toml" ]]; then
@@ -117,10 +132,52 @@ ensure_repo() {
   fi
 
   mkdir -p "$(dirname "$target")"
+  if [[ -n "$opt_src" && -d "$opt_src" ]]; then
+    ln -s "$opt_src" "$target"
+    return 0
+  fi
+  if [[ -z "$url" ]]; then
+    echo "ERROR: cannot provision $target without a repo URL or preinstalled source." >&2
+    exit 1
+  fi
   git clone "$url" "$target"
   git -C "$target" checkout "$ref"
   if [[ -f "$target/.gitmodules" ]]; then
     git -C "$target" submodule update --init --recursive
+  fi
+}
+
+upsert_runtime_env() {
+  local key="$1"
+  local value="$2"
+  mkdir -p "$(dirname "$RUNTIME_ENV_LOCAL")"
+  python - "$RUNTIME_ENV_LOCAL" "$key" "$value" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+key = sys.argv[2]
+value = sys.argv[3]
+lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+prefix = f"export {key}="
+new_line = f'export {key}="{value}"'
+for index, line in enumerate(lines):
+    if line.startswith(prefix):
+        lines[index] = new_line
+        break
+else:
+    lines.append(new_line)
+path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
+}
+
+persist_neoverse_runtime_env() {
+  upsert_runtime_env "NEOVERSE_REPO_PATH" "$NEOVERSE_REPO_PATH"
+  if [[ -n "$NEOVERSE_PYTHON_EXECUTABLE" ]]; then
+    upsert_runtime_env "NEOVERSE_PYTHON_EXECUTABLE" "$NEOVERSE_PYTHON_EXECUTABLE"
+  fi
+  if [[ -n "$NEOVERSE_CHECKPOINT_PATH" ]]; then
+    upsert_runtime_env "NEOVERSE_CHECKPOINT_PATH" "$NEOVERSE_CHECKPOINT_PATH"
   fi
 }
 
@@ -151,6 +208,10 @@ if ! command -v uv >/dev/null 2>&1; then
   echo "ERROR: uv is required but not found on PATH." >&2
   exit 1
 fi
+if [[ ! -d "$NEOVERSE_REPO_PATH" && ! -d "/opt/neoverse" && -z "$NEOVERSE_REPO_URL" ]]; then
+  echo "NeoVerse runtime not installed; set NEOVERSE_REPO_URL or preinstall /opt/neoverse." >&2
+  exit 1
+fi
 
 mkdir -p "$MPLCONFIGDIR"
 mkdir -p "$ROOT_DIR/data" "$ROOT_DIR/data/vendor" "$CHECKPOINT_DIR" "$SHARED_OUTPUT_ROOT" "$OPENVLA_DATASET_ROOT"
@@ -170,6 +231,8 @@ echo "[0/5] Ensuring pinned vendor repos and same-facility assets"
 ensure_repo "$ROOT_DIR/data/vendor/DreamDojo" "$DREAMDOJO_REPO_URL" "$DREAMDOJO_REF"
 ensure_repo "$ROOT_DIR/data/vendor/cosmos-transfer" "$COSMOS_REPO_URL" "$COSMOS_REF"
 ensure_repo "$ROOT_DIR/data/vendor/openvla-oft" "$OPENVLA_REPO_URL" "$OPENVLA_REF"
+ensure_repo "$NEOVERSE_REPO_PATH" "$NEOVERSE_REPO_URL" "$NEOVERSE_REPO_REF" "/opt/neoverse"
+persist_neoverse_runtime_env
 
 stage_optional_file \
   "$FACILITY_A_SPLAT_SOURCE" \

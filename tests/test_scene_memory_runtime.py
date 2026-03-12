@@ -99,8 +99,6 @@ scene_memory_runtime:
     repo_path: {vendor_root / "neoverse"}
     python_executable: /usr/bin/python3
     inference_script: scripts/inference.py
-    hosted_runtime_module: neoverse_runtime
-    hosted_runtime_class: HostedNeoVerseRuntime
   gen3c:
     allow_runtime_execution: true
     repo_path: {vendor_root / "gen3c"}
@@ -118,8 +116,6 @@ scene_memory_runtime:
     assert config.scene_memory_runtime.watchlist_backends == ["3dsceneprompt"]
     assert config.scene_memory_runtime.neoverse.allow_runtime_execution is True
     assert str(config.scene_memory_runtime.neoverse.repo_path).endswith("/vendor/neoverse")
-    assert config.scene_memory_runtime.neoverse.hosted_runtime_module == "neoverse_runtime"
-    assert config.scene_memory_runtime.neoverse.hosted_runtime_class == "HostedNeoVerseRuntime"
     assert config.scene_memory_runtime.gen3c.inference_script == "launch/inference.py"
 
 
@@ -150,3 +146,31 @@ def test_runtime_metadata_prefers_existing_runtime_selection_file(sample_config,
 
     assert runtime["selected_backend"] == "gen3c"
     assert runtime["selection_reason"] == "cached runtime selection"
+
+
+def test_load_config_applies_neoverse_env_overrides(monkeypatch, tmp_path):
+    config_path = tmp_path / "validation.yaml"
+    config_path.write_text(
+        """
+schema_version: v1
+qualified_opportunities:
+  facility_a:
+    name: Facility A
+scene_memory_runtime:
+  neoverse:
+    allow_runtime_execution: false
+    repo_path: ./scene_memory/neoverse
+""",
+        encoding="utf-8",
+    )
+    override_repo = tmp_path / "runtime" / "neoverse"
+    override_repo.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("NEOVERSE_REPO_PATH", str(override_repo))
+    monkeypatch.setenv("NEOVERSE_PYTHON_EXECUTABLE", "/usr/bin/python3")
+    monkeypatch.setenv("NEOVERSE_CHECKPOINT_PATH", str(tmp_path / "ckpts" / "neoverse"))
+
+    config = load_config(config_path)
+
+    assert config.scene_memory_runtime.neoverse.allow_runtime_execution is True
+    assert config.scene_memory_runtime.neoverse.repo_path == override_repo.resolve()
+    assert str(config.scene_memory_runtime.neoverse.python_executable) == "/usr/bin/python3"
