@@ -15,8 +15,8 @@ export RCLONE_OPERATION="sync"  # set to "copy" if your B2 key cannot delete fil
 
 # NeoVerse hosted-session runtime bootstrap
 # These are expected to be written/populated by first-boot provisioning.
-# export NEOVERSE_REPO_URL="git@github.com:your-org/NeoVerse.git"
-# export NEOVERSE_REPO_REF="main"
+# export NEOVERSE_REPO_URL="https://github.com/IamCreateAI/NeoVerse.git"
+# export NEOVERSE_REPO_REF="886772226c909801fb00b9148d9f7fdd4f34e579"
 # export NEOVERSE_REPO_PATH="/app/data/vendor/neoverse"
 # export NEOVERSE_PYTHON_EXECUTABLE="/app/.venv/bin/python"
 # export NEOVERSE_CHECKPOINT_PATH="/models/checkpoints/neoverse/"

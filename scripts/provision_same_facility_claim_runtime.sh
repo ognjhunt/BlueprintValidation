@@ -23,8 +23,8 @@ COSMOS_REPO_URL="${COSMOS_REPO_URL:-https://github.com/nvidia-cosmos/cosmos-tran
 COSMOS_REF="${COSMOS_REF:-c9ad44b7283613618d57c1e4c9991916907d4f4b}"
 OPENVLA_REPO_URL="${OPENVLA_REPO_URL:-https://github.com/moojink/openvla-oft.git}"
 OPENVLA_REF="${OPENVLA_REF:-e4287e94541f459edc4feabc4e181f537cd569a8}"
-NEOVERSE_REPO_URL="${NEOVERSE_REPO_URL:-}"
-NEOVERSE_REPO_REF="${NEOVERSE_REPO_REF:-main}"
+NEOVERSE_REPO_URL="${NEOVERSE_REPO_URL:-https://github.com/IamCreateAI/NeoVerse.git}"
+NEOVERSE_REPO_REF="${NEOVERSE_REPO_REF:-886772226c909801fb00b9148d9f7fdd4f34e579}"
 NEOVERSE_REPO_PATH="${NEOVERSE_REPO_PATH:-$ROOT_DIR/data/vendor/neoverse}"
 NEOVERSE_PYTHON_EXECUTABLE="${NEOVERSE_PYTHON_EXECUTABLE:-$PYTHON_BIN}"
 NEOVERSE_CHECKPOINT_PATH="${NEOVERSE_CHECKPOINT_PATH:-$CHECKPOINT_DIR/neoverse}"
@@ -233,6 +233,11 @@ ensure_repo "$ROOT_DIR/data/vendor/cosmos-transfer" "$COSMOS_REPO_URL" "$COSMOS_
 ensure_repo "$ROOT_DIR/data/vendor/openvla-oft" "$OPENVLA_REPO_URL" "$OPENVLA_REF"
 ensure_repo "$NEOVERSE_REPO_PATH" "$NEOVERSE_REPO_URL" "$NEOVERSE_REPO_REF" "/opt/neoverse"
 persist_neoverse_runtime_env
+
+if [[ -f "$NEOVERSE_REPO_PATH/requirements.txt" ]]; then
+  echo "Installing NeoVerse runtime Python dependencies"
+  pip_install -r "$NEOVERSE_REPO_PATH/requirements.txt"
+fi
 
 stage_optional_file \
   "$FACILITY_A_SPLAT_SOURCE" \

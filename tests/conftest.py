@@ -148,43 +148,69 @@ def sample_config(tmp_path):
     claim_benchmark_path.write_text('{"version": 1, "task_specs": [], "assignments": []}')
     neoverse_repo = tmp_path / "vendor" / "neoverse"
     neoverse_repo.mkdir(parents=True, exist_ok=True)
-    (neoverse_repo / "neoverse").mkdir(parents=True, exist_ok=True)
-    (neoverse_repo / "neoverse" / "__init__.py").write_text("", encoding="utf-8")
-    (neoverse_repo / "neoverse" / "runtime.py").write_text(
+    (neoverse_repo / "inference.py").write_text(
         """
 from __future__ import annotations
 
+import argparse
+import os
+
+import cv2
 import numpy as np
 
 
-class HostedNeoVerseRuntime:
-    def __init__(self, **kwargs):
-        self.kwargs = kwargs
+def _read_frame(path: str) -> np.ndarray:
+    suffix = os.path.splitext(path)[1].lower()
+    if suffix in {".png", ".jpg", ".jpeg", ".bmp", ".webp"}:
+        frame = cv2.imread(path)
+        if frame is not None:
+            return frame
+    cap = cv2.VideoCapture(path)
+    ok, frame = cap.read()
+    cap.release()
+    if ok and frame is not None:
+        return frame
+    return np.full((48, 64, 3), 96, dtype=np.uint8)
 
-    def create_session(self, session_context=None, **kwargs):
-        return {"runtime_session_metadata": {"scene_id": (session_context or {}).get("scene_id")}}
 
-    def reset_episode(self, session_context=None, **kwargs):
-        frame = np.full((48, 64, 3), 96, dtype=np.uint8)
-        return {
-            "camera_frames": {"head_rgb": frame, "wrist_rgb": frame},
-            "reward": 0.0,
-            "runtime_metadata": {"event": "reset"},
-        }
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input_path", required=True)
+    parser.add_argument("--output_path", required=True)
+    parser.add_argument("--trajectory", default="static")
+    parser.add_argument("--distance", default="0.0")
+    parser.add_argument("--angle", default="0.0")
+    parser.add_argument("--height", type=int, default=48)
+    parser.add_argument("--width", type=int, default=64)
+    parser.add_argument("--num_frames", type=int, default=12)
+    parser.add_argument("--prompt", default="")
+    parser.add_argument("--model_path", default="")
+    parser.add_argument("--reconstructor_path", default="")
+    parser.add_argument("--disable_lora", action="store_true")
+    parser.add_argument("--static_scene", action="store_true")
+    args = parser.parse_args()
 
-    def step_episode(self, session_context=None, action=None, current_observation=None, **kwargs):
-        step_index = int((current_observation or {}).get("stepIndex") or 0) + 1
-        base = 96 + min(step_index * 12, 120)
-        frame = np.full((48, 64, 3), base, dtype=np.uint8)
-        done = step_index >= 3
-        return {
-            "camera_frames": {"head_rgb": frame, "wrist_rgb": frame},
-            "reward": float(step_index) / 3.0,
-            "done": done,
-            "success": done,
-            "failure_reason": None,
-            "runtime_metadata": {"event": "step", "action_dim": len(action or [])},
-        }
+    frame = _read_frame(args.input_path)
+    frame = cv2.resize(frame, (args.width, args.height))
+    boost = 12 if args.trajectory != "static" else 0
+    frame = np.clip(frame.astype(np.int16) + boost, 0, 255).astype(np.uint8)
+
+    os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
+    writer = cv2.VideoWriter(
+        args.output_path,
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        10.0,
+        (args.width, args.height),
+    )
+    for index in range(max(args.num_frames, 4)):
+        shifted = np.roll(frame, shift=min(index, 6), axis=1)
+        writer.write(shifted)
+    writer.release()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
 """,
         encoding="utf-8",
     )
@@ -236,6 +262,8 @@ class HostedNeoVerseRuntime:
     cfg.wm_refresh_loop.backfill_from_stage2_vlm_passed = False
     cfg.scene_memory_runtime.neoverse.allow_runtime_execution = True
     cfg.scene_memory_runtime.neoverse.repo_path = neoverse_repo
+    cfg.scene_memory_runtime.neoverse.python_executable = Path(sys.executable)
+    cfg.scene_memory_runtime.neoverse.inference_script = "inference.py"
     return cfg
 
 

@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import json
-import math
-import shutil
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -38,7 +37,8 @@ def _read_json(path: Path) -> Dict[str, Any]:
 
 
 def _iter_candidate_input_paths(runtime_manifest: Mapping[str, Any], conditioning_bundle_path: Optional[Path]) -> Sequence[Path]:
-    runtime_dir = Path(str(runtime_manifest.get("runtime_manifest_path") or "")).parent
+    runtime_manifest_path = str(runtime_manifest.get("runtime_manifest_path") or "").strip()
+    runtime_dir = Path(runtime_manifest_path).resolve().parent if runtime_manifest_path else None
     candidates: list[Path] = []
     for key in (
         "conditioning_input_path",
@@ -56,7 +56,7 @@ def _iter_candidate_input_paths(runtime_manifest: Mapping[str, Any], conditionin
             if value and not value.startswith("gs://"):
                 candidates.append(Path(value))
 
-    if runtime_dir.exists():
+    if runtime_dir is not None and runtime_dir.exists():
         patterns = (
             "conditioning_input.*",
             "conditioning_keyframe.*",
@@ -218,7 +218,11 @@ class NeoVerseHostedRuntime:
             self.runtime_manifest,
             conditioning_bundle_uri=conditioning_bundle_uri,
         )
-        self.runtime_dir = Path(str(self.runtime_manifest.get("runtime_manifest_path") or self.conditioning_input_path.parent)).parent
+        runtime_manifest_path = str(self.runtime_manifest.get("runtime_manifest_path") or "").strip()
+        if runtime_manifest_path:
+            self.runtime_dir = Path(runtime_manifest_path).resolve().parent
+        else:
+            self.runtime_dir = self.conditioning_input_path.parent
 
     def _resolve_model_args(self) -> list[str]:
         if self.checkpoint_path is None:
@@ -264,6 +268,7 @@ class NeoVerseHostedRuntime:
             str(output_path),
             "--prompt",
             prompt,
+            "--disable_lora",
             "--static_scene",
             "--num_frames",
             "12",
@@ -280,9 +285,12 @@ class NeoVerseHostedRuntime:
                 continue
             cmd.extend([f"--{key}", value])
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        existing_pythonpath = str(os.environ.get("PYTHONPATH") or "").strip()
         env = {
-            **dict(**shutil.os.environ),
-            "PYTHONPATH": str(self.repo_path),
+            **os.environ,
+            "PYTHONPATH": str(self.repo_path)
+            if not existing_pythonpath
+            else f"{self.repo_path}{os.pathsep}{existing_pythonpath}",
         }
         result = subprocess.run(
             cmd,

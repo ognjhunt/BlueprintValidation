@@ -19,9 +19,9 @@ def test_runtime_env_example_mentions_neoverse_bootstrap_contract() -> None:
 def test_runtime_snapshot_build_and_runpod_image_wire_neoverse_clone() -> None:
     snapshot = _read("/Users/nijelhunt_1/workspace/BlueprintValidation/scripts/build_runtime_snapshot.sh")
     dockerfile = _read("/Users/nijelhunt_1/workspace/BlueprintValidation/docker/runpod.Dockerfile")
-    assert 'NEOVERSE_REPO_URL="${NEOVERSE_REPO_URL:-}"' in snapshot
+    assert 'NEOVERSE_REPO_URL="${NEOVERSE_REPO_URL:-https://github.com/IamCreateAI/NeoVerse.git}"' in snapshot
     assert '--build-arg NEOVERSE_REPO_URL="$NEOVERSE_REPO_URL"' in snapshot
-    assert 'ARG NEOVERSE_REPO_URL=' in dockerfile
+    assert 'ARG NEOVERSE_REPO_URL=https://github.com/IamCreateAI/NeoVerse.git' in dockerfile
     assert 'resolve_vendor_or_clone "neoverse"' in dockerfile
 
 

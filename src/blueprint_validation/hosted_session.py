@@ -357,7 +357,10 @@ class NeoVerseHostedAdapter(HostedWorldModelAdapter):
             "inference_script": runtime_cfg.inference_script,
             "checkpoint_path": str(runtime_cfg.checkpoint_path) if runtime_cfg.checkpoint_path else None,
         }
-        self.runtime = NeoVerseHostedRuntime(**kwargs)
+        try:
+            self.runtime = NeoVerseHostedRuntime(**kwargs)
+        except Exception as exc:
+            raise HostedSessionError(f"NeoVerse hosted runtime initialization failed: {exc}") from exc
 
     def _call(self, method_names: Sequence[str], *, session_context: Mapping[str, Any], **kwargs: Any) -> Dict[str, Any]:
         for method_name in method_names:
@@ -370,7 +373,20 @@ class NeoVerseHostedAdapter(HostedWorldModelAdapter):
                 try:
                     payload = method(**kwargs)
                 except TypeError:
-                    payload = method(session_context)
+                    try:
+                        payload = method(session_context)
+                    except Exception as exc:
+                        raise HostedSessionError(
+                            f"NeoVerse runtime method {method_name} failed: {exc}"
+                        ) from exc
+                except Exception as exc:
+                    raise HostedSessionError(
+                        f"NeoVerse runtime method {method_name} failed: {exc}"
+                    ) from exc
+            except Exception as exc:
+                raise HostedSessionError(
+                    f"NeoVerse runtime method {method_name} failed: {exc}"
+                ) from exc
             if isinstance(payload, Mapping):
                 return dict(payload)
             raise HostedSessionError(f"NeoVerse runtime method {method_name} returned non-mapping payload.")

@@ -14,8 +14,8 @@ ARG COSMOS_REPO_URL=https://github.com/nvidia-cosmos/cosmos-transfer2.5.git
 ARG COSMOS_REF=c9ad44b7283613618d57c1e4c9991916907d4f4b
 ARG OPENVLA_REPO_URL=https://github.com/moojink/openvla-oft.git
 ARG OPENVLA_REF=e4287e94541f459edc4feabc4e181f537cd569a8
-ARG NEOVERSE_REPO_URL=
-ARG NEOVERSE_REPO_REF=main
+ARG NEOVERSE_REPO_URL=https://github.com/IamCreateAI/NeoVerse.git
+ARG NEOVERSE_REPO_REF=886772226c909801fb00b9148d9f7fdd4f34e579
 
 # System packages
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -127,6 +127,7 @@ ln -sfn /app/data/vendor/neoverse /opt/neoverse
 EOF
 
 RUN if [ "$(uname -m)" = "x86_64" ]; then . /app/.venv/bin/activate && uv pip install -e /opt/DreamDojo; else echo "Skipping DreamDojo editable install on $(uname -m)"; fi
+RUN . /app/.venv/bin/activate && if [ -f /opt/neoverse/requirements.txt ]; then uv pip install -r /opt/neoverse/requirements.txt; fi
 
 ENV DREAMDOJO_ROOT=/opt/DreamDojo
 ENV COSMOS_ROOT=/opt/cosmos-transfer

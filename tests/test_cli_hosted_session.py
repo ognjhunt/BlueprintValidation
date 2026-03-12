@@ -13,6 +13,8 @@ def _write_json(path: Path, payload: object) -> None:
 
 def test_hosted_session_cli_flow(monkeypatch, tmp_path, sample_config):
     import blueprint_validation.cli as cli_module
+    import cv2
+    import numpy as np
 
     config_path = tmp_path / "config.yaml"
     config_path.write_text("schema_version: v1\n", encoding="utf-8")
@@ -24,6 +26,9 @@ def test_hosted_session_cli_flow(monkeypatch, tmp_path, sample_config):
     task_run_path = runtime_dir / "task_run_manifest.json"
     scene_memory_manifest_path = runtime_dir / "scene_memory_manifest.json"
     conditioning_bundle_path = runtime_dir / "conditioning_bundle.json"
+    conditioning_input_path = runtime_dir / "conditioning_input.png"
+    conditioning_input_path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(conditioning_input_path), np.full((48, 64, 3), 96, dtype=np.uint8))
 
     _write_json(
         task_anchor_path,
@@ -39,7 +44,13 @@ def test_hosted_session_cli_flow(monkeypatch, tmp_path, sample_config):
     )
     _write_json(task_run_path, {"schema_version": "v1"})
     _write_json(scene_memory_manifest_path, {"schema_version": "v1"})
-    _write_json(conditioning_bundle_path, {"schema_version": "v1"})
+    _write_json(
+        conditioning_bundle_path,
+        {
+            "schema_version": "v1",
+            "keyframe_uri": str(conditioning_input_path),
+        },
+    )
     runtime_manifest_path = runtime_dir / "hosted_session_runtime_manifest.json"
     _write_json(
         runtime_manifest_path,
@@ -51,6 +62,7 @@ def test_hosted_session_cli_flow(monkeypatch, tmp_path, sample_config):
             "pipeline_prefix": "scenes/scene-1/captures/cap-1/pipeline",
             "scene_memory_manifest_uri": str(scene_memory_manifest_path),
             "conditioning_bundle_uri": str(conditioning_bundle_path),
+            "conditioning_input_path": str(conditioning_input_path),
             "preview_simulation_manifest_uri": None,
             "task_anchor_manifest_uri": str(task_anchor_path),
             "task_run_manifest_uri": str(task_run_path),
