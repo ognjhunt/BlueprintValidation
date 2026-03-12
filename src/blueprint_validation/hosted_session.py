@@ -305,6 +305,7 @@ def _materialize_observation(
 
 
 def _episode_payload(episode_state: Mapping[str, Any]) -> Dict[str, Any]:
+    runtime_metadata = dict(((episode_state.get("observation") or {}).get("runtimeMetadata") or {}))
     return {
         "episodeId": episode_state["episode_id"],
         "taskId": episode_state["task_id"],
@@ -323,6 +324,11 @@ def _episode_payload(episode_state: Mapping[str, Any]) -> Dict[str, Any]:
         "actionTrace": episode_state.get("action_trace", []),
         "observationCameras": episode_state.get("observation_cameras", []),
         "artifactUris": episode_state.get("artifact_uris", {}),
+        "canonicalPackageVersion": runtime_metadata.get("canonical_package_version"),
+        "presentationConfig": runtime_metadata.get("presentation_config"),
+        "qualityFlags": runtime_metadata.get("quality_flags", {}),
+        "protectedRegionViolations": runtime_metadata.get("protected_region_violations", {}),
+        "debugArtifacts": runtime_metadata.get("debug_artifacts", {}),
     }
 
 
@@ -404,6 +410,12 @@ def create_session(
         scenario_id=scenario_id,
         start_state_id=start_state_id,
         notes=notes,
+        canonical_package_uri=str((policy_payload or {}).get("canonical_package_uri") or "") or None,
+        canonical_package_version=str((policy_payload or {}).get("canonical_package_version") or "") or None,
+        prompt=str((policy_payload or {}).get("prompt") or "") or None,
+        trajectory=(policy_payload or {}).get("trajectory"),
+        presentation_model=str((policy_payload or {}).get("presentation_model") or "") or None,
+        debug_mode=bool((policy_payload or {}).get("debug_mode", False)),
     )
     runtime_probe = client.probe_runtime()
 
@@ -438,6 +450,11 @@ def create_session(
         "dataset_artifacts": {},
         "grounding_summary": grounding,
         "runtime_probe": runtime_probe,
+        "canonical_package_version": create_payload.get("canonical_package_version"),
+        "presentation_config": create_payload.get("presentation_config"),
+        "quality_flags": create_payload.get("quality_flags", {}),
+        "protected_region_violations": create_payload.get("protected_region_violations", {}),
+        "debug_artifacts": create_payload.get("debug_artifacts", {}),
     }
     _write_json(_session_state_path(session_work_dir), session_state)
     return {
@@ -451,6 +468,11 @@ def create_session(
         "artifact_uris": session_state["artifact_uris"],
         "dataset_artifacts": session_state["dataset_artifacts"],
         "grounding_summary": grounding,
+        "canonical_package_version": create_payload.get("canonical_package_version"),
+        "presentation_config": create_payload.get("presentation_config"),
+        "quality_flags": create_payload.get("quality_flags", {}),
+        "protected_region_violations": create_payload.get("protected_region_violations", {}),
+        "debug_artifacts": create_payload.get("debug_artifacts", {}),
     }
 
 

@@ -137,6 +137,12 @@ class NeoVerseRuntimeClient:
         scenario_id: str,
         start_state_id: str,
         notes: str = "",
+        canonical_package_uri: str | None = None,
+        canonical_package_version: str | None = None,
+        prompt: str | None = None,
+        trajectory: Mapping[str, Any] | str | None = None,
+        presentation_model: str | None = None,
+        debug_mode: bool = False,
     ) -> Mapping[str, Any]:
         return self._request_json(
             method="POST",
@@ -148,6 +154,18 @@ class NeoVerseRuntimeClient:
                 "scenario_id": scenario_id,
                 "start_state_id": start_state_id,
                 "notes": notes,
+                "canonical_package_uri": canonical_package_uri,
+                "canonical_package_version": canonical_package_version,
+                "prompt": prompt,
+                "trajectory": (
+                    dict(trajectory)
+                    if isinstance(trajectory, Mapping)
+                    else str(trajectory)
+                    if trajectory is not None
+                    else None
+                ),
+                "presentation_model": presentation_model,
+                "debug_mode": debug_mode,
             },
         )
 

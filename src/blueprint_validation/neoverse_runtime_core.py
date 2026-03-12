@@ -17,6 +17,15 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - exercised only in lean envs
     cv2 = None
 
+from .runtime_layer_grounding import (
+    composite_runtime_layer,
+    load_runtime_layer_bundle,
+    snapshot_runtime_layer_bundle,
+    update_presentation_session_manifest,
+    validate_runtime_layer_spec,
+    verify_canonical_package_version,
+)
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -96,10 +105,9 @@ def _apply_action(frame: np.ndarray, action: Sequence[float], step_index: int) -
     if brightness:
         transformed = np.clip(transformed.astype(np.float32) + brightness, 0, 255).astype(np.uint8)
 
-    label = f"step {step_index:03d}"
     cv2.putText(
         transformed,
-        label,
+        f"step {step_index:03d}",
         (12, 28),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.7,
@@ -113,9 +121,7 @@ def _apply_action(frame: np.ndarray, action: Sequence[float], step_index: int) -
 def _preferred_local_path(*values: Any) -> Optional[Path]:
     for raw in values:
         value = str(raw or "").strip()
-        if not value:
-            continue
-        if value.startswith("gs://") or value.startswith("http://") or value.startswith("https://"):
+        if not value or value.startswith(("gs://", "http://", "https://")):
             continue
         path = Path(value).resolve()
         if path.exists():
@@ -158,12 +164,16 @@ class NeoVerseRuntimeStore:
     def _site_world_health_path(self, site_world_id: str) -> Path:
         return self._site_world_dir(site_world_id) / "site_world_health.json"
 
+    def _site_world_spec_path(self, site_world_id: str) -> Path:
+        return self._site_world_dir(site_world_id) / "site_world_spec.json"
+
     def _session_state_path(self, session_id: str) -> Path:
         return self._session_dir(session_id) / "session_state.json"
 
     def validate_spec(self, spec: Mapping[str, Any]) -> RuntimeValidationResult:
         blockers: list[str] = []
         warnings: list[str] = []
+        blockers.extend(validate_runtime_layer_spec(spec))
 
         qualification_state = str(spec.get("qualification_state") or "").strip().lower()
         if qualification_state != "ready":
@@ -175,21 +185,16 @@ class NeoVerseRuntimeStore:
         if capture_source in {"glasses", "video_only", "glasses_video_only"}:
             blockers.append("video_only_capture:not_launchable")
 
-        conditioning = spec.get("conditioning")
-        conditioning_map = dict(conditioning) if isinstance(conditioning, Mapping) else {}
-        sensors = conditioning_map.get("sensor_availability")
-        sensor_map = dict(sensors) if isinstance(sensors, Mapping) else {}
+        conditioning_map = dict(spec.get("conditioning") or {}) if isinstance(spec.get("conditioning"), Mapping) else {}
+        sensor_map = dict(conditioning_map.get("sensor_availability") or {}) if isinstance(conditioning_map.get("sensor_availability"), Mapping) else {}
         if not _sensor_truth(sensor_map, "arkit_poses"):
             blockers.append("missing_spatial_conditioning:arkit_poses")
         if not _sensor_truth(sensor_map, "arkit_intrinsics"):
             blockers.append("missing_spatial_conditioning:arkit_intrinsics")
 
-        local_paths = conditioning_map.get("local_paths")
-        local_map = dict(local_paths) if isinstance(local_paths, Mapping) else {}
+        local_map = dict(conditioning_map.get("local_paths") or {}) if isinstance(conditioning_map.get("local_paths"), Mapping) else {}
         poses_path = _preferred_local_path(local_map.get("arkit_poses_path"), conditioning_map.get("arkit_poses_uri"))
-        intrinsics_path = _preferred_local_path(
-            local_map.get("arkit_intrinsics_path"), conditioning_map.get("arkit_intrinsics_uri")
-        )
+        intrinsics_path = _preferred_local_path(local_map.get("arkit_intrinsics_path"), conditioning_map.get("arkit_intrinsics_uri"))
         if poses_path is None:
             blockers.append("missing_local_conditioning:arkit_poses")
         if intrinsics_path is None:
@@ -204,14 +209,9 @@ class NeoVerseRuntimeStore:
         if conditioning_source is None:
             blockers.append("missing_local_conditioning:visual_source")
 
-        occupancy_path = _preferred_local_path(
-            local_map.get("occupancy_path"),
-            ((spec.get("geometry") or {}) if isinstance(spec.get("geometry"), Mapping) else {}).get("occupancy_path"),
-        )
-        object_index_path = _preferred_local_path(
-            local_map.get("object_index_path"),
-            ((spec.get("geometry") or {}) if isinstance(spec.get("geometry"), Mapping) else {}).get("object_index_path"),
-        )
+        geometry_map = dict(spec.get("geometry") or {}) if isinstance(spec.get("geometry"), Mapping) else {}
+        occupancy_path = _preferred_local_path(local_map.get("occupancy_path"), geometry_map.get("occupancy_path"))
+        object_index_path = _preferred_local_path(local_map.get("object_index_path"), geometry_map.get("object_index_path"))
         if occupancy_path is None:
             warnings.append("occupancy_path_missing")
         if object_index_path is None:
@@ -236,13 +236,13 @@ class NeoVerseRuntimeStore:
         cache_dir.mkdir(parents=True, exist_ok=True)
 
         validation = self.validate_spec(spec)
-        conditioning = dict(spec.get("conditioning") or {}) if isinstance(spec.get("conditioning"), Mapping) else {}
-        local_paths = dict(conditioning.get("local_paths") or {}) if isinstance(conditioning.get("local_paths"), Mapping) else {}
+        conditioning_map = dict(spec.get("conditioning") or {}) if isinstance(spec.get("conditioning"), Mapping) else {}
+        local_map = dict(conditioning_map.get("local_paths") or {}) if isinstance(conditioning_map.get("local_paths"), Mapping) else {}
         conditioning_source = _preferred_local_path(
-            local_paths.get("keyframe_path"),
-            local_paths.get("raw_video_path"),
-            conditioning.get("keyframe_uri"),
-            conditioning.get("raw_video_uri"),
+            local_map.get("keyframe_path"),
+            local_map.get("raw_video_path"),
+            conditioning_map.get("keyframe_uri"),
+            conditioning_map.get("raw_video_uri"),
         )
         if conditioning_source is None:
             raise RuntimeError("site world build requires a local conditioning source")
@@ -255,20 +255,29 @@ class NeoVerseRuntimeStore:
         seed_frame_path = cache_dir / "seed_frame.png"
         _save_frame(seed_frame_path, source_frame)
 
-        supported_cameras = []
-        robot_profiles = spec.get("robot_profiles")
-        if isinstance(robot_profiles, list):
-            seen: set[str] = set()
-            for profile in robot_profiles:
-                if not isinstance(profile, Mapping):
+        runtime_layer_bundle = load_runtime_layer_bundle(spec)
+        version_error = verify_canonical_package_version(
+            spec=spec,
+            protected_regions_manifest=runtime_layer_bundle["protected_regions_manifest"],
+            canonical_render_policy=runtime_layer_bundle["canonical_render_policy"],
+            presentation_variance_policy=runtime_layer_bundle["presentation_variance_policy"],
+        )
+        if version_error is not None:
+            raise RuntimeError(version_error)
+        runtime_layer_snapshots = snapshot_runtime_layer_bundle(runtime_layer_bundle, cache_dir)
+
+        supported_cameras: list[str] = []
+        seen: set[str] = set()
+        for profile in spec.get("robot_profiles", []) or []:
+            if not isinstance(profile, Mapping):
+                continue
+            for camera in profile.get("observation_cameras", []) or []:
+                if not isinstance(camera, Mapping):
                     continue
-                for camera in profile.get("observation_cameras", []) or []:
-                    if not isinstance(camera, Mapping):
-                        continue
-                    camera_id = str(camera.get("id") or "").strip()
-                    if camera_id and camera_id not in seen:
-                        seen.add(camera_id)
-                        supported_cameras.append(camera_id)
+                camera_id = str(camera.get("id") or "").strip()
+                if camera_id and camera_id not in seen:
+                    seen.add(camera_id)
+                    supported_cameras.append(camera_id)
         if not supported_cameras:
             supported_cameras = ["head_rgb"]
 
@@ -283,9 +292,12 @@ class NeoVerseRuntimeStore:
             "runtime_base_url": self.base_url,
             "websocket_base_url": self.ws_base_url,
             "vm_instance_id": os.getenv("VASTAI_INSTANCE_ID") or os.getenv("HOSTNAME") or "local-vm",
+            "canonical_package_uri": spec.get("canonical_package_uri"),
+            "canonical_package_version": spec.get("canonical_package_version"),
             "cache_path": str(cache_dir),
             "conditioning_source_path": str(conditioning_source),
             "seed_frame_path": str(seed_frame_path),
+            "runtime_layer_policy_snapshots": runtime_layer_snapshots,
             "supported_cameras": supported_cameras,
             "scenario_catalog": list(spec.get("scenario_catalog") or []),
             "start_state_catalog": list(spec.get("start_state_catalog") or []),
@@ -296,6 +308,9 @@ class NeoVerseRuntimeStore:
                 "supports_batch_rollout": True,
                 "supports_camera_views": True,
                 "supports_stream": True,
+                "protected_region_locking": True,
+                "runtime_layer_compositing": True,
+                "debug_render_outputs": True,
             },
             "health_uri": f"{self.base_url}/v1/site-worlds/{site_world_id}/health",
             "generated_at": _utc_now_iso(),
@@ -309,9 +324,10 @@ class NeoVerseRuntimeStore:
             "status": "healthy" if validation.launchable else "blocked",
             "blockers": validation.blockers,
             "warnings": validation.warnings,
+            "canonical_package_version": spec.get("canonical_package_version"),
             "last_heartbeat_at": _utc_now_iso(),
         }
-        _write_json(site_world_dir / "site_world_spec.json", dict(spec))
+        _write_json(self._site_world_spec_path(site_world_id), dict(spec))
         _write_json(self._site_world_state_path(site_world_id), registration)
         _write_json(self._site_world_health_path(site_world_id), health)
         return registration
@@ -350,20 +366,30 @@ class NeoVerseRuntimeStore:
         scenario_id: str,
         start_state_id: str,
         notes: str = "",
+        canonical_package_uri: str | None = None,
+        canonical_package_version: str | None = None,
+        prompt: str | None = None,
+        trajectory: Mapping[str, Any] | None = None,
+        presentation_model: str | None = None,
+        debug_mode: bool | None = None,
     ) -> Dict[str, Any]:
         registration = self.load_site_world(site_world_id)
         health = self.load_site_world_health(site_world_id)
         if not bool(health.get("launchable")):
             raise RuntimeError(f"site world {site_world_id} is not launchable")
 
+        site_world_spec = _read_json(self._site_world_spec_path(site_world_id))
+        expected_package_uri = str(registration.get("canonical_package_uri") or site_world_spec.get("canonical_package_uri") or "").strip()
+        expected_package_version = str(registration.get("canonical_package_version") or site_world_spec.get("canonical_package_version") or "").strip()
+        if canonical_package_uri and expected_package_uri and str(canonical_package_uri).strip() != expected_package_uri:
+            raise RuntimeError("canonical_package_uri_mismatch")
+        if canonical_package_version and expected_package_version and str(canonical_package_version).strip() != expected_package_version:
+            raise RuntimeError("canonical_package_version_mismatch")
+
         robot_profile = self._catalog_entry(registration.get("robot_profiles", []), robot_profile_id, label="robot profile")
         task_entry = self._catalog_entry(registration.get("task_catalog", []), task_id, label="task")
-        scenario_entry = self._catalog_entry(
-            registration.get("scenario_catalog", []), scenario_id, label="scenario"
-        )
-        start_state_entry = self._catalog_entry(
-            registration.get("start_state_catalog", []), start_state_id, label="start state"
-        )
+        scenario_entry = self._catalog_entry(registration.get("scenario_catalog", []), scenario_id, label="scenario")
+        start_state_entry = self._catalog_entry(registration.get("start_state_catalog", []), start_state_id, label="start state")
         session_id = str(session_id or _stable_id("session", site_world_id, robot_profile_id, task_id, _utc_now_iso())).strip()
         session_dir = self._session_dir(session_id)
         session_dir.mkdir(parents=True, exist_ok=True)
@@ -376,11 +402,22 @@ class NeoVerseRuntimeStore:
             "capture_id": registration.get("capture_id"),
             "runtime_base_url": registration.get("runtime_base_url"),
             "status": "ready",
+            "canonical_package_uri": expected_package_uri,
+            "canonical_package_version": expected_package_version,
             "robot_profile": robot_profile,
             "task": task_entry,
             "scenario": scenario_entry,
             "start_state": start_state_entry,
             "notes": notes,
+            "presentation_config": {
+                "prompt": prompt,
+                "trajectory": dict(trajectory or {}) if trajectory is not None else {},
+                "presentation_model": presentation_model or "runtime_default",
+                "debug_mode": bool(debug_mode),
+            },
+            "quality_flags": {"presentation_quality": "normal", "editable_ratio": 0.0, "locked_ratio": 0.0},
+            "protected_region_violations": [],
+            "debug_artifacts": {},
             "step_index": 0,
             "done": False,
             "success": None,
@@ -391,11 +428,34 @@ class NeoVerseRuntimeStore:
             "created_at": _utc_now_iso(),
         }
         _write_json(self._session_state_path(session_id), session_state)
+        update_presentation_session_manifest(
+            session_dir=session_dir,
+            payload={
+                "schema_version": "v1",
+                "session_id": session_id,
+                "site_world_id": site_world_id,
+                "canonical_package_uri": expected_package_uri,
+                "canonical_package_version": expected_package_version,
+                "prompt": prompt,
+                "trajectory": dict(trajectory or {}) if trajectory is not None else {},
+                "presentation_model": presentation_model or "runtime_default",
+                "debug_mode": bool(debug_mode),
+                "quality_flags": session_state["quality_flags"],
+                "protected_region_violations": session_state["protected_region_violations"],
+                "policy_refs": dict(site_world_spec.get("runtime_layer_policy") or {}),
+                "latest_debug_artifacts": {},
+            },
+        )
         return {
             "session_id": session_id,
             "site_world_id": site_world_id,
             "build_id": registration.get("build_id"),
             "status": "ready",
+            "canonical_package_version": expected_package_version,
+            "presentation_config": dict(session_state["presentation_config"]),
+            "quality_flags": dict(session_state["quality_flags"]),
+            "protected_region_violations": list(session_state["protected_region_violations"]),
+            "debug_artifacts": dict(session_state["debug_artifacts"]),
             "runtime_capabilities": registration.get("runtime_capabilities", {}),
             "observation_cameras": list(robot_profile.get("observation_cameras") or []),
         }
@@ -413,28 +473,63 @@ class NeoVerseRuntimeStore:
             raise RuntimeError(f"seed frame missing for {registration.get('site_world_id')}")
         return _load_frame(seed_frame)
 
+    def _runtime_layer_bundle_for_site_world(self, site_world_id: str) -> Dict[str, Any]:
+        registration = self.load_site_world(site_world_id)
+        snapshots = dict(registration.get("runtime_layer_policy_snapshots") or {})
+        protected_path = Path(str(snapshots.get("protected_regions_manifest_path") or "")).resolve()
+        render_policy_path = Path(str(snapshots.get("canonical_render_policy_path") or "")).resolve()
+        variance_policy_path = Path(str(snapshots.get("presentation_variance_policy_path") or "")).resolve()
+        return {
+            "protected_regions_manifest": _read_json(protected_path),
+            "canonical_render_policy": _read_json(render_policy_path),
+            "presentation_variance_policy": _read_json(variance_policy_path),
+        }
+
     def _observation_payload(self, session_state: Dict[str, Any], frame: np.ndarray) -> Dict[str, Any]:
         session_id = str(session_state["session_id"])
         session_dir = self._session_dir(session_id)
         step_index = int(session_state.get("step_index", 0))
         robot_profile = dict(session_state.get("robot_profile") or {})
         cameras = robot_profile.get("observation_cameras") or [{"id": "head_rgb", "role": "head"}]
+        runtime_layer_bundle = self._runtime_layer_bundle_for_site_world(str(session_state.get("site_world_id") or ""))
+        presentation_config = dict(session_state.get("presentation_config") or {})
 
         camera_summaries = []
         latest_render_paths: Dict[str, str] = {}
         primary_camera_id = ""
+        quality_flags = {"presentation_quality": "normal", "editable_ratio": 0.0, "locked_ratio": 0.0}
+        protected_region_violations: list[Dict[str, Any]] = []
+        debug_artifacts: Dict[str, Any] = {}
         for camera in cameras:
             if not isinstance(camera, Mapping):
                 continue
             camera_id = str(camera.get("id") or "").strip()
             if not camera_id:
                 continue
-            camera_frame = _coerce_camera_frame(frame, camera_id)
+            canonical_camera_frame = _coerce_camera_frame(frame, camera_id)
+            composite = composite_runtime_layer(
+                canonical_frame=canonical_camera_frame,
+                protected_regions_manifest=runtime_layer_bundle["protected_regions_manifest"],
+                presentation_config=presentation_config,
+                session_dir=session_dir,
+                step_index=step_index,
+                camera_id=camera_id,
+            )
+            camera_frame = composite["frame"]
             output_path = session_dir / "renders" / camera_id / f"frame_{step_index:03d}.png"
             _save_frame(output_path, camera_frame)
             latest_render_paths[camera_id] = str(output_path)
             if not primary_camera_id:
                 primary_camera_id = camera_id
+                quality_flags = dict(composite.get("quality_flags") or quality_flags)
+                debug_artifacts = dict(composite.get("debug_artifacts") or {})
+            protected_region_violations.extend(
+                [
+                    {**dict(item), "camera_id": camera_id}
+                    for item in composite.get("protected_region_violations", [])
+                    if isinstance(item, Mapping)
+                ]
+            )
             camera_summaries.append(
                 {
                     "cameraId": camera_id,
@@ -446,6 +541,17 @@ class NeoVerseRuntimeStore:
             )
 
         session_state["latest_render_paths"] = latest_render_paths
+        session_state["quality_flags"] = quality_flags
+        session_state["protected_region_violations"] = protected_region_violations
+        session_state["debug_artifacts"] = debug_artifacts
+        update_presentation_session_manifest(
+            session_dir=session_dir,
+            payload={
+                "quality_flags": quality_flags,
+                "protected_region_violations": protected_region_violations,
+                "latest_debug_artifacts": debug_artifacts,
+            },
+        )
         return {
             "frame_path": f"{self.base_url}/v1/sessions/{session_id}/render?camera_id={primary_camera_id}",
             "primaryCameraId": primary_camera_id,
@@ -454,6 +560,10 @@ class NeoVerseRuntimeStore:
                 "site_world_id": session_state.get("site_world_id"),
                 "build_id": session_state.get("build_id"),
                 "step_index": step_index,
+                "canonical_package_version": session_state.get("canonical_package_version"),
+                "quality_flags": quality_flags,
+                "protected_region_violations": protected_region_violations,
+                "debug_artifacts": debug_artifacts,
             },
             "worldSnapshot": {
                 "task_id": (session_state.get("task") or {}).get("id"),
@@ -482,6 +592,11 @@ class NeoVerseRuntimeStore:
             "observationCameras": observation.get("cameraFrames", []),
             "actionTrace": list(session_state.get("action_trace", [])),
             "artifactUris": {},
+            "canonicalPackageVersion": session_state.get("canonical_package_version"),
+            "presentationConfig": dict(session_state.get("presentation_config") or {}),
+            "qualityFlags": dict(session_state.get("quality_flags") or {}),
+            "protectedRegionViolations": list(session_state.get("protected_region_violations") or []),
+            "debugArtifacts": dict(session_state.get("debug_artifacts") or {}),
         }
 
     def reset_session(
@@ -497,13 +612,9 @@ class NeoVerseRuntimeStore:
         if task_id:
             session_state["task"] = self._catalog_entry(registration.get("task_catalog", []), task_id, label="task")
         if scenario_id:
-            session_state["scenario"] = self._catalog_entry(
-                registration.get("scenario_catalog", []), scenario_id, label="scenario"
-            )
+            session_state["scenario"] = self._catalog_entry(registration.get("scenario_catalog", []), scenario_id, label="scenario")
         if start_state_id:
-            session_state["start_state"] = self._catalog_entry(
-                registration.get("start_state_catalog", []), start_state_id, label="start state"
-            )
+            session_state["start_state"] = self._catalog_entry(registration.get("start_state_catalog", []), start_state_id, label="start state")
         session_state["step_index"] = 0
         session_state["done"] = False
         session_state["success"] = None
@@ -554,6 +665,11 @@ class NeoVerseRuntimeStore:
             "reward": session_state.get("reward"),
             "observation": observation,
             "action_trace": session_state.get("action_trace", []),
+            "canonical_package_version": session_state.get("canonical_package_version"),
+            "presentation_config": dict(session_state.get("presentation_config") or {}),
+            "quality_flags": dict(session_state.get("quality_flags") or {}),
+            "protected_region_violations": list(session_state.get("protected_region_violations") or []),
+            "debug_artifacts": dict(session_state.get("debug_artifacts") or {}),
         }
 
     def render_bytes(self, session_id: str, camera_id: str) -> bytes:

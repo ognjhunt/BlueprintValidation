@@ -34,6 +34,12 @@ class SessionCreateRequest(BaseModel):
     scenario_id: str
     start_state_id: str
     notes: str = ""
+    canonical_package_uri: str | None = None
+    canonical_package_version: str | None = None
+    prompt: str | None = None
+    trajectory: Dict[str, Any] | str | None = None
+    presentation_model: str | None = None
+    debug_mode: bool = False
 
 
 class SessionResetRequest(BaseModel):
@@ -70,6 +76,9 @@ def runtime_info() -> Dict[str, Any]:
             "session_render": True,
             "session_state": True,
             "session_stream": True,
+            "protected_region_locking": True,
+            "runtime_layer_compositing": True,
+            "debug_render_outputs": True,
         },
     }
 
@@ -115,6 +124,12 @@ def create_session(site_world_id: str, request: SessionCreateRequest) -> Dict[st
                 scenario_id=request.scenario_id,
                 start_state_id=request.start_state_id,
                 notes=request.notes,
+                canonical_package_uri=request.canonical_package_uri,
+                canonical_package_version=request.canonical_package_version,
+                prompt=request.prompt,
+                trajectory=request.trajectory,
+                presentation_model=request.presentation_model,
+                debug_mode=request.debug_mode,
             )
         )
     except FileNotFoundError as exc:

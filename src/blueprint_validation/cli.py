@@ -1315,6 +1315,12 @@ def session_group() -> None:
 @click.option("--scenario-id", required=True)
 @click.option("--start-state-id", required=True)
 @click.option("--policy-json", required=False, default=None, help="Optional JSON payload describing adapter/model/checkpoint.")
+@click.option("--canonical-package-uri", default=None)
+@click.option("--canonical-package-version", default=None)
+@click.option("--prompt", default=None)
+@click.option("--trajectory-json", default=None, help="Optional JSON payload describing a presentation trajectory.")
+@click.option("--presentation-model", default=None)
+@click.option("--debug-mode/--no-debug-mode", default=False, show_default=True)
 @click.option("--export-mode", "export_modes", multiple=True)
 @click.option("--robot-profile-override-json", default=None)
 @click.option("--notes", default="", show_default=True)
@@ -1329,6 +1335,12 @@ def session_create(
     scenario_id: str,
     start_state_id: str,
     policy_json: Optional[str],
+    canonical_package_uri: Optional[str],
+    canonical_package_version: Optional[str],
+    prompt: Optional[str],
+    trajectory_json: Optional[str],
+    presentation_model: Optional[str],
+    debug_mode: bool,
     export_modes: tuple[str, ...],
     robot_profile_override_json: Optional[str],
     notes: str,
@@ -1336,6 +1348,19 @@ def session_create(
     from .hosted_session import HostedSessionError, create_session
 
     try:
+        policy_payload = json.loads(policy_json) if policy_json else {}
+        if canonical_package_uri is not None:
+            policy_payload["canonical_package_uri"] = canonical_package_uri
+        if canonical_package_version is not None:
+            policy_payload["canonical_package_version"] = canonical_package_version
+        if prompt is not None:
+            policy_payload["prompt"] = prompt
+        if trajectory_json is not None:
+            policy_payload["trajectory"] = json.loads(trajectory_json)
+        if presentation_model is not None:
+            policy_payload["presentation_model"] = presentation_model
+        if debug_mode:
+            policy_payload["debug_mode"] = True
         payload = create_session(
             config=ctx.obj["config"],
             session_id=session_id,
@@ -1345,7 +1370,7 @@ def session_create(
             task_id=task_id,
             scenario_id=scenario_id,
             start_state_id=start_state_id,
-            policy_payload=(json.loads(policy_json) if policy_json else None),
+            policy_payload=(policy_payload or None),
             export_modes=export_modes,
             robot_profile_override=(
                 json.loads(robot_profile_override_json) if robot_profile_override_json else None

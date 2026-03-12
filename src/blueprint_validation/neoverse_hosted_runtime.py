@@ -224,10 +224,11 @@ class NeoVerseHostedRuntime:
         else:
             self.runtime_dir = self.conditioning_input_path.parent
 
-    def _resolve_model_args(self) -> list[str]:
-        if self.checkpoint_path is None:
+    def _resolve_model_args(self, presentation_model: Optional[str] = None) -> list[str]:
+        override = Path(str(presentation_model)).resolve() if presentation_model and Path(str(presentation_model)).exists() else None
+        checkpoint_path = override or self.checkpoint_path
+        if checkpoint_path is None:
             return []
-        checkpoint_path = self.checkpoint_path
         reconstructor_path: Optional[Path] = None
         model_path: Optional[Path] = None
         if checkpoint_path.is_file():
@@ -255,10 +256,13 @@ class NeoVerseHostedRuntime:
         input_path: Path,
         output_path: Path,
         prompt: str,
+        presentation_model: Optional[str] = None,
+        trajectory_override: Optional[Mapping[str, Any]] = None,
         action: Optional[Sequence[float]] = None,
     ) -> np.ndarray:
         height, width = _read_input_dimensions(input_path)
-        trajectory_args = _dominant_trajectory_from_action(action or [])
+        trajectory_args = dict(trajectory_override or _dominant_trajectory_from_action(action or []))
+        trajectory_name = str(trajectory_args.get("trajectory") or "static")
         cmd = [
             str(self.python_executable),
             str(self.inference_script_path),
@@ -277,8 +281,8 @@ class NeoVerseHostedRuntime:
             "--width",
             str(width),
             "--trajectory",
-            trajectory_args["trajectory"],
-            *self._resolve_model_args(),
+            trajectory_name,
+            *self._resolve_model_args(presentation_model),
         ]
         for key, value in trajectory_args.items():
             if key == "trajectory":
@@ -318,15 +322,35 @@ class NeoVerseHostedRuntime:
         action: Optional[Sequence[float]],
         done: bool,
     ) -> Dict[str, Any]:
+        presentation_config = (
+            dict(session_context.get("presentation_config") or {})
+            if isinstance(session_context.get("presentation_config"), Mapping)
+            else {}
+        )
         prompt = str(
-            ((session_context.get("task") or {}) if isinstance(session_context.get("task"), Mapping) else {}).get("task_text")
+            presentation_config.get("prompt")
+            or ((session_context.get("task") or {}) if isinstance(session_context.get("task"), Mapping) else {}).get("task_text")
             or ((session_context.get("task") or {}) if isinstance(session_context.get("task"), Mapping) else {}).get("name")
             or "A smooth site-conditioned manipulation scene."
         ).strip()
+        presentation_model = str(presentation_config.get("presentation_model") or "").strip() or None
+        if isinstance(presentation_config.get("trajectory"), Mapping):
+            trajectory_override = dict(presentation_config.get("trajectory") or {})
+        elif presentation_config.get("trajectory") is not None:
+            trajectory_override = {"trajectory": str(presentation_config.get("trajectory") or "static")}
+        else:
+            trajectory_override = None
         session_id = str(session_context.get("session_id") or "session")
         episode_dir = self.runtime_dir / "_neoverse_runtime" / session_id
         output_path = episode_dir / f"step_{step_index:03d}.mp4"
-        frame = self._run_inference(input_path=input_path, output_path=output_path, prompt=prompt, action=action)
+        frame = self._run_inference(
+            input_path=input_path,
+            output_path=output_path,
+            prompt=prompt,
+            presentation_model=presentation_model,
+            trajectory_override=trajectory_override,
+            action=action,
+        )
         robot_profile = (
             dict(session_context.get("robot_profile") or {})
             if isinstance(session_context.get("robot_profile"), Mapping)
@@ -345,7 +369,9 @@ class NeoVerseHostedRuntime:
                 "repo_path": str(self.repo_path),
                 "input_path": str(input_path),
                 "output_video_path": str(output_path),
-                "trajectory": _dominant_trajectory_from_action(action or []),
+                "trajectory": trajectory_override or _dominant_trajectory_from_action(action or []),
+                "presentation_model": presentation_model,
+                "presentation_config": presentation_config,
             },
         }
 

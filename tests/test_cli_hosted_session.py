@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import cv2
 import numpy as np
 from click.testing import CliRunner
+import pytest
+
+cv2 = pytest.importorskip("cv2")
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -49,6 +51,15 @@ class _FakeRuntimeClient:
         return {
             "session_id": self.session_id,
             "runtime_capabilities": {"supports_stream": True},
+            "canonical_package_version": "pkg-v1",
+            "presentation_config": {
+                "prompt": kwargs.get("prompt") or "default prompt",
+                "presentation_model": kwargs.get("presentation_model") or "default-model",
+                "debug_mode": bool(kwargs.get("debug_mode", False)),
+            },
+            "quality_flags": {},
+            "protected_region_violations": {"count": 0},
+            "debug_artifacts": {},
             "observation_cameras": [
                 {"id": "head_rgb", "role": "head", "required": True},
                 {"id": "wrist_rgb", "role": "wrist", "required": False},
@@ -108,7 +119,14 @@ class _FakeRuntimeClient:
                             "framePath": f"http://runtime.local/render/{self.step_index}/wrist_rgb",
                         },
                     ],
-                    "runtimeMetadata": {"step_index": self.step_index},
+                    "runtimeMetadata": {
+                        "step_index": self.step_index,
+                        "canonical_package_version": "pkg-v1",
+                        "presentation_config": {"prompt": "policy prompt", "presentation_model": "demo-model"},
+                        "quality_flags": {"presentation_quality": "nominal"},
+                        "protected_region_violations": {"count": 0},
+                        "debug_artifacts": {},
+                    },
                     "worldSnapshot": {"status": status},
                 },
                 "observationCameras": [
@@ -233,7 +251,17 @@ def test_hosted_session_cli_flow(monkeypatch, tmp_path, sample_config):
             "--start-state-id",
             "start-dock",
             "--policy-json",
-            json.dumps({"adapter_name": "mock", "model_name": "mock-policy"}),
+            json.dumps(
+                {
+                    "adapter_name": "mock",
+                    "model_name": "mock-policy",
+                    "canonical_package_version": "pkg-v1",
+                    "prompt": "policy prompt",
+                    "presentation_model": "demo-model",
+                    "trajectory": {"trajectory": "static"},
+                    "debug_mode": True,
+                }
+            ),
             "--export-mode",
             "raw_bundle",
             "--export-mode",
@@ -244,6 +272,8 @@ def test_hosted_session_cli_flow(monkeypatch, tmp_path, sample_config):
     create_payload = json.loads(create.output)
     assert create_payload["runtime_backend_selected"] == "neoverse_service"
     assert create_payload["siteWorldId"] == "siteworld-1"
+    assert create_payload["canonical_package_version"] == "pkg-v1"
+    assert create_payload["presentation_config"]["prompt"] == "policy prompt"
 
     reset = runner.invoke(
         cli_module.cli,
@@ -268,6 +298,8 @@ def test_hosted_session_cli_flow(monkeypatch, tmp_path, sample_config):
     reset_payload = json.loads(reset.output)
     assert reset_payload["episode"]["episodeId"].startswith("episode-")
     assert reset_payload["episode"]["startStateId"] == "start-dock"
+    assert reset_payload["episode"]["canonicalPackageVersion"] == "pkg-v1"
+    assert reset_payload["episode"]["presentationConfig"]["presentation_model"] == "demo-model"
     assert (work_dir / "runtime_smoke.json").exists()
 
     step = runner.invoke(
