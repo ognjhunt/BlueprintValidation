@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Mapping
 
 _PUBLIC_RUNTIME_LABELS = {
     "neoverse": "Hosted site runtime",
+    "neoverse_service": "NeoVerse runtime service",
     "gen3c": "Scene-memory runtime",
     "cosmos_transfer": "Transfer-backed runtime",
     "isaac_scene": "Isaac Sim strict scene",

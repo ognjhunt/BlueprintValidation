@@ -23,11 +23,8 @@ COSMOS_REPO_URL="${COSMOS_REPO_URL:-https://github.com/nvidia-cosmos/cosmos-tran
 COSMOS_REF="${COSMOS_REF:-c9ad44b7283613618d57c1e4c9991916907d4f4b}"
 OPENVLA_REPO_URL="${OPENVLA_REPO_URL:-https://github.com/moojink/openvla-oft.git}"
 OPENVLA_REF="${OPENVLA_REF:-e4287e94541f459edc4feabc4e181f537cd569a8}"
-NEOVERSE_REPO_URL="${NEOVERSE_REPO_URL:-https://github.com/IamCreateAI/NeoVerse.git}"
-NEOVERSE_REPO_REF="${NEOVERSE_REPO_REF:-886772226c909801fb00b9148d9f7fdd4f34e579}"
-NEOVERSE_REPO_PATH="${NEOVERSE_REPO_PATH:-$ROOT_DIR/data/vendor/neoverse}"
-NEOVERSE_PYTHON_EXECUTABLE="${NEOVERSE_PYTHON_EXECUTABLE:-$PYTHON_BIN}"
-NEOVERSE_CHECKPOINT_PATH="${NEOVERSE_CHECKPOINT_PATH:-$CHECKPOINT_DIR/neoverse}"
+NEOVERSE_RUNTIME_SERVICE_URL="${NEOVERSE_RUNTIME_SERVICE_URL:-}"
+NEOVERSE_RUNTIME_SERVICE_TIMEOUT_SECONDS="${NEOVERSE_RUNTIME_SERVICE_TIMEOUT_SECONDS:-120}"
 RUNTIME_ENV_LOCAL="${RUNTIME_ENV_LOCAL:-$ROOT_DIR/scripts/runtime_env.local}"
 
 pip_install() {
@@ -172,13 +169,8 @@ PY
 }
 
 persist_neoverse_runtime_env() {
-  upsert_runtime_env "NEOVERSE_REPO_PATH" "$NEOVERSE_REPO_PATH"
-  if [[ -n "$NEOVERSE_PYTHON_EXECUTABLE" ]]; then
-    upsert_runtime_env "NEOVERSE_PYTHON_EXECUTABLE" "$NEOVERSE_PYTHON_EXECUTABLE"
-  fi
-  if [[ -n "$NEOVERSE_CHECKPOINT_PATH" ]]; then
-    upsert_runtime_env "NEOVERSE_CHECKPOINT_PATH" "$NEOVERSE_CHECKPOINT_PATH"
-  fi
+  upsert_runtime_env "NEOVERSE_RUNTIME_SERVICE_URL" "$NEOVERSE_RUNTIME_SERVICE_URL"
+  upsert_runtime_env "NEOVERSE_RUNTIME_SERVICE_TIMEOUT_SECONDS" "$NEOVERSE_RUNTIME_SERVICE_TIMEOUT_SECONDS"
 }
 
 stage_optional_file() {
@@ -208,8 +200,8 @@ if ! command -v uv >/dev/null 2>&1; then
   echo "ERROR: uv is required but not found on PATH." >&2
   exit 1
 fi
-if [[ ! -d "$NEOVERSE_REPO_PATH" && ! -d "/opt/neoverse" && -z "$NEOVERSE_REPO_URL" ]]; then
-  echo "NeoVerse runtime not installed; set NEOVERSE_REPO_URL or preinstall /opt/neoverse." >&2
+if [[ -z "$NEOVERSE_RUNTIME_SERVICE_URL" ]]; then
+  echo "NeoVerse runtime service URL not configured; set NEOVERSE_RUNTIME_SERVICE_URL." >&2
   exit 1
 fi
 
@@ -231,13 +223,7 @@ echo "[0/5] Ensuring pinned vendor repos and same-facility assets"
 ensure_repo "$ROOT_DIR/data/vendor/DreamDojo" "$DREAMDOJO_REPO_URL" "$DREAMDOJO_REF"
 ensure_repo "$ROOT_DIR/data/vendor/cosmos-transfer" "$COSMOS_REPO_URL" "$COSMOS_REF"
 ensure_repo "$ROOT_DIR/data/vendor/openvla-oft" "$OPENVLA_REPO_URL" "$OPENVLA_REF"
-ensure_repo "$NEOVERSE_REPO_PATH" "$NEOVERSE_REPO_URL" "$NEOVERSE_REPO_REF" "/opt/neoverse"
 persist_neoverse_runtime_env
-
-if [[ -f "$NEOVERSE_REPO_PATH/requirements.txt" ]]; then
-  echo "Installing NeoVerse runtime Python dependencies"
-  pip_install -r "$NEOVERSE_REPO_PATH/requirements.txt"
-fi
 
 stage_optional_file \
   "$FACILITY_A_SPLAT_SOURCE" \

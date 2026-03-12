@@ -1321,12 +1321,19 @@ def session_group() -> None:
 @session_group.command("create")
 @click.option("--session-id", required=True)
 @click.option("--session-work-dir", type=click.Path(file_okay=False), required=True)
-@click.option("--runtime-manifest", type=click.Path(exists=True), required=True)
+@click.option(
+    "--site-world-registration",
+    "--runtime-manifest",
+    "registration_path",
+    type=click.Path(exists=True),
+    required=True,
+    help="Path to site_world_registration.json. Legacy alias retained: --runtime-manifest.",
+)
 @click.option("--robot-profile-id", required=True)
 @click.option("--task-id", required=True)
 @click.option("--scenario-id", required=True)
 @click.option("--start-state-id", required=True)
-@click.option("--policy-json", required=True, help="JSON payload describing adapter/model/checkpoint.")
+@click.option("--policy-json", required=False, default=None, help="Optional JSON payload describing adapter/model/checkpoint.")
 @click.option("--export-mode", "export_modes", multiple=True)
 @click.option("--robot-profile-override-json", default=None)
 @click.option("--notes", default="", show_default=True)
@@ -1335,12 +1342,12 @@ def session_create(
     ctx: click.Context,
     session_id: str,
     session_work_dir: str,
-    runtime_manifest: str,
+    registration_path: str,
     robot_profile_id: str,
     task_id: str,
     scenario_id: str,
     start_state_id: str,
-    policy_json: str,
+    policy_json: Optional[str],
     export_modes: tuple[str, ...],
     robot_profile_override_json: Optional[str],
     notes: str,
@@ -1352,12 +1359,12 @@ def session_create(
             config=ctx.obj["config"],
             session_id=session_id,
             session_work_dir=Path(session_work_dir),
-            runtime_manifest_path=Path(runtime_manifest),
+            registration_path=Path(registration_path),
             robot_profile_id=robot_profile_id,
             task_id=task_id,
             scenario_id=scenario_id,
             start_state_id=start_state_id,
-            policy_payload=json.loads(policy_json),
+            policy_payload=(json.loads(policy_json) if policy_json else None),
             export_modes=export_modes,
             robot_profile_override=(
                 json.loads(robot_profile_override_json) if robot_profile_override_json else None

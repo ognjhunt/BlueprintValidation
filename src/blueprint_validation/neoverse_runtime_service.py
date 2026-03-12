@@ -9,6 +9,7 @@ from typing import Any, Dict
 from fastapi import FastAPI, HTTPException, Response, WebSocket
 from pydantic import BaseModel, Field
 import uvicorn
+import asyncio
 
 from .neoverse_runtime_core import NeoVerseRuntimeStore
 
@@ -43,6 +44,34 @@ class SessionResetRequest(BaseModel):
 
 class SessionStepRequest(BaseModel):
     action: list[float] = Field(default_factory=list)
+
+
+@app.get("/healthz")
+def healthz() -> Dict[str, Any]:
+    return {
+        "status": "ok",
+        "service": "neoverse-site-world-runtime",
+        "version": app.version,
+    }
+
+
+@app.get("/v1/runtime")
+def runtime_info() -> Dict[str, Any]:
+    return {
+        "service": "neoverse-site-world-runtime",
+        "version": app.version,
+        "api_version": "v1",
+        "runtime_base_url": STORE.base_url,
+        "websocket_base_url": STORE.ws_base_url,
+        "capabilities": {
+            "site_world_build": True,
+            "session_reset": True,
+            "session_step": True,
+            "session_render": True,
+            "session_state": True,
+            "session_stream": True,
+        },
+    }
 
 
 @app.post("/v1/site-worlds")
@@ -146,10 +175,15 @@ def render_session(session_id: str, camera_id: str = "head_rgb") -> Response:
 async def stream_session(session_id: str, websocket: WebSocket) -> None:
     await websocket.accept()
     try:
-        payload = dict(STORE.session_state(session_id))
-        await websocket.send_json(payload)
+        for _ in range(10_000):
+            payload = dict(STORE.session_state(session_id))
+            await websocket.send_json(payload)
+            await asyncio.sleep(0.5)
     except FileNotFoundError:
         await websocket.send_json({"error": f"session not found: {session_id}"})
+    except Exception:
+        # Client disconnects are expected in local smoke flows.
+        pass
     finally:
         await websocket.close()
 

@@ -15,11 +15,9 @@ from typing import Callable, List, Literal, cast
 
 from .common import PreflightCheck, get_logger
 from .config import FacilityConfig, ValidationConfig
-from .neoverse_hosted_runtime import (
-    NEOVERSE_REPO_REF,
-    NEOVERSE_REPO_URL,
-    NEOVERSE_RUNTIME_LABEL,
-    validate_neoverse_runtime_contract,
+from .neoverse_runtime_client import (
+    NeoVerseRuntimeClient,
+    NeoVerseRuntimeClientConfig,
 )
 from .evaluation.claim_benchmark import (
     claim_benchmark_alignment_failures,
@@ -39,6 +37,8 @@ from .teleop.contracts import (
 from .validation import ManifestValidationError, load_and_validate_manifest
 
 logger = get_logger("preflight")
+
+NEOVERSE_RUNTIME_SERVICE_LABEL = "NeoVerse runtime service"
 
 PreflightProfile = Literal["audit", "runtime_local", "runtime_cloud"]
 
@@ -333,46 +333,72 @@ def check_isaac_scene_import_opt_in(config: ValidationConfig, facility_id: str) 
     )
 
 
-def check_neoverse_hosted_runtime_contract(config: ValidationConfig) -> PreflightCheck:
-    runtime = config.scene_memory_runtime.neoverse
-    name = "scene_memory_runtime:neoverse:hosted_runtime_contract"
-    bootstrap_hint = (
-        "NeoVerse runtime not installed; run bootstrap with NEOVERSE_REPO_URL/NEOVERSE_REPO_REF "
-        f"for the pinned {NEOVERSE_RUNTIME_LABEL} runtime."
-    )
-    if not bool(runtime.enabled):
+def check_neoverse_runtime_service_contract(config: ValidationConfig) -> PreflightCheck:
+    runtime = config.scene_memory_runtime.neoverse_service
+    name = "scene_memory_runtime:neoverse:service_contract"
+    service_url = str(runtime.service_url or "").strip().rstrip("/")
+    if not bool(config.scene_memory_runtime.enabled):
         return PreflightCheck(name=name, passed=False, detail="NeoVerse runtime is disabled.")
-    if not bool(runtime.allow_runtime_execution):
+    if not bool(runtime.enabled) or not service_url:
         return PreflightCheck(
             name=name,
             passed=False,
-            detail=bootstrap_hint,
+            detail="NeoVerse runtime service is not configured. Set scene_memory_runtime.neoverse_service.service_url or NEOVERSE_RUNTIME_SERVICE_URL.",
         )
-    if runtime.repo_path is None or not runtime.repo_path.exists():
-        return PreflightCheck(
-            name=name,
-            passed=False,
-            detail=bootstrap_hint,
+    api_key = ""
+    if runtime.api_key_env:
+        api_key = str(os.environ.get(runtime.api_key_env, "") or "").strip()
+    client = NeoVerseRuntimeClient(
+        NeoVerseRuntimeClientConfig(
+            service_url=service_url,
+            api_key=api_key,
+            timeout_seconds=max(1, int(runtime.timeout_seconds)),
         )
+    )
     try:
-        result = validate_neoverse_runtime_contract(
-            repo_path=runtime.repo_path,
-            python_executable=runtime.python_executable,
-            inference_script=runtime.inference_script,
-        )
+        probe = client.probe_runtime()
     except Exception as exc:
         return PreflightCheck(
             name=name,
             passed=False,
-            detail=f"{bootstrap_hint} Contract validation failed: {type(exc).__name__}: {exc}",
+            detail=f"Failed to reach {NEOVERSE_RUNTIME_SERVICE_LABEL} at {service_url}: {type(exc).__name__}: {exc}",
+        )
+    health = dict(probe.get("healthz", {}) or {})
+    runtime_info = dict(probe.get("runtime", {}) or {})
+    status = str(health.get("status") or "").strip().lower()
+    api_version = str(runtime_info.get("api_version") or "").strip().lower()
+    capabilities = dict(runtime_info.get("capabilities", {}) or {})
+    required_capabilities = (
+        "site_world_build",
+        "session_reset",
+        "session_step",
+        "session_render",
+        "session_state",
+        "session_stream",
+    )
+    missing = [key for key in required_capabilities if not bool(capabilities.get(key))]
+    if status != "ok":
+        return PreflightCheck(
+            name=name,
+            passed=False,
+            detail=f"{NEOVERSE_RUNTIME_SERVICE_LABEL} health probe returned status={status or 'missing'} at {service_url}",
+        )
+    if api_version != "v1":
+        return PreflightCheck(
+            name=name,
+            passed=False,
+            detail=f"{NEOVERSE_RUNTIME_SERVICE_LABEL} returned unsupported api_version={api_version or 'missing'} at {service_url}",
+        )
+    if missing:
+        return PreflightCheck(
+            name=name,
+            passed=False,
+            detail=f"{NEOVERSE_RUNTIME_SERVICE_LABEL} is missing required capabilities at {service_url}: {', '.join(missing)}",
         )
     return PreflightCheck(
         name=name,
         passed=True,
-        detail=(
-            f"{result['runtime_label']} from {result['repo_path']} "
-            f"(expected repo {NEOVERSE_REPO_URL} @ {NEOVERSE_REPO_REF})"
-        ),
+        detail=f"{NEOVERSE_RUNTIME_SERVICE_LABEL} reachable at {service_url} (api_version=v1)",
     )
 
 
@@ -2111,12 +2137,12 @@ def run_preflight(
     _append_profiled_check(
         checks,
         enforce=enforce_runtime_requirements,
-        advisory_name="scene_memory_runtime:neoverse:hosted_runtime_contract",
+        advisory_name="scene_memory_runtime:neoverse:service_contract",
         advisory_detail=_advisory_detail(
             normalized_profile,
-            "NeoVerse hosted-session runtime is only required for runnable hosted sessions.",
+            "NeoVerse runtime service is only required for runnable site-world sessions.",
         ),
-        factory=lambda: check_neoverse_hosted_runtime_contract(config),
+        factory=lambda: check_neoverse_runtime_service_contract(config),
     )
 
     _append_profiled_check(

@@ -43,6 +43,7 @@ Default runtime policy for scene-memory-backed work:
 - `GEN3C` is the secondary runtime when `NeoVerse` is unavailable or explicitly bypassed.
 - `Cosmos Transfer` remains the fallback enrichment/runtime path.
 - `3DScenePrompt` stays on the watchlist and is not selected as an active runtime by default.
+- Validation talks to NeoVerse through a runtime service URL. It is no longer expected to own NeoVerse process lifecycle through a local `inference.py` checkout.
 
 Legacy geometry bundle format:
 
@@ -186,7 +187,12 @@ blueprint-validate --config configs/qualified_opportunity_validation.yaml prefli
 # Optional: source runtime secrets from a local untracked file
 # cp scripts/runtime_env.example scripts/runtime_env.local
 # set -a && source scripts/runtime_env.local && set +a
-# (includes GOOGLE_GENAI_API_KEY, HF_TOKEN, BLUEPRINT_GPU_HOURLY_RATE_USD, BLUEPRINT_AUTO_SHUTDOWN_CMD)
+# (includes GOOGLE_GENAI_API_KEY, HF_TOKEN, BLUEPRINT_GPU_HOURLY_RATE_USD, BLUEPRINT_AUTO_SHUTDOWN_CMD,
+#  and NEOVERSE_RUNTIME_SERVICE_URL)
+
+# NeoVerse runtime service preflight
+export NEOVERSE_RUNTIME_SERVICE_URL="http://127.0.0.1:8787"
+blueprint-validate --config configs/qualified_opportunity_validation.yaml preflight
 
 # Provision the same-facility claim runtime (downloads checkpoints and installs CUDA extras by default)
 bash scripts/provision_same_facility_claim_runtime.sh
@@ -220,6 +226,39 @@ blueprint-validate eval-visual --opportunity warehouse_tote_pick_0787
 blueprint-validate eval-spatial --opportunity warehouse_tote_pick_0787
 blueprint-validate eval-crosssite
 blueprint-validate report
+```
+
+For site-world session smoke and exports, use the registration written by BlueprintCapturePipeline:
+
+```bash
+blueprint-validate session create \
+  --session-id smoke-session \
+  --session-work-dir data/session-smoke \
+  --site-world-registration /path/to/site_world_registration.json \
+  --robot-profile-id mobile_manipulator_rgb_v1 \
+  --task-id task-1 \
+  --scenario-id scenario-default \
+  --start-state-id start-default
+
+blueprint-validate session reset \
+  --session-id smoke-session \
+  --session-work-dir data/session-smoke
+
+blueprint-validate session step \
+  --session-id smoke-session \
+  --session-work-dir data/session-smoke \
+  --episode-id episode-xxxxxxxx \
+  --action-json '[0,0,0,0,0,0,1]' \
+  --no-auto-policy
+
+blueprint-validate session run-batch \
+  --session-id smoke-session \
+  --session-work-dir data/session-smoke \
+  --num-episodes 5
+
+blueprint-validate session export \
+  --session-id smoke-session \
+  --session-work-dir data/session-smoke
 ```
 
 ## Cloud GPU (Provider-Agnostic)

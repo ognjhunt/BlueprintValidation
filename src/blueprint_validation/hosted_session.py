@@ -1,23 +1,19 @@
-"""Hosted session runtime helpers for WebApp-driven evaluation control."""
+"""Service-driven session helpers for NeoVerse site-world runtime orchestration."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-import os
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 import cv2
 import numpy as np
 
-from .config import FacilityConfig, PolicyAdapterConfig, ValidationConfig
-from .neoverse_hosted_runtime import (
-    NeoVerseHostedRuntime,
-)
+from .config import PolicyAdapterConfig, ValidationConfig
+from .neoverse_runtime_client import NeoVerseRuntimeClient, NeoVerseRuntimeClientConfig
 from .policy_adapters import get_policy_adapter
 from .public_contract import public_runtime_label
-from .scene_memory_runtime import resolve_scene_memory_runtime_plan
 from .training.rlds_export import export_rollouts_to_rlds_jsonl
 
 
@@ -26,21 +22,13 @@ class HostedSessionError(RuntimeError):
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return dict(payload) if isinstance(payload, Mapping) else {}
 
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
-
-def _env_truthy(name: str) -> bool:
-    return (str(os.environ.get(name, "") or "").strip().lower() in {"1", "true", "yes", "on"})
-
-
-def _stable_seed(*parts: str) -> int:
-    digest = hashlib.sha256("::".join(parts).encode("utf-8")).hexdigest()
-    return int(digest[:8], 16)
 
 
 def _session_state_path(work_dir: Path) -> Path:
@@ -68,204 +56,149 @@ def _canonical_adapter_name(name: str) -> str:
     return key
 
 
-def _task_entries(runtime_manifest: Mapping[str, Any]) -> List[Dict[str, Any]]:
-    task_catalog = runtime_manifest.get("task_catalog")
-    if isinstance(task_catalog, list) and task_catalog:
-        return [dict(item) for item in task_catalog if isinstance(item, Mapping)]
-    task_anchor_path = Path(str(runtime_manifest.get("task_anchor_manifest_uri") or ""))
-    if not task_anchor_path.exists():
-        raise HostedSessionError("Hosted session runtime is missing task_anchor_manifest.json")
-    anchor = _read_json(task_anchor_path)
-    tasks = anchor.get("tasks")
-    if not isinstance(tasks, list) or not tasks:
-        raise HostedSessionError("Hosted session runtime has no task entries")
-    return [dict(item) for item in tasks if isinstance(item, Mapping)]
+def _env_truthy(name: str) -> bool:
+    return (str(__import__("os").environ.get(name, "") or "").strip().lower() in {"1", "true", "yes", "on"})
 
 
-def _default_robot_profiles() -> List[Dict[str, Any]]:
-    return [
-        {
-            "id": "mobile_manipulator_rgb_v1",
-            "display_name": "Mobile manipulator",
-            "embodiment_type": "mobile_manipulator",
-            "action_space": {
-                "name": "ee_delta_pose_gripper",
-                "dim": 7,
-                "labels": [
-                    "base_x",
-                    "base_y",
-                    "base_yaw",
-                    "ee_x",
-                    "ee_y",
-                    "ee_z",
-                    "gripper",
-                ],
-            },
-            "observation_cameras": [
-                {"id": "head_rgb", "role": "head", "required": True, "default_enabled": True},
-                {"id": "wrist_rgb", "role": "wrist", "required": False, "default_enabled": True},
-                {"id": "site_context_rgb", "role": "context", "required": False, "default_enabled": True},
-            ],
-            "base_semantics": "holonomic_mobile_base",
-            "gripper_semantics": "parallel_jaw_gripper",
-            "urdf_uri": None,
-            "usd_uri": None,
-            "allowed_policy_adapters": ["openvla_oft", "pi05", "dreamzero"],
-            "default_policy_adapter": "openvla_oft",
-        },
-        {
-            "id": "humanoid_dual_camera_v1",
-            "display_name": "Humanoid",
-            "embodiment_type": "humanoid",
-            "action_space": {
-                "name": "whole_body_delta_pose_gripper",
-                "dim": 7,
-                "labels": [
-                    "body_x",
-                    "body_y",
-                    "body_yaw",
-                    "hand_x",
-                    "hand_y",
-                    "hand_z",
-                    "gripper",
-                ],
-            },
-            "observation_cameras": [
-                {"id": "head_rgb", "role": "head", "required": True, "default_enabled": True},
-                {"id": "left_wrist_rgb", "role": "wrist_left", "required": False, "default_enabled": True},
-                {"id": "right_wrist_rgb", "role": "wrist_right", "required": False, "default_enabled": True},
-                {"id": "site_context_rgb", "role": "context", "required": False, "default_enabled": True},
-            ],
-            "base_semantics": "bipedal_base",
-            "gripper_semantics": "multi_finger_gripper",
-            "urdf_uri": None,
-            "usd_uri": None,
-            "allowed_policy_adapters": ["openvla_oft", "dreamzero"],
-            "default_policy_adapter": "openvla_oft",
-        },
-        {
-            "id": "fixed_arm_cell_v1",
-            "display_name": "Fixed arm cell",
-            "embodiment_type": "fixed_arm",
-            "action_space": {
-                "name": "joint_delta_gripper",
-                "dim": 7,
-                "labels": [
-                    "joint_1",
-                    "joint_2",
-                    "joint_3",
-                    "joint_4",
-                    "joint_5",
-                    "joint_6",
-                    "gripper",
-                ],
-            },
-            "observation_cameras": [
-                {"id": "cell_rgb", "role": "head", "required": True, "default_enabled": True},
-                {"id": "wrist_rgb", "role": "wrist", "required": False, "default_enabled": True},
-            ],
-            "base_semantics": "fixed_base",
-            "gripper_semantics": "parallel_jaw_gripper",
-            "urdf_uri": None,
-            "usd_uri": None,
-            "allowed_policy_adapters": ["openvla_oft", "pi05"],
-            "default_policy_adapter": "pi05",
-        },
-    ]
+def _camera_catalog(robot_profile: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    cameras = robot_profile.get("observation_cameras")
+    if not isinstance(cameras, list) or not cameras:
+        raise HostedSessionError(f"Robot profile {robot_profile.get('id')} is missing observation cameras.")
+    return [dict(item) for item in cameras if isinstance(item, Mapping)]
 
 
-def _robot_profiles(runtime_manifest: Mapping[str, Any]) -> List[Dict[str, Any]]:
-    profiles = runtime_manifest.get("robot_profiles")
-    if isinstance(profiles, list) and profiles:
-        return [dict(item) for item in profiles if isinstance(item, Mapping)]
-    return _default_robot_profiles()
+def _save_frame(path: Path, frame: np.ndarray) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(path), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
 
 
-def _catalog_entries(runtime_manifest: Mapping[str, Any], key: str, fallback_values: Sequence[str]) -> List[Dict[str, Any]]:
-    entries = runtime_manifest.get(key)
-    if isinstance(entries, list) and entries:
-        return [dict(item) for item in entries if isinstance(item, Mapping)]
-    out: List[Dict[str, Any]] = []
-    prefix = key.replace("_catalog", "")
-    for index, value in enumerate(fallback_values):
-        text = str(value or "").strip()
-        if not text:
+def _load_frame(path: str) -> np.ndarray:
+    frame = cv2.imread(str(path))
+    if frame is None:
+        raise HostedSessionError(f"Could not load observation frame from {path}")
+    return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+
+def _decode_png(payload: bytes) -> np.ndarray:
+    array = np.frombuffer(payload, dtype=np.uint8)
+    frame = cv2.imdecode(array, cv2.IMREAD_COLOR)
+    if frame is None:
+        raise HostedSessionError("NeoVerse runtime returned invalid render bytes.")
+    return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+
+def _write_video(frame_paths: Sequence[str], output_path: Path) -> None:
+    if not frame_paths:
+        raise HostedSessionError(f"No frames available for video export: {output_path}")
+    first = cv2.imread(str(frame_paths[0]))
+    if first is None:
+        raise HostedSessionError(f"Could not read rollout frame: {frame_paths[0]}")
+    height, width = first.shape[:2]
+    writer = cv2.VideoWriter(str(output_path), cv2.VideoWriter_fourcc(*"mp4v"), 10.0, (width, height))
+    for frame_path in frame_paths:
+        frame = cv2.imread(str(frame_path))
+        if frame is None:
             continue
-        out.append({"id": f"{prefix}_{index}", "name": text})
-    return out
+        writer.write(frame)
+    writer.release()
 
 
-def _find_catalog_entry(
-    entries: Sequence[Mapping[str, Any]],
-    *,
-    requested_id: Optional[str],
-    fallback_name: Optional[str] = None,
-    label: str,
-) -> Dict[str, Any]:
-    requested = str(requested_id or "").strip()
-    if requested:
-        for item in entries:
-            if str(item.get("id") or "").strip() == requested:
-                return dict(item)
-        raise HostedSessionError(f"Unsupported {label}: {requested}")
-    if fallback_name:
-        fallback = str(fallback_name or "").strip().lower()
-        for item in entries:
-            if str(item.get("name") or item.get("task_text") or "").strip().lower() == fallback:
-                return dict(item)
-    if not entries:
-        raise HostedSessionError(f"Hosted session runtime is missing {label} catalog entries")
-    return dict(entries[0])
+def _adjacent_site_world_paths(registration_path: Path) -> tuple[Path, Path]:
+    root = registration_path.parent
+    return root / "site_world_health.json", root / "site_world_spec.json"
 
 
-def _runtime_plan(config: ValidationConfig, runtime_manifest: Mapping[str, Any]) -> Dict[str, Any]:
-    bundle_manifest = Path(str(runtime_manifest.get("scene_memory_manifest_uri") or ""))
-    bundle_dir = bundle_manifest.parent if bundle_manifest.name else bundle_manifest
-    adapter_uris = runtime_manifest.get("adapter_manifest_uris")
-    adapter_paths = (
-        {
-            str(key): Path(str(value))
-            for key, value in adapter_uris.items()
-            if isinstance(adapter_uris, Mapping)
-            and str(key).strip()
-            and str(value).strip()
-        }
-        if isinstance(adapter_uris, Mapping)
+def _optional_path(value: Any) -> Optional[Path]:
+    text = str(value or "").strip()
+    if not text or text.startswith("gs://") or text.startswith("http://") or text.startswith("https://"):
+        return None
+    return Path(text).resolve()
+
+
+def _grounding_summary(spec: Mapping[str, Any]) -> Dict[str, Any]:
+    conditioning = dict(spec.get("conditioning") or {}) if isinstance(spec.get("conditioning"), Mapping) else {}
+    local_paths = dict(conditioning.get("local_paths") or {}) if isinstance(conditioning.get("local_paths"), Mapping) else {}
+    geometry = dict(spec.get("geometry") or {}) if isinstance(spec.get("geometry"), Mapping) else {}
+    qualification_references = (
+        dict(spec.get("qualification_references") or {})
+        if isinstance(spec.get("qualification_references"), Mapping)
         else {}
     )
-    facility = FacilityConfig(
-        name="hosted_session",
-        scene_memory_bundle_path=bundle_dir if bundle_dir.exists() else None,
-        preview_simulation_path=(
-            Path(str(runtime_manifest.get("preview_simulation_manifest_uri"))).parent
-            if str(runtime_manifest.get("preview_simulation_manifest_uri") or "").strip()
-            else None
-        ),
-        scene_memory_adapter_manifests=adapter_paths,
-    )
-    try:
-        return resolve_scene_memory_runtime_plan(config, facility)
-    except Exception:
-        return {
-            "selected_backend": runtime_manifest.get("default_backend"),
-            "available_backends": runtime_manifest.get("available_backends", []),
-            "selection_reason": "runtime_manifest_fallback",
-        }
+    visuals = [
+        _optional_path(local_paths.get("keyframe_path")),
+        _optional_path(local_paths.get("raw_video_path")),
+        _optional_path(conditioning.get("keyframe_uri")),
+        _optional_path(conditioning.get("raw_video_uri")),
+    ]
+    arkit_poses = _optional_path(local_paths.get("arkit_poses_path")) or _optional_path(conditioning.get("arkit_poses_uri"))
+    arkit_intrinsics = _optional_path(local_paths.get("arkit_intrinsics_path")) or _optional_path(conditioning.get("arkit_intrinsics_uri"))
+    depth_path = _optional_path(local_paths.get("depth_path")) or _optional_path(conditioning.get("depth_uri"))
+    occupancy_path = _optional_path(local_paths.get("occupancy_path")) or _optional_path(geometry.get("occupancy_path"))
+    collision_path = _optional_path(local_paths.get("collision_path")) or _optional_path(geometry.get("collision_path"))
+    object_index_path = _optional_path(local_paths.get("object_index_path")) or _optional_path(geometry.get("object_index_path"))
+    object_geometry_path = _optional_path(local_paths.get("object_geometry_manifest_path")) or _optional_path(geometry.get("object_geometry_manifest_path"))
+    checks = {
+        "visual_source": any(path is not None and path.exists() for path in visuals),
+        "arkit_poses": bool(arkit_poses and arkit_poses.exists()),
+        "arkit_intrinsics": bool(arkit_intrinsics and arkit_intrinsics.exists()),
+        "depth": bool(depth_path and depth_path.exists()),
+        "occupancy": bool(occupancy_path and occupancy_path.exists()),
+        "collision": bool(collision_path and collision_path.exists()),
+        "object_index": bool(object_index_path and object_index_path.exists()),
+        "object_geometry": bool(object_geometry_path and object_geometry_path.exists()),
+        "qualification_refs": bool(qualification_references),
+    }
+    missing_required = [key for key in ("visual_source", "arkit_poses", "arkit_intrinsics") if not checks[key]]
+    missing_optional = [key for key in ("depth", "occupancy", "collision", "object_index", "object_geometry") if not checks[key]]
+    return {
+        "checks": checks,
+        "missing_required": missing_required,
+        "missing_optional": missing_optional,
+        "qualification_state": str(spec.get("qualification_state") or ""),
+        "downstream_evaluation_eligibility": spec.get("downstream_evaluation_eligibility"),
+        "task_catalog_count": len(list(spec.get("task_catalog", []) or [])),
+        "scenario_catalog_count": len(list(spec.get("scenario_catalog", []) or [])),
+        "start_state_catalog_count": len(list(spec.get("start_state_catalog", []) or [])),
+        "robot_profile_count": len(list(spec.get("robot_profiles", []) or [])),
+    }
 
 
-def _resolve_backend(config: ValidationConfig, runtime_manifest: Mapping[str, Any]) -> str:
-    if not bool(runtime_manifest.get("launchable", False)):
-        blockers = ", ".join(str(item) for item in runtime_manifest.get("launch_blockers", []))
-        raise HostedSessionError(f"Hosted session runtime is not launchable: {blockers}")
-    runtime_plan = _runtime_plan(config, runtime_manifest)
-    backend = str(runtime_plan.get("selected_backend") or runtime_manifest.get("default_backend") or "").strip()
-    if not backend:
-        raise HostedSessionError("Hosted session runtime has no executable backend selected")
-    if backend != "neoverse":
-        raise HostedSessionError(
-            f"Hosted sessions require neoverse as the execution backend; got {backend or 'unset'}."
+def _load_site_world_bundle(registration_path: Path) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    registration = _read_json(registration_path)
+    health_path, spec_path = _adjacent_site_world_paths(registration_path)
+    health = _read_json(health_path) if health_path.exists() else {}
+    spec = _read_json(spec_path) if spec_path.exists() else {}
+    return registration, health, spec, _grounding_summary(spec) if spec else {
+        "checks": {},
+        "missing_required": [],
+        "missing_optional": [],
+        "qualification_state": "",
+        "downstream_evaluation_eligibility": None,
+        "task_catalog_count": 0,
+        "scenario_catalog_count": 0,
+        "start_state_catalog_count": 0,
+        "robot_profile_count": 0,
+    }
+
+
+def _resolve_runtime_client(
+    config: ValidationConfig,
+    registration: Mapping[str, Any],
+) -> NeoVerseRuntimeClient:
+    service_cfg = config.scene_memory_runtime.neoverse_service
+    service_url = str(service_cfg.service_url or "").strip() or str(registration.get("runtime_base_url") or "").strip()
+    if not service_url:
+        raise HostedSessionError("NeoVerse runtime service URL is not configured in config or site-world registration.")
+    api_key = ""
+    if service_cfg.api_key_env:
+        api_key = str(__import__("os").environ.get(service_cfg.api_key_env, "") or "").strip()
+    return NeoVerseRuntimeClient(
+        NeoVerseRuntimeClientConfig(
+            service_url=service_url.rstrip("/"),
+            api_key=api_key,
+            timeout_seconds=max(1, int(service_cfg.timeout_seconds)),
         )
-    return backend
+    )
 
 
 def _resolve_policy_adapter(
@@ -297,224 +230,77 @@ def _resolve_policy_adapter(
     return get_policy_adapter(adapter_config), adapter_config
 
 
-def _save_frame(path: Path, frame: np.ndarray) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(path), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-
-
-def _load_frame(value: Any) -> np.ndarray:
-    if isinstance(value, np.ndarray):
-        return value.astype(np.uint8)
-    if isinstance(value, str) and value.strip():
-        frame = cv2.imread(value)
-        if frame is None:
-            raise HostedSessionError(f"Could not load observation frame from {value}")
-        return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    raise HostedSessionError("Hosted runtime returned an invalid frame payload.")
-
-
-class HostedWorldModelAdapter:
-    def create_session(self, *, session_context: Mapping[str, Any]) -> Dict[str, Any]:
-        raise NotImplementedError
-
-    def reset_episode(self, *, session_context: Mapping[str, Any]) -> Dict[str, Any]:
-        raise NotImplementedError
-
-    def step_episode(
-        self,
-        *,
-        session_context: Mapping[str, Any],
-        action: Sequence[float],
-        current_observation: Mapping[str, Any],
-    ) -> Dict[str, Any]:
-        raise NotImplementedError
-
-    def run_batch(self, *, session_context: Mapping[str, Any]) -> Dict[str, Any]:
-        raise NotImplementedError
-
-    def export_rollouts(self, *, session_context: Mapping[str, Any]) -> Dict[str, Any]:
-        raise NotImplementedError
-
-
-class NeoVerseHostedAdapter(HostedWorldModelAdapter):
-    def __init__(self, *, config: ValidationConfig, runtime_manifest: Mapping[str, Any]) -> None:
-        self.config = config
-        self.runtime_manifest = runtime_manifest
-        runtime_cfg = config.scene_memory_runtime.neoverse
-        if not bool(runtime_cfg.allow_runtime_execution):
-            raise HostedSessionError("NeoVerse hosted runtime execution is disabled in Validation config.")
-        if runtime_cfg.repo_path is None or not runtime_cfg.repo_path.exists():
-            raise HostedSessionError("NeoVerse hosted runtime repo_path is missing or does not exist.")
-        kwargs = {
-            "scene_memory_manifest_uri": runtime_manifest.get("scene_memory_manifest_uri"),
-            "conditioning_bundle_uri": runtime_manifest.get("conditioning_bundle_uri"),
-            "preview_simulation_manifest_uri": runtime_manifest.get("preview_simulation_manifest_uri"),
-            "runtime_manifest": dict(runtime_manifest),
-            "repo_path": str(runtime_cfg.repo_path),
-            "python_executable": (
-                str(runtime_cfg.python_executable) if runtime_cfg.python_executable is not None else None
-            ),
-            "inference_script": runtime_cfg.inference_script,
-            "checkpoint_path": str(runtime_cfg.checkpoint_path) if runtime_cfg.checkpoint_path else None,
-        }
-        try:
-            self.runtime = NeoVerseHostedRuntime(**kwargs)
-        except Exception as exc:
-            raise HostedSessionError(f"NeoVerse hosted runtime initialization failed: {exc}") from exc
-
-    def _call(self, method_names: Sequence[str], *, session_context: Mapping[str, Any], **kwargs: Any) -> Dict[str, Any]:
-        for method_name in method_names:
-            method = getattr(self.runtime, method_name, None)
-            if not callable(method):
-                continue
-            try:
-                payload = method(session_context=session_context, **kwargs)
-            except TypeError:
-                try:
-                    payload = method(**kwargs)
-                except TypeError:
-                    try:
-                        payload = method(session_context)
-                    except Exception as exc:
-                        raise HostedSessionError(
-                            f"NeoVerse runtime method {method_name} failed: {exc}"
-                        ) from exc
-                except Exception as exc:
-                    raise HostedSessionError(
-                        f"NeoVerse runtime method {method_name} failed: {exc}"
-                    ) from exc
-            except Exception as exc:
-                raise HostedSessionError(
-                    f"NeoVerse runtime method {method_name} failed: {exc}"
-                ) from exc
-            if isinstance(payload, Mapping):
-                return dict(payload)
-            raise HostedSessionError(f"NeoVerse runtime method {method_name} returned non-mapping payload.")
-        raise HostedSessionError(
-            f"NeoVerse runtime missing required method. Tried: {', '.join(method_names)}"
-        )
-
-    def create_session(self, *, session_context: Mapping[str, Any]) -> Dict[str, Any]:
-        return self._call(("create_session", "initialize_session"), session_context=session_context)
-
-    def reset_episode(self, *, session_context: Mapping[str, Any]) -> Dict[str, Any]:
-        return self._call(("reset_episode", "initial_observation"), session_context=session_context)
-
-    def step_episode(
-        self,
-        *,
-        session_context: Mapping[str, Any],
-        action: Sequence[float],
-        current_observation: Mapping[str, Any],
-    ) -> Dict[str, Any]:
-        return self._call(
-            ("step_episode", "predict_next_observation"),
-            session_context=session_context,
-            action=list(action),
-            current_observation=dict(current_observation),
-        )
-
-    def run_batch(self, *, session_context: Mapping[str, Any]) -> Dict[str, Any]:
-        return {"status": "supported", "session_context": dict(session_context)}
-
-    def export_rollouts(self, *, session_context: Mapping[str, Any]) -> Dict[str, Any]:
-        return {"status": "supported", "session_context": dict(session_context)}
-
-
-def _resolve_world_model_adapter(
-    *,
+def _policy_load_args(
     config: ValidationConfig,
-    runtime_manifest: Mapping[str, Any],
-) -> HostedWorldModelAdapter:
-    backend = _resolve_backend(config, runtime_manifest)
-    if backend == "neoverse":
-        return NeoVerseHostedAdapter(config=config, runtime_manifest=runtime_manifest)
-    raise HostedSessionError(f"Unsupported hosted-session backend: {backend}")
+    policy_payload: Mapping[str, Any],
+) -> tuple[str, Optional[Path], str]:
+    model_name = str(policy_payload.get("model_name") or config.eval_policy.model_name or "").strip()
+    checkpoint_value = str(policy_payload.get("checkpoint_path") or "").strip()
+    checkpoint_path = Path(checkpoint_value).resolve() if checkpoint_value else config.eval_policy.checkpoint_path
+    device = str(policy_payload.get("device") or "cpu")
+    return model_name, checkpoint_path, device
 
 
-def _camera_catalog(robot_profile: Mapping[str, Any]) -> List[Dict[str, Any]]:
-    cameras = robot_profile.get("observation_cameras")
-    if isinstance(cameras, list) and cameras:
-        return [dict(item) for item in cameras if isinstance(item, Mapping)]
-    raise HostedSessionError(f"Robot profile {robot_profile.get('id')} is missing observation cameras.")
-
-
-def _normalize_runtime_observation(
-    payload: Mapping[str, Any],
+def _materialize_observation(
     *,
+    client: NeoVerseRuntimeClient,
+    remote_session_id: str,
     robot_profile: Mapping[str, Any],
+    remote_episode: Mapping[str, Any],
     episode_dir: Path,
     step_index: int,
 ) -> Dict[str, Any]:
-    camera_catalog = _camera_catalog(robot_profile)
-    raw_camera_frames = payload.get("camera_frames")
-    camera_frames: Dict[str, np.ndarray] = {}
-    if isinstance(raw_camera_frames, Mapping):
-        for camera_id, frame in raw_camera_frames.items():
-            camera_frames[str(camera_id)] = _load_frame(frame)
-    elif payload.get("frame") is not None:
-        primary_id = str(camera_catalog[0].get("id") or "head_rgb")
-        camera_frames[primary_id] = _load_frame(payload.get("frame"))
-    else:
-        raise HostedSessionError("NeoVerse runtime reset/step payload missing camera frame data.")
+    remote_observation = dict(remote_episode.get("observation", {}) or {})
+    camera_catalog = {str(item.get("id") or ""): dict(item) for item in _camera_catalog(robot_profile)}
+    remote_cameras = list(remote_observation.get("cameraFrames", []) or [])
+    primary_camera_id = str(remote_observation.get("primaryCameraId") or "")
+    if not primary_camera_id and remote_cameras:
+        primary_camera_id = str((remote_cameras[0] or {}).get("cameraId") or "")
+    local_summaries: List[Dict[str, Any]] = []
+    local_paths: Dict[str, str] = {}
 
-    saved_paths: Dict[str, str] = {}
-    summaries: List[Dict[str, Any]] = []
-    primary_camera_id = ""
-    for camera in camera_catalog:
-        camera_id = str(camera.get("id") or "").strip()
+    for camera in remote_cameras:
+        if not isinstance(camera, Mapping):
+            continue
+        camera_id = str(camera.get("cameraId") or "").strip()
         if not camera_id:
             continue
-        frame = camera_frames.get(camera_id)
-        if frame is not None:
-            frame_path = episode_dir / "cameras" / camera_id / f"frame_{step_index:03d}.png"
-            _save_frame(frame_path, frame)
-            saved_paths[camera_id] = str(frame_path)
-            if not primary_camera_id:
-                primary_camera_id = camera_id
-        summaries.append(
+        remote_path = str(camera.get("framePath") or "")
+        payload = client.render_bytes(remote_session_id, camera_id=camera_id)
+        frame = _decode_png(payload)
+        output_path = episode_dir / "cameras" / camera_id / f"frame_{step_index:03d}.png"
+        _save_frame(output_path, frame)
+        local_paths[camera_id] = str(output_path)
+        catalog_entry = camera_catalog.get(camera_id, {})
+        local_summaries.append(
             {
                 "cameraId": camera_id,
-                "role": str(camera.get("role") or ""),
-                "required": bool(camera.get("required", False)),
-                "available": frame is not None,
-                "framePath": saved_paths.get(camera_id),
+                "role": str(camera.get("role") or catalog_entry.get("role") or ""),
+                "required": bool(camera.get("required", catalog_entry.get("required", False))),
+                "available": True,
+                "framePath": str(output_path),
+                "remoteFramePath": remote_path,
             }
         )
+
     if not primary_camera_id:
-        raise HostedSessionError("NeoVerse runtime did not return any usable observation camera frames.")
+        raise HostedSessionError("NeoVerse runtime observation did not include any cameras.")
+    if primary_camera_id not in local_paths:
+        payload = client.render_bytes(remote_session_id, camera_id=primary_camera_id)
+        frame = _decode_png(payload)
+        output_path = episode_dir / "cameras" / primary_camera_id / f"frame_{step_index:03d}.png"
+        _save_frame(output_path, frame)
+        local_paths[primary_camera_id] = str(output_path)
 
     return {
-        "stepIndex": step_index,
+        "stepIndex": int(remote_episode.get("stepIndex", step_index) or step_index),
         "primaryCameraId": primary_camera_id,
-        "frame_path": saved_paths[primary_camera_id],
-        "cameraFrames": summaries,
-        "camera_frame_paths": saved_paths,
-        "task_instruction": str(payload.get("task_instruction") or ""),
-        "runtimeMetadata": dict(payload.get("runtime_metadata", {}) or {}),
-        "worldSnapshot": dict(payload.get("world_snapshot", {}) or {}),
-    }
-
-
-def _session_context_from_state(
-    session_state: Mapping[str, Any],
-    *,
-    task_entry: Mapping[str, Any],
-    scenario_entry: Mapping[str, Any],
-    start_state_entry: Mapping[str, Any],
-) -> Dict[str, Any]:
-    return {
-        "session_id": session_state["session_id"],
-        "scene_id": session_state["scene_id"],
-        "capture_id": session_state["capture_id"],
-        "site_submission_id": session_state["site_submission_id"],
-        "runtime_backend_selected": session_state["runtime_backend_selected"],
-        "runtime_manifest_path": session_state["runtime_manifest_path"],
-        "robot_profile": session_state["robot_profile"],
-        "task": dict(task_entry),
-        "scenario": dict(scenario_entry),
-        "start_state": dict(start_state_entry),
-        "policy": dict(session_state["policy"]),
+        "frame_path": local_paths[primary_camera_id],
+        "cameraFrames": local_summaries,
+        "camera_frame_paths": local_paths,
+        "runtimeMetadata": dict(remote_observation.get("runtimeMetadata", {}) or {}),
+        "worldSnapshot": dict(remote_observation.get("worldSnapshot", {}) or {}),
+        "remoteObservation": remote_observation,
     }
 
 
@@ -540,31 +326,11 @@ def _episode_payload(episode_state: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _write_video(frame_paths: Sequence[str], output_path: Path) -> None:
-    if not frame_paths:
-        raise HostedSessionError(f"No frames available for video export: {output_path}")
-    first = cv2.imread(str(frame_paths[0]))
-    if first is None:
-        raise HostedSessionError(f"Could not read rollout frame: {frame_paths[0]}")
-    height, width = first.shape[:2]
-    writer = cv2.VideoWriter(str(output_path), cv2.VideoWriter_fourcc(*"mp4v"), 10.0, (width, height))
-    for frame_path in frame_paths:
-        frame = cv2.imread(str(frame_path))
-        if frame is None:
-            continue
-        writer.write(frame)
-    writer.release()
-
-
 def _finalize_episode_artifacts(episode_state: Dict[str, Any], *, session_work_dir: Path) -> None:
     episode_dir = _rollouts_dir(session_work_dir) / str(episode_state["episode_id"])
     primary_camera_id = str(episode_state["observation"].get("primaryCameraId") or "")
     camera_frame_paths = episode_state.get("camera_frame_paths", {}) or {}
-    primary_frame_paths = (
-        camera_frame_paths.get(primary_camera_id)
-        if isinstance(camera_frame_paths, Mapping)
-        else None
-    )
+    primary_frame_paths = camera_frame_paths.get(primary_camera_id) if isinstance(camera_frame_paths, Mapping) else None
     if isinstance(primary_frame_paths, list) and primary_frame_paths and episode_state["artifact_uris"].get("rollout_video") is None:
         video_path = episode_dir / f"{episode_dir.name}.mp4"
         _write_video([str(item) for item in primary_frame_paths], video_path)
@@ -591,91 +357,100 @@ def create_session(
     config: ValidationConfig,
     session_id: str,
     session_work_dir: Path,
-    runtime_manifest_path: Path,
+    registration_path: Path,
     robot_profile_id: str,
     task_id: str,
     scenario_id: str,
     start_state_id: str,
-    policy_payload: Mapping[str, Any],
-    export_modes: Sequence[str],
+    policy_payload: Optional[Mapping[str, Any]] = None,
+    export_modes: Sequence[str] = (),
     robot_profile_override: Optional[Mapping[str, Any]] = None,
     notes: str = "",
 ) -> Dict[str, Any]:
-    runtime_manifest = _read_json(runtime_manifest_path)
-    runtime_manifest.setdefault("runtime_manifest_path", str(runtime_manifest_path))
-    backend = _resolve_backend(config, runtime_manifest)
-    adapter = _resolve_world_model_adapter(config=config, runtime_manifest=runtime_manifest)
-    task_entries = _task_entries(runtime_manifest)
-    scenario_entries = _catalog_entries(
-        runtime_manifest,
-        "scenario_catalog",
-        runtime_manifest.get("scenario_variants", []) if isinstance(runtime_manifest.get("scenario_variants"), list) else [],
-    )
-    start_state_entries = _catalog_entries(
-        runtime_manifest,
-        "start_state_catalog",
-        runtime_manifest.get("start_states", []) if isinstance(runtime_manifest.get("start_states"), list) else [],
-    )
-    robot_profiles = _robot_profiles(runtime_manifest)
-    robot_profile = _find_catalog_entry(robot_profiles, requested_id=robot_profile_id, label="robot profile")
+    registration, health, spec, grounding = _load_site_world_bundle(registration_path)
+    if not registration.get("site_world_id"):
+        raise HostedSessionError(f"Invalid site-world registration: {registration_path}")
+    if health and not bool(health.get("launchable", False)):
+        blockers = ", ".join(str(item) for item in health.get("blockers", []) if str(item).strip())
+        raise HostedSessionError(f"Site world is not launchable: {blockers or 'unknown blockers'}")
+
+    robot_profiles = [dict(item) for item in registration.get("robot_profiles", []) if isinstance(item, Mapping)]
+    task_entries = [dict(item) for item in registration.get("task_catalog", []) if isinstance(item, Mapping)]
+    scenario_entries = [dict(item) for item in registration.get("scenario_catalog", []) if isinstance(item, Mapping)]
+    start_state_entries = [dict(item) for item in registration.get("start_state_catalog", []) if isinstance(item, Mapping)]
+
+    def _find(entries: Sequence[Mapping[str, Any]], selected_id: str, label: str) -> Dict[str, Any]:
+        for entry in entries:
+            if str(entry.get("id") or entry.get("task_id") or "").strip() == selected_id:
+                return dict(entry)
+        raise HostedSessionError(f"Unsupported {label}: {selected_id}")
+
+    robot_profile = _find(robot_profiles, robot_profile_id, "robot profile")
     if isinstance(robot_profile_override, Mapping):
         robot_profile.update(dict(robot_profile_override))
-    task_entry = _find_catalog_entry(
-        task_entries,
-        requested_id=task_id,
-        fallback_name=None,
-        label="task",
-    )
-    scenario_entry = _find_catalog_entry(scenario_entries, requested_id=scenario_id, label="scenario")
-    start_state_entry = _find_catalog_entry(start_state_entries, requested_id=start_state_id, label="start state")
-    _resolve_policy_adapter(config, policy_payload, robot_profile=robot_profile)
+    task_entry = _find(task_entries, task_id, "task")
+    scenario_entry = _find(scenario_entries, scenario_id, "scenario")
+    start_state_entry = _find(start_state_entries, start_state_id, "start state")
 
     session_work_dir.mkdir(parents=True, exist_ok=True)
     _rollouts_dir(session_work_dir).mkdir(parents=True, exist_ok=True)
 
+    client = _resolve_runtime_client(config, registration)
+    create_payload = client.create_session(
+        str(registration["site_world_id"]),
+        session_id=session_id,
+        robot_profile_id=robot_profile_id,
+        task_id=task_id,
+        scenario_id=scenario_id,
+        start_state_id=start_state_id,
+        notes=notes,
+    )
+    runtime_probe = client.probe_runtime()
+
     session_state = {
         "schema_version": "v1",
         "session_id": session_id,
-        "runtime_manifest_path": str(runtime_manifest_path),
-        "runtime_backend_selected": backend,
-        "runtime_backend_public_name": public_runtime_label(backend),
+        "remote_session_id": str(create_payload.get("session_id") or session_id),
+        "site_world_registration_path": str(registration_path.resolve()),
+        "site_world_id": registration.get("site_world_id"),
+        "build_id": registration.get("build_id"),
+        "runtime_backend_selected": "neoverse_service",
+        "runtime_backend_public_name": public_runtime_label("neoverse_service"),
+        "runtime_service_url": str(client.config.service_url),
         "status": "ready",
-        "scene_id": runtime_manifest.get("scene_id"),
-        "capture_id": runtime_manifest.get("capture_id"),
-        "site_submission_id": runtime_manifest.get("site_submission_id"),
+        "scene_id": registration.get("scene_id"),
+        "capture_id": registration.get("capture_id"),
+        "site_submission_id": registration.get("site_submission_id"),
         "robot_profile": robot_profile,
         "task": dict(task_entry),
         "scenario": dict(scenario_entry),
         "start_state": dict(start_state_entry),
         "notes": notes,
-        "policy": dict(policy_payload),
+        "policy": dict(policy_payload or {}),
         "export_modes": [str(item) for item in export_modes if str(item).strip()],
         "current_episode_id": None,
         "latest_episode_path": None,
+        "runtime_smoke_path": None,
         "batch_summary_path": None,
         "artifact_uris": {
             "session_state": str(_session_state_path(session_work_dir)),
         },
         "dataset_artifacts": {},
+        "grounding_summary": grounding,
+        "runtime_probe": runtime_probe,
     }
-    session_context = _session_context_from_state(
-        session_state,
-        task_entry=task_entry,
-        scenario_entry=scenario_entry,
-        start_state_entry=start_state_entry,
-    )
-    create_payload = adapter.create_session(session_context=session_context)
-    session_state["runtime_session_metadata"] = dict(create_payload.get("runtime_session_metadata", {}) or {})
     _write_json(_session_state_path(session_work_dir), session_state)
     return {
         "session_id": session_id,
-        "runtime_backend_selected": backend,
-        "runtime_backend_public_name": public_runtime_label(backend),
+        "runtime_backend_selected": "neoverse_service",
+        "runtime_backend_public_name": public_runtime_label("neoverse_service"),
         "status": "ready",
+        "siteWorldId": registration.get("site_world_id"),
         "robotProfile": robot_profile,
-        "observationCameras": _camera_catalog(robot_profile),
+        "observationCameras": list(create_payload.get("observation_cameras", []) or _camera_catalog(robot_profile)),
         "artifact_uris": session_state["artifact_uris"],
         "dataset_artifacts": session_state["dataset_artifacts"],
+        "grounding_summary": grounding,
     }
 
 
@@ -691,51 +466,44 @@ def reset_session(
 ) -> Dict[str, Any]:
     del seed
     session_state = _read_json(_session_state_path(session_work_dir))
-    runtime_manifest_path = Path(str(session_state["runtime_manifest_path"]))
-    runtime_manifest = _read_json(runtime_manifest_path)
-    runtime_manifest.setdefault("runtime_manifest_path", str(runtime_manifest_path))
-    adapter = _resolve_world_model_adapter(config=config, runtime_manifest=runtime_manifest)
-    task_entries = _task_entries(runtime_manifest)
-    scenario_entries = _catalog_entries(
-        runtime_manifest,
-        "scenario_catalog",
-        runtime_manifest.get("scenario_variants", []) if isinstance(runtime_manifest.get("scenario_variants"), list) else [],
+    registration_path = Path(str(session_state["site_world_registration_path"]))
+    registration, _health, _spec, grounding = _load_site_world_bundle(registration_path)
+    client = _resolve_runtime_client(config, registration)
+    remote_session_id = str(session_state.get("remote_session_id") or session_id)
+
+    task_entry = dict(session_state.get("task") or {})
+    scenario_entry = dict(session_state.get("scenario") or {})
+    start_state_entry = dict(session_state.get("start_state") or {})
+    if task_id:
+        task_entry = next(
+            (dict(item) for item in registration.get("task_catalog", []) if isinstance(item, Mapping) and str(item.get("id") or item.get("task_id") or "").strip() == task_id),
+            task_entry,
+        )
+    if scenario_id:
+        scenario_entry = next(
+            (dict(item) for item in registration.get("scenario_catalog", []) if isinstance(item, Mapping) and str(item.get("id") or "").strip() == scenario_id),
+            scenario_entry,
+        )
+    if start_state_id:
+        start_state_entry = next(
+            (dict(item) for item in registration.get("start_state_catalog", []) if isinstance(item, Mapping) and str(item.get("id") or "").strip() == start_state_id),
+            start_state_entry,
+        )
+
+    reset_payload = client.reset_session(
+        remote_session_id,
+        task_id=str(task_entry.get("id") or task_entry.get("task_id") or "") or None,
+        scenario_id=str(scenario_entry.get("id") or "") or None,
+        start_state_id=str(start_state_entry.get("id") or "") or None,
     )
-    start_state_entries = _catalog_entries(
-        runtime_manifest,
-        "start_state_catalog",
-        runtime_manifest.get("start_states", []) if isinstance(runtime_manifest.get("start_states"), list) else [],
-    )
-    task_entry = _find_catalog_entry(
-        task_entries,
-        requested_id=task_id,
-        fallback_name=str((session_state.get("task") or {}).get("task_text") or (session_state.get("task") or {}).get("task") or ""),
-        label="task",
-    )
-    scenario_entry = _find_catalog_entry(
-        scenario_entries,
-        requested_id=scenario_id,
-        fallback_name=str((session_state.get("scenario") or {}).get("name") or ""),
-        label="scenario",
-    )
-    start_state_entry = _find_catalog_entry(
-        start_state_entries,
-        requested_id=start_state_id,
-        fallback_name=str((session_state.get("start_state") or {}).get("name") or ""),
-        label="start state",
-    )
-    session_context = _session_context_from_state(
-        session_state,
-        task_entry=task_entry,
-        scenario_entry=scenario_entry,
-        start_state_entry=start_state_entry,
-    )
-    reset_payload = adapter.reset_episode(session_context=session_context)
+    remote_episode = dict(reset_payload.get("episode", {}) or {})
     episode_id = f"episode-{hashlib.sha256('::'.join([session_id, str(task_entry.get('id') or ''), str(start_state_entry.get('id') or '')]).encode('utf-8')).hexdigest()[:8]}"
     episode_dir = _rollouts_dir(session_work_dir) / episode_id
-    observation = _normalize_runtime_observation(
-        reset_payload,
-        robot_profile=session_state["robot_profile"],
+    observation = _materialize_observation(
+        client=client,
+        remote_session_id=remote_session_id,
+        robot_profile=dict(session_state["robot_profile"]),
+        remote_episode=remote_episode,
         episode_dir=episode_dir,
         step_index=0,
     )
@@ -748,19 +516,22 @@ def reset_session(
     episode_state = {
         "schema_version": "v1",
         "session_id": session_id,
+        "remote_session_id": remote_session_id,
         "episode_id": episode_id,
+        "site_world_id": session_state.get("site_world_id"),
+        "build_id": session_state.get("build_id"),
         "task_id": str(task_entry.get("id") or task_entry.get("task_id") or ""),
         "task": str(task_entry.get("task_text") or task_entry.get("name") or ""),
         "scenario_id": str(scenario_entry.get("id") or ""),
         "scenario": str(scenario_entry.get("name") or ""),
         "start_state_id": str(start_state_entry.get("id") or ""),
         "start_state": str(start_state_entry.get("name") or ""),
-        "status": "ready",
-        "step_index": 0,
-        "done": False,
-        "reward": float(reset_payload.get("reward", 0.0) or 0.0),
-        "success": None,
-        "failure_reason": None,
+        "status": str(remote_episode.get("status") or "ready"),
+        "step_index": int(remote_episode.get("stepIndex", 0) or 0),
+        "done": bool(remote_episode.get("done", False)),
+        "reward": float(remote_episode.get("reward", 0.0) or 0.0),
+        "success": remote_episode.get("success"),
+        "failure_reason": remote_episode.get("failureReason"),
         "action_trace": [],
         "observation": observation,
         "observation_cameras": observation_cameras,
@@ -768,11 +539,25 @@ def reset_session(
         "artifact_uris": {
             "episode_state": str(episode_dir / "episode_state.json"),
         },
-        "runtime_metadata": dict(reset_payload.get("runtime_metadata", {}) or {}),
+        "remote_episode": remote_episode,
     }
+    runtime_smoke_path = session_work_dir / "runtime_smoke.json"
+    _write_json(
+        runtime_smoke_path,
+        {
+            "schema_version": "v1",
+            "session_id": session_id,
+            "remote_session_id": remote_session_id,
+            "site_world_id": session_state.get("site_world_id"),
+            "service_url": session_state.get("runtime_service_url"),
+            "grounding_summary": grounding,
+            "initial_episode": _episode_payload(episode_state),
+        },
+    )
     _write_json(_episode_state_path(session_work_dir), episode_state)
     session_state["current_episode_id"] = episode_id
     session_state["latest_episode_path"] = str(_episode_state_path(session_work_dir))
+    session_state["runtime_smoke_path"] = str(runtime_smoke_path)
     session_state["status"] = "running"
     session_state["task"] = dict(task_entry)
     session_state["scenario"] = dict(scenario_entry)
@@ -790,68 +575,50 @@ def step_session(
     auto_policy: bool,
 ) -> Dict[str, Any]:
     session_state = _read_json(_session_state_path(session_work_dir))
-    runtime_manifest_path = Path(str(session_state["runtime_manifest_path"]))
-    runtime_manifest = _read_json(runtime_manifest_path)
-    runtime_manifest.setdefault("runtime_manifest_path", str(runtime_manifest_path))
-    adapter = _resolve_world_model_adapter(config=config, runtime_manifest=runtime_manifest)
     episode_state = _read_json(_episode_state_path(session_work_dir))
     if episode_state.get("episode_id") != episode_id:
         raise HostedSessionError("Episode ID does not match current session episode state")
+    registration = _read_json(Path(str(session_state["site_world_registration_path"])))
+    client = _resolve_runtime_client(config, registration)
 
-    robot_profile = session_state["robot_profile"]
-    policy_payload = (
-        session_state.get("policy")
-        if isinstance(session_state.get("policy"), Mapping)
-        else {}
-    )
-    policy_adapter, _ = _resolve_policy_adapter(config, policy_payload, robot_profile=robot_profile)
-    policy_handle = policy_adapter.load_policy(
-        model_name=str(policy_payload.get("model_name") or ""),
-        checkpoint_path=(
-            Path(str(policy_payload.get("checkpoint_path")))
-            if str(policy_payload.get("checkpoint_path") or "").strip()
-            else None
-        ),
-        device=str(policy_payload.get("device") or "cpu"),
-    )
-
-    primary_frame_path = str((episode_state.get("observation") or {}).get("frame_path") or "")
-    if not primary_frame_path:
-        raise HostedSessionError("Current episode observation is missing a primary frame_path.")
-    current_frame = _load_frame(primary_frame_path)
+    robot_profile = dict(session_state["robot_profile"])
+    policy_payload = dict(session_state.get("policy") or {})
     if auto_policy:
+        policy_adapter, _adapter_config = _resolve_policy_adapter(config, policy_payload, robot_profile=robot_profile)
+        model_name, checkpoint_path, device = _policy_load_args(config, policy_payload)
+        handle = policy_adapter.load_policy(
+            model_name=model_name,
+            checkpoint_path=checkpoint_path,
+            device=device,
+        )
+        current_frame = _load_frame(str((episode_state.get("observation") or {}).get("frame_path") or ""))
         next_action = policy_adapter.predict_action(
-            handle=policy_handle,
+            handle=handle,
             frame=current_frame,
             task_prompt=str(episode_state.get("task") or ""),
             unnorm_key=None,
-            device=str(policy_payload.get("device") or "cpu"),
+            device=device,
         )
         action_list = np.asarray(next_action, dtype=np.float32).reshape(-1).tolist()
     else:
         action_list = list(action or [])
+
     expected_action_dim = int(((robot_profile.get("action_space") or {}).get("dim")) or len(action_list) or 7)
     if len(action_list) != expected_action_dim:
         raise HostedSessionError(
             f"Action-space mismatch: received {len(action_list)} values, expected {expected_action_dim}."
         )
 
-    session_context = _session_context_from_state(
-        session_state,
-        task_entry=session_state["task"],
-        scenario_entry=session_state["scenario"],
-        start_state_entry=session_state["start_state"],
-    )
-    step_payload = adapter.step_episode(
-        session_context=session_context,
-        action=action_list,
-        current_observation=episode_state["observation"],
-    )
-    next_step_index = int(episode_state.get("step_index", 0)) + 1
+    remote_session_id = str(session_state.get("remote_session_id") or session_state["session_id"])
+    step_payload = client.step_session(remote_session_id, action=action_list)
+    remote_episode = dict(step_payload.get("episode", {}) or {})
+    next_step_index = int(remote_episode.get("stepIndex", int(episode_state.get("step_index", 0)) + 1) or 0)
     episode_dir = _rollouts_dir(session_work_dir) / str(episode_state["episode_id"])
-    observation = _normalize_runtime_observation(
-        step_payload,
+    observation = _materialize_observation(
+        client=client,
+        remote_session_id=remote_session_id,
         robot_profile=robot_profile,
+        remote_episode=remote_episode,
         episode_dir=episode_dir,
         step_index=next_step_index,
     )
@@ -863,19 +630,17 @@ def step_session(
         if not camera_id or not frame_path:
             continue
         episode_state.setdefault("camera_frame_paths", {}).setdefault(camera_id, []).append(frame_path)
+
     episode_state["step_index"] = next_step_index
-    episode_state["reward"] = float(step_payload.get("reward", episode_state.get("reward", 0.0)) or 0.0)
-    episode_state["done"] = bool(step_payload.get("done", False))
-    episode_state["success"] = (
-        bool(step_payload.get("success"))
-        if step_payload.get("success") is not None
-        else (True if episode_state["done"] and not step_payload.get("failure_reason") else False if episode_state["done"] else None)
-    )
-    episode_state["failure_reason"] = step_payload.get("failure_reason")
-    episode_state["status"] = "completed" if episode_state["done"] else "running"
+    episode_state["reward"] = float(remote_episode.get("reward", episode_state.get("reward", 0.0)) or 0.0)
+    episode_state["done"] = bool(remote_episode.get("done", False))
+    episode_state["success"] = remote_episode.get("success")
+    episode_state["failure_reason"] = remote_episode.get("failureReason")
+    episode_state["status"] = str(remote_episode.get("status") or ("completed" if episode_state["done"] else "running"))
     episode_state["action_trace"].append(action_list)
     episode_state["observation"] = observation
     episode_state["observation_cameras"] = observation.get("cameraFrames", [])
+    episode_state["remote_episode"] = remote_episode
     episode_state.setdefault("artifact_uris", {})
     _finalize_episode_artifacts(episode_state, session_work_dir=session_work_dir)
     _write_json(_episode_state_path(session_work_dir), episode_state)
@@ -895,9 +660,6 @@ def run_batch(
 ) -> Dict[str, Any]:
     del seed
     session_state = _read_json(_session_state_path(session_work_dir))
-    runtime_manifest_path = Path(str(session_state["runtime_manifest_path"]))
-    runtime_manifest = _read_json(runtime_manifest_path)
-    runtime_manifest.setdefault("runtime_manifest_path", str(runtime_manifest_path))
     assignments: List[Dict[str, Any]] = []
     failures: List[str] = []
     max_steps_value = int(max_steps or 6)
@@ -949,10 +711,10 @@ def run_batch(
         "numFailure": num_episodes - num_success,
         "successRate": round(num_success / float(max(num_episodes, 1)), 4),
         "commonFailureModes": sorted(set(failures)),
-        "artifactManifestUri": str(session_work_dir / "batch_run_summary.json"),
     }
-    _write_json(session_work_dir / "batch_run_summary.json", {"assignments": assignments, "summary": summary})
-    session_state["batch_summary_path"] = str(session_work_dir / "batch_run_summary.json")
+    manifest_path = session_work_dir / "runtime_batch_manifest.json"
+    _write_json(manifest_path, {"assignments": assignments, "summary": summary})
+    session_state["batch_summary_path"] = str(manifest_path)
     _write_json(_session_state_path(session_work_dir), session_state)
     return {
         "session_id": session_state["session_id"],
@@ -960,7 +722,7 @@ def run_batch(
         "status": "completed",
         "assignments": assignments,
         "summary": summary,
-        "artifact_uris": {"batch_summary": str(session_work_dir / "batch_run_summary.json")},
+        "artifact_uris": {"runtime_batch_manifest": str(manifest_path)},
     }
 
 
@@ -1010,7 +772,7 @@ def export_session(*, session_work_dir: Path) -> Dict[str, Any]:
                 "eval_cell_id": str(episode_state.get("scenario_id") or ""),
                 "task_spec_id": str(episode_state.get("task_id") or ""),
                 "start_region_id": str(episode_state.get("start_state_id") or ""),
-                "sim_backend": "neoverse_hosted_session",
+                "sim_backend": "neoverse_service",
                 "success": bool(episode_state.get("success", False)),
                 "task_success": bool(episode_state.get("success", False)),
                 "task_success_available": True,
@@ -1024,6 +786,7 @@ def export_session(*, session_work_dir: Path) -> Dict[str, Any]:
         "rollouts": rollouts,
         "session_state_path": str(_session_state_path(session_work_dir)),
         "batch_summary_path": session_state.get("batch_summary_path"),
+        "runtime_smoke_path": session_state.get("runtime_smoke_path"),
     }
     raw_manifest_path = raw_bundle_dir / "raw_session_bundle.json"
     _write_json(raw_manifest_path, raw_manifest)

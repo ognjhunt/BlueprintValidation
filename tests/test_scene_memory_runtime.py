@@ -94,6 +94,10 @@ qualified_opportunities:
 scene_memory_runtime:
   preferred_backends: [neoverse, gen3c, cosmos_transfer]
   watchlist_backends: [3dsceneprompt]
+  neoverse_service:
+    enabled: true
+    service_url: http://runtime.local:8787
+    timeout_seconds: 45
   neoverse:
     allow_runtime_execution: true
     repo_path: {vendor_root / "neoverse"}
@@ -114,6 +118,9 @@ scene_memory_runtime:
         "cosmos_transfer",
     ]
     assert config.scene_memory_runtime.watchlist_backends == ["3dsceneprompt"]
+    assert config.scene_memory_runtime.neoverse_service.enabled is True
+    assert config.scene_memory_runtime.neoverse_service.service_url == "http://runtime.local:8787"
+    assert config.scene_memory_runtime.neoverse_service.timeout_seconds == 45
     assert config.scene_memory_runtime.neoverse.allow_runtime_execution is True
     assert str(config.scene_memory_runtime.neoverse.repo_path).endswith("/vendor/neoverse")
     assert config.scene_memory_runtime.gen3c.inference_script == "launch/inference.py"
@@ -168,9 +175,12 @@ scene_memory_runtime:
     monkeypatch.setenv("NEOVERSE_REPO_PATH", str(override_repo))
     monkeypatch.setenv("NEOVERSE_PYTHON_EXECUTABLE", "/usr/bin/python3")
     monkeypatch.setenv("NEOVERSE_CHECKPOINT_PATH", str(tmp_path / "ckpts" / "neoverse"))
+    monkeypatch.setenv("NEOVERSE_RUNTIME_SERVICE_URL", "http://runtime.env:8787")
 
     config = load_config(config_path)
 
+    assert config.scene_memory_runtime.neoverse_service.enabled is True
+    assert config.scene_memory_runtime.neoverse_service.service_url == "http://runtime.env:8787"
     assert config.scene_memory_runtime.neoverse.allow_runtime_execution is True
     assert config.scene_memory_runtime.neoverse.repo_path == override_repo.resolve()
     assert str(config.scene_memory_runtime.neoverse.python_executable) == "/usr/bin/python3"

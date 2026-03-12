@@ -312,6 +312,15 @@ class SceneMemoryBackendRuntimeConfig:
 
 
 @dataclass
+class NeoVerseServiceConfig:
+    enabled: bool = False
+    service_url: Optional[str] = None
+    api_key_env: str = "NEOVERSE_RUNTIME_SERVICE_API_KEY"
+    timeout_seconds: int = 120
+    websocket_base_url: Optional[str] = None
+
+
+@dataclass
 class SceneMemoryRuntimeConfig:
     enabled: bool = True
     preferred_backends: List[str] = field(
@@ -319,6 +328,7 @@ class SceneMemoryRuntimeConfig:
     )
     watchlist_backends: List[str] = field(default_factory=lambda: ["3dsceneprompt"])
     allow_backend_fallback: bool = True
+    neoverse_service: NeoVerseServiceConfig = field(default_factory=NeoVerseServiceConfig)
     neoverse: SceneMemoryBackendRuntimeConfig = field(
         default_factory=lambda: SceneMemoryBackendRuntimeConfig(inference_script="inference.py")
     )
@@ -1739,6 +1749,20 @@ def _parse_scene_memory_backend_runtime_config(
     )
 
 
+def _parse_neoverse_service_config(raw: Dict[str, Any]) -> NeoVerseServiceConfig:
+    service_url_raw = raw.get("service_url")
+    websocket_base_url_raw = raw.get("websocket_base_url")
+    service_url = str(service_url_raw or "").strip() or None
+    websocket_base_url = str(websocket_base_url_raw or "").strip() or None
+    return NeoVerseServiceConfig(
+        enabled=bool(raw.get("enabled", bool(service_url))),
+        service_url=service_url,
+        api_key_env=str(raw.get("api_key_env", "NEOVERSE_RUNTIME_SERVICE_API_KEY") or "NEOVERSE_RUNTIME_SERVICE_API_KEY").strip(),
+        timeout_seconds=max(1, int(raw.get("timeout_seconds", 120) or 120)),
+        websocket_base_url=websocket_base_url,
+    )
+
+
 def _parse_scene_memory_runtime_config(
     raw: Dict[str, Any],
     base_dir: Path,
@@ -1754,6 +1778,9 @@ def _parse_scene_memory_runtime_config(
             SceneMemoryRuntimeConfig().watchlist_backends,
         ) if str(v).strip()],
         allow_backend_fallback=bool(raw.get("allow_backend_fallback", True)),
+        neoverse_service=_parse_neoverse_service_config(
+            dict(raw.get("neoverse_service", {}) or {})
+        ),
         neoverse=_parse_scene_memory_backend_runtime_config(
             dict(raw.get("neoverse", {}) or {}),
             base_dir=base_dir,
@@ -1777,6 +1804,21 @@ def _apply_scene_memory_runtime_env_overrides(
     *,
     base_dir: Path,
 ) -> None:
+    service_cfg = config.neoverse_service
+    service_url = _env_text("NEOVERSE_RUNTIME_SERVICE_URL")
+    service_api_key_env = _env_text("NEOVERSE_RUNTIME_SERVICE_API_KEY_ENV")
+    timeout_seconds = _env_text("NEOVERSE_RUNTIME_SERVICE_TIMEOUT_SECONDS")
+    websocket_base_url = _env_text("NEOVERSE_RUNTIME_PUBLIC_WS_BASE_URL")
+    if service_url is not None:
+        service_cfg.service_url = service_url.rstrip("/")
+        service_cfg.enabled = True
+    if service_api_key_env is not None:
+        service_cfg.api_key_env = service_api_key_env
+    if timeout_seconds is not None:
+        service_cfg.timeout_seconds = max(1, int(timeout_seconds))
+    if websocket_base_url is not None:
+        service_cfg.websocket_base_url = websocket_base_url.rstrip("/")
+
     runtime = config.neoverse
     repo_path = _env_text("NEOVERSE_REPO_PATH")
     python_executable = _env_text("NEOVERSE_PYTHON_EXECUTABLE")

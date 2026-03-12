@@ -371,8 +371,16 @@ _SCENE_MEMORY_RUNTIME_KEYS = {
     "preferred_backends",
     "watchlist_backends",
     "allow_backend_fallback",
+    "neoverse_service",
     "neoverse",
     "gen3c",
+}
+_SCENE_MEMORY_RUNTIME_SERVICE_KEYS = {
+    "enabled",
+    "service_url",
+    "api_key_env",
+    "timeout_seconds",
+    "websocket_base_url",
 }
 _SCENE_MEMORY_RUNTIME_BACKEND_KEYS = {
     "enabled",
@@ -717,6 +725,17 @@ def validate_config_keys(raw: Mapping[str, object], *, config_path: Path) -> Non
         raw, "scene_memory_runtime", _SCENE_MEMORY_RUNTIME_KEYS, unknown_keys
     )
     if scene_memory_runtime is not None:
+        if scene_memory_runtime.get("neoverse_service") is not None:
+            nested_mapping = _expect_mapping(
+                scene_memory_runtime["neoverse_service"],
+                "scene_memory_runtime.neoverse_service",
+            )
+            _collect_unknown_keys(
+                nested_mapping,
+                _SCENE_MEMORY_RUNTIME_SERVICE_KEYS,
+                "scene_memory_runtime.neoverse_service",
+                unknown_keys,
+            )
         for nested_key in ("neoverse", "gen3c"):
             if scene_memory_runtime.get(nested_key) is not None:
                 nested_mapping = _expect_mapping(

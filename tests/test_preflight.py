@@ -907,19 +907,36 @@ def test_run_preflight_runtime_local_marks_cloud_guards_advisory(sample_config, 
     assert by_name["cloud:auto_shutdown_enforcement"].passed is True
 
 
-def test_preflight_requires_neoverse_hosted_runtime_contract(sample_config, monkeypatch):
+def test_preflight_requires_neoverse_runtime_service_contract(sample_config, monkeypatch):
     import blueprint_validation.preflight as preflight
 
     _patch_preflight_fast(monkeypatch, preflight)
-    sample_config.scene_memory_runtime.neoverse.repo_path = (
-        sample_config.scene_memory_runtime.neoverse.repo_path / "missing"
+    sample_config.scene_memory_runtime.neoverse_service.enabled = True
+    sample_config.scene_memory_runtime.neoverse_service.service_url = "http://runtime.local"
+    monkeypatch.setattr(
+        preflight.NeoVerseRuntimeClient,
+        "probe_runtime",
+        lambda self: {
+            "healthz": {"status": "ok"},
+            "runtime": {
+                "api_version": "v1",
+                "capabilities": {
+                    "site_world_build": True,
+                    "session_reset": True,
+                    "session_step": True,
+                    "session_render": True,
+                    "session_state": True,
+                    "session_stream": False,
+                },
+            },
+        },
     )
 
     checks = preflight.run_preflight(sample_config, profile="runtime-local")
     by_name = {c.name: c for c in checks}
 
-    assert by_name["scene_memory_runtime:neoverse:hosted_runtime_contract"].passed is False
-    assert "NeoVerse runtime not installed" in by_name["scene_memory_runtime:neoverse:hosted_runtime_contract"].detail
+    assert by_name["scene_memory_runtime:neoverse:service_contract"].passed is False
+    assert "missing required capabilities" in by_name["scene_memory_runtime:neoverse:service_contract"].detail
 
 
 def test_preflight_module_import_is_lazy_for_heavy_helpers(monkeypatch):

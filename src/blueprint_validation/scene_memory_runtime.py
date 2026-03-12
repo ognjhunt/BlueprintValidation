@@ -34,7 +34,14 @@ def _scene_memory_backend_runtime_payload(
 ) -> Dict[str, Any]:
     if backend_id == "neoverse":
         runtime = config.scene_memory_runtime.neoverse
+        service = config.scene_memory_runtime.neoverse_service
+        service_url = str(service.service_url or "").strip() or None
         return {
+            "service_enabled": bool(service.enabled),
+            "service_url": service_url,
+            "service_timeout_seconds": int(service.timeout_seconds),
+            "service_api_key_env": service.api_key_env,
+            "service_websocket_base_url": service.websocket_base_url,
             "allow_runtime_execution": bool(runtime.allow_runtime_execution),
             "repo_path": str(runtime.repo_path) if runtime.repo_path is not None else None,
             "python_executable": (
@@ -47,12 +54,16 @@ def _scene_memory_backend_runtime_payload(
                 str(runtime.checkpoint_path) if runtime.checkpoint_path is not None else None
             ),
             "execution_mode": (
-                "runtime_configured"
-                if runtime.enabled
-                and runtime.allow_runtime_execution
-                and runtime.repo_path is not None
-                and bool(runtime.inference_script)
-                else "manifest_only"
+                "service_configured"
+                if service.enabled and service_url
+                else (
+                    "runtime_configured"
+                    if runtime.enabled
+                    and runtime.allow_runtime_execution
+                    and runtime.repo_path is not None
+                    and bool(runtime.inference_script)
+                    else "manifest_only"
+                )
             ),
         }
     if backend_id == "gen3c":
@@ -218,4 +229,3 @@ def resolve_scene_memory_runtime_plan(
             "watchlist_only": ["3dsceneprompt"],
         },
     }
-

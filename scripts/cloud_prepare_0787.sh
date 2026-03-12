@@ -19,11 +19,8 @@ DREAMDOJO_REF="${DREAMDOJO_REF:-7f3379bcb831147c0cc170e79ba08471ad186497}"
 COSMOS_REF="${COSMOS_REF:-c9ad44b7283613618d57c1e4c9991916907d4f4b}"
 OPENVLA_REF="${OPENVLA_REF:-e4287e94541f459edc4feabc4e181f537cd569a8}"
 OPENPI_REF="${OPENPI_REF:-}"
-NEOVERSE_REPO_URL="${NEOVERSE_REPO_URL:-https://github.com/IamCreateAI/NeoVerse.git}"
-NEOVERSE_REPO_REF="${NEOVERSE_REPO_REF:-886772226c909801fb00b9148d9f7fdd4f34e579}"
-NEOVERSE_REPO_PATH="${NEOVERSE_REPO_PATH:-$ROOT_DIR/data/vendor/neoverse}"
-NEOVERSE_PYTHON_EXECUTABLE="${NEOVERSE_PYTHON_EXECUTABLE:-$(command -v python || true)}"
-NEOVERSE_CHECKPOINT_PATH="${NEOVERSE_CHECKPOINT_PATH:-$CHECKPOINT_DIR/neoverse}"
+NEOVERSE_RUNTIME_SERVICE_URL="${NEOVERSE_RUNTIME_SERVICE_URL:-}"
+NEOVERSE_RUNTIME_SERVICE_TIMEOUT_SECONDS="${NEOVERSE_RUNTIME_SERVICE_TIMEOUT_SECONDS:-120}"
 RUNTIME_ENV_LOCAL="${RUNTIME_ENV_LOCAL:-$ROOT_DIR/scripts/runtime_env.local}"
 
 if [ -f "$ROOT_DIR/scripts/runtime_env.local" ]; then
@@ -92,8 +89,8 @@ if [ -z "${GOOGLE_GENAI_API_KEY:-}" ]; then
   echo "GOOGLE_GENAI_API_KEY is required for judge/spatial/cross-site evaluations."
   exit 1
 fi
-if [ ! -d "$NEOVERSE_REPO_PATH" ] && [ ! -d "/opt/neoverse" ] && [ -z "$NEOVERSE_REPO_URL" ]; then
-  echo "NeoVerse runtime not installed; set NEOVERSE_REPO_URL or preinstall /opt/neoverse."
+if [ -z "${NEOVERSE_RUNTIME_SERVICE_URL:-}" ]; then
+  echo "NeoVerse runtime service URL not configured; set NEOVERSE_RUNTIME_SERVICE_URL."
   exit 1
 fi
 
@@ -203,13 +200,8 @@ PY
 }
 
 persist_neoverse_runtime_env() {
-  upsert_runtime_env "NEOVERSE_REPO_PATH" "$NEOVERSE_REPO_PATH"
-  if [ -n "$NEOVERSE_PYTHON_EXECUTABLE" ]; then
-    upsert_runtime_env "NEOVERSE_PYTHON_EXECUTABLE" "$NEOVERSE_PYTHON_EXECUTABLE"
-  fi
-  if [ -n "$NEOVERSE_CHECKPOINT_PATH" ]; then
-    upsert_runtime_env "NEOVERSE_CHECKPOINT_PATH" "$NEOVERSE_CHECKPOINT_PATH"
-  fi
+  upsert_runtime_env "NEOVERSE_RUNTIME_SERVICE_URL" "$NEOVERSE_RUNTIME_SERVICE_URL"
+  upsert_runtime_env "NEOVERSE_RUNTIME_SERVICE_TIMEOUT_SECONDS" "$NEOVERSE_RUNTIME_SERVICE_TIMEOUT_SECONDS"
 }
 
 echo "Ensuring vendor repos..."
@@ -217,13 +209,7 @@ ensure_repo "$ROOT_DIR/data/vendor/DreamDojo" "/opt/DreamDojo" "https://github.c
 ensure_repo "$ROOT_DIR/data/vendor/cosmos-transfer" "/opt/cosmos-transfer" "https://github.com/nvidia-cosmos/cosmos-transfer2.5.git" "$COSMOS_REF"
 ensure_repo "$ROOT_DIR/data/vendor/openvla-oft" "/opt/openvla-oft" "https://github.com/moojink/openvla-oft.git" "$OPENVLA_REF"
 ensure_repo "$ROOT_DIR/data/vendor/openpi" "/opt/openpi" "https://github.com/Physical-Intelligence/openpi.git" "$OPENPI_REF"
-ensure_repo "$NEOVERSE_REPO_PATH" "/opt/neoverse" "$NEOVERSE_REPO_URL" "$NEOVERSE_REPO_REF"
 persist_neoverse_runtime_env
-
-if [ -f "$NEOVERSE_REPO_PATH/requirements.txt" ]; then
-  echo "Installing NeoVerse runtime Python dependencies..."
-  pip_install -r "$NEOVERSE_REPO_PATH/requirements.txt"
-fi
 
 if [ "$INSTALL_COSMOS_RUNTIME_DEPS" = "true" ]; then
   echo "Installing Cosmos runtime dependencies (sam2, natsort)..."
