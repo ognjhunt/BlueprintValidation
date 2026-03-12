@@ -99,6 +99,8 @@ scene_memory_runtime:
     repo_path: {vendor_root / "neoverse"}
     python_executable: /usr/bin/python3
     inference_script: scripts/inference.py
+    hosted_runtime_module: neoverse_runtime
+    hosted_runtime_class: HostedNeoVerseRuntime
   gen3c:
     allow_runtime_execution: true
     repo_path: {vendor_root / "gen3c"}
@@ -116,6 +118,8 @@ scene_memory_runtime:
     assert config.scene_memory_runtime.watchlist_backends == ["3dsceneprompt"]
     assert config.scene_memory_runtime.neoverse.allow_runtime_execution is True
     assert str(config.scene_memory_runtime.neoverse.repo_path).endswith("/vendor/neoverse")
+    assert config.scene_memory_runtime.neoverse.hosted_runtime_module == "neoverse_runtime"
+    assert config.scene_memory_runtime.neoverse.hosted_runtime_class == "HostedNeoVerseRuntime"
     assert config.scene_memory_runtime.gen3c.inference_script == "launch/inference.py"
 
 

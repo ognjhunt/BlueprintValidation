@@ -381,6 +381,8 @@ _SCENE_MEMORY_RUNTIME_BACKEND_KEYS = {
     "python_executable",
     "inference_script",
     "checkpoint_path",
+    "hosted_runtime_module",
+    "hosted_runtime_class",
 }
 
 _CLAIM_REPLICATION_KEYS = {"training_seeds"}

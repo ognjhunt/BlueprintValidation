@@ -1322,10 +1322,13 @@ def session_group() -> None:
 @click.option("--session-id", required=True)
 @click.option("--session-work-dir", type=click.Path(file_okay=False), required=True)
 @click.option("--runtime-manifest", type=click.Path(exists=True), required=True)
-@click.option("--robot", required=True)
-@click.option("--task", required=True)
-@click.option("--scenario", required=True)
+@click.option("--robot-profile-id", required=True)
+@click.option("--task-id", required=True)
+@click.option("--scenario-id", required=True)
+@click.option("--start-state-id", required=True)
 @click.option("--policy-json", required=True, help="JSON payload describing adapter/model/checkpoint.")
+@click.option("--export-mode", "export_modes", multiple=True)
+@click.option("--robot-profile-override-json", default=None)
 @click.option("--notes", default="", show_default=True)
 @click.pass_context
 def session_create(
@@ -1333,10 +1336,13 @@ def session_create(
     session_id: str,
     session_work_dir: str,
     runtime_manifest: str,
-    robot: str,
-    task: str,
-    scenario: str,
+    robot_profile_id: str,
+    task_id: str,
+    scenario_id: str,
+    start_state_id: str,
     policy_json: str,
+    export_modes: tuple[str, ...],
+    robot_profile_override_json: Optional[str],
     notes: str,
 ) -> None:
     from .hosted_session import HostedSessionError, create_session
@@ -1347,10 +1353,15 @@ def session_create(
             session_id=session_id,
             session_work_dir=Path(session_work_dir),
             runtime_manifest_path=Path(runtime_manifest),
-            robot=robot,
-            task=task,
-            scenario=scenario,
+            robot_profile_id=robot_profile_id,
+            task_id=task_id,
+            scenario_id=scenario_id,
+            start_state_id=start_state_id,
             policy_payload=json.loads(policy_json),
+            export_modes=export_modes,
+            robot_profile_override=(
+                json.loads(robot_profile_override_json) if robot_profile_override_json else None
+            ),
             notes=notes,
         )
     except (HostedSessionError, json.JSONDecodeError) as exc:
@@ -1362,8 +1373,8 @@ def session_create(
 @click.option("--session-id", required=True)
 @click.option("--session-work-dir", type=click.Path(file_okay=False), required=True)
 @click.option("--task-id", default=None)
-@click.option("--scenario", default=None)
-@click.option("--start-state", default=None)
+@click.option("--scenario-id", default=None)
+@click.option("--start-state-id", default=None)
 @click.option("--seed", type=int, default=None)
 @click.pass_context
 def session_reset(
@@ -1371,8 +1382,8 @@ def session_reset(
     session_id: str,
     session_work_dir: str,
     task_id: Optional[str],
-    scenario: Optional[str],
-    start_state: Optional[str],
+    scenario_id: Optional[str],
+    start_state_id: Optional[str],
     seed: Optional[int],
 ) -> None:
     from .hosted_session import HostedSessionError, reset_session
@@ -1383,8 +1394,8 @@ def session_reset(
             session_id=session_id,
             session_work_dir=Path(session_work_dir),
             task_id=task_id,
-            scenario=scenario,
-            start_state=start_state,
+            scenario_id=scenario_id,
+            start_state_id=start_state_id,
             seed=seed,
         )
     except HostedSessionError as exc:
@@ -1427,7 +1438,8 @@ def session_step(
 @click.option("--session-work-dir", type=click.Path(file_okay=False), required=True)
 @click.option("--num-episodes", type=int, required=True)
 @click.option("--task-id", default=None)
-@click.option("--scenario", default=None)
+@click.option("--scenario-id", default=None)
+@click.option("--start-state-id", default=None)
 @click.option("--seed", type=int, default=None)
 @click.option("--max-steps", type=int, default=None)
 @click.pass_context
@@ -1437,7 +1449,8 @@ def session_run_batch(
     session_work_dir: str,
     num_episodes: int,
     task_id: Optional[str],
-    scenario: Optional[str],
+    scenario_id: Optional[str],
+    start_state_id: Optional[str],
     seed: Optional[int],
     max_steps: Optional[int],
 ) -> None:
@@ -1449,7 +1462,8 @@ def session_run_batch(
             session_work_dir=Path(session_work_dir),
             num_episodes=num_episodes,
             task_id=task_id,
-            scenario=scenario,
+            scenario_id=scenario_id,
+            start_state_id=start_state_id,
             seed=seed,
             max_steps=max_steps,
         )

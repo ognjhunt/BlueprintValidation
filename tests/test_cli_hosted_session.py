@@ -17,6 +17,7 @@ def test_hosted_session_cli_flow(monkeypatch, tmp_path, sample_config):
     config_path = tmp_path / "config.yaml"
     config_path.write_text("schema_version: v1\n", encoding="utf-8")
     monkeypatch.setattr(cli_module, "load_config", lambda _path: sample_config)
+    monkeypatch.setenv("BLUEPRINT_ALLOW_MOCK_POLICY_ADAPTER", "1")
 
     runtime_dir = tmp_path / "runtime"
     task_anchor_path = runtime_dir / "task_anchor_manifest.json"
@@ -57,8 +58,40 @@ def test_hosted_session_cli_flow(monkeypatch, tmp_path, sample_config):
             "default_backend": "neoverse",
             "task_ids": ["task-1"],
             "task_texts": ["Walk to shelf staging and pick the blue tote"],
+            "task_catalog": [
+                {
+                    "id": "task-1",
+                    "task_id": "task-1",
+                    "task_text": "Walk to shelf staging and pick the blue tote",
+                    "task_category": "pick",
+                }
+            ],
             "start_states": ["Dock-side tote stack"],
+            "start_state_catalog": [
+                {
+                    "id": "start-dock",
+                    "name": "Dock-side tote stack",
+                    "task_id": "task-1",
+                }
+            ],
             "scenario_variants": ["Normal lighting"],
+            "scenario_catalog": [{"id": "scenario-normal", "name": "Normal lighting"}],
+            "robot_profiles": [
+                {
+                    "id": "mobile_manipulator_rgb_v1",
+                    "display_name": "Mobile manipulator",
+                    "embodiment_type": "mobile_manipulator",
+                    "action_space": {"name": "ee_delta_pose_gripper", "dim": 7, "labels": []},
+                    "observation_cameras": [
+                        {"id": "head_rgb", "role": "head", "required": True, "default_enabled": True},
+                        {"id": "wrist_rgb", "role": "wrist", "required": False, "default_enabled": True},
+                    ],
+                    "base_semantics": "holonomic_mobile_base",
+                    "gripper_semantics": "parallel_jaw_gripper",
+                    "allowed_policy_adapters": ["openvla_oft", "pi05", "dreamzero", "mock"],
+                    "default_policy_adapter": "openvla_oft",
+                }
+            ],
             "launchable": True,
             "launch_blockers": [],
         },
@@ -79,14 +112,20 @@ def test_hosted_session_cli_flow(monkeypatch, tmp_path, sample_config):
             str(work_dir),
             "--runtime-manifest",
             str(runtime_manifest_path),
-            "--robot",
-            "Unitree G1",
-            "--task",
-            "Walk to shelf staging and pick the blue tote",
-            "--scenario",
-            "Normal lighting",
+            "--robot-profile-id",
+            "mobile_manipulator_rgb_v1",
+            "--task-id",
+            "task-1",
+            "--scenario-id",
+            "scenario-normal",
+            "--start-state-id",
+            "start-dock",
             "--policy-json",
             json.dumps({"adapter_name": "mock", "model_name": "mock-policy"}),
+            "--export-mode",
+            "raw_bundle",
+            "--export-mode",
+            "rlds_dataset",
         ],
     )
     assert create.exit_code == 0
@@ -104,11 +143,18 @@ def test_hosted_session_cli_flow(monkeypatch, tmp_path, sample_config):
             "session-1",
             "--session-work-dir",
             str(work_dir),
+            "--task-id",
+            "task-1",
+            "--scenario-id",
+            "scenario-normal",
+            "--start-state-id",
+            "start-dock",
         ],
     )
     assert reset.exit_code == 0
     reset_payload = json.loads(reset.output)
     assert reset_payload["episode"]["episodeId"].startswith("episode-")
+    assert reset_payload["episode"]["startStateId"] == "start-dock"
 
     step = runner.invoke(
         cli_module.cli,
@@ -128,6 +174,7 @@ def test_hosted_session_cli_flow(monkeypatch, tmp_path, sample_config):
     assert step.exit_code == 0
     step_payload = json.loads(step.output)
     assert step_payload["episode"]["stepIndex"] == 1
+    assert step_payload["episode"]["observation"]["cameraFrames"][0]["available"] is True
 
     batch = runner.invoke(
         cli_module.cli,
@@ -142,6 +189,12 @@ def test_hosted_session_cli_flow(monkeypatch, tmp_path, sample_config):
             str(work_dir),
             "--num-episodes",
             "3",
+            "--task-id",
+            "task-1",
+            "--scenario-id",
+            "scenario-normal",
+            "--start-state-id",
+            "start-dock",
         ],
     )
     assert batch.exit_code == 0
@@ -164,3 +217,4 @@ def test_hosted_session_cli_flow(monkeypatch, tmp_path, sample_config):
     assert export.exit_code == 0
     export_payload = json.loads(export.output)
     assert export_payload["artifact_uris"]["export_manifest"].endswith("export_manifest.json")
+    assert export_payload["artifact_uris"]["rlds_dataset"].endswith("rlds_manifest.json")

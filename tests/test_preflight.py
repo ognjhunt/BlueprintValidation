@@ -907,6 +907,19 @@ def test_run_preflight_runtime_local_marks_cloud_guards_advisory(sample_config, 
     assert by_name["cloud:auto_shutdown_enforcement"].passed is True
 
 
+def test_preflight_requires_neoverse_hosted_runtime_contract(sample_config, monkeypatch):
+    import blueprint_validation.preflight as preflight
+
+    _patch_preflight_fast(monkeypatch, preflight)
+    sample_config.scene_memory_runtime.neoverse.hosted_runtime_module = None
+
+    checks = preflight.run_preflight(sample_config, profile="runtime-local")
+    by_name = {c.name: c for c in checks}
+
+    assert by_name["scene_memory_runtime:neoverse:hosted_runtime_contract"].passed is False
+    assert "hosted_runtime_module" in by_name["scene_memory_runtime:neoverse:hosted_runtime_contract"].detail
+
+
 def test_preflight_module_import_is_lazy_for_heavy_helpers(monkeypatch):
     for name in [
         "blueprint_validation.preflight",

@@ -327,6 +327,47 @@ def check_isaac_scene_import_opt_in(config: ValidationConfig, facility_id: str) 
     )
 
 
+def check_neoverse_hosted_runtime_contract(config: ValidationConfig) -> PreflightCheck:
+    runtime = config.scene_memory_runtime.neoverse
+    name = "scene_memory_runtime:neoverse:hosted_runtime_contract"
+    if not bool(runtime.enabled):
+        return PreflightCheck(name=name, passed=False, detail="NeoVerse runtime is disabled.")
+    if not bool(runtime.allow_runtime_execution):
+        return PreflightCheck(
+            name=name,
+            passed=False,
+            detail=(
+                "Set scene_memory_runtime.neoverse.allow_runtime_execution=true for hosted-session launch."
+            ),
+        )
+    if runtime.repo_path is None or not runtime.repo_path.exists():
+        return PreflightCheck(
+            name=name,
+            passed=False,
+            detail="scene_memory_runtime.neoverse.repo_path is missing or does not exist.",
+        )
+    if not str(runtime.hosted_runtime_module or "").strip():
+        return PreflightCheck(
+            name=name,
+            passed=False,
+            detail="scene_memory_runtime.neoverse.hosted_runtime_module must be set.",
+        )
+    if not str(runtime.hosted_runtime_class or "").strip():
+        return PreflightCheck(
+            name=name,
+            passed=False,
+            detail="scene_memory_runtime.neoverse.hosted_runtime_class must be set.",
+        )
+    return PreflightCheck(
+        name=name,
+        passed=True,
+        detail=(
+            f"{runtime.hosted_runtime_module}.{runtime.hosted_runtime_class} "
+            f"from {runtime.repo_path}"
+        ),
+    )
+
+
 def _canonical_policy_adapter_name(name: str) -> str:
     key = (name or "").strip().lower()
     if key in {"openvla_oft", "openvla-oft", "oft", "openvla", "open-vla"}:
@@ -2059,6 +2100,16 @@ def run_preflight(
                 deep_scan=enforce_runtime_requirements,
             )
         )
+    _append_profiled_check(
+        checks,
+        enforce=enforce_runtime_requirements,
+        advisory_name="scene_memory_runtime:neoverse:hosted_runtime_contract",
+        advisory_detail=_advisory_detail(
+            normalized_profile,
+            "NeoVerse hosted-session runtime is only required for runnable hosted sessions.",
+        ),
+        factory=lambda: check_neoverse_hosted_runtime_contract(config),
+    )
 
     _append_profiled_check(
         checks,

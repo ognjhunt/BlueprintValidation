@@ -146,6 +146,46 @@ def sample_config(tmp_path):
     ply_path.touch()
     claim_benchmark_path = tmp_path / "claim_benchmark.json"
     claim_benchmark_path.write_text('{"version": 1, "task_specs": [], "assignments": []}')
+    neoverse_repo = tmp_path / "vendor" / "neoverse"
+    neoverse_repo.mkdir(parents=True, exist_ok=True)
+    (neoverse_repo / "dummy_neoverse_runtime.py").write_text(
+        """
+from __future__ import annotations
+
+import numpy as np
+
+
+class DummyNeoVerseRuntime:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+    def create_session(self, session_context=None, **kwargs):
+        return {"runtime_session_metadata": {"scene_id": (session_context or {}).get("scene_id")}}
+
+    def reset_episode(self, session_context=None, **kwargs):
+        frame = np.full((48, 64, 3), 96, dtype=np.uint8)
+        return {
+            "camera_frames": {"head_rgb": frame, "wrist_rgb": frame},
+            "reward": 0.0,
+            "runtime_metadata": {"event": "reset"},
+        }
+
+    def step_episode(self, session_context=None, action=None, current_observation=None, **kwargs):
+        step_index = int((current_observation or {}).get("stepIndex") or 0) + 1
+        base = 96 + min(step_index * 12, 120)
+        frame = np.full((48, 64, 3), base, dtype=np.uint8)
+        done = step_index >= 3
+        return {
+            "camera_frames": {"head_rgb": frame, "wrist_rgb": frame},
+            "reward": float(step_index) / 3.0,
+            "done": done,
+            "success": done,
+            "failure_reason": None,
+            "runtime_metadata": {"event": "step", "action_dim": len(action or [])},
+        }
+""",
+        encoding="utf-8",
+    )
 
     cfg = ValidationConfig(
         project_name="Test Project",
@@ -192,6 +232,10 @@ def sample_config(tmp_path):
     cfg.wm_refresh_loop.require_valid_video_decode = False
     cfg.wm_refresh_loop.enforce_vlm_quality_floor = False
     cfg.wm_refresh_loop.backfill_from_stage2_vlm_passed = False
+    cfg.scene_memory_runtime.neoverse.allow_runtime_execution = True
+    cfg.scene_memory_runtime.neoverse.repo_path = neoverse_repo
+    cfg.scene_memory_runtime.neoverse.hosted_runtime_module = "dummy_neoverse_runtime"
+    cfg.scene_memory_runtime.neoverse.hosted_runtime_class = "DummyNeoVerseRuntime"
     return cfg
 
 

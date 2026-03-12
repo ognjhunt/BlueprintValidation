@@ -308,6 +308,8 @@ class SceneMemoryBackendRuntimeConfig:
     python_executable: Optional[Path] = None
     inference_script: Optional[str] = None
     checkpoint_path: Optional[Path] = None
+    hosted_runtime_module: Optional[str] = None
+    hosted_runtime_class: Optional[str] = None
 
 
 @dataclass
@@ -1724,6 +1726,8 @@ def _parse_scene_memory_backend_runtime_config(
     python_raw = raw.get("python_executable")
     checkpoint_raw = raw.get("checkpoint_path")
     inference_script_raw = raw.get("inference_script", default_inference_script)
+    hosted_runtime_module_raw = raw.get("hosted_runtime_module")
+    hosted_runtime_class_raw = raw.get("hosted_runtime_class")
     inference_script = None
     if inference_script_raw is not None:
         text = str(inference_script_raw).strip()
@@ -1735,6 +1739,14 @@ def _parse_scene_memory_backend_runtime_config(
         python_executable=_resolve_optional_path(python_raw, base_dir),
         inference_script=inference_script,
         checkpoint_path=_resolve_optional_path(checkpoint_raw, base_dir),
+        hosted_runtime_module=(
+            str(hosted_runtime_module_raw).strip() if hosted_runtime_module_raw is not None else None
+        )
+        or None,
+        hosted_runtime_class=(
+            str(hosted_runtime_class_raw).strip() if hosted_runtime_class_raw is not None else None
+        )
+        or None,
     )
 
 
