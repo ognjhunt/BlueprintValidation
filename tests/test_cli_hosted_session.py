@@ -4,10 +4,10 @@ import json
 from pathlib import Path
 
 import numpy as np
-from click.testing import CliRunner
 import pytest
 
 cv2 = pytest.importorskip("cv2")
+CliRunner = pytest.importorskip("click.testing").CliRunner
 
 
 def _write_json(path: Path, payload: object) -> None:
