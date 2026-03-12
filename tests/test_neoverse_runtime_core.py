@@ -215,6 +215,30 @@ def _build_runtime_ready_spec(tmp_path: Path) -> dict:
     return spec
 
 
+def _refresh_canonical_package_version(spec: dict) -> None:
+    conditioning = dict(spec.get("conditioning") or {})
+    local_paths = dict(conditioning.get("local_paths") or {})
+    geometry = dict(spec.get("geometry") or {})
+    runtime_layer_policy = dict(spec.get("runtime_layer_policy") or {})
+    scene_memory_manifest = json.loads(Path(str(local_paths["scene_memory_manifest_path"])).read_text(encoding="utf-8"))
+    conditioning_bundle = json.loads(Path(str(conditioning["conditioning_bundle_path"])).read_text(encoding="utf-8"))
+    object_geometry_manifest = json.loads(Path(str(geometry["object_geometry_manifest_path"])).read_text(encoding="utf-8"))
+    task_anchor_manifest = json.loads(Path(str(spec["task_anchor_manifest_path"])).read_text(encoding="utf-8"))
+    protected_regions_manifest = json.loads(Path(str(runtime_layer_policy["protected_regions_manifest_path"])).read_text(encoding="utf-8"))
+    canonical_render_policy = json.loads(Path(str(runtime_layer_policy["canonical_render_policy_path"])).read_text(encoding="utf-8"))
+    presentation_variance_policy = json.loads(Path(str(runtime_layer_policy["presentation_variance_policy_path"])).read_text(encoding="utf-8"))
+    spec["canonical_package_version"] = compute_canonical_package_version(
+        scene_memory_manifest=scene_memory_manifest,
+        conditioning_bundle=conditioning_bundle,
+        object_geometry_manifest=object_geometry_manifest,
+        task_anchor_manifest=task_anchor_manifest,
+        site_world_spec=spec,
+        protected_regions_manifest=protected_regions_manifest,
+        canonical_render_policy=canonical_render_policy,
+        presentation_variance_policy=presentation_variance_policy,
+    )
+
+
 def test_runtime_store_builds_and_steps_site_world(tmp_path: Path) -> None:
     spec = _build_runtime_ready_spec(tmp_path)
 
@@ -278,3 +302,56 @@ def test_runtime_store_rejects_canonical_package_mismatch(tmp_path: Path) -> Non
             start_state_id="start-default",
             canonical_package_version="wrong-version",
         )
+
+
+def test_runtime_store_requires_explicit_unsafe_flag_for_blocked_site_world(tmp_path: Path) -> None:
+    spec = _build_runtime_ready_spec(tmp_path)
+    spec["qualification_state"] = "not_ready_yet"
+    spec["downstream_evaluation_eligibility"] = False
+    _refresh_canonical_package_version(spec)
+
+    store = NeoVerseRuntimeStore(tmp_path / "runtime", base_url="http://runtime.local")
+    registration = store.build_site_world(spec)
+    assert registration["status"] == "blocked"
+    assert store.load_site_world_health(str(registration["site_world_id"]))["launchable"] is False
+
+    with pytest.raises(RuntimeError, match="is not launchable"):
+        store.create_session(
+            str(registration["site_world_id"]),
+            session_id="session-blocked-default",
+            robot_profile_id="mobile_manipulator_rgb_v1",
+            task_id="task-1",
+            scenario_id="scenario-default",
+            start_state_id="start-default",
+        )
+
+    session = store.create_session(
+        str(registration["site_world_id"]),
+        session_id="session-blocked-unsafe",
+        robot_profile_id="mobile_manipulator_rgb_v1",
+        task_id="task-1",
+        scenario_id="scenario-default",
+        start_state_id="start-default",
+        unsafe_allow_blocked_site_world=True,
+    )
+    assert session["session_id"] == "session-blocked-unsafe"
+    assert session["unsafe_allow_blocked_site_world"] is True
+
+
+def test_runtime_store_blocks_ungrounded_site_world_without_unsafe_override(tmp_path: Path) -> None:
+    spec = _build_runtime_ready_spec(tmp_path)
+    spec["grounding_status"] = "ungrounded"
+    spec["ungrounded_reason"] = "empty_object_index"
+    runtime_layer_policy = dict(spec.get("runtime_layer_policy") or {})
+    runtime_layer_policy["grounding_status"] = "ungrounded"
+    runtime_layer_policy["ungrounded_reason"] = "empty_object_index"
+    spec["runtime_layer_policy"] = runtime_layer_policy
+    _refresh_canonical_package_version(spec)
+
+    store = NeoVerseRuntimeStore(tmp_path / "runtime", base_url="http://runtime.local")
+    registration = store.build_site_world(spec)
+    health = store.load_site_world_health(str(registration["site_world_id"]))
+
+    assert registration["status"] == "blocked"
+    assert health["launchable"] is False
+    assert "runtime_grounding:empty_object_index" in health["blockers"]

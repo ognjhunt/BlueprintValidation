@@ -372,11 +372,15 @@ def create_session(
     export_modes: Sequence[str] = (),
     robot_profile_override: Optional[Mapping[str, Any]] = None,
     notes: str = "",
+    unsafe_allow_blocked_site_world: bool = False,
 ) -> Dict[str, Any]:
     registration, health, spec, grounding = _load_site_world_bundle(registration_path)
     if not registration.get("site_world_id"):
         raise HostedSessionError(f"Invalid site-world registration: {registration_path}")
-    if health and not bool(health.get("launchable", False)):
+    allow_blocked_site_world = bool(unsafe_allow_blocked_site_world) or _env_truthy(
+        "BLUEPRINT_UNSAFE_ALLOW_BLOCKED_SITE_WORLD"
+    )
+    if health and not bool(health.get("launchable", False)) and not allow_blocked_site_world:
         blockers = ", ".join(str(item) for item in health.get("blockers", []) if str(item).strip())
         raise HostedSessionError(f"Site world is not launchable: {blockers or 'unknown blockers'}")
 
@@ -416,6 +420,7 @@ def create_session(
         trajectory=(policy_payload or {}).get("trajectory"),
         presentation_model=str((policy_payload or {}).get("presentation_model") or "") or None,
         debug_mode=bool((policy_payload or {}).get("debug_mode", False)),
+        unsafe_allow_blocked_site_world=allow_blocked_site_world,
     )
     runtime_probe = client.probe_runtime()
 
@@ -439,6 +444,7 @@ def create_session(
         "start_state": dict(start_state_entry),
         "notes": notes,
         "policy": dict(policy_payload or {}),
+        "unsafe_allow_blocked_site_world": allow_blocked_site_world,
         "export_modes": [str(item) for item in export_modes if str(item).strip()],
         "current_episode_id": None,
         "latest_episode_path": None,
@@ -452,6 +458,9 @@ def create_session(
         "runtime_probe": runtime_probe,
         "canonical_package_version": create_payload.get("canonical_package_version"),
         "presentation_config": create_payload.get("presentation_config"),
+        "unsafe_allow_blocked_site_world": bool(
+            create_payload.get("unsafe_allow_blocked_site_world", allow_blocked_site_world)
+        ),
         "quality_flags": create_payload.get("quality_flags", {}),
         "protected_region_violations": create_payload.get("protected_region_violations", {}),
         "debug_artifacts": create_payload.get("debug_artifacts", {}),
@@ -470,6 +479,9 @@ def create_session(
         "grounding_summary": grounding,
         "canonical_package_version": create_payload.get("canonical_package_version"),
         "presentation_config": create_payload.get("presentation_config"),
+        "unsafe_allow_blocked_site_world": bool(
+            create_payload.get("unsafe_allow_blocked_site_world", allow_blocked_site_world)
+        ),
         "quality_flags": create_payload.get("quality_flags", {}),
         "protected_region_violations": create_payload.get("protected_region_violations", {}),
         "debug_artifacts": create_payload.get("debug_artifacts", {}),

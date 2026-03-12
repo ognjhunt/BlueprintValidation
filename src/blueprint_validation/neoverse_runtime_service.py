@@ -40,6 +40,7 @@ class SessionCreateRequest(BaseModel):
     trajectory: Dict[str, Any] | str | None = None
     presentation_model: str | None = None
     debug_mode: bool = False
+    unsafe_allow_blocked_site_world: bool = False
 
 
 class SessionResetRequest(BaseModel):
@@ -130,6 +131,7 @@ def create_session(site_world_id: str, request: SessionCreateRequest) -> Dict[st
                 trajectory=request.trajectory,
                 presentation_model=request.presentation_model,
                 debug_mode=request.debug_mode,
+                unsafe_allow_blocked_site_world=request.unsafe_allow_blocked_site_world,
             )
         )
     except FileNotFoundError as exc:

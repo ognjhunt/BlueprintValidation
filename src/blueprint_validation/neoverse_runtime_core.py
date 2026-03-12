@@ -36,6 +36,10 @@ def _stable_id(prefix: str, *parts: str) -> str:
     return f"{prefix}-{digest[:12]}"
 
 
+def _env_truthy(name: str) -> bool:
+    return (os.environ.get(name, "") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _read_json(path: Path) -> Dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     return dict(payload) if isinstance(payload, Mapping) else {}
@@ -174,12 +178,25 @@ class NeoVerseRuntimeStore:
         blockers: list[str] = []
         warnings: list[str] = []
         blockers.extend(validate_runtime_layer_spec(spec))
+        runtime_layer_policy = (
+            dict(spec.get("runtime_layer_policy") or {})
+            if isinstance(spec.get("runtime_layer_policy"), Mapping)
+            else {}
+        )
 
         qualification_state = str(spec.get("qualification_state") or "").strip().lower()
         if qualification_state != "ready":
             blockers.append(f"qualification_state:{qualification_state or 'missing'}")
         if not bool(spec.get("downstream_evaluation_eligibility")):
             blockers.append("downstream_evaluation_eligibility:false")
+        grounding_status = str(
+            runtime_layer_policy.get("grounding_status") or spec.get("grounding_status") or ""
+        ).strip().lower()
+        if grounding_status == "ungrounded":
+            reason = str(
+                runtime_layer_policy.get("ungrounded_reason") or spec.get("ungrounded_reason") or "ungrounded"
+            ).strip()
+            blockers.append(f"runtime_grounding:{reason or 'ungrounded'}")
 
         capture_source = str(spec.get("capture_source") or "").strip().lower()
         if capture_source in {"glasses", "video_only", "glasses_video_only"}:
@@ -372,10 +389,14 @@ class NeoVerseRuntimeStore:
         trajectory: Mapping[str, Any] | None = None,
         presentation_model: str | None = None,
         debug_mode: bool | None = None,
+        unsafe_allow_blocked_site_world: bool = False,
     ) -> Dict[str, Any]:
         registration = self.load_site_world(site_world_id)
         health = self.load_site_world_health(site_world_id)
-        if not bool(health.get("launchable")):
+        allow_blocked_site_world = bool(unsafe_allow_blocked_site_world) or _env_truthy(
+            "BLUEPRINT_UNSAFE_ALLOW_BLOCKED_SITE_WORLD"
+        )
+        if not bool(health.get("launchable")) and not allow_blocked_site_world:
             raise RuntimeError(f"site world {site_world_id} is not launchable")
 
         site_world_spec = _read_json(self._site_world_spec_path(site_world_id))
@@ -414,7 +435,9 @@ class NeoVerseRuntimeStore:
                 "trajectory": dict(trajectory or {}) if trajectory is not None else {},
                 "presentation_model": presentation_model or "runtime_default",
                 "debug_mode": bool(debug_mode),
+                "unsafe_allow_blocked_site_world": allow_blocked_site_world,
             },
+            "unsafe_allow_blocked_site_world": allow_blocked_site_world,
             "quality_flags": {"presentation_quality": "normal", "editable_ratio": 0.0, "locked_ratio": 0.0},
             "protected_region_violations": [],
             "debug_artifacts": {},
@@ -453,6 +476,7 @@ class NeoVerseRuntimeStore:
             "status": "ready",
             "canonical_package_version": expected_package_version,
             "presentation_config": dict(session_state["presentation_config"]),
+            "unsafe_allow_blocked_site_world": allow_blocked_site_world,
             "quality_flags": dict(session_state["quality_flags"]),
             "protected_region_violations": list(session_state["protected_region_violations"]),
             "debug_artifacts": dict(session_state["debug_artifacts"]),

@@ -143,6 +143,7 @@ class NeoVerseRuntimeClient:
         trajectory: Mapping[str, Any] | str | None = None,
         presentation_model: str | None = None,
         debug_mode: bool = False,
+        unsafe_allow_blocked_site_world: bool = False,
     ) -> Mapping[str, Any]:
         return self._request_json(
             method="POST",
@@ -166,6 +167,7 @@ class NeoVerseRuntimeClient:
                 ),
                 "presentation_model": presentation_model,
                 "debug_mode": debug_mode,
+                "unsafe_allow_blocked_site_world": bool(unsafe_allow_blocked_site_world),
             },
         )
 

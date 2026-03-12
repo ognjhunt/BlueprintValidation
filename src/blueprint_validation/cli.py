@@ -1321,6 +1321,12 @@ def session_group() -> None:
 @click.option("--trajectory-json", default=None, help="Optional JSON payload describing a presentation trajectory.")
 @click.option("--presentation-model", default=None)
 @click.option("--debug-mode/--no-debug-mode", default=False, show_default=True)
+@click.option(
+    "--unsafe-allow-blocked-site-world/--no-unsafe-allow-blocked-site-world",
+    default=False,
+    show_default=True,
+    help="Unsafe local-only bypass for blocked site worlds during smoke/debug sessions.",
+)
 @click.option("--export-mode", "export_modes", multiple=True)
 @click.option("--robot-profile-override-json", default=None)
 @click.option("--notes", default="", show_default=True)
@@ -1341,6 +1347,7 @@ def session_create(
     trajectory_json: Optional[str],
     presentation_model: Optional[str],
     debug_mode: bool,
+    unsafe_allow_blocked_site_world: bool,
     export_modes: tuple[str, ...],
     robot_profile_override_json: Optional[str],
     notes: str,
@@ -1376,6 +1383,7 @@ def session_create(
                 json.loads(robot_profile_override_json) if robot_profile_override_json else None
             ),
             notes=notes,
+            unsafe_allow_blocked_site_world=unsafe_allow_blocked_site_world,
         )
     except (HostedSessionError, json.JSONDecodeError) as exc:
         raise click.ClickException(str(exc)) from exc

@@ -223,8 +223,19 @@ def build_target_view_masks(
     *,
     protected_regions_manifest: Mapping[str, Any],
     frame_shape: tuple[int, int],
+    allow_ungrounded_editable: bool = False,
 ) -> Dict[str, np.ndarray]:
     regions = [dict(item) for item in protected_regions_manifest.get("regions", []) if isinstance(item, Mapping)]
+    grounding_status = str(protected_regions_manifest.get("grounding_status") or "").strip().lower()
+    if grounding_status == "ungrounded":
+        locked = np.zeros(frame_shape, dtype=bool)
+        uncertain = np.zeros(frame_shape, dtype=bool)
+        editable = np.zeros(frame_shape, dtype=bool)
+        if allow_ungrounded_editable:
+            editable[:] = True
+        else:
+            uncertain[:] = True
+        return {"locked_mask": locked, "uncertain_mask": uncertain, "editable_mask": editable}
     extents = _bbox_extents(regions)
     locked = np.zeros(frame_shape, dtype=bool)
     uncertain = np.zeros(frame_shape, dtype=bool)
@@ -286,43 +297,59 @@ def composite_runtime_layer(
     step_index: int,
     camera_id: str,
 ) -> Dict[str, Any]:
+    allow_ungrounded_editable = bool(presentation_config.get("unsafe_allow_blocked_site_world"))
     masks = build_target_view_masks(
         protected_regions_manifest=protected_regions_manifest,
         frame_shape=canonical_frame.shape[:2],
+        allow_ungrounded_editable=allow_ungrounded_editable,
     )
     locked_mask = masks["locked_mask"]
     uncertain_mask = masks["uncertain_mask"]
     editable_mask = masks["editable_mask"]
+    grounding_status = str(protected_regions_manifest.get("grounding_status") or "grounded").strip().lower()
+    ungrounded_reason = str(protected_regions_manifest.get("ungrounded_reason") or "ungrounded").strip()
 
     attempt = 0
     violations: list[Dict[str, Any]] = []
     final_frame = canonical_frame.copy()
-    while attempt <= LOCK_VIOLATION_RETRY_BUDGET:
-        candidate = _generator_candidate(
-            canonical_frame,
-            config=presentation_config,
-            editable_mask=editable_mask,
-            step_index=step_index,
-            strict_editable_only=attempt > 0,
-        )
-        touched_locked = bool(np.any(np.any(candidate != canonical_frame, axis=2) & locked_mask))
-        if touched_locked:
-            violations.append({"attempt": attempt + 1, "reason": "locked_region_modified"})
-            attempt += 1
-            if attempt > LOCK_VIOLATION_RETRY_BUDGET:
-                final_frame = canonical_frame.copy()
-                break
-            continue
-        final_frame = canonical_frame.copy()
-        final_frame[editable_mask] = candidate[editable_mask]
-        break
+    if grounding_status == "ungrounded" and not allow_ungrounded_editable:
+        quality_flags = {
+            "presentation_quality": "ungrounded",
+            "editable_ratio": 0.0,
+            "locked_ratio": 0.0,
+            "fallback_mode": "ungrounded_canonical_only",
+            "grounding_status": "ungrounded",
+            "ungrounded_reason": ungrounded_reason,
+        }
+    else:
+        while attempt <= LOCK_VIOLATION_RETRY_BUDGET:
+            candidate = _generator_candidate(
+                canonical_frame,
+                config=presentation_config,
+                editable_mask=editable_mask,
+                step_index=step_index,
+                strict_editable_only=attempt > 0,
+            )
+            touched_locked = bool(np.any(np.any(candidate != canonical_frame, axis=2) & locked_mask))
+            if touched_locked:
+                violations.append({"attempt": attempt + 1, "reason": "locked_region_modified"})
+                attempt += 1
+                if attempt > LOCK_VIOLATION_RETRY_BUDGET:
+                    final_frame = canonical_frame.copy()
+                    break
+                continue
+            final_frame = canonical_frame.copy()
+            final_frame[editable_mask] = candidate[editable_mask]
+            break
 
-    editable_ratio = float(editable_mask.sum()) / float(max(1, editable_mask.size))
-    quality_flags = {
-        "presentation_quality": "degraded" if editable_ratio > DEGRADED_EDITABLE_RATIO_THRESHOLD else "normal",
-        "editable_ratio": round(editable_ratio, 4),
-        "locked_ratio": round(float(locked_mask.sum()) / float(max(1, locked_mask.size)), 4),
-    }
+        editable_ratio = float(editable_mask.sum()) / float(max(1, editable_mask.size))
+        quality_flags = {
+            "presentation_quality": "degraded" if editable_ratio > DEGRADED_EDITABLE_RATIO_THRESHOLD else "normal",
+            "editable_ratio": round(editable_ratio, 4),
+            "locked_ratio": round(float(locked_mask.sum()) / float(max(1, locked_mask.size)), 4),
+            "grounding_status": grounding_status or "grounded",
+            "unsafe_editable_override": bool(allow_ungrounded_editable and grounding_status == "ungrounded"),
+        }
     debug_artifacts: Dict[str, str] = {}
     if bool(presentation_config.get("debug_mode")):
         debug_dir = session_dir / "debug" / f"step_{step_index:03d}" / camera_id

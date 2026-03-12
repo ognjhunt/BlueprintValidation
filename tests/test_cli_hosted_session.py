@@ -60,6 +60,7 @@ class _FakeRuntimeClient:
             "quality_flags": {},
             "protected_region_violations": {"count": 0},
             "debug_artifacts": {},
+            "unsafe_allow_blocked_site_world": bool(kwargs.get("unsafe_allow_blocked_site_world", False)),
             "observation_cameras": [
                 {"id": "head_rgb", "role": "head", "required": True},
                 {"id": "wrist_rgb", "role": "wrist", "required": False},
@@ -365,3 +366,121 @@ def test_hosted_session_cli_flow(monkeypatch, tmp_path, sample_config):
     export_payload = json.loads(export.output)
     assert export_payload["artifact_uris"]["export_manifest"].endswith("export_manifest.json")
     assert export_payload["artifact_uris"]["rlds_dataset"].endswith("rlds_manifest.json")
+
+
+def test_hosted_session_cli_requires_explicit_unsafe_flag_for_blocked_site_world(monkeypatch, tmp_path, sample_config):
+    import blueprint_validation.cli as cli_module
+    import blueprint_validation.hosted_session as hosted_session_module
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("schema_version: v1\n", encoding="utf-8")
+    monkeypatch.setattr(cli_module, "load_config", lambda _path: sample_config)
+    monkeypatch.setenv("BLUEPRINT_ALLOW_MOCK_POLICY_ADAPTER", "1")
+    sample_config.scene_memory_runtime.neoverse.repo_path = None
+
+    runtime_root = tmp_path / "site-world"
+    registration_path = runtime_root / "site_world_registration.json"
+    health_path = runtime_root / "site_world_health.json"
+    spec_path = runtime_root / "site_world_spec.json"
+    raw_dir = tmp_path / "capture" / "raw" / "arkit"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    (raw_dir / "poses.jsonl").write_text("{}\n", encoding="utf-8")
+    (raw_dir / "intrinsics.json").write_text("{}", encoding="utf-8")
+    keyframe_path = tmp_path / "capture" / "raw" / "keyframe.png"
+    keyframe_path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(keyframe_path), np.full((48, 64, 3), 96, dtype=np.uint8))
+
+    _write_json(
+        registration_path,
+        {
+            "schema_version": "v1",
+            "site_world_id": "siteworld-1",
+            "build_id": "build-1",
+            "scene_id": "scene-1",
+            "capture_id": "cap-1",
+            "site_submission_id": "site-sub-1",
+            "runtime_base_url": "http://runtime.local",
+            "task_catalog": [{"id": "task-1", "task_id": "task-1", "task_text": "Blocked smoke"}],
+            "scenario_catalog": [{"id": "scenario-normal", "name": "Normal lighting"}],
+            "start_state_catalog": [{"id": "start-dock", "name": "Dock-side tote stack"}],
+            "robot_profiles": [
+                {
+                    "id": "mobile_manipulator_rgb_v1",
+                    "display_name": "Mobile manipulator",
+                    "embodiment_type": "mobile_manipulator",
+                    "action_space": {"name": "ee_delta_pose_gripper", "dim": 7, "labels": []},
+                    "observation_cameras": [
+                        {"id": "head_rgb", "role": "head", "required": True, "default_enabled": True},
+                    ],
+                    "allowed_policy_adapters": ["mock"],
+                    "default_policy_adapter": "mock",
+                }
+            ],
+        },
+    )
+    _write_json(
+        health_path,
+        {
+            "schema_version": "v1",
+            "site_world_id": "siteworld-1",
+            "build_id": "build-1",
+            "launchable": False,
+            "healthy": False,
+            "blockers": ["qualification_state:not_ready_yet", "downstream_evaluation_eligibility:false"],
+            "warnings": [],
+        },
+    )
+    _write_json(
+        spec_path,
+        {
+            "schema_version": "v1",
+            "qualification_state": "not_ready_yet",
+            "downstream_evaluation_eligibility": False,
+            "conditioning": {
+                "local_paths": {
+                    "keyframe_path": str(keyframe_path),
+                    "arkit_poses_path": str(raw_dir / "poses.jsonl"),
+                    "arkit_intrinsics_path": str(raw_dir / "intrinsics.json"),
+                }
+            },
+        },
+    )
+
+    fake_client = _FakeRuntimeClient()
+    monkeypatch.setattr(hosted_session_module, "_resolve_runtime_client", lambda config, registration: fake_client)
+
+    runner = CliRunner()
+    base_args = [
+        "--config",
+        str(config_path),
+        "session",
+        "create",
+        "--session-id",
+        "session-unsafe",
+        "--session-work-dir",
+        str(tmp_path / "session-work"),
+        "--site-world-registration",
+        str(registration_path),
+        "--robot-profile-id",
+        "mobile_manipulator_rgb_v1",
+        "--task-id",
+        "task-1",
+        "--scenario-id",
+        "scenario-normal",
+        "--start-state-id",
+        "start-dock",
+        "--policy-json",
+        json.dumps({"adapter_name": "mock", "model_name": "mock-policy"}),
+    ]
+
+    blocked = runner.invoke(cli_module.cli, base_args)
+    assert blocked.exit_code != 0
+    assert "Site world is not launchable" in blocked.output
+
+    allowed = runner.invoke(
+        cli_module.cli,
+        [*base_args, "--unsafe-allow-blocked-site-world"],
+    )
+    assert allowed.exit_code == 0
+    payload = json.loads(allowed.output)
+    assert payload["unsafe_allow_blocked_site_world"] is True

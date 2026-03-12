@@ -133,6 +133,7 @@ def test_runtime_client_covers_json_and_bytes(monkeypatch):
         trajectory="static",
         presentation_model="model-a",
         debug_mode=True,
+        unsafe_allow_blocked_site_world=True,
     )["session_id"] == "session-1"
     assert client.reset_session("session-1")["episode"]["stepIndex"] == 0
     assert client.step_session("session-1", action=[0, 0, 0])["episode"]["stepIndex"] == 1
@@ -145,6 +146,7 @@ def test_runtime_client_covers_json_and_bytes(monkeypatch):
     assert session_request["presentation_model"] == "model-a"
     assert session_request["trajectory"] == "static"
     assert session_request["debug_mode"] is True
+    assert session_request["unsafe_allow_blocked_site_world"] is True
 
 
 def test_runtime_client_stream_session_once(monkeypatch):
