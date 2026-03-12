@@ -1,234 +1,73 @@
 # BlueprintValidation
 
-Secondary-only post-qualification scene-derivation, evaluation, and adaptation pipeline for Blueprint.
+NeoVerse site-world runtime validation, smoke testing, rollout capture, and export tooling.
 
-This repo is not the qualification system and should not be the default site-readiness path. It starts after a site has already been scoped and cleared for downstream evaluation, or in lightweight advisory mode when a qualified opportunity needs a bounded downstream review without the full DreamDojo/PolaRiS stack.
+This repo is now focused on one job:
 
-Current canonical executable question:
+- take a `site_world_registration.json` produced upstream
+- connect to a NeoVerse runtime service
+- run `create -> reset -> step -> render -> batch -> export`
+- inspect grounding, health, and exported rollout data
 
-> For this already-qualified opportunity, how should we evaluate or adapt a specific robot stack against the scoped task and site constraints?
+## Supported Intake
 
-Default answer path in this repo:
+Expected upstream artifacts from `BlueprintCapturePipeline`:
 
-- world model / DreamDojo = first-class downstream adaptation, RL post-training, and bounded evidence path
-- PolaRiS = stricter downstream outer-loop evaluator when the scene package and target robot stack justify it
+- `pipeline/evaluation_prep/site_world_spec.json`
+- `pipeline/evaluation_prep/site_world_registration.json`
+- `pipeline/evaluation_prep/site_world_health.json`
 
-World-model stages remain central to the product. The change is that they now sit behind a qualification-first handoff model, and their outputs remain derived downstream assets rather than qualification truth. Passive site capture helps with conditioning, but meaningful robot adaptation usually depends on action-conditioned robot data such as play, teleop logs, or task rollouts. When `eval_polaris.enabled=true` and `eval_polaris.default_as_primary_gate=true`, world-model evidence stays supporting and PolaRiS becomes the report's primary validation gate.
+The registration file is the main handoff into this repo.
 
-## Preferred Intake
+## Runtime Model
 
-Preferred upstream handoff:
+- `BlueprintCapturePipeline` prepares the grounding package and asks NeoVerse to build/register the site world.
+- `BlueprintValidation` does not own NeoVerse process lifecycle. It talks to a NeoVerse runtime service over HTTP/WebSocket.
+- The repo keeps local debug and export artifacts, but the site-specific world itself lives behind the NeoVerse runtime API.
 
-- `opportunity_handoff.json`
-- scoped task definition
-- site constraints
-- target robot/team
-- preferred `scene_memory_bundle`
-- optional preview simulation package
-- optional geometry bundle
-- optional scene package when simulator-backed evaluation is justified
+Grounding should come from the upstream site-world spec, including:
 
-Thin `BlueprintCapturePipeline` handoffs remain temporary compatibility only. The intended default is the rich downstream handoff with explicit evidence links from qualification.
-
-Preferred scene-memory intake:
-
-- `scene_memory/scene_memory_manifest.json`
-- `scene_memory/conditioning_bundle.json`
-- optional `scene_memory/adapter_manifests/{gen3c,neoverse,cosmos_transfer}.json`
-- optional `preview_simulation/preview_simulation_manifest.json`
-
-Default runtime policy for scene-memory-backed work:
-
-- `NeoVerse` is the primary scene-specific runtime when its adapter manifest is present.
-- `GEN3C` is the secondary runtime when `NeoVerse` is unavailable or explicitly bypassed.
-- `Cosmos Transfer` remains the fallback enrichment/runtime path.
-- `3DScenePrompt` stays on the watchlist and is not selected as an active runtime by default.
-- Validation talks to NeoVerse through a runtime service URL. It is no longer expected to own NeoVerse process lifecycle through a local `inference.py` checkout.
-
-Legacy geometry bundle format:
-
-- `3dgs_compressed.ply`
-- `labels.json`
-- `structure.json`
-- `task_targets.synthetic.json`
-
-See [docs/qualified_opportunity_handoff.md](docs/qualified_opportunity_handoff.md) and [configs/qualified_opportunity_validation.yaml](configs/qualified_opportunity_validation.yaml).
-
-## Pipeline
-
-```
-Qualified opportunity handoff
-  + preferred scene-memory bundle / optional preview simulation
-  + optional geometry bundle adapter / strict scene package fallback
-  → Stage 0b: Resolve active scene-memory runtime (`NeoVerse` → `GEN3C` → `Cosmos`)
-  → Stage 0a: Resolve strict scene package only when Isaac/PolaRiS is justified
-  → Stage 1: Render legacy geometry-backed clips via gsplat, or strict simulator clips via Isaac
-  → Stage 1b (optional): Composite URDF robot arm with camera extrinsics
-  → Stage 1c (optional): Gemini image polish on composited clips
-  → Stage 1d (optional): Full RoboSplat-default 3D Gaussian augmentation (hybrid fallback)
-  → Stage 1f (optional): Ingest external interaction videos
-  → Stage 1g (optional): Ingest external teleop rollouts (videos + actions)
-  → Stage 2: Enrich with Cosmos Transfer 2.5 (5-10 variants per clip)
-  → Stage 3: Fine-tune DreamDojo-2B on enriched video
-  → Stage 4: Frozen policy rollouts (baseline vs adapted world model) + VLM scoring
-  → Stage 3d (default-on): WM-only near-miss/success world-model refresh loop
-  → Stage 4a: Export adapted rollouts to RLDS TFRecords
-  → Stage 3b: OFT-oriented policy fine-tuning on generated rollouts
-  → Stage 3c: World-VLA-Loop-style iterative policy RL + world refresh
-  → Stage 4e: Evaluate trained policy in adapted world model
-  → Stage 4f: Evaluate frozen vs adapted OpenVLA in PolaRiS
-  → Stage 4b: Export paired rollouts to RLDS-style train/heldout datasets
-  → Stage 4c: Train policy_base vs policy_site from same initialization/budget
-  → Stage 4d: Heldout policy A/B evaluation in same world model
-  → Stage 5: Visual fidelity metrics (PSNR/SSIM/LPIPS)
-  → Stage 6: Spatial accuracy (VLM layout verification)
-  → Stage 7: Cross-site discrimination (requires 2 facilities)
-  → Final validation report (Markdown + JSON)
-```
-
-Note: Stage 3d (`wm_refresh_loop.enabled`) is now enabled by default and runs in WM-only scope.
-
-For the default deployment recommendation path, enable `eval_polaris` and point each qualified opportunity at a validated `scene_package_path`. In that mode, Stage 4f (`s4f_polaris_eval`) is the primary gate for the report headline and deployment recommendation, while Stages 4/4e/4d remain supporting world-model evidence.
-
-For the legacy fixed-world same-facility WM-only claim path, use `eval_policy.claim_protocol=fixed_same_facility_uplift` together with `eval_policy.primary_endpoint=task_success`, `eval_policy.freeze_world_snapshot=true`, `eval_policy.split_strategy=disjoint_tasks_and_starts`, and a pinned `facility.claim_benchmark_path`.
-
-## Scene-Memory Mapping (Stage 1/2/3)
-
-DreamDojo in this pipeline does not maintain an explicit persistent global 3D scene map during generation. It conditions on provided video/context controls, so memory is mostly local/temporal unless we pass broader context.
-
-This repo therefore treats `scene_memory_bundle` as the preferred canonical intake and uses legacy splat/scene-package paths as adapters.
-
-- Stage 1 + Stage 2 are the current practical memory approximation:
-  - Stage 1 provides broad camera coverage of the site (many trajectories/targets).
-  - Stage 2 builds variants anchored to those clips, preserving local geometry while broadening appearance diversity.
-  - Stage 3 then trains on that corpus, so recurring structure is internalized statistically (not as a global map object).
-
-To move closer to full-scene memory behavior:
-- Increase Stage 1 coverage density and trajectory/context windows:
-  - `render.task_scoped_num_clips_per_path`
-  - `render.task_scoped_num_frames_override`
-- Use multi-view Stage 2 context per task:
-  - `enrich.multi_view_context_enabled`
-  - `enrich.multi_view_context_offsets`
-- Enable retrieval-backed context hooks:
-  - `enrich.scene_index_enabled`
-  - `enrich.scene_index_k`
-  - `enrich.scene_index_sample_every_n_frames`
-
-## Planning Guide
-
-- No-new-data scaling roadmap for future sessions:
-  - [docs/no_new_data_scaling_playbook.md](docs/no_new_data_scaling_playbook.md)
-- Isaac teleop manifest + ingest workflow:
-  - [docs/teleop_isaac_workflow.md](docs/teleop_isaac_workflow.md)
-- Remote GPU setup for Isaac teleop:
-  - [docs/remote_isaac_teleop_setup.md](docs/remote_isaac_teleop_setup.md)
-- Vision Pro teleop bridge setup:
-  - [docs/vision_pro_teleop_setup.md](docs/vision_pro_teleop_setup.md)
-- Vision Pro sample-client hook details:
-  - [docs/vision_pro_sample_client_hook.md](docs/vision_pro_sample_client_hook.md)
-- PolaRiS setup and scene handoff:
-  - [docs/polaris_outer_loop.md](docs/polaris_outer_loop.md)
-- Legacy PLY-to-scene-package builder:
-  - [docs/scene_builder.md](docs/scene_builder.md)
-
-## Full Action-Success Boost
-
-The pipeline supports a default-on full mixed-data path (scan-only, no new real data):
-
-1. Stage 2 enriched scan videos train the world model (Stage 3).
-2. Stage 4 rollouts are bucketed into success / near-miss / hard-negative.
-3. Stage 4a exports a mixed policy curriculum with deterministic train/eval split manifests.
-4. Stage 3b fine-tunes policy on that curriculum.
-5. Stage 3c iteratively refines policy and refreshes the world model using a mix of:
-   - Stage 2 base clips
-   - selected-success rollouts
-   - near-miss / hard-negative rollouts
-6. Stage 4d is the canonical fixed-world claim stage and enforces disjoint evaluation on heldout starts/tasks.
-
-Key controls:
-- `action_boost.*` for runtime orchestration (`wm_only` auto-switch to `wm_uplift`, full-path enforcement).
-- `rollout_dataset.selection_mode` and near-miss/hard-negative fractions.
-- `policy_rl_loop.*` world-refresh and policy-refine mix ratios.
-
-Expected uplift prior (not guaranteed): around `+8 to +18` absolute points in WM eval.
-IRL transfer to the exact same facility remains a future follow-up question until matched real-robot runs are added.
+- site video / keyframe
+- ARKit poses
+- ARKit intrinsics
+- optional depth
+- occupancy / collision geometry
+- object index
+- object geometry
+- task / scenario / start-state catalogs
+- robot profiles
+- qualification references
 
 ## Quick Start
 
 ```bash
-# Install
 git clone https://github.com/ognjhunt/BlueprintValidation.git
 cd BlueprintValidation
-uv sync --extra rlds
-
-# Download model weights (~30GB)
-bash scripts/download_models.sh
-
-# Stage a qualified opportunity handoff plus the preferred scene-memory bundle
-cp /path/to/opportunity_handoff.json configs/opportunity_handoff.local.json
-# Preferred canonical intake:
-#   pipeline/scene_memory/scene_memory_manifest.json
-#   pipeline/scene_memory/conditioning_bundle.json
-#   pipeline/scene_memory/adapter_manifests/{neoverse,gen3c,cosmos_transfer}.json
-#   pipeline/preview_simulation/preview_simulation_manifest.json   # optional
-#
-# Optional legacy geometry adapter only when scene-memory is missing or insufficient:
-#   pipeline/advanced_geometry/3dgs_compressed.ply
-#   pipeline/advanced_geometry/labels.json
-#   pipeline/advanced_geometry/structure.json
-#   pipeline/advanced_geometry/task_targets.synthetic.json
-
-# Run preflight checks
-blueprint-validate --config configs/qualified_opportunity_validation.yaml preflight
-# For pre-GPU audits (no CUDA yet):
-blueprint-validate --config configs/qualified_opportunity_validation.yaml preflight --profile audit
-
-# Optional: source runtime secrets from a local untracked file
-# cp scripts/runtime_env.example scripts/runtime_env.local
-# set -a && source scripts/runtime_env.local && set +a
-# (includes GOOGLE_GENAI_API_KEY, HF_TOKEN, BLUEPRINT_GPU_HOURLY_RATE_USD, BLUEPRINT_AUTO_SHUTDOWN_CMD,
-#  and NEOVERSE_RUNTIME_SERVICE_URL)
-
-# NeoVerse runtime service preflight
-export NEOVERSE_RUNTIME_SERVICE_URL="http://127.0.0.1:8787"
-blueprint-validate --config configs/qualified_opportunity_validation.yaml preflight
-
-# Provision the same-facility claim runtime (downloads checkpoints and installs CUDA extras by default)
-bash scripts/provision_same_facility_claim_runtime.sh
-
-# Run full pipeline
-blueprint-validate --config configs/qualified_opportunity_validation.yaml --work-dir data/outputs/post_qualification run-all
-# Resume mode: skip stages with successful/skipped *_result.json files
-blueprint-validate --config configs/qualified_opportunity_validation.yaml --work-dir data/outputs/post_qualification run-all --resume
-
-# Or run stages individually
-# `render`, `enrich`, and the Stage 4 commands resolve scene-memory runtime
-# selection first, then fall back to legacy geometry or strict scene-package paths.
-blueprint-validate --config configs/qualified_opportunity_validation.yaml render --opportunity warehouse_tote_pick_0787
-blueprint-validate compose-robot --opportunity warehouse_tote_pick_0787    # optional
-blueprint-validate polish-gemini --opportunity warehouse_tote_pick_0787    # optional
-blueprint-validate augment-gaussian --opportunity warehouse_tote_pick_0787 # optional Stage 1d
-blueprint-validate augment-robosplat --opportunity warehouse_tote_pick_0787 # alias
-blueprint-validate ingest-external-interaction --opportunity warehouse_tote_pick_0787 # optional
-blueprint-validate ingest-external-rollouts --opportunity warehouse_tote_pick_0787 # optional
-blueprint-validate enrich --opportunity warehouse_tote_pick_0787
-blueprint-validate finetune --opportunity warehouse_tote_pick_0787
-blueprint-validate eval-policy --opportunity warehouse_tote_pick_0787
-blueprint-validate export-rlds --opportunity warehouse_tote_pick_0787      # optional
-blueprint-validate finetune-policy --opportunity warehouse_tote_pick_0787  # optional
-blueprint-validate rl-loop-policy --opportunity warehouse_tote_pick_0787   # optional
-blueprint-validate eval-trained-policy --opportunity warehouse_tote_pick_0787  # optional
-blueprint-validate export-rollouts --opportunity warehouse_tote_pick_0787
-blueprint-validate train-policy-pair --opportunity warehouse_tote_pick_0787
-blueprint-validate eval-policy-pair --opportunity warehouse_tote_pick_0787
-blueprint-validate eval-visual --opportunity warehouse_tote_pick_0787
-blueprint-validate eval-spatial --opportunity warehouse_tote_pick_0787
-blueprint-validate eval-crosssite
-blueprint-validate report
+uv sync
 ```
 
-For site-world session smoke and exports, use the registration written by BlueprintCapturePipeline:
+Set the NeoVerse runtime service:
+
+```bash
+export NEOVERSE_RUNTIME_SERVICE_URL="http://127.0.0.1:8787"
+```
+
+Optional local env file:
+
+```bash
+cp scripts/runtime_env.example scripts/runtime_env.local
+set -a && source scripts/runtime_env.local && set +a
+```
+
+Run preflight:
+
+```bash
+blueprint-validate --config configs/qualified_opportunity_validation.yaml preflight
+```
+
+## Session Workflow
+
+Create a local session workspace from a site-world registration:
 
 ```bash
 blueprint-validate session create \
@@ -239,351 +78,80 @@ blueprint-validate session create \
   --task-id task-1 \
   --scenario-id scenario-default \
   --start-state-id start-default
+```
 
+Reset:
+
+```bash
 blueprint-validate session reset \
   --session-id smoke-session \
   --session-work-dir data/session-smoke
+```
 
+Manual step:
+
+```bash
 blueprint-validate session step \
   --session-id smoke-session \
   --session-work-dir data/session-smoke \
   --episode-id episode-xxxxxxxx \
   --action-json '[0,0,0,0,0,0,1]' \
   --no-auto-policy
+```
 
+Batch rollout:
+
+```bash
 blueprint-validate session run-batch \
   --session-id smoke-session \
   --session-work-dir data/session-smoke \
   --num-episodes 5
+```
 
+Export raw bundle + RLDS-style data:
+
+```bash
 blueprint-validate session export \
   --session-id smoke-session \
   --session-work-dir data/session-smoke
 ```
 
-## Cloud GPU (Provider-Agnostic)
+## Outputs
+
+Validation writes local artifacts such as:
+
+- `runtime_smoke.json`
+- `runtime_batch_manifest.json`
+- `rollouts/<episode>/...`
+- `exports/raw_bundle/raw_session_bundle.json`
+- `exports/rlds/rlds_manifest.json`
+- `export_manifest.json`
+
+These are derived interaction/export artifacts. The site world itself remains in the NeoVerse runtime service.
+
+## Placeholder Service
+
+This repo still includes a local placeholder NeoVerse-compatible service for contract testing:
 
 ```bash
-# Build Docker image
-docker build -f docker/runpod.Dockerfile -t blueprint-validation:latest .
-
-# On any GPU provider: SSH in and run
-bash /app/scripts/cloud_launch.sh
-blueprint-validate --config /app/configs/same_facility_policy_uplift_openvla.cloud.yaml --work-dir /models/outputs/same_facility_first run-all
+blueprint-neoverse-runtime
 ```
 
-The repo pins `numpy<2` because the current TensorFlow 2.15 runtime used by rollout/RLDS export and local preflight is not NumPy-2 compatible.
-
-Notes:
-- `cloud_launch.sh` now defaults to the same-facility claim path via `configs/same_facility_policy_uplift_openvla.cloud.yaml`.
-- Legacy geometry assets remain supported before cloud prep when scene-memory is unavailable:
-  - `FACILITY_A_SPLAT_SOURCE=/path/to/facility_a/splat.ply`
-  - optional: `FACILITY_A_TASK_HINTS_SOURCE=/path/to/task_targets.synthetic.json`
-- `run-all` now executes preflight by default; use `--skip-preflight` only if you are intentionally bypassing the gate.
-- You can skip checkpoint downloads if your volume is pre-seeded:
-  - `DOWNLOAD_MODELS=false bash /app/scripts/cloud_launch.sh`
-- DreamDojo/Cosmos CUDA extra install defaults to `cu128`:
-  - `DREAMDOJO_EXTRA=cu128 bash /app/scripts/cloud_launch.sh`
-
-### Docker Snapshot
-
-Build a reusable runtime image snapshot (DreamDojo/Cosmos/OpenVLA-OFT are vendored-if-present, otherwise cloned at pinned refs):
-
-```bash
-bash scripts/build_runtime_snapshot.sh
-```
-
-Vendor strategy options:
-
-```bash
-# auto (default): use data/vendor/* if present, else clone pinned refs
-VENDOR_STRATEGY=auto bash scripts/build_runtime_snapshot.sh
-
-# require local vendored repos
-VENDOR_STRATEGY=vendored bash scripts/build_runtime_snapshot.sh
-
-# always clone pinned refs
-VENDOR_STRATEGY=clone bash scripts/build_runtime_snapshot.sh
-```
-
-Build + push to Docker Hub:
-
-```bash
-DOCKERHUB_IMAGE=<dockerhub-user>/blueprint-validation PUSH=true bash scripts/build_runtime_snapshot.sh
-```
-
-Provision local vendor repos for non-Docker runs (auto-invoked by `setup_first_data.sh`):
-
-```bash
-PROVISION_REPOS=true bash scripts/setup_first_data.sh
-```
-
-### Pre-GPU Audit
-
-Run the non-GPU readiness gate before paying for GPU time:
-
-```bash
-bash scripts/pre_gpu_audit.sh
-
-# Optional: keep the old targeted subset instead of the full CPU suite
-AUDIT_SCOPE=quick bash scripts/pre_gpu_audit.sh
-```
-
-Secret scan command used by the audit script:
-
-```bash
-rg -n "AIza|hf_[A-Za-z0-9]{10,}" -S . --hidden --no-ignore \
-  --glob '!.git/**' --glob '!.venv/**' --glob '!data/vendor/**' \
-  --glob '!README.md' --glob '!scripts/pre_gpu_audit.sh'
-```
-
-### Vast Pause/Resume Checkpoint Safety
-
-Use these local scripts to keep resumable run state off-instance while training:
-
-```bash
-# Validate a local scene handoff package for teleop use
-blueprint-validate validate-scene-package --scene-root /path/to/scene_root
-
-# Or build one directly from a raw PLY + local USD assets
-blueprint-validate --config configs/example_validation.yaml build-scene-package
-
-# Record one local teleop demo from an Isaac Lab task package
-blueprint-validate record-teleop \
-  --scene-root /path/to/scene_root \
-  --task-id pick_tote \
-  --task-text "Pick up the tote and place it on the shelf" \
-  --output-dir /path/to/teleop_bundle \
-  --teleop-device keyboard \
-  --task-package my_scene_task \
-  --env-cfg-class TeleopEnvCfg \
-  --camera-key wrist_rgb \
-  --state-key policy \
-  --confirm-success \
-  --max-attempts 3
-
-# Build teleop manifests from recorded Isaac outputs
-blueprint-validate build-teleop-manifests \
-  --scene-id facility_a \
-  --task-id pick_tote \
-  --task-text "Pick up the tote and place it on the shelf" \
-  --demo-index 0 \
-  --robot-type franka \
-  --robot-asset-ref robot/franka/franka.usd \
-  --teleop-device spacemouse \
-  --lerobot-root /path/to/lerobot_dataset \
-  --episode-ref episode_000000 \
-  --action-sequence-path /path/to/actions.json \
-  --state-sequence-path /path/to/states.json \
-  --video wrist=/path/to/wrist.mp4 \
-  --calibration wrist=/path/to/wrist_calibration.json \
-  --state-key joint_positions \
-  --state-key joint_velocities \
-  --state-key end_effector_pose \
-  --state-key gripper_state \
-  --output-dir /path/to/teleop_bundle
-
-# One-shot backup pull from instance -> local
-INSTANCE_ID=<vast_instance_id> bash scripts/vast_checkpoint_sync.sh pull
-
-# Periodic backup every 30 minutes during long runs
-INSTANCE_ID=<vast_instance_id> INTERVAL_MINUTES=30 bash scripts/vast_checkpoint_watch.sh
-
-# Pause-safe stop (runs final sync, then stops instance)
-INSTANCE_ID=<vast_instance_id> bash scripts/vast_pause_safe.sh
-
-# Resume later (optional restore from local snapshot)
-INSTANCE_ID=<vast_instance_id> RESTORE_AFTER_START=true bash scripts/vast_resume_safe.sh
-```
-
-Enable automatic Backblaze B2 mirroring during these sync operations:
-
-```bash
-export ENABLE_B2_SYNC=true
-# Optional (default is already blueprint-validation-checkpoints)
-export B2_BUCKET=blueprint-validation-checkpoints
-export B2_PREFIX=blueprint-validation/vast
-export B2_APPLICATION_KEY_ID=<scoped_app_key_id>
-export B2_APPLICATION_KEY=<scoped_app_key_secret>
-# If your key lacks delete permissions:
-export RCLONE_OPERATION=copy
-INSTANCE_ID=<vast_instance_id> bash scripts/vast_checkpoint_sync.sh pull
-```
-
-Notes:
-- Use a dedicated private bucket.
-- Use a scoped application key limited to that bucket (avoid Master key usage).
-- Install `rclone` locally for B2 sync.
-- `scripts/vast_checkpoint_sync.sh` and `scripts/b2_checkpoint_sync.sh` auto-source `scripts/runtime_env.local` when present.
-
-Backup scope includes:
-
-- `/models/outputs` (primary cloud work dir)
-- `/models/openvla_datasets` (policy finetune dataset root)
-- `/workspace/BlueprintValidation/data/outputs` (legacy path)
-- `/workspace/BlueprintValidation/data/openvla_datasets`
-- task hints file for scene `0787_841244`
-
-Default local snapshot location:
-
-```bash
-$HOME/BlueprintValidationBackups/vast/<instance_id>/
-```
-
-### Post-Stage Sync Hook (Optional)
-
-`run-all` can execute a custom command after each stage (for example, upload stage snapshots to B2 directly from the VM):
-
-```bash
-export BLUEPRINT_POST_STAGE_SYNC_CMD='bash /app/scripts/b2_checkpoint_sync.sh push'
-# Optional: fail the stage if sync hook fails
-export BLUEPRINT_POST_STAGE_SYNC_STRICT=1
-blueprint-validate --config /app/configs/interiorgs_kitchen_0787.cloud.yaml --work-dir /models/outputs run-all
-```
-
-Hook env vars passed per stage:
-- `BLUEPRINT_SYNC_STAGE_KEY`
-- `BLUEPRINT_SYNC_STAGE_NAME`
-- `BLUEPRINT_SYNC_STAGE_STATUS`
-- `BLUEPRINT_SYNC_FACILITY_ID`
-- `BLUEPRINT_SYNC_FACILITY_WORK_DIR`
-- `BLUEPRINT_SYNC_RESULT_PATH`
-
-## Components
-
-| Component | Source | Purpose |
-|-----------|--------|---------|
-| [DreamDojo 2B](https://github.com/NVIDIA/DreamDojo) | NVIDIA | World model for fine-tuning |
-| [Cosmos Transfer 2.5](https://github.com/nvidia-cosmos/cosmos-transfer2.5) | NVIDIA | Video enrichment |
-| RoboSplat (pinned vendor + native completion) | SHOWLab + local | Default S1d 3D Gaussian augmentation backend |
-| [OpenVLA-OFT](https://github.com/moojink/openvla-oft) | OpenVLA team | Default policy adapter/fine-tuning recipe |
-| [OpenPI](https://github.com/Physical-Intelligence/openpi) | Physical Intelligence | pi0.5 runtime + PyTorch fine-tuning backend |
-| [OpenVLA 7B weights](https://github.com/openvla/openvla) | Stanford | Default base checkpoint for OpenVLA-OFT adapter |
-| pi0.5 profiles (`pi05_libero`, `pi05_droid`) | OpenPI | Optional second policy adapter path |
-| [gsplat](https://github.com/nerfstudio-project/gsplat) | Nerfstudio | Gaussian splat rendering |
-| Gemini 3 Flash Preview | Google | VLM judge with Agentic Vision |
-
-## Requirements
-
-- Python 3.10+
-- CUDA GPU (H100 recommended for full pipeline)
-- `uv` package manager
-- (Optional) pinned RoboSplat vendor repo at `./vendor/robosplat` for vendor backend path
-- Google Gemini API key (for VLM judge)
-- HuggingFace account (for model downloads)
-- Local clones or container images with:
-  - DreamDojo repo (and importable `cosmos_predict2`)
-  - Cosmos Transfer repo (`examples/inference.py`)
-  - OpenVLA-OFT repo (`vla-scripts/finetune.py` compatible entrypoint)
-  - OpenPI repo (`scripts/train_pytorch.py`, `scripts/compute_norm_stats.py`)
-- For pi0.5 adapter path: `lerobot` dependency (`uv sync --extra pi05` or `pip install -U lerobot`)
-- HuggingFace auth (`huggingface-cli login` or `HF_TOKEN`) with accepted licenses for:
-  - `nvidia/DreamDojo`
-  - `nvidia/Cosmos-Transfer2.5-2B`
-  - `openvla/openvla-7b`
-
-## Policy Adapter Switching
-
-Adapter switching is config-only:
-
-- Default (OpenVLA-OFT): `policy_adapter.name: openvla_oft`
-- pi0.5: `policy_adapter.name: pi05`
-- DreamZero (action-only adapter mode): `policy_adapter.name: dreamzero`
-
-Required config for pi0.5:
-
-- `policy_adapter.pi05.openpi_repo`
-- at least one explicit pi0.5 base reference:
-  - `eval_policy.model_name` (non-OpenVLA ref), and/or
-  - `eval_policy.checkpoint_path` (non-OpenVLA checkpoint path)
-- optional overrides:
-  - `policy_adapter.pi05.profile` (`pi05_libero` default, or `pi05_droid`)
-
-Required config for DreamZero action-only adapter mode:
-
-- `policy_adapter.dreamzero.repo_path`
-- `policy_adapter.dreamzero.checkpoint_path`
-- `policy_adapter.dreamzero.inference_module`
-- `policy_adapter.dreamzero.inference_class`
-- `policy_adapter.dreamzero.policy_action_dim`
-
-DreamZero limitations and defaults in this repo:
-
-- Inference integration is full and runtime-selectable.
-- Training path is integrated but `policy_adapter.dreamzero.allow_training=false` by default.
-- To enable full DreamZero training later, set:
-  - `policy_adapter.dreamzero.allow_training: true`
-  - valid `policy_adapter.dreamzero.train_script`
-  - dataset path inputs (`policy_finetune.data_root_dir` or Stage 4b/4c outputs).
-
-### pi05 Pre-GPU Gate
-
-Before allocating GPU, run:
-
-```bash
-blueprint-validate --config <config.yaml> --work-dir <work_dir> preflight
-```
-
-For `policy_adapter.name: pi05`, preflight now hard-fails unless all of the following pass:
-
-- `policy:base_reference` (must not be OpenVLA-like)
-- `policy_adapter:pi05:openpi_repo`
-- `policy_adapter:pi05:train_script`
-- `policy_adapter:pi05:norm_stats_script`
-- `policy_adapter:pi05:train_contract`
-- `policy_adapter:pi05:norm_stats_contract`
-- `dep:lerobot`
-- `policy_finetune:dataset_dir` (when `rollout_dataset.enabled=false`)
-
-Backward compatibility:
-
-- Legacy `eval_policy.openvla_model` and `eval_policy.openvla_checkpoint` are still accepted and mapped to `model_name` / `checkpoint_path` with deprecation warnings.
-- Legacy stage output keys (`adapted_openvla_checkpoint*`) are still emitted alongside canonical adapter-neutral keys (`adapted_policy_checkpoint*`).
-
-## External Interaction Ingest
-
-Stage 1f allows you to ingest external interaction manifests without coupling the runtime to a specific external simulator or evaluator.
-
-Config:
-
-- `external_interaction.enabled: true`
-- `external_interaction.manifest_path: <stage1_source_manifest.json>`
-- `external_interaction.source_name: external`
-
-Behavior:
-
-- Stage 1f validates the incoming manifest as `stage1_source`.
-- It writes normalized output to:
-  - `<work_dir>/<facility>/external_interaction/interaction_manifest.json`
-- Stage 2 source resolution precedence is:
-  - `s1f_external_interaction_ingest` > `s1d_gaussian_augment` > `s1c_gemini_polish` > `s1b_robot_composite` > `s1_render`
-
-## Manipulation-Focused Setup
-
-- Use manipulation-centric tasks in `eval_policy.tasks` (pick/place/regrasp/tote handling).
-- Prefer pointing `qualified_opportunities.<id>.opportunity_handoff_path` at the
-  `BlueprintCapturePipeline` handoff and let Validation resolve
-  `advanced_geometry/task_targets.synthetic.json`, `labels.json`, and `structure.json`
-  from the sibling bundle when it exists.
-- Use close-range capture paths around task-relevant objects (totes, bins, shelf faces).
-- For synthetic robot-context data:
-  - enable `robot_composite.enabled=true` and set `robot_composite.urdf_path`
-  - optionally enable `gemini_polish.enabled=true` for photoreal blending polish
-  - keep geometry filters on (`robot_composite.min_visible_joint_ratio`, `min_consistency_score`)
-- For policy improvement claim:
-  - `policy_finetune.enabled` and `rollout_dataset.enabled` are on by default in current templates
-  - `wm_refresh_loop.enabled` is on by default (executes only when `eval_policy.headline_scope=wm_only`)
-  - `policy_rl_loop.enabled` and `policy_compare.enabled` stay off by default
-  - enable `policy_compare.enabled` when you want paired policy A/B training/eval
-  - run `export-rollouts`, `train-policy-pair`, `eval-policy-pair`
-- Capture checklist: `configs/capture/manipulation_capture_checklist.md`
-
-## Testing
-
-```bash
-uv run pytest tests/ -v
-```
-
-## License
-
-MIT
+Useful endpoints:
+
+- `GET /healthz`
+- `GET /v1/runtime`
+- `POST /v1/site-worlds`
+- `GET /v1/site-worlds/{site_world_id}`
+- `GET /v1/site-worlds/{site_world_id}/health`
+- `POST /v1/site-worlds/{site_world_id}/sessions`
+- `POST /v1/sessions/{session_id}/reset`
+- `POST /v1/sessions/{session_id}/step`
+- `GET /v1/sessions/{session_id}/state`
+- `GET /v1/sessions/{session_id}/render?camera_id=...`
+- `WS /v1/sessions/{session_id}/stream`
+
+## Notes
+
+- The supported path is runtime-first and site-world-first.
+- Older training-first workflows are no longer the intended focus of this repo.

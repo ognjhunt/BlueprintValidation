@@ -196,7 +196,7 @@ def check_model_weights(path: Path, name: str) -> PreflightCheck:
     return PreflightCheck(
         name=f"weights:{name}",
         passed=False,
-        detail=f"Not found at {path}. Run: bash scripts/download_models.sh",
+        detail=f"Not found at {path}. Provision the required model artifact before running this stage.",
     )
 
 
@@ -1036,7 +1036,6 @@ def check_cosmos_predict_tokenizer_access(cosmos_checkpoint_path: Path) -> Prefl
     name = "enrich:cosmos_predict_tokenizer"
     local_candidates: list[Path] = []
 
-    # Preferred location used by scripts/download_models.sh.
     if cosmos_checkpoint_path:
         local_candidates.append(
             cosmos_checkpoint_path.parent
@@ -1075,7 +1074,7 @@ def check_cosmos_predict_tokenizer_access(cosmos_checkpoint_path: Path) -> Prefl
             passed=False,
             detail=(
                 "Missing local tokenizer and HF_TOKEN is unset. "
-                "Grant access to nvidia/Cosmos-Predict2.5-2B and run scripts/download_models.sh."
+                "Grant access to nvidia/Cosmos-Predict2.5-2B and provision the tokenizer locally."
             ),
         )
 

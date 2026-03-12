@@ -1,18 +1,18 @@
 [project]
 name = "blueprint-validation"
 version = "0.1.0"
-description = "Gaussian splat to robot world model validation pipeline"
+description = "NeoVerse site-world runtime validation and export toolkit"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [{name = "Blueprint Team"}]
 keywords = [
-    "gaussian-splatting",
-    "world-model",
+    "neoverse",
+    "site-world",
+    "runtime",
     "robotics",
     "validation",
-    "dreamdojo",
-    "cosmos-transfer",
+    "rollouts",
 ]
 
 dependencies = [

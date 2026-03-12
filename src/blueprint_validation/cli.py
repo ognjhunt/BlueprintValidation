@@ -1209,7 +1209,7 @@ def run_all(
     resume_from_results: bool,
     skip_preflight: bool,
 ) -> None:
-    """Run the full validation pipeline, all stages sequentially."""
+    """Run the supported site-world preparation pipeline."""
     from .pipeline import ValidationPipeline
     from .preflight import run_preflight
 
@@ -1264,7 +1264,7 @@ def report(ctx: click.Context, fmt: str, output_path: str) -> None:
 @cli.command()
 @click.pass_context
 def status(ctx: click.Context) -> None:
-    """Show current pipeline status for all facilities."""
+    """Show current site-world preparation status for all facilities."""
     from .common import read_json
 
     config = ctx.obj["config"]
@@ -1273,24 +1273,14 @@ def status(ctx: click.Context) -> None:
     stages = [
         "s0_task_hints_bootstrap",
         "s0a_scene_package",
+        "s0b_scene_memory_runtime",
         "s1_isaac_render",
         "s1_render",
         "s1b_robot_composite",
         "s1c_gemini_polish",
         "s1d_gaussian_augment",
         "s1f_external_interaction_ingest",
-        "s2_enrich",
-        "s3_finetune",
-        "s3b_policy_finetune",
-        "s3c_policy_rl_loop",
-        "s4_policy_eval",
-        "s4a_rlds_export",
-        "s4e_trained_eval",
-        "s4b_rollout_dataset",
-        "s4c_policy_pair_train",
-        "s4d_policy_pair_eval",
-        "s5_visual_fidelity",
-        "s6_spatial_accuracy",
+        "s1g_external_rollout_ingest",
     ]
 
     for fid in config.facilities:
@@ -1303,15 +1293,6 @@ def status(ctx: click.Context) -> None:
                 click.echo(f"  {sname}: {data['status']} ({data['elapsed_seconds']:.1f}s)")
             else:
                 click.echo(f"  {sname}: not started")
-
-    # Cross-site
-    cs_file = work_dir / "s7_cross_site_result.json"
-    if cs_file.exists():
-        data = read_json(cs_file)
-        click.echo(f"\nCross-site: {data['status']} ({data['elapsed_seconds']:.1f}s)")
-    else:
-        click.echo("\nCross-site: not started")
-
 
 @cli.group("session")
 def session_group() -> None:
