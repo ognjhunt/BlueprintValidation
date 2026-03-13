@@ -92,9 +92,25 @@ class LocalNeoVerseRunnerAdapter:
     def __init__(self, config: NeoVerseRunnerConfig) -> None:
         self.config = config
 
+    def _checkpoint_path(self) -> Optional[Path]:
+        explicit = Path(self.config.checkpoint_path).expanduser() if self.config.checkpoint_path else None
+        if explicit and explicit.is_file():
+            return explicit
+        model_root = Path(self.config.model_root).expanduser() if self.config.model_root else None
+        if model_root and model_root.exists():
+            candidates = [
+                item
+                for item in model_root.rglob("*")
+                if item.is_file() and item.suffix in {".ckpt", ".pt", ".pth", ".safetensors"}
+            ]
+            if candidates:
+                candidates.sort(key=lambda item: ("reconstructor" not in item.name.lower(), len(str(item))))
+                return candidates[0]
+        return None
+
     def readiness(self) -> Dict[str, Any]:
         model_root = Path(self.config.model_root).expanduser() if self.config.model_root else None
-        checkpoint_path = Path(self.config.checkpoint_path).expanduser() if self.config.checkpoint_path else None
+        checkpoint_path = self._checkpoint_path()
         runner_ready = bool(self.config.runner_command.strip())
         return {
             "ready": bool(model_root and model_root.exists() and checkpoint_path and checkpoint_path.exists() and runner_ready),
@@ -117,10 +133,11 @@ class LocalNeoVerseRunnerAdapter:
         }
 
     def checkpoint_identity(self) -> Dict[str, Any]:
-        checkpoint_name = Path(self.config.checkpoint_path).name if self.config.checkpoint_path else "unconfigured"
+        checkpoint_path = self._checkpoint_path()
+        checkpoint_name = checkpoint_path.name if checkpoint_path is not None else "unconfigured"
         return {
             "checkpoint_id": checkpoint_name,
-            "checkpoint_path": self.config.checkpoint_path,
+            "checkpoint_path": str(checkpoint_path) if checkpoint_path is not None else self.config.checkpoint_path,
             "checkpoint_ready": bool(self.readiness().get("checkpoint_ready")),
         }
 

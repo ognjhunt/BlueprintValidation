@@ -17,6 +17,7 @@ from .runtime_backend import KNOWN_RUNTIME_BACKEND_KINDS, normalize_runtime_kind
 
 
 _PREFERRED_COMMAND_ORDER = {
+    "runtime": 0,
     "session": 0,
     "preflight": 1,
     "report": 2,
@@ -42,6 +43,18 @@ class SessionCliGroup(click.Group):
     def list_commands(self, ctx: click.Context) -> list[str]:
         commands = list(super().list_commands(ctx))
         return sorted(commands, key=lambda name: (_SESSION_COMMAND_ORDER.get(name, 100), name))
+
+
+_RUNTIME_COMMAND_ORDER = {
+    "bootstrap": 0,
+    "smoke-test": 1,
+}
+
+
+class RuntimeCliGroup(click.Group):
+    def list_commands(self, ctx: click.Context) -> list[str]:
+        commands = list(super().list_commands(ctx))
+        return sorted(commands, key=lambda name: (_RUNTIME_COMMAND_ORDER.get(name, 100), name))
 
 
 def _load_local_env_file(path: Path) -> None:
@@ -158,6 +171,82 @@ def report(ctx: click.Context, fmt: str, output_path: str) -> None:
         output_path=Path(output_path),
     )
     click.echo(f"Report written to {report_path}")
+
+
+@cli.group("runtime", cls=RuntimeCliGroup)
+def runtime_group() -> None:
+    """Bootstrap and smoke-test the NeoVerse runtime environment."""
+
+
+@runtime_group.command("bootstrap")
+@click.option("--repo-root", type=click.Path(file_okay=False), default="./external/NeoVerse")
+@click.option("--env-file", type=click.Path(dir_okay=False), default="./scripts/runtime_env.local")
+@click.option("--git-url", default="https://github.com/IamCreateAI/NeoVerse.git", show_default=True)
+@click.option("--hf-repo", default="Yuppie1204/NeoVerse", show_default=True)
+@click.option("--cuda-variant", type=click.Choice(["cu121", "cu128"]), default=None)
+@click.option("--skip-install/--no-skip-install", default=False, show_default=True)
+@click.option("--skip-download/--no-skip-download", default=False, show_default=True)
+def runtime_bootstrap(
+    repo_root: str,
+    env_file: str,
+    git_url: str,
+    hf_repo: str,
+    cuda_variant: Optional[str],
+    skip_install: bool,
+    skip_download: bool,
+) -> None:
+    from .neoverse_runtime_ops import bootstrap_neoverse_runtime
+
+    payload = bootstrap_neoverse_runtime(
+        repo_root=Path(repo_root),
+        env_file=Path(env_file),
+        git_url=git_url,
+        hf_repo=hf_repo,
+        cuda_variant=cuda_variant,
+        skip_install=skip_install,
+        skip_download=skip_download,
+    )
+    click.echo(json.dumps(payload.to_dict(), indent=2))
+
+
+@runtime_group.command("smoke-test")
+@click.option("--site-world-registration", type=click.Path(exists=True), required=True)
+@click.option("--work-dir", "runtime_work_dir", type=click.Path(file_okay=False), default="./data/runtime-smoke")
+@click.option("--session-id", default="runtime-smoke-session", show_default=True)
+@click.option("--robot-profile-id", required=True)
+@click.option("--task-id", required=True)
+@click.option("--scenario-id", required=True)
+@click.option("--start-state-id", required=True)
+@click.option("--boot-service/--use-existing-service", default=True, show_default=True)
+@click.option("--service-url", default="", help="Optional runtime service URL override.")
+@click.pass_context
+def runtime_smoke_test(
+    ctx: click.Context,
+    site_world_registration: str,
+    runtime_work_dir: str,
+    session_id: str,
+    robot_profile_id: str,
+    task_id: str,
+    scenario_id: str,
+    start_state_id: str,
+    boot_service: bool,
+    service_url: str,
+) -> None:
+    from .neoverse_runtime_ops import run_neoverse_runtime_smoke_test
+
+    payload = run_neoverse_runtime_smoke_test(
+        config=_load_cli_config(ctx),
+        registration_path=Path(site_world_registration),
+        work_dir=Path(runtime_work_dir),
+        session_id=session_id,
+        robot_profile_id=robot_profile_id,
+        task_id=task_id,
+        scenario_id=scenario_id,
+        start_state_id=start_state_id,
+        boot_service=boot_service,
+        service_url=service_url,
+    )
+    click.echo(json.dumps(payload, indent=2))
 
 
 @cli.group("session", cls=SessionCliGroup)

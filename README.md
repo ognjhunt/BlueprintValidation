@@ -32,6 +32,8 @@ uv sync
 uv sync --extra vision
 ```
 
+The `vision` extra is required for the production runtime path because frame IO and render/export flows depend on OpenCV.
+
 ## Inputs
 
 Expected upstream artifacts from `BlueprintCapturePipeline`:
@@ -42,13 +44,20 @@ Expected upstream artifacts from `BlueprintCapturePipeline`:
 
 ## Runtime Services
 
+Bootstrap the NeoVerse environment for an A100 host:
+
+```bash
+blueprint-validate runtime bootstrap \
+  --repo-root ./external/NeoVerse \
+  --env-file ./scripts/runtime_env.local
+
+source ./scripts/runtime_env.local
+```
+
 Production runtime service:
 
 ```bash
-export NEOVERSE_MODEL_ROOT="/path/to/neoverse/model"
-export NEOVERSE_CHECKPOINT_PATH="/path/to/neoverse/checkpoint.pt"
-export NEOVERSE_RUNNER_COMMAND="/path/to/neoverse-runner"
-
+uv sync --extra vision
 blueprint-neoverse-runtime
 ```
 
@@ -58,7 +67,20 @@ Smoke-contract runtime service:
 blueprint-neoverse-smoke-runtime
 ```
 
+Use the smoke runtime only for local interface smoke checks. It is intentionally non-production and should fail preflight whenever `--required-runtime-kind neoverse_production` is used.
+
 The production service is the one intended to be surfaced behind a `runtime_base_url` for downstream tools or `Blueprint-WebApp`. The WebApp already expects a live runtime handle and proxies runtime calls through that URL; this repo now returns runtime-kind and production-readiness fields with that handle.
+
+Run a live runtime smoke test against the production backend:
+
+```bash
+blueprint-validate runtime smoke-test \
+  --site-world-registration /path/to/site_world_registration.json \
+  --robot-profile-id mobile_manipulator_rgb_v1 \
+  --task-id task-1 \
+  --scenario-id scenario-default \
+  --start-state-id start-default
+```
 
 ## Validation Workflow
 
@@ -120,5 +142,8 @@ blueprint-validate --work-dir data/session-validation report
 ## Production Backend Notes
 
 - The production backend is local to this repo, but it still depends on external NeoVerse model assets and a local runner integration.
-- The built-in `LocalNeoVerseRunnerAdapter` expects `NEOVERSE_RUNNER_COMMAND` to point to a command that accepts `request_json_path response_json_path` and writes a response manifest containing `camera_frames`.
+- `blueprint-validate runtime bootstrap` clones the public NeoVerse repo, creates a dedicated `.venv`, downloads model assets from Hugging Face, discovers a checkpoint, and writes an env file with the runtime variables this service expects.
+- The built-in `LocalNeoVerseRunnerAdapter` expects `NEOVERSE_RUNNER_COMMAND` to point to a command that accepts `request_json_path response_json_path` and writes a response manifest containing `camera_frames`. The bootstrap command configures this to `python -m blueprint_validation.neoverse_runner_wrapper`.
+- `blueprint_validation.neoverse_runner_wrapper` invokes the official NeoVerse `inference.py` entrypoint, extracts the first frame of each generated video, and returns camera-frame paths back to the runtime service.
+- The production runtime also requires the `vision` extra so image/frame IO is available at runtime.
 - If model assets or checkpoint readiness are missing, `/v1/runtime` reports that explicitly and preflight fails for production validation.

@@ -91,6 +91,10 @@ def test_production_runtime_round_trip_and_restart_recovery(
         lambda path, _frame: path.parent.mkdir(parents=True, exist_ok=True) or path.write_bytes(b"frame"),
     )
     monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._coerce_camera_frame",
+        lambda frame, _camera_id: frame,
+    )
+    monkeypatch.setattr(
         "blueprint_validation.neoverse_production_runtime.composite_runtime_layer",
         lambda **_kwargs: {
             "frame": np.zeros((16, 16, 3), dtype=np.uint8),
@@ -138,6 +142,10 @@ def test_production_runtime_round_trip_and_restart_recovery(
     monkeypatch.setattr(
         "blueprint_validation.neoverse_production_runtime._save_frame",
         lambda path, _frame: path.parent.mkdir(parents=True, exist_ok=True) or path.write_bytes(b"frame"),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._coerce_camera_frame",
+        lambda frame, _camera_id: frame,
     )
     monkeypatch.setattr(
         "blueprint_validation.neoverse_production_runtime.composite_runtime_layer",

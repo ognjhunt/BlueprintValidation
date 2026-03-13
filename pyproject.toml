@@ -20,6 +20,7 @@ dependencies = [
     "click>=8.0",
     "pyyaml>=6.0",
     "fastapi>=0.115.0",
+    "huggingface-hub>=0.34.0",
     "numpy>=1.24.0,<2",
     "uvicorn>=0.30.0",
     "websockets>=15.0.0",
@@ -42,6 +43,7 @@ dev = [
 blueprint-validate = "blueprint_validation.cli:main"
 blueprint-neoverse-runtime = "blueprint_validation.neoverse_runtime_service:main"
 blueprint-neoverse-smoke-runtime = "blueprint_validation.smoke_contract_runtime_service:main"
+blueprint-neoverse-runner = "blueprint_validation.neoverse_runner_wrapper:main"
 
 [project.urls]
 Repository = "https://github.com/ognjhunt/BlueprintValidation"
