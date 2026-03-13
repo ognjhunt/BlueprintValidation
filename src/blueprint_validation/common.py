@@ -76,6 +76,18 @@ class StageResult:
             "timestamp": self.timestamp,
         }
 
+    @classmethod
+    def from_dict(cls, payload: Dict[str, Any]) -> "StageResult":
+        return cls(
+            stage_name=str(payload.get("stage_name", "")),
+            status=str(payload.get("status", "")),
+            elapsed_seconds=float(payload.get("elapsed_seconds", 0.0) or 0.0),
+            outputs=dict(payload.get("outputs", {}) or {}),
+            metrics=dict(payload.get("metrics", {}) or {}),
+            detail=str(payload.get("detail", "") or ""),
+            timestamp=str(payload.get("timestamp", "") or datetime.now(timezone.utc).isoformat()),
+        )
+
     def save(self, path: Path) -> None:
         write_json(self.to_dict(), path)
 

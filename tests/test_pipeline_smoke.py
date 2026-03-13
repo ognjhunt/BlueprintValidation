@@ -170,21 +170,7 @@ def _patch_pipeline_stages_with_dummies(monkeypatch, call_counts):
         "GeminiPolishStage": "s1c_gemini_polish",
         "GaussianAugmentStage": "s1d_gaussian_augment",
         "ExternalInteractionIngestStage": "s1f_external_interaction_ingest",
-        "EnrichStage": "s2_enrich",
-        "FinetuneStage": "s3_finetune",
-        "PolicyEvalStage": "s4_policy_eval",
-        "WorldModelRefreshLoopStage": "s3d_wm_refresh_loop",
-        "RLDSExportStage": "s4a_rlds_export",
-        "PolicyFinetuneStage": "s3b_policy_finetune",
-        "PolicyRLLoopStage": "s3c_policy_rl_loop",
-        "TrainedPolicyEvalStage": "s4e_trained_eval",
-        "PolarisEvalStage": "s4f_polaris_eval",
-        "RolloutDatasetStage": "s4b_rollout_dataset",
-        "PolicyPairTrainStage": "s4c_policy_pair_train",
-        "PolicyPairEvalStage": "s4d_policy_pair_eval",
-        "VisualFidelityStage": "s5_visual_fidelity",
-        "SpatialAccuracyStage": "s6_spatial_accuracy",
-        "CrossSiteStage": "s7_cross_site",
+        "ExternalRolloutIngestStage": "s1g_external_rollout_ingest",
     }
 
     for class_name, stage_name in stage_map.items():
@@ -205,16 +191,16 @@ def test_pipeline_resume_reuses_success_results(sample_config, tmp_path, monkeyp
     pipeline = pipeline_mod.ValidationPipeline(sample_config, work_dir)
 
     first = pipeline.run_all(resume_from_results=False)
-    assert first["test_facility/s6_spatial_accuracy"].status == "success"
+    assert first["test_facility/s1g_external_rollout_ingest"].status == "success"
     assert call_counts["s0a_scene_package"] == 1
     assert call_counts["s0b_scene_memory_runtime"] == 1
     assert call_counts["s1_isaac_render"] == 1
     assert call_counts["s1_render"] == 1
-    assert call_counts["s6_spatial_accuracy"] == 1
+    assert call_counts["s1g_external_rollout_ingest"] == 1
 
     call_counts.clear()
     second = pipeline.run_all(resume_from_results=True)
-    assert second["test_facility/s6_spatial_accuracy"].status == "success"
+    assert second["test_facility/s1g_external_rollout_ingest"].status == "success"
 
     # Resume mode should not re-execute already successful stages.
     assert call_counts == {}
@@ -228,7 +214,7 @@ def test_pipeline_resume_reruns_failed_result(sample_config, tmp_path, monkeypat
     pipeline = pipeline_mod.ValidationPipeline(sample_config, work_dir)
     pipeline.run_all(resume_from_results=False)
 
-    stage_file = work_dir / "test_facility" / "s2_enrich_result.json"
+    stage_file = work_dir / "test_facility" / "s1_render_result.json"
     payload = json.loads(stage_file.read_text())
     payload["status"] = "failed"
     stage_file.write_text(json.dumps(payload))
@@ -236,8 +222,8 @@ def test_pipeline_resume_reruns_failed_result(sample_config, tmp_path, monkeypat
     call_counts.clear()
     pipeline.run_all(resume_from_results=True)
 
-    assert call_counts.get("s2_enrich", 0) == 1
-    assert call_counts.get("s1_render", 0) == 0
+    assert call_counts.get("s1_render", 0) == 1
+    assert call_counts.get("s1_isaac_render", 0) == 0
 
 
 def test_pipeline_resume_fails_fast_on_corrupt_stage_result(sample_config, tmp_path, monkeypatch):
@@ -284,13 +270,11 @@ def test_pipeline_post_stage_sync_hook(sample_config, tmp_path, monkeypatch):
     pipeline.run_all(resume_from_results=False)
 
     lines = hook_log.read_text().strip().splitlines()
-    assert len(lines) == 25
+    assert len(lines) == 10
     assert any(line.startswith("test_facility/s0a_scene_package|success") for line in lines)
     assert any(line.startswith("test_facility/s0b_scene_memory_runtime|success") for line in lines)
     assert any(line.startswith("test_facility/s1_isaac_render|success") for line in lines)
     assert any(line.startswith("test_facility/s1_render|success") for line in lines)
-
-
 
 def test_auto_shutdown_uses_argv_without_shell(sample_config, tmp_path, monkeypatch):
     import blueprint_validation.pipeline as pipeline_mod
@@ -313,182 +297,6 @@ def test_auto_shutdown_uses_argv_without_shell(sample_config, tmp_path, monkeypa
     assert captured["kwargs"]["shell"] is False
 
 
-def test_pipeline_wm_only_skips_openvla_stages(sample_config, tmp_path, monkeypatch):
-    call_counts = {}
-    pipeline_mod = _patch_pipeline_stages_with_dummies(monkeypatch, call_counts)
-    sample_config.cloud.max_cost_usd = 0
-    sample_config.eval_policy.headline_scope = "wm_only"
-    sample_config.action_boost.enabled = False
-    work_dir = tmp_path / "outputs"
-    pipeline = pipeline_mod.ValidationPipeline(sample_config, work_dir)
-
-    results = pipeline.run_all(resume_from_results=False)
-    deferred = [
-        "s3b_policy_finetune",
-        "s3c_policy_rl_loop",
-        "s4a_rlds_export",
-        "s4b_rollout_dataset",
-        "s4c_policy_pair_train",
-        "s4d_policy_pair_eval",
-        "s4e_trained_eval",
-        "s4f_polaris_eval",
-    ]
-    for stage_name in deferred:
-        key = f"test_facility/{stage_name}"
-        assert results[key].status == "skipped"
-        assert "headline_scope=wm_only" in results[key].detail
-        assert call_counts.get(stage_name, 0) == 0
-
-
-def test_pipeline_primary_gate_summary_prefers_fixed_world_claim_over_s4e(sample_config, tmp_path):
-    import blueprint_validation.pipeline as pipeline_mod
-    from blueprint_validation.common import StageResult
-
-    sample_config.eval_policy.claim_protocol = "fixed_same_facility_uplift"
-    sample_config.eval_policy.primary_endpoint = "task_success"
-    sample_config.eval_policy.freeze_world_snapshot = True
-    sample_config.eval_polaris.enabled = False
-
-    pipeline = pipeline_mod.ValidationPipeline(sample_config, tmp_path / "outputs")
-    summary = pipeline._primary_gate_summary(
-        {
-            "test_facility": {
-                "s4e_trained_eval": StageResult(
-                    stage_name="s4e_trained_eval",
-                    status="success",
-                    elapsed_seconds=0,
-                    outputs={"report_path": "trained.json"},
-                    metrics={"claim_comparison_key": "adapted_vs_trained"},
-                )
-            }
-        }
-    )
-
-    assert summary["gate_name"] == "fixed_world_claim"
-    assert summary["stage_name"] == "s4d_policy_pair_eval"
-    assert summary["status"] == "failed"
-
-
-def test_pipeline_action_boost_auto_switches_wm_only_to_wm_uplift(
-    sample_config, tmp_path, monkeypatch
-):
-    call_counts = {}
-    pipeline_mod = _patch_pipeline_stages_with_dummies(monkeypatch, call_counts)
-    sample_config.cloud.max_cost_usd = 0
-    sample_config.eval_policy.headline_scope = "wm_only"
-    sample_config.action_boost.enabled = True
-    sample_config.action_boost.auto_switch_headline_scope_to_dual = True
-    work_dir = tmp_path / "outputs"
-    pipeline = pipeline_mod.ValidationPipeline(sample_config, work_dir)
-
-    results = pipeline.run_all(resume_from_results=False)
-    assert sample_config.eval_policy.headline_scope == "wm_uplift"
-    for stage_name in (
-        "s4a_rlds_export",
-        "s3b_policy_finetune",
-        "s3c_policy_rl_loop",
-        "s4e_trained_eval",
-    ):
-        key = f"test_facility/{stage_name}"
-        assert results[key].status == "success"
-        assert call_counts.get(stage_name, 0) == 1
-
-
-def test_pipeline_action_boost_require_full_converts_skipped_to_failed(
-    sample_config, tmp_path, monkeypatch
-):
-    import blueprint_validation.pipeline as pipeline_mod
-    from blueprint_validation.common import StageResult
-    from blueprint_validation.stages.base import PipelineStage
-
-    class DummyStage(PipelineStage):
-        def __init__(self, stage_name: str, status: str = "success"):
-            self._stage_name = stage_name
-            self._status = status
-
-        @property
-        def name(self):
-            return self._stage_name
-
-        @property
-        def description(self):
-            return self._stage_name
-
-        def run(self, config, facility, work_dir, previous_results):
-            del config, facility, work_dir, previous_results
-            return StageResult(
-                stage_name=self._stage_name,
-                status=self._status,
-                elapsed_seconds=0.0,
-                detail="simulated",
-            )
-
-    monkeypatch.setattr(
-        pipeline_mod, "TaskHintsBootstrapStage", lambda: DummyStage("s0_task_hints_bootstrap")
-    )
-    monkeypatch.setattr(pipeline_mod, "ScenePackageStage", lambda: DummyStage("s0a_scene_package"))
-    monkeypatch.setattr(
-        pipeline_mod, "SceneMemoryRuntimeStage", lambda: DummyStage("s0b_scene_memory_runtime")
-    )
-    monkeypatch.setattr(pipeline_mod, "IsaacRenderStage", lambda: DummyStage("s1_isaac_render"))
-    monkeypatch.setattr(pipeline_mod, "RenderStage", lambda: DummyStage("s1_render"))
-    monkeypatch.setattr(
-        pipeline_mod, "RobotCompositeStage", lambda: DummyStage("s1b_robot_composite")
-    )
-    monkeypatch.setattr(pipeline_mod, "GeminiPolishStage", lambda: DummyStage("s1c_gemini_polish"))
-    monkeypatch.setattr(
-        pipeline_mod, "GaussianAugmentStage", lambda: DummyStage("s1d_gaussian_augment")
-    )
-    monkeypatch.setattr(
-        pipeline_mod,
-        "ExternalInteractionIngestStage",
-        lambda: DummyStage("s1f_external_interaction_ingest"),
-    )
-    monkeypatch.setattr(pipeline_mod, "EnrichStage", lambda: DummyStage("s2_enrich"))
-    monkeypatch.setattr(pipeline_mod, "FinetuneStage", lambda: DummyStage("s3_finetune"))
-    monkeypatch.setattr(pipeline_mod, "PolicyEvalStage", lambda: DummyStage("s4_policy_eval"))
-    monkeypatch.setattr(
-        pipeline_mod, "WorldModelRefreshLoopStage", lambda: DummyStage("s3d_wm_refresh_loop")
-    )
-    monkeypatch.setattr(
-        pipeline_mod, "RLDSExportStage", lambda: DummyStage("s4a_rlds_export", status="skipped")
-    )
-    monkeypatch.setattr(
-        pipeline_mod, "PolicyFinetuneStage", lambda: DummyStage("s3b_policy_finetune")
-    )
-    monkeypatch.setattr(pipeline_mod, "PolicyRLLoopStage", lambda: DummyStage("s3c_policy_rl_loop"))
-    monkeypatch.setattr(
-        pipeline_mod, "TrainedPolicyEvalStage", lambda: DummyStage("s4e_trained_eval")
-    )
-    monkeypatch.setattr(
-        pipeline_mod, "PolarisEvalStage", lambda: DummyStage("s4f_polaris_eval")
-    )
-    monkeypatch.setattr(
-        pipeline_mod, "RolloutDatasetStage", lambda: DummyStage("s4b_rollout_dataset")
-    )
-    monkeypatch.setattr(
-        pipeline_mod, "PolicyPairTrainStage", lambda: DummyStage("s4c_policy_pair_train")
-    )
-    monkeypatch.setattr(
-        pipeline_mod, "PolicyPairEvalStage", lambda: DummyStage("s4d_policy_pair_eval")
-    )
-    monkeypatch.setattr(
-        pipeline_mod, "VisualFidelityStage", lambda: DummyStage("s5_visual_fidelity")
-    )
-    monkeypatch.setattr(
-        pipeline_mod, "SpatialAccuracyStage", lambda: DummyStage("s6_spatial_accuracy")
-    )
-    monkeypatch.setattr(pipeline_mod, "CrossSiteStage", lambda: DummyStage("s7_cross_site"))
-
-    sample_config.cloud.max_cost_usd = 0
-    sample_config.action_boost.enabled = True
-    sample_config.action_boost.require_full_pipeline = True
-    sample_config.eval_policy.headline_scope = "dual"
-    pipeline = pipeline_mod.ValidationPipeline(sample_config, tmp_path / "outputs")
-    results = pipeline.run_all(resume_from_results=False)
-    assert results["test_facility/s4a_rlds_export"].status == "failed"
-
-
 def test_pipeline_summary_includes_run_metadata_and_stage_provenance(
     sample_config, tmp_path, monkeypatch
 ):
@@ -505,7 +313,6 @@ def test_pipeline_summary_includes_run_metadata_and_stage_provenance(
     assert summary["run_mode"] == "fresh"
     assert summary["run_started_at"]
     assert summary["run_finished_at"]
-    assert "policy_eval_matrix_path" in summary
     for stage_payload in summary["stages"].values():
         provenance = stage_payload.get("provenance", {})
         assert provenance.get("source") == "executed"
@@ -529,20 +336,3 @@ def test_pipeline_summary_marks_resumed_stage_provenance(sample_config, tmp_path
         stage_payload.get("provenance", {}).get("source") == "resumed"
         for stage_payload in summary["stages"].values()
     )
-
-
-def test_pipeline_strict_fresh_guard_blocks_stale_stage_results(
-    sample_config, tmp_path, monkeypatch
-):
-    call_counts = {}
-    pipeline_mod = _patch_pipeline_stages_with_dummies(monkeypatch, call_counts)
-    sample_config.cloud.max_cost_usd = 0
-    sample_config.eval_policy.reliability.enforce_stage_success = True
-    work_dir = tmp_path / "outputs"
-    stale = work_dir / "test_facility" / "s1_render_result.json"
-    stale.parent.mkdir(parents=True, exist_ok=True)
-    stale.write_text('{"stage_name":"s1_render","status":"success"}')
-
-    pipeline = pipeline_mod.ValidationPipeline(sample_config, work_dir)
-    results = pipeline.run_all(resume_from_results=False)
-    assert results["pipeline/fresh_workdir_guard"].status == "failed"

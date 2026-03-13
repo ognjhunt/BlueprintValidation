@@ -40,6 +40,8 @@ artifacts/
 
 # Logs
 *.log
+tmp/
+tmp_debug/
 
 # Environment
 .env

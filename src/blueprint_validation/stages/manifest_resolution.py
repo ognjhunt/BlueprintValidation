@@ -79,7 +79,8 @@ def resolve_manifest_source(
             manifest_path,
         )
 
-    if previous_results:
+    present_stage_keys = {candidate.stage_name for candidate in candidates} & set(previous_results)
+    if present_stage_keys:
         return None
 
     for candidate in candidates:

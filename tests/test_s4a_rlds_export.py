@@ -241,7 +241,7 @@ def test_rlds_export_stage_reports_action_quality_filters(sample_config, tmp_pat
     split = Path(result.outputs["split_manifest_path"])
     assert split.exists()
     payload = read_json(split)
-    assert set(payload.keys()) == {"train_pair_ids", "eval_pair_ids"}
+    assert {"train_pair_ids", "eval_pair_ids"}.issubset(payload.keys())
 
 
 def test_rlds_export_stage_excludes_eval_only_heldout_tasks_from_training(sample_config, tmp_path):

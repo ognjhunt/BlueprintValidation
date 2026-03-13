@@ -10,15 +10,16 @@ def test_pipeline_stage_smoke_imports(sample_config, tmp_path):
     from blueprint_validation.stages.s0a_scene_package import ScenePackageStage
     from blueprint_validation.stages.s0b_scene_memory_runtime import SceneMemoryRuntimeStage
     from blueprint_validation.stages.s1_isaac_render import IsaacRenderStage
+    from blueprint_validation.stages.s1_render import RenderStage
+    from blueprint_validation.stages.s1b_robot_composite import RobotCompositeStage
+    from blueprint_validation.stages.s1c_gemini_polish import GeminiPolishStage
+    from blueprint_validation.stages.s1d_gaussian_augment import GaussianAugmentStage
     from blueprint_validation.stages.s1f_external_interaction_ingest import (
         ExternalInteractionIngestStage,
     )
-    from blueprint_validation.stages.s3b_policy_finetune import PolicyFinetuneStage
-    from blueprint_validation.stages.s3c_policy_rl_loop import PolicyRLLoopStage
-    from blueprint_validation.stages.s3d_wm_refresh_loop import WorldModelRefreshLoopStage
-    from blueprint_validation.stages.s4a_rlds_export import RLDSExportStage
-    from blueprint_validation.stages.s4e_trained_eval import TrainedPolicyEvalStage
-    from blueprint_validation.stages.s4f_polaris_eval import PolarisEvalStage
+    from blueprint_validation.stages.s1g_external_rollout_ingest import (
+        ExternalRolloutIngestStage,
+    )
 
     # Ensure the pipeline can be instantiated with the shared fixture config.
     ValidationPipeline(sample_config, tmp_path / "outputs")
@@ -27,13 +28,12 @@ def test_pipeline_stage_smoke_imports(sample_config, tmp_path):
     assert ScenePackageStage().name == "s0a_scene_package"
     assert SceneMemoryRuntimeStage().name == "s0b_scene_memory_runtime"
     assert IsaacRenderStage().name == "s1_isaac_render"
+    assert RenderStage().name == "s1_render"
+    assert RobotCompositeStage().name == "s1b_robot_composite"
+    assert GeminiPolishStage().name == "s1c_gemini_polish"
+    assert GaussianAugmentStage().name == "s1d_gaussian_augment"
     assert ExternalInteractionIngestStage().name == "s1f_external_interaction_ingest"
-    assert PolicyFinetuneStage().name == "s3b_policy_finetune"
-    assert PolicyRLLoopStage().name == "s3c_policy_rl_loop"
-    assert WorldModelRefreshLoopStage().name == "s3d_wm_refresh_loop"
-    assert RLDSExportStage().name == "s4a_rlds_export"
-    assert TrainedPolicyEvalStage().name == "s4e_trained_eval"
-    assert PolarisEvalStage().name == "s4f_polaris_eval"
+    assert ExternalRolloutIngestStage().name == "s1g_external_rollout_ingest"
 
 
 def test_stage_names_are_unique():
@@ -49,21 +49,7 @@ def test_stage_names_are_unique():
     from blueprint_validation.stages.s1f_external_interaction_ingest import (
         ExternalInteractionIngestStage,
     )
-    from blueprint_validation.stages.s2_enrich import EnrichStage
-    from blueprint_validation.stages.s3_finetune import FinetuneStage
-    from blueprint_validation.stages.s3b_policy_finetune import PolicyFinetuneStage
-    from blueprint_validation.stages.s3c_policy_rl_loop import PolicyRLLoopStage
-    from blueprint_validation.stages.s3d_wm_refresh_loop import WorldModelRefreshLoopStage
-    from blueprint_validation.stages.s4_policy_eval import PolicyEvalStage
-    from blueprint_validation.stages.s4a_rlds_export import RLDSExportStage
-    from blueprint_validation.stages.s4b_rollout_dataset import RolloutDatasetStage
-    from blueprint_validation.stages.s4c_policy_pair_train import PolicyPairTrainStage
-    from blueprint_validation.stages.s4d_policy_pair_eval import PolicyPairEvalStage
-    from blueprint_validation.stages.s4e_trained_eval import TrainedPolicyEvalStage
-    from blueprint_validation.stages.s4f_polaris_eval import PolarisEvalStage
-    from blueprint_validation.stages.s5_visual_fidelity import VisualFidelityStage
-    from blueprint_validation.stages.s6_spatial_accuracy import SpatialAccuracyStage
-    from blueprint_validation.stages.s7_cross_site import CrossSiteStage
+    from blueprint_validation.stages.s1g_external_rollout_ingest import ExternalRolloutIngestStage
 
     stages = [
         TaskHintsBootstrapStage(),
@@ -75,36 +61,13 @@ def test_stage_names_are_unique():
         GeminiPolishStage(),
         GaussianAugmentStage(),
         ExternalInteractionIngestStage(),
-        EnrichStage(),
-        FinetuneStage(),
-        PolicyEvalStage(),
-        RLDSExportStage(),
-        PolicyFinetuneStage(),
-        PolicyRLLoopStage(),
-        WorldModelRefreshLoopStage(),
-        TrainedPolicyEvalStage(),
-        PolarisEvalStage(),
-        RolloutDatasetStage(),
-        PolicyPairTrainStage(),
-        PolicyPairEvalStage(),
-        VisualFidelityStage(),
-        SpatialAccuracyStage(),
-        CrossSiteStage(),
+        ExternalRolloutIngestStage(),
     ]
     names = [stage.name for stage in stages]
     assert len(names) == len(set(names)), f"Duplicate stage names: {names}"
 
 
-def test_validation_config_exposes_action_boost_defaults():
-    from blueprint_validation.config import ValidationConfig
-
-    cfg = ValidationConfig()
-    assert cfg.action_boost.enabled is True
-    assert cfg.action_boost.require_full_pipeline is True
-    assert cfg.action_boost.compute_profile == "standard"
-
-
-def test_pipeline_reruns_s4_after_successful_s3d(sample_config, tmp_path, monkeypatch):
+def test_pipeline_executes_runtime_first_stages_in_order(sample_config, tmp_path, monkeypatch):
     import blueprint_validation.pipeline as pipeline_mod
     from blueprint_validation.common import StageResult
     from blueprint_validation.stages.base import PipelineStage
@@ -149,38 +112,22 @@ def test_pipeline_reruns_s4_after_successful_s3d(sample_config, tmp_path, monkey
         "ExternalInteractionIngestStage",
         lambda: OrderedStage("s1f_external_interaction_ingest"),
     )
-    monkeypatch.setattr(pipeline_mod, "EnrichStage", lambda: OrderedStage("s2_enrich"))
-    monkeypatch.setattr(pipeline_mod, "FinetuneStage", lambda: OrderedStage("s3_finetune"))
-    monkeypatch.setattr(pipeline_mod, "PolicyEvalStage", lambda: OrderedStage("s4_policy_eval"))
     monkeypatch.setattr(
-        pipeline_mod, "WorldModelRefreshLoopStage", lambda: OrderedStage("s3d_wm_refresh_loop")
+        pipeline_mod,
+        "ExternalRolloutIngestStage",
+        lambda: OrderedStage("s1g_external_rollout_ingest"),
     )
-    monkeypatch.setattr(pipeline_mod, "RLDSExportStage", lambda: OrderedStage("s4a_rlds_export"))
-    monkeypatch.setattr(pipeline_mod, "PolicyFinetuneStage", lambda: OrderedStage("s3b_policy_finetune"))
-    monkeypatch.setattr(pipeline_mod, "PolicyRLLoopStage", lambda: OrderedStage("s3c_policy_rl_loop"))
-    monkeypatch.setattr(pipeline_mod, "TrainedPolicyEvalStage", lambda: OrderedStage("s4e_trained_eval"))
-    monkeypatch.setattr(pipeline_mod, "PolarisEvalStage", lambda: OrderedStage("s4f_polaris_eval"))
-    monkeypatch.setattr(pipeline_mod, "RolloutDatasetStage", lambda: OrderedStage("s4b_rollout_dataset"))
-    monkeypatch.setattr(pipeline_mod, "PolicyPairTrainStage", lambda: OrderedStage("s4c_policy_pair_train"))
-    monkeypatch.setattr(pipeline_mod, "PolicyPairEvalStage", lambda: OrderedStage("s4d_policy_pair_eval"))
-    monkeypatch.setattr(pipeline_mod, "VisualFidelityStage", lambda: OrderedStage("s5_visual_fidelity"))
-    monkeypatch.setattr(pipeline_mod, "SpatialAccuracyStage", lambda: OrderedStage("s6_spatial_accuracy"))
-    monkeypatch.setattr(pipeline_mod, "CrossSiteStage", lambda: OrderedStage("s7_cross_site"))
 
     sample_config.cloud.max_cost_usd = 0
-    sample_config.eval_policy.headline_scope = "dual"
-    sample_config.eval_policy.reliability.enforce_stage_success = False
     pipeline = pipeline_mod.ValidationPipeline(sample_config, tmp_path / "outputs")
     pipeline.run_all(resume_from_results=False)
 
-    first_s4 = execution_order.index("s4_policy_eval")
-    s3d = execution_order.index("s3d_wm_refresh_loop")
-    second_s4 = execution_order.index("s4_policy_eval", first_s4 + 1)
-    s4a = execution_order.index("s4a_rlds_export")
-    s4f = execution_order.index("s4f_polaris_eval")
     assert execution_order.index("s0_task_hints_bootstrap") < execution_order.index("s0b_scene_memory_runtime")
     assert execution_order.index("s0b_scene_memory_runtime") < execution_order.index("s0a_scene_package")
     assert execution_order.index("s0a_scene_package") < execution_order.index("s1_isaac_render")
     assert execution_order.index("s1_isaac_render") < execution_order.index("s1_render")
-    assert first_s4 < s3d < second_s4 < s4a
-    assert execution_order.index("s4e_trained_eval") < s4f < execution_order.index("s4b_rollout_dataset")
+    assert execution_order.index("s1_render") < execution_order.index("s1b_robot_composite")
+    assert execution_order.index("s1b_robot_composite") < execution_order.index("s1c_gemini_polish")
+    assert execution_order.index("s1c_gemini_polish") < execution_order.index("s1d_gaussian_augment")
+    assert execution_order.index("s1d_gaussian_augment") < execution_order.index("s1f_external_interaction_ingest")
+    assert execution_order.index("s1f_external_interaction_ingest") < execution_order.index("s1g_external_rollout_ingest")

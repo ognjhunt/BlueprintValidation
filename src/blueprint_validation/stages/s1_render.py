@@ -3924,6 +3924,8 @@ def _build_scene_locked_specs(
             task_hints_path,
             grounding_path=facility.holi_spatial_grounding_path,
         )
+    except TypeError:
+        obbs = load_obbs_from_task_targets(task_hints_path)
     except Exception:
         logger.warning(
             "%s scene-locked mode failed to load OBBs from %s",

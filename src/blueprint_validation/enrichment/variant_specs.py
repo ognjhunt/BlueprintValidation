@@ -80,7 +80,9 @@ def _candidate_dynamic_models(primary_model: str) -> list[str]:
     """Build ordered candidate model list for dynamic variant generation."""
     primary = (primary_model or "").strip() or "gemini-3-flash-preview"
     candidates = [primary]
-    for fallback in ("gemini-3.1-flash-lite-preview", "gemini-2.5-flash"):
+    if primary == "gemini-2.5-flash":
+        return candidates
+    for fallback in ("gemini-2.5-flash",):
         if fallback not in candidates:
             candidates.append(fallback)
     return candidates
