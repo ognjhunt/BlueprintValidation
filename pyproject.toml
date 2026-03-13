@@ -16,7 +16,7 @@ keywords = [
 ]
 
 dependencies = [
-    "blueprint-contracts @ file:///Users/nijelhunt_1/workspace/BlueprintContracts",
+    "blueprint-contracts @ git+https://github.com/ognjhunt/BlueprintContracts.git@2933580",
     "click>=8.0",
     "pyyaml>=6.0",
     "fastapi>=0.115.0",

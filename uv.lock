@@ -404,12 +404,7 @@ wheels = [
 [[package]]
 name = "blueprint-contracts"
 version = "0.1.0"
-source = { directory = "../BlueprintContracts" }
-
-[package.metadata]
-
-[package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=7.0.0" }]
+source = { git = "https://github.com/ognjhunt/BlueprintContracts.git?rev=2933580#2933580347090ad01c2bdfb0b56d7c0535924feb" }
 
 [[package]]
 name = "blueprint-validation"
@@ -492,7 +487,7 @@ dev = [
 requires-dist = [
     { name = "accelerate", marker = "extra == 'full'", specifier = ">=1.0.0" },
     { name = "accelerate", marker = "extra == 'training'", specifier = ">=1.0.0" },
-    { name = "blueprint-contracts", directory = "../BlueprintContracts" },
+    { name = "blueprint-contracts", git = "https://github.com/ognjhunt/BlueprintContracts.git?rev=2933580" },
     { name = "click", specifier = ">=8.0" },
     { name = "defusedxml", specifier = ">=0.7.1" },
     { name = "fastapi", specifier = ">=0.115.0" },
