@@ -15,6 +15,7 @@ from .config import ValidationConfig
 from .neoverse_runtime_client import NeoVerseRuntimeClient, NeoVerseRuntimeClientConfig
 from .optional_dependencies import require_optional_dependency
 from .public_contract import public_runtime_label
+from .runtime_backend import parse_runtime_metadata, runtime_kind_matches, runtime_kind_label
 
 
 class HostedSessionError(RuntimeError):
@@ -53,6 +54,38 @@ def _episode_state_path(work_dir: Path) -> Path:
 
 def _rollouts_dir(work_dir: Path) -> Path:
     return work_dir / "rollouts"
+
+
+def _runtime_probe_path(work_dir: Path) -> Path:
+    return work_dir / "runtime_probe.json"
+
+
+def _validate_runtime_probe(config: ValidationConfig, probe: Mapping[str, Any]) -> Dict[str, Any]:
+    runtime = dict(probe.get("runtime", {}) or {})
+    runtime_match, runtime_detail = runtime_kind_matches(
+        runtime,
+        required_kind=config.scene_memory_runtime.required_runtime_kind,
+        allow_smoke_fallback=config.scene_memory_runtime.allow_smoke_fallback,
+    )
+    if not runtime_match:
+        raise HostedSessionError(f"Runtime kind mismatch: {runtime_detail}")
+    metadata = parse_runtime_metadata(runtime)
+    if metadata.runtime_kind == "neoverse_production":
+        readiness = metadata.readiness
+        if not bool(readiness.get("model_ready", False)):
+            raise HostedSessionError("NeoVerse production runtime model is not ready.")
+        if not bool(readiness.get("checkpoint_ready", False)):
+            raise HostedSessionError("NeoVerse production runtime checkpoint is not ready.")
+    return {
+        "runtime_kind": metadata.runtime_kind,
+        "runtime_kind_public_name": runtime_kind_label(metadata.runtime_kind),
+        "production_grade": metadata.production_grade,
+        "engine_identity": dict(metadata.engine_identity),
+        "model_identity": dict(metadata.model_identity),
+        "checkpoint_identity": dict(metadata.checkpoint_identity),
+        "readiness": dict(metadata.readiness),
+        "capabilities": dict(metadata.capabilities),
+    }
 
 
 def _resolve_runtime_client(config: ValidationConfig, registration: Mapping[str, Any]) -> NeoVerseRuntimeClient:
@@ -286,8 +319,15 @@ def create_session(
     session_work_dir.mkdir(parents=True, exist_ok=True)
     _rollouts_dir(session_work_dir).mkdir(parents=True, exist_ok=True)
     client = _resolve_runtime_client(config, registration)
+    runtime_probe = client.probe_runtime()
+    runtime_details = _validate_runtime_probe(config, runtime_probe)
+    registered_site_world = client.register_site_world_package(
+        spec=dict(bundle.spec or {}),
+        registration=dict(registration or {}),
+        health=dict(health or {}),
+    )
     create_payload = client.create_session(
-        str(registration["site_world_id"]),
+        str(registered_site_world.get("site_world_id") or registration["site_world_id"]),
         session_id=session_id,
         robot_profile_id=robot_profile_id,
         task_id=task_id,
@@ -302,7 +342,6 @@ def create_session(
         debug_mode=bool(debug_mode),
         unsafe_allow_blocked_site_world=allow_blocked_site_world,
     )
-    runtime_probe = client.probe_runtime()
 
     session_state = {
         "schema_version": "v1",
@@ -310,14 +349,22 @@ def create_session(
         "remote_session_id": str(create_payload.get("session_id") or session_id),
         "site_world_registration_path": str(registration_path.resolve()),
         "site_world_spec_path": str(bundle.spec_path.resolve()),
-        "site_world_id": registration.get("site_world_id"),
+        "site_world_id": registered_site_world.get("site_world_id") or registration.get("site_world_id"),
         "scene_id": registration.get("scene_id"),
         "capture_id": registration.get("capture_id"),
         "build_id": registration.get("build_id"),
         "status": "ready",
         "runtime_backend_selected": "neoverse_service",
         "runtime_backend_public_name": public_runtime_label("neoverse_service"),
+        "runtime_kind": runtime_details["runtime_kind"],
+        "runtime_kind_public_name": runtime_details["runtime_kind_public_name"],
+        "production_grade": runtime_details["production_grade"],
         "runtime_service_url": str(client.config.service_url),
+        "runtime_engine_identity": runtime_details["engine_identity"],
+        "runtime_model_identity": runtime_details["model_identity"],
+        "runtime_checkpoint_identity": runtime_details["checkpoint_identity"],
+        "runtime_readiness": runtime_details["readiness"],
+        "runtime_capabilities": runtime_details["capabilities"],
         "robot_profile": robot_profile,
         "task": task_entry,
         "scenario": scenario_entry,
@@ -326,10 +373,31 @@ def create_session(
         "runtime_probe": runtime_probe,
         "current_episode_id": None,
         "latest_episode_path": None,
+        "runtime_probe_path": None,
         "runtime_smoke_path": None,
         "batch_summary_path": None,
-        "artifact_uris": {"session_state": str(_session_state_path(session_work_dir))},
+        "artifact_uris": {
+            "session_state": str(_session_state_path(session_work_dir)),
+            "runtime_probe": str(_runtime_probe_path(session_work_dir)),
+        },
     }
+    _write_json(_session_state_path(session_work_dir), session_state)
+    _write_json(
+        _runtime_probe_path(session_work_dir),
+        {
+            "schema_version": "v1",
+            "session_id": session_id,
+            "site_world_id": session_state["site_world_id"],
+            "service_url": session_state["runtime_service_url"],
+            "runtime_kind": runtime_details["runtime_kind"],
+            "production_grade": runtime_details["production_grade"],
+            "engine_identity": runtime_details["engine_identity"],
+            "model_identity": runtime_details["model_identity"],
+            "checkpoint_identity": runtime_details["checkpoint_identity"],
+            "probe": runtime_probe,
+        },
+    )
+    session_state["runtime_probe_path"] = str(_runtime_probe_path(session_work_dir))
     _write_json(_session_state_path(session_work_dir), session_state)
     return {
         "session_id": session_id,
@@ -337,6 +405,12 @@ def create_session(
         "siteWorldId": registration.get("site_world_id"),
         "runtime_backend_selected": "neoverse_service",
         "runtime_backend_public_name": public_runtime_label("neoverse_service"),
+        "runtime_kind": runtime_details["runtime_kind"],
+        "runtime_kind_public_name": runtime_details["runtime_kind_public_name"],
+        "production_grade": runtime_details["production_grade"],
+        "runtime_engine_identity": runtime_details["engine_identity"],
+        "runtime_model_identity": runtime_details["model_identity"],
+        "runtime_checkpoint_identity": runtime_details["checkpoint_identity"],
         "robotProfile": robot_profile,
         "observationCameras": list(create_payload.get("observation_cameras", []) or _camera_catalog(robot_profile).values()),
         "artifact_uris": session_state["artifact_uris"],
@@ -424,22 +498,34 @@ def reset_session(
         "artifact_uris": {"episode_state": str(episode_dir / "episode_state.json")},
         "remote_episode": remote_episode,
     }
-    runtime_smoke_path = session_work_dir / "runtime_smoke.json"
+    runtime_probe_path = _runtime_probe_path(session_work_dir)
+    runtime_probe_payload = {
+        "schema_version": "v1",
+        "session_id": session_id,
+        "remote_session_id": remote_session_id,
+        "site_world_id": session_state.get("site_world_id"),
+        "service_url": session_state.get("runtime_service_url"),
+        "runtime_kind": session_state.get("runtime_kind"),
+        "production_grade": session_state.get("production_grade"),
+        "engine_identity": session_state.get("runtime_engine_identity", {}),
+        "model_identity": session_state.get("runtime_model_identity", {}),
+        "checkpoint_identity": session_state.get("runtime_checkpoint_identity", {}),
+        "initial_episode": _episode_payload(episode_state),
+    }
     _write_json(
-        runtime_smoke_path,
-        {
-            "schema_version": "v1",
-            "session_id": session_id,
-            "remote_session_id": remote_session_id,
-            "site_world_id": session_state.get("site_world_id"),
-            "service_url": session_state.get("runtime_service_url"),
-            "initial_episode": _episode_payload(episode_state),
-        },
+        runtime_probe_path,
+        runtime_probe_payload,
     )
+    runtime_smoke_path = session_work_dir / "runtime_smoke.json"
+    if str(session_state.get("runtime_kind") or "") == "smoke_contract":
+        _write_json(runtime_smoke_path, runtime_probe_payload)
+        session_state["runtime_smoke_path"] = str(runtime_smoke_path)
+    else:
+        session_state["runtime_smoke_path"] = None
     _write_json(_episode_state_path(session_work_dir), episode_state)
     session_state["current_episode_id"] = episode_id
     session_state["latest_episode_path"] = str(_episode_state_path(session_work_dir))
-    session_state["runtime_smoke_path"] = str(runtime_smoke_path)
+    session_state["runtime_probe_path"] = str(runtime_probe_path)
     session_state["status"] = "running"
     session_state["task"] = task_entry
     session_state["scenario"] = scenario_entry
@@ -574,6 +660,8 @@ def run_batch(
         "session_id": session_state["session_id"],
         "batchRunId": summary["batchRunId"],
         "status": "completed",
+        "runtime_kind": session_state.get("runtime_kind"),
+        "production_grade": session_state.get("production_grade"),
         "assignments": assignments,
         "summary": summary,
         "artifact_uris": {"runtime_batch_manifest": str(manifest_path)},
@@ -637,9 +725,15 @@ def export_session(*, session_work_dir: Path) -> Dict[str, Any]:
     raw_manifest = {
         "schema_version": "v1",
         "session_id": session_state["session_id"],
+        "runtime_kind": session_state.get("runtime_kind"),
+        "production_grade": session_state.get("production_grade"),
+        "runtime_engine_identity": session_state.get("runtime_engine_identity", {}),
+        "runtime_model_identity": session_state.get("runtime_model_identity", {}),
+        "runtime_checkpoint_identity": session_state.get("runtime_checkpoint_identity", {}),
         "rollouts": rollouts,
         "session_state_path": str(_session_state_path(session_work_dir)),
         "batch_summary_path": session_state.get("batch_summary_path"),
+        "runtime_probe_path": session_state.get("runtime_probe_path"),
         "runtime_smoke_path": session_state.get("runtime_smoke_path"),
     }
     raw_manifest_path = raw_bundle_dir / "raw_session_bundle.json"
@@ -663,6 +757,11 @@ def export_session(*, session_work_dir: Path) -> Dict[str, Any]:
     manifest = {
         "schema_version": "v1",
         "session_id": session_state["session_id"],
+        "runtime_kind": session_state.get("runtime_kind"),
+        "production_grade": session_state.get("production_grade"),
+        "runtime_engine_identity": session_state.get("runtime_engine_identity", {}),
+        "runtime_model_identity": session_state.get("runtime_model_identity", {}),
+        "runtime_checkpoint_identity": session_state.get("runtime_checkpoint_identity", {}),
         "raw_bundle": {"manifest_path": str(raw_manifest_path), "rollout_count": len(rollouts)},
         "rlds_dataset": {"manifest_path": str(rlds_manifest_path), "episodes_jsonl": str(rlds_jsonl_path)},
         "rollouts": rollouts,
@@ -675,5 +774,6 @@ def export_session(*, session_work_dir: Path) -> Dict[str, Any]:
             "export_manifest": str(export_path),
             "raw_bundle": str(raw_manifest_path),
             "rlds_dataset": str(rlds_manifest_path),
+            "runtime_probe": str(session_state.get("runtime_probe_path") or ""),
         },
     }

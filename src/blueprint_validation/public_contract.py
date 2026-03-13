@@ -4,10 +4,14 @@ from __future__ import annotations
 
 from typing import Any, Dict, Mapping
 
+from .runtime_backend import runtime_kind_label
+
 
 _PUBLIC_RUNTIME_LABELS = {
     "neoverse": "NeoVerse runtime",
     "neoverse_service": "NeoVerse runtime service",
+    "smoke_contract": "Smoke contract runtime",
+    "neoverse_production": "NeoVerse production runtime",
 }
 
 
@@ -28,6 +32,12 @@ def build_standardized_eval_report(report_data: Mapping[str, Any]) -> Dict[str, 
         "session_id": session.get("session_id"),
         "site_world_id": session.get("site_world_id"),
         "runtime_backend_public": public_runtime_label(session.get("runtime_backend_selected")),
+        "runtime_kind": session.get("runtime_kind"),
+        "runtime_kind_public": runtime_kind_label(session.get("runtime_kind")),
+        "production_grade": session.get("production_grade"),
+        "engine_identity": session.get("runtime_engine_identity", {}),
+        "model_identity": session.get("runtime_model_identity", {}),
+        "checkpoint_identity": session.get("runtime_checkpoint_identity", {}),
         "session_status": session.get("status"),
         "batch_summary": batch.get("summary"),
         "export_artifacts": export_data.get("artifact_uris", {}),

@@ -11,6 +11,7 @@ from blueprint_contracts.site_world_contract import SiteWorldIntakeError, load_s
 from .common import PreflightCheck
 from .config import ValidationConfig
 from .neoverse_runtime_client import NeoVerseRuntimeClient, NeoVerseRuntimeClientConfig
+from .runtime_backend import parse_runtime_metadata, runtime_kind_matches
 
 
 def _configured_service_url(config: ValidationConfig) -> str:
@@ -67,7 +68,8 @@ def run_preflight(
 
     try:
         runtime = client.runtime_info()
-        capabilities = runtime.get("capabilities") if isinstance(runtime.get("capabilities"), dict) else {}
+        metadata = parse_runtime_metadata(runtime)
+        capabilities = metadata.capabilities if isinstance(metadata.capabilities, dict) else {}
         missing = [
             key
             for key in ("site_world_registration", "session_reset", "session_step", "session_render", "session_state")
@@ -80,8 +82,49 @@ def run_preflight(
                 detail="ok" if not missing else f"missing={','.join(missing)}",
             )
         )
+        runtime_match, runtime_detail = runtime_kind_matches(
+            runtime,
+            required_kind=config.scene_memory_runtime.required_runtime_kind,
+            allow_smoke_fallback=config.scene_memory_runtime.allow_smoke_fallback,
+        )
+        checks.append(
+            PreflightCheck(
+                name="runtime:kind",
+                passed=runtime_match,
+                detail=(
+                    metadata.runtime_kind
+                    if runtime_match and runtime_detail == "ok"
+                    else runtime_detail
+                ),
+            )
+        )
+        checks.append(
+            PreflightCheck(
+                name="runtime:production_grade",
+                passed=bool(metadata.production_grade) or metadata.runtime_kind == "smoke_contract",
+                detail=str(metadata.production_grade),
+            )
+        )
+        readiness = metadata.readiness
+        checks.append(
+            PreflightCheck(
+                name="runtime:model_ready",
+                passed=bool(readiness.get("model_ready", True)),
+                detail=str(readiness.get("model_ready", True)),
+            )
+        )
+        checks.append(
+            PreflightCheck(
+                name="runtime:checkpoint_ready",
+                passed=bool(readiness.get("checkpoint_ready", True)),
+                detail=str(readiness.get("checkpoint_ready", True)),
+            )
+        )
     except Exception as exc:
         checks.append(PreflightCheck(name="runtime:capabilities", passed=False, detail=str(exc)))
+        checks.append(PreflightCheck(name="runtime:kind", passed=False, detail=str(exc)))
+        checks.append(PreflightCheck(name="runtime:model_ready", passed=False, detail=str(exc)))
+        checks.append(PreflightCheck(name="runtime:checkpoint_ready", passed=False, detail=str(exc)))
 
     if site_world_registration is not None:
         registration_path = Path(site_world_registration).expanduser().resolve()

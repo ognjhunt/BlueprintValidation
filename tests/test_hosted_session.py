@@ -14,11 +14,38 @@ class _FakeRuntimeClient:
         self._step_index = 0
         self.config = type("Config", (), {"service_url": "http://runtime.local"})()
 
+    def register_site_world_package(self, *, spec, registration, health):
+        return {
+            "site_world_id": registration["site_world_id"],
+            "runtime_kind": "neoverse_production",
+            "production_grade": True,
+            "runtime_model_identity": {"model_id": "test-model"},
+            "runtime_checkpoint_identity": {"checkpoint_id": "test-ckpt"},
+        }
+
     def create_session(self, *_args, **_kwargs):
         return {"session_id": "remote-session-1", "observation_cameras": [{"id": "head_rgb", "role": "head"}]}
 
     def probe_runtime(self):
-        return {"healthz": {"status": "ok"}, "runtime": {"service": "fake"}}
+        return {
+            "healthz": {"status": "ok", "runtime_kind": "neoverse_production"},
+            "runtime": {
+                "service": "fake",
+                "runtime_kind": "neoverse_production",
+                "production_grade": True,
+                "engine_identity": {"engine": "neoverse"},
+                "model_identity": {"model_id": "test-model"},
+                "checkpoint_identity": {"checkpoint_id": "test-ckpt"},
+                "readiness": {"model_ready": True, "checkpoint_ready": True},
+                "capabilities": {
+                    "site_world_registration": True,
+                    "session_reset": True,
+                    "session_step": True,
+                    "session_render": True,
+                    "session_state": True,
+                },
+            },
+        }
 
     def reset_session(self, *_args, **_kwargs):
         self._step_index = 0
@@ -52,6 +79,7 @@ def test_hosted_session_round_trip(tmp_path: Path, sample_site_world_bundle: dic
         start_state_id="start-default",
     )
     assert create_payload["status"] == "ready"
+    assert create_payload["runtime_kind"] == "neoverse_production"
 
     reset_payload = reset_session(config=config, session_id="session-1", session_work_dir=session_dir)
     episode_id = reset_payload["episode"]["episodeId"]
@@ -71,3 +99,5 @@ def test_hosted_session_round_trip(tmp_path: Path, sample_site_world_bundle: dic
     assert export_manifest.exists()
     exported = json.loads(export_manifest.read_text(encoding="utf-8"))
     assert exported["raw_bundle"]["rollout_count"] >= 1
+    assert exported["runtime_kind"] == "neoverse_production"
+    assert (session_dir / "runtime_probe.json").exists()

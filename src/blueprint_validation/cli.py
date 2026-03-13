@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
@@ -12,6 +13,7 @@ import click
 
 from .common import setup_logging
 from .config import load_config
+from .runtime_backend import KNOWN_RUNTIME_BACKEND_KINDS, normalize_runtime_kind
 
 
 _PREFERRED_COMMAND_ORDER = {
@@ -79,22 +81,45 @@ def _load_cli_config(ctx: click.Context):
         config_path = Path(ctx.obj["config_path"]).expanduser().resolve()
         if not config_path.exists():
             raise click.ClickException(f"Config path does not exist: {config_path}")
-        ctx.obj["config"] = load_config(config_path)
+        config = load_config(config_path)
+        override_kind = ctx.obj.get("required_runtime_kind")
+        if override_kind:
+            config = replace(
+                config,
+                scene_memory_runtime=replace(
+                    config.scene_memory_runtime,
+                    required_runtime_kind=normalize_runtime_kind(override_kind),
+                ),
+            )
+        ctx.obj["config"] = config
     return ctx.obj["config"]
 
 
 @click.group(cls=BlueprintCliGroup)
 @click.option("--config", "config_path", type=click.Path(), default="validation.yaml", help="Path to validation YAML config.")
 @click.option("--work-dir", type=click.Path(), default="./data/outputs", help="Working directory for reports.")
+@click.option(
+    "--required-runtime-kind",
+    type=click.Choice(sorted(KNOWN_RUNTIME_BACKEND_KINDS)),
+    default=None,
+    help="Override the runtime kind this command requires from the remote runtime service.",
+)
 @click.option("--verbose/--quiet", default=True, help="Logging verbosity.")
 @click.pass_context
-def cli(ctx: click.Context, config_path: str, work_dir: str, verbose: bool) -> None:
+def cli(
+    ctx: click.Context,
+    config_path: str,
+    work_dir: str,
+    required_runtime_kind: Optional[str],
+    verbose: bool,
+) -> None:
     """Consume built site-world packages through NeoVerse runtime sessions and exports."""
     setup_logging(verbose)
     _load_local_env_defaults()
     ctx.ensure_object(dict)
     ctx.obj["config_path"] = config_path
     ctx.obj["work_dir"] = Path(work_dir)
+    ctx.obj["required_runtime_kind"] = required_runtime_kind
 
 
 @cli.command()

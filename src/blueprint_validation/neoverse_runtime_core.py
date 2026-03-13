@@ -1,7 +1,8 @@
-"""Persistent downstream site-world runtime store used by the NeoVerse service.
+"""Local smoke-contract runtime store for NeoVerse site-world validation.
 
-This store consumes already-built site-world package artifacts and derives local runtime
-cache/session state from them. Shared contract ownership stays in BlueprintContracts.
+This module intentionally provides a deterministic local contract/smoke backend. It is
+useful for interface validation and developer smoke flows, but it is not the
+production NeoVerse runtime path.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from .runtime_layer_grounding import (
     validate_runtime_layer_spec,
     verify_canonical_package_version,
 )
+from .runtime_backend import RuntimeMetadata
 
 
 def _utc_now_iso() -> str:
@@ -184,8 +186,8 @@ class RuntimeValidationResult:
     warnings: list[str]
 
 
-class NeoVerseRuntimeStore:
-    """Disk-backed store for site worlds and sessions."""
+class SmokeContractRuntimeStore:
+    """Disk-backed local smoke runtime for site worlds and sessions."""
 
     def __init__(self, root_dir: str | Path, *, base_url: str, ws_base_url: Optional[str] = None) -> None:
         self.root_dir = Path(root_dir).resolve()
@@ -213,6 +215,54 @@ class NeoVerseRuntimeStore:
 
     def _session_state_path(self, session_id: str) -> Path:
         return self._session_dir(session_id) / "session_state.json"
+
+    def runtime_info(self, *, service_version: str) -> Dict[str, Any]:
+        return RuntimeMetadata(
+            runtime_kind="smoke_contract",
+            production_grade=False,
+            service="neoverse-smoke-contract-runtime",
+            version=service_version,
+            runtime_base_url=self.base_url,
+            websocket_base_url=self.ws_base_url,
+            engine_identity={
+                "engine": "smoke_contract_runtime",
+                "mode": "local_deterministic_contract",
+            },
+            model_identity={
+                "model_family": "none",
+                "model_id": "smoke-contract-renderer",
+                "model_ready": True,
+            },
+            checkpoint_identity={
+                "checkpoint_id": "none",
+                "checkpoint_path": "",
+                "checkpoint_ready": True,
+            },
+            state_guarantees={
+                "authoritative_state": False,
+                "restart_safe": True,
+                "deterministic_replay": True,
+                "render_source": "conditioning_seed_frame_plus_transforms",
+            },
+            capabilities={
+                "site_world_package_registration": True,
+                "site_world_registration": True,
+                "session_reset": True,
+                "session_step": True,
+                "session_render": True,
+                "session_state": True,
+                "session_stream": True,
+                "protected_region_locking": True,
+                "runtime_layer_compositing": True,
+                "debug_render_outputs": True,
+            },
+            readiness={
+                "ready": True,
+                "model_ready": True,
+                "checkpoint_ready": True,
+                "notes": ["Smoke-only backend; not suitable for production validation."],
+            },
+        ).to_dict()
 
     def validate_spec(
         self,
@@ -382,6 +432,8 @@ class NeoVerseRuntimeStore:
         registration_payload = {
             **dict(registration),
             "schema_version": "v1",
+            "runtime_kind": "smoke_contract",
+            "production_grade": False,
             "site_world_id": site_world_id,
             "build_id": build_id,
             "scene_id": scene_id,
@@ -415,6 +467,10 @@ class NeoVerseRuntimeStore:
                 "runtime_layer_compositing": True,
                 "debug_render_outputs": True,
             },
+            "runtime_engine_identity": {
+                "engine": "smoke_contract_runtime",
+                "mode": "local_deterministic_contract",
+            },
             "registration_mode": str(registration.get("registration_mode") or "package_registration"),
             "intake_source": str(registration.get("intake_source") or "built_site_world_package"),
             "compatibility_notice": str(registration.get("compatibility_notice") or ""),
@@ -431,6 +487,8 @@ class NeoVerseRuntimeStore:
         health_payload = {
             **dict(health),
             "schema_version": "v1",
+            "runtime_kind": "smoke_contract",
+            "production_grade": False,
             "site_world_id": site_world_id,
             "build_id": build_id,
             "scene_id": scene_id,
@@ -456,6 +514,7 @@ class NeoVerseRuntimeStore:
             "task_catalog": list(spec.get("task_catalog") or []),
             "robot_profiles": list(spec.get("robot_profiles") or []),
             "runtime_capabilities": dict(registration_payload.get("runtime_capabilities") or {}),
+            "runtime_engine_identity": dict(registration_payload.get("runtime_engine_identity") or {}),
             "registration_mode": registration_payload.get("registration_mode"),
             "intake_source": registration_payload.get("intake_source"),
             "compatibility_notice": registration_payload.get("compatibility_notice"),
@@ -551,6 +610,8 @@ class NeoVerseRuntimeStore:
         session_state = {
             "schema_version": "v1",
             "session_id": session_id,
+            "runtime_kind": "smoke_contract",
+            "production_grade": False,
             "site_world_id": site_world_id,
             "build_id": registration.get("build_id"),
             "scene_id": registration.get("scene_id"),
@@ -575,6 +636,19 @@ class NeoVerseRuntimeStore:
             "quality_flags": {"presentation_quality": "normal", "editable_ratio": 0.0, "locked_ratio": 0.0},
             "protected_region_violations": [],
             "debug_artifacts": {},
+            "runtime_engine_identity": {
+                "engine": "smoke_contract_runtime",
+                "mode": "local_deterministic_contract",
+            },
+            "runtime_model_identity": {
+                "model_family": "none",
+                "model_id": "smoke-contract-renderer",
+                "model_ready": True,
+            },
+            "runtime_checkpoint_identity": {
+                "checkpoint_id": "none",
+                "checkpoint_ready": True,
+            },
             "step_index": 0,
             "done": False,
             "success": None,
@@ -608,12 +682,17 @@ class NeoVerseRuntimeStore:
             "site_world_id": site_world_id,
             "build_id": registration.get("build_id"),
             "status": "ready",
+            "runtime_kind": "smoke_contract",
+            "production_grade": False,
             "canonical_package_version": expected_package_version,
             "presentation_config": dict(session_state["presentation_config"]),
             "unsafe_allow_blocked_site_world": allow_blocked_site_world,
             "quality_flags": dict(session_state["quality_flags"]),
             "protected_region_violations": list(session_state["protected_region_violations"]),
             "debug_artifacts": dict(session_state["debug_artifacts"]),
+            "runtime_engine_identity": dict(session_state["runtime_engine_identity"]),
+            "runtime_model_identity": dict(session_state["runtime_model_identity"]),
+            "runtime_checkpoint_identity": dict(session_state["runtime_checkpoint_identity"]),
             "runtime_capabilities": registration.get("runtime_capabilities", {}),
             "observation_cameras": list(robot_profile.get("observation_cameras") or []),
         }
@@ -720,6 +799,8 @@ class NeoVerseRuntimeStore:
                 "site_world_id": session_state.get("site_world_id"),
                 "build_id": session_state.get("build_id"),
                 "step_index": step_index,
+                "runtime_kind": session_state.get("runtime_kind"),
+                "production_grade": session_state.get("production_grade"),
                 "canonical_package_version": session_state.get("canonical_package_version"),
                 "quality_flags": quality_flags,
                 "protected_region_violations": protected_region_violations,
@@ -752,11 +833,16 @@ class NeoVerseRuntimeStore:
             "observationCameras": observation.get("cameraFrames", []),
             "actionTrace": list(session_state.get("action_trace", [])),
             "artifactUris": {},
+            "runtimeKind": session_state.get("runtime_kind"),
+            "productionGrade": session_state.get("production_grade"),
             "canonicalPackageVersion": session_state.get("canonical_package_version"),
             "presentationConfig": dict(session_state.get("presentation_config") or {}),
             "qualityFlags": dict(session_state.get("quality_flags") or {}),
             "protectedRegionViolations": list(session_state.get("protected_region_violations") or []),
             "debugArtifacts": dict(session_state.get("debug_artifacts") or {}),
+            "engineIdentity": dict(session_state.get("runtime_engine_identity") or {}),
+            "modelIdentity": dict(session_state.get("runtime_model_identity") or {}),
+            "checkpointIdentity": dict(session_state.get("runtime_checkpoint_identity") or {}),
         }
 
     def reset_session(
@@ -820,6 +906,8 @@ class NeoVerseRuntimeStore:
             "session_id": session_id,
             "site_world_id": session_state.get("site_world_id"),
             "build_id": session_state.get("build_id"),
+            "runtime_kind": session_state.get("runtime_kind"),
+            "production_grade": session_state.get("production_grade"),
             "status": session_state.get("status"),
             "step_index": session_state.get("step_index"),
             "done": session_state.get("done"),
@@ -831,6 +919,9 @@ class NeoVerseRuntimeStore:
             "quality_flags": dict(session_state.get("quality_flags") or {}),
             "protected_region_violations": list(session_state.get("protected_region_violations") or []),
             "debug_artifacts": dict(session_state.get("debug_artifacts") or {}),
+            "runtime_engine_identity": dict(session_state.get("runtime_engine_identity") or {}),
+            "runtime_model_identity": dict(session_state.get("runtime_model_identity") or {}),
+            "runtime_checkpoint_identity": dict(session_state.get("runtime_checkpoint_identity") or {}),
         }
 
     def render_bytes(self, session_id: str, camera_id: str) -> bytes:
@@ -846,3 +937,7 @@ class NeoVerseRuntimeStore:
         if not payload:
             raise RuntimeError(f"missing render bytes for {session_id}:{camera_id}")
         return payload
+
+
+# Backward-compatible alias for existing imports.
+NeoVerseRuntimeStore = SmokeContractRuntimeStore

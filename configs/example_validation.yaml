@@ -2,7 +2,16 @@ project_name: "Blueprint Validation"
 
 scene_memory_runtime:
   enabled: true
+  required_runtime_kind: "neoverse_production"
+  allow_smoke_fallback: false
   neoverse_service:
     service_url: "http://127.0.0.1:8787"
     api_key_env: "NEOVERSE_RUNTIME_SERVICE_API_KEY"
     timeout_seconds: 120
+  neoverse_model:
+    model_root: "/path/to/neoverse/model"
+    checkpoint_path: "/path/to/neoverse/checkpoint.pt"
+    cache_root: "./data/neoverse-cache"
+    runner_command: "/path/to/neoverse-runner"
+    device: "cuda"
+    gpu_enabled: true

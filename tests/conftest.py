@@ -4,8 +4,6 @@ import json
 from pathlib import Path
 
 import pytest
-
-
 @pytest.fixture()
 def sample_site_world_bundle(tmp_path: Path) -> dict[str, Path]:
     bundle_dir = tmp_path / "bundle"
@@ -23,11 +21,15 @@ def sample_site_world_bundle(tmp_path: Path) -> dict[str, Path]:
         "runtime_base_url": "http://runtime.local",
         "status": "ready",
     }
+    conditioning_frame_path = bundle_dir / "conditioning_frame.png"
+    conditioning_frame_path.write_bytes(b"placeholder")
     spec = {
         "schema_version": "v1",
         "scene_id": "scene-1",
         "capture_id": "capture-1",
         "canonical_package_version": "pkg-1",
+        "qualification_state": "ready",
+        "downstream_evaluation_eligibility": True,
         "robot_profiles": [
             {
                 "id": "mobile_manipulator_rgb_v1",
@@ -37,6 +39,19 @@ def sample_site_world_bundle(tmp_path: Path) -> dict[str, Path]:
                 "action_space": {"dim": 7},
             }
         ],
+        "conditioning": {
+            "sensor_availability": {
+                "arkit_poses": True,
+                "arkit_intrinsics": True,
+            },
+            "local_paths": {
+                "arkit_poses_path": str(bundle_dir / "arkit_poses.json"),
+                "arkit_intrinsics_path": str(bundle_dir / "arkit_intrinsics.json"),
+                "keyframe_path": str(conditioning_frame_path),
+                "occupancy_path": str(bundle_dir / "occupancy.json"),
+                "object_index_path": str(bundle_dir / "object_index.json"),
+            },
+        },
         "task_catalog": [{"id": "task-1", "task_text": "Pick item"}],
         "scenario_catalog": [{"id": "scenario-default", "name": "Default scenario"}],
         "start_state_catalog": [{"id": "start-default", "name": "Start default"}],
@@ -70,6 +85,10 @@ def sample_site_world_bundle(tmp_path: Path) -> dict[str, Path]:
         "task_anchor_manifest.json": {"schema_version": "v1"},
         "object_geometry_manifest.json": {"schema_version": "v1", "objects": []},
         "scene_memory_manifest.json": {"schema_version": "v1"},
+        "arkit_poses.json": {"schema_version": "v1", "poses": []},
+        "arkit_intrinsics.json": {"schema_version": "v1", "intrinsics": []},
+        "occupancy.json": {"schema_version": "v1", "voxels": []},
+        "object_index.json": {"schema_version": "v1", "objects": []},
     }
 
     registration_path.write_text(json.dumps(registration), encoding="utf-8")

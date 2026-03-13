@@ -41,6 +41,7 @@ dev = [
 [project.scripts]
 blueprint-validate = "blueprint_validation.cli:main"
 blueprint-neoverse-runtime = "blueprint_validation.neoverse_runtime_service:main"
+blueprint-neoverse-smoke-runtime = "blueprint_validation.smoke_contract_runtime_service:main"
 
 [project.urls]
 Repository = "https://github.com/ognjhunt/BlueprintValidation"

@@ -20,6 +20,7 @@ def _load_optional_json(path: Path) -> Dict[str, Any] | None:
 
 def _collect_results(config: ValidationConfig, work_dir: Path) -> Dict[str, Any]:
     session = _load_optional_json(work_dir / "session_state.json")
+    runtime_probe = _load_optional_json(work_dir / "runtime_probe.json")
     runtime_smoke = _load_optional_json(work_dir / "runtime_smoke.json")
     batch = _load_optional_json(work_dir / "runtime_batch_manifest.json")
     export_data = _load_optional_json(work_dir / "export_manifest.json")
@@ -27,6 +28,7 @@ def _collect_results(config: ValidationConfig, work_dir: Path) -> Dict[str, Any]
         "project_name": config.project_name,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "session": session or {},
+        "runtime_probe": runtime_probe or {},
         "runtime_smoke": runtime_smoke or {},
         "batch": batch or {},
         "export": export_data or {},
@@ -44,6 +46,8 @@ def _render_markdown(report_data: Dict[str, Any]) -> str:
         f"- Session ID: {session.get('session_id', 'N/A')}",
         f"- Site world ID: {session.get('site_world_id', 'N/A')}",
         f"- Runtime: {session.get('runtime_backend_public_name', 'N/A')}",
+        f"- Runtime kind: {session.get('runtime_kind', 'N/A')}",
+        f"- Production grade: {session.get('production_grade', 'N/A')}",
         f"- Session status: {session.get('status', 'N/A')}",
         "",
         "## Batch Summary",
@@ -68,6 +72,12 @@ def _render_markdown(report_data: Dict[str, Any]) -> str:
             lines.append(f"- {key}: {value}")
     else:
         lines.append("- No export manifest found.")
+    lines.extend(["", "## Runtime Provenance", ""])
+    if session.get("runtime_model_identity") or session.get("runtime_checkpoint_identity"):
+        lines.append(f"- Model: {session.get('runtime_model_identity', {})}")
+        lines.append(f"- Checkpoint: {session.get('runtime_checkpoint_identity', {})}")
+    else:
+        lines.append("- Runtime provenance unavailable.")
     lines.append("")
     return "\n".join(lines)
 

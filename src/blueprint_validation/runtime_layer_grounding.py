@@ -23,12 +23,8 @@ from blueprint_contracts.canonical_package import (
 )
 from blueprint_contracts.runtime_layer_contract import (
     DEGRADED_EDITABLE_RATIO_THRESHOLD,
-    EDITABLE_LOW_CONFIDENCE_THRESHOLD,
     LOCK_VIOLATION_RETRY_BUDGET,
-    PROTECTED_OBSERVED_THRESHOLD,
-    PROTECTED_RECONSTRUCTED_THRESHOLD,
     TASK_CRITICAL_DILATION_PX,
-    TASK_CRITICAL_OVERRIDE_THRESHOLD,
     load_runtime_layer_bundle as shared_load_runtime_layer_bundle,
     validate_runtime_layer_spec as shared_validate_runtime_layer_spec,
 )
