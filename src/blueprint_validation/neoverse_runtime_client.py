@@ -136,10 +136,6 @@ class NeoVerseRuntimeClient:
             },
         )
 
-    def build_site_world(self, spec: Mapping[str, Any]) -> Mapping[str, Any]:
-        """Deprecated compatibility wrapper for spec-only site-world registration."""
-        return self._request_json(method="POST", path="/v1/site-worlds", payload=spec)
-
     def get_site_world(self, site_world_id: str) -> Mapping[str, Any]:
         return self._request_json(
             method="GET",

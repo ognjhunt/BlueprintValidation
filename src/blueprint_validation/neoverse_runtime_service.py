@@ -1,8 +1,4 @@
-"""FastAPI service exposing the downstream NeoVerse site-world runtime contract.
-
-The supported intake is a built site-world package (`spec` + `registration` + `health`).
-Spec-only payloads remain available only as a deprecated local compatibility path.
-"""
+"""FastAPI service exposing the downstream NeoVerse site-world runtime contract."""
 
 from __future__ import annotations
 
@@ -79,8 +75,6 @@ def runtime_info() -> Dict[str, Any]:
         "capabilities": {
             "site_world_package_registration": True,
             "site_world_registration": True,
-            "site_world_build": False,
-            "legacy_site_world_build": True,
             "session_reset": True,
             "session_step": True,
             "session_render": True,
@@ -96,19 +90,15 @@ def runtime_info() -> Dict[str, Any]:
 @app.post("/v1/site-worlds")
 def register_site_world(payload: Dict[str, Any]) -> Dict[str, Any]:
     try:
-        if all(
-            isinstance(payload.get(key), dict)
-            for key in ("spec", "registration", "health")
-        ):
-            registration = dict(
-                STORE.register_site_world_package(
-                    spec=dict(payload["spec"]),
-                    registration=dict(payload["registration"]),
-                    health=dict(payload["health"]),
-                )
+        if not all(isinstance(payload.get(key), dict) for key in ("spec", "registration", "health")):
+            raise ValueError("site-world registration requires spec + registration + health payloads")
+        registration = dict(
+            STORE.register_site_world_package(
+                spec=dict(payload["spec"]),
+                registration=dict(payload["registration"]),
+                health=dict(payload["health"]),
             )
-        else:
-            registration = dict(STORE.build_site_world(payload))
+        )
         health = dict(STORE.load_site_world_health(str(registration.get("site_world_id") or "")))
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

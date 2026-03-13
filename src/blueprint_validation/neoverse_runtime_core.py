@@ -291,68 +291,6 @@ class NeoVerseRuntimeStore:
             warnings=warnings,
         )
 
-    def build_site_world(self, spec: Mapping[str, Any]) -> Dict[str, Any]:
-        """Deprecated compatibility wrapper for spec-only site-world registration."""
-        scene_id = str(spec.get("scene_id") or "").strip()
-        capture_id = str(spec.get("capture_id") or "").strip()
-        if not scene_id or not capture_id:
-            raise RuntimeError("site world build requires scene_id and capture_id")
-
-        site_world_id = _stable_id("siteworld", scene_id, capture_id)
-        registration = {
-            "schema_version": "v1",
-            "site_world_id": site_world_id,
-            "scene_id": scene_id,
-            "capture_id": capture_id,
-            "site_submission_id": spec.get("site_submission_id"),
-            "status": "ready",
-            "task_catalog": list(spec.get("task_catalog") or []),
-            "scenario_catalog": list(spec.get("scenario_catalog") or []),
-            "start_state_catalog": list(spec.get("start_state_catalog") or []),
-            "robot_profiles": list(spec.get("robot_profiles") or []),
-            "canonical_package_uri": spec.get("canonical_package_uri"),
-            "canonical_package_version": spec.get("canonical_package_version"),
-            "blockers": [],
-            "warnings": [],
-            "runtime_capabilities": {
-                "supports_step_rollout": True,
-                "supports_batch_rollout": True,
-                "supports_camera_views": True,
-                "supports_stream": True,
-                "protected_region_locking": True,
-                "runtime_layer_compositing": True,
-                "debug_render_outputs": True,
-            },
-            "registration_mode": "legacy_spec_build",
-            "intake_source": "legacy_spec_only_payload",
-            "compatibility_notice": (
-                "Deprecated compatibility path. Prefer registering built "
-                "site_world_spec/site_world_registration/site_world_health artifacts."
-            ),
-        }
-        health = {
-            "schema_version": "v1",
-            "site_world_id": site_world_id,
-            "scene_id": scene_id,
-            "capture_id": capture_id,
-            "site_submission_id": spec.get("site_submission_id"),
-            "healthy": True,
-            "launchable": True,
-            "status": "healthy",
-            "blockers": [],
-            "warnings": [],
-            "runtime_capabilities": dict(registration["runtime_capabilities"]),
-            "canonical_package_version": spec.get("canonical_package_version"),
-            "registration_mode": "legacy_spec_build",
-            "intake_source": "legacy_spec_only_payload",
-            "compatibility_notice": registration["compatibility_notice"],
-        }
-        return self.register_site_world_package(
-            spec=spec,
-            registration=registration,
-            health=health,
-        )
-
     def register_site_world_package(
         self,
         *,
