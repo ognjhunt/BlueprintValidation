@@ -18,19 +18,36 @@ sys.path.insert(0, str(SRC_DIR))
 def pytest_addoption(parser):
     parser.addoption("--run-gpu", action="store_true", default=False, help="Run GPU tests")
     parser.addoption("--run-slow", action="store_true", default=False, help="Run slow tests")
+    parser.addoption(
+        "--run-integration",
+        action="store_true",
+        default=False,
+        help="Run integration tests",
+    )
 
 
 def pytest_collection_modifyitems(config, items):
+    skip_integration = pytest.mark.skip(reason="need --run-integration option")
     if not config.getoption("--run-gpu"):
         skip_gpu = pytest.mark.skip(reason="need --run-gpu option")
-        for item in items:
-            if "gpu" in item.keywords:
-                item.add_marker(skip_gpu)
+    else:
+        skip_gpu = None
     if not config.getoption("--run-slow"):
         skip_slow = pytest.mark.skip(reason="need --run-slow option")
-        for item in items:
-            if "slow" in item.keywords:
-                item.add_marker(skip_slow)
+    else:
+        skip_slow = None
+    run_integration = config.getoption("--run-integration")
+
+    for item in items:
+        path = Path(str(getattr(item, "path", "")))
+        if "integration" in path.parts:
+            item.add_marker(pytest.mark.integration)
+            if not run_integration:
+                item.add_marker(skip_integration)
+        if skip_gpu is not None and "gpu" in item.keywords:
+            item.add_marker(skip_gpu)
+        if skip_slow is not None and "slow" in item.keywords:
+            item.add_marker(skip_slow)
 
 
 @pytest.fixture

@@ -369,7 +369,6 @@ def check_neoverse_runtime_service_contract(config: ValidationConfig) -> Preflig
     api_version = str(runtime_info.get("api_version") or "").strip().lower()
     capabilities = dict(runtime_info.get("capabilities", {}) or {})
     required_capabilities = (
-        "site_world_build",
         "session_reset",
         "session_step",
         "session_render",
@@ -377,6 +376,8 @@ def check_neoverse_runtime_service_contract(config: ValidationConfig) -> Preflig
         "session_stream",
     )
     missing = [key for key in required_capabilities if not bool(capabilities.get(key))]
+    if not bool(capabilities.get("site_world_registration")) and not bool(capabilities.get("site_world_build")):
+        missing.append("site_world_registration")
     if status != "ok":
         return PreflightCheck(
             name=name,

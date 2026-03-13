@@ -11,12 +11,13 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence
 
 import numpy as np
+from blueprint_contracts.site_world_contract import (
+    SiteWorldIntakeError,
+    load_site_world_bundle,
+    normalize_trajectory_payload,
+)
 
-try:
-    import cv2
-except ModuleNotFoundError:  # pragma: no cover - exercised only in lean envs
-    cv2 = None
-
+from .optional_dependencies import require_optional_dependency
 from .runtime_layer_grounding import (
     composite_runtime_layer,
     load_runtime_layer_bundle,
@@ -25,7 +26,6 @@ from .runtime_layer_grounding import (
     validate_runtime_layer_spec,
     verify_canonical_package_version,
 )
-from .site_world_intake import SiteWorldIntakeError, load_site_world_bundle, normalize_trajectory_payload
 
 
 def _utc_now_iso() -> str:
@@ -51,9 +51,32 @@ def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def _dedupe_strings(*collections: Sequence[Any]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for collection in collections:
+        for item in collection:
+            text = str(item or "").strip()
+            if text and text not in seen:
+                seen.add(text)
+                out.append(text)
+    return out
+
+
+def _blocked_status(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in {"ready", "healthy"}:
+            return text
+    return "blocked"
+
+
 def _load_frame(path: Path) -> np.ndarray:
-    if cv2 is None:
-        raise RuntimeError("opencv-python is required for NeoVerse runtime frame IO")
+    cv2 = require_optional_dependency(
+        "cv2",
+        extra="vision",
+        purpose="NeoVerse runtime frame IO",
+    )
     frame = cv2.imread(str(path))
     if frame is None:
         raise RuntimeError(f"failed to load frame at {path}")
@@ -61,15 +84,21 @@ def _load_frame(path: Path) -> np.ndarray:
 
 
 def _save_frame(path: Path, frame: np.ndarray) -> None:
-    if cv2 is None:
-        raise RuntimeError("opencv-python is required for NeoVerse runtime frame IO")
+    cv2 = require_optional_dependency(
+        "cv2",
+        extra="vision",
+        purpose="NeoVerse runtime frame IO",
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(path), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
 
 
 def _extract_first_frame(video_path: Path) -> np.ndarray:
-    if cv2 is None:
-        raise RuntimeError("opencv-python is required for NeoVerse runtime frame IO")
+    cv2 = require_optional_dependency(
+        "cv2",
+        extra="vision",
+        purpose="NeoVerse runtime frame IO",
+    )
     capture = cv2.VideoCapture(str(video_path))
     try:
         ok, frame = capture.read()
@@ -81,8 +110,11 @@ def _extract_first_frame(video_path: Path) -> np.ndarray:
 
 
 def _coerce_camera_frame(frame: np.ndarray, camera_id: str) -> np.ndarray:
-    if cv2 is None:
-        raise RuntimeError("opencv-python is required for NeoVerse runtime frame IO")
+    cv2 = require_optional_dependency(
+        "cv2",
+        extra="vision",
+        purpose="NeoVerse runtime frame IO",
+    )
     variant = frame.copy()
     if "wrist" in camera_id:
         variant = cv2.resize(
@@ -96,8 +128,11 @@ def _coerce_camera_frame(frame: np.ndarray, camera_id: str) -> np.ndarray:
 
 
 def _apply_action(frame: np.ndarray, action: Sequence[float], step_index: int) -> np.ndarray:
-    if cv2 is None:
-        raise RuntimeError("opencv-python is required for NeoVerse runtime frame IO")
+    cv2 = require_optional_dependency(
+        "cv2",
+        extra="vision",
+        purpose="NeoVerse runtime frame IO",
+    )
     padded = [float(value) for value in action] + [0.0] * max(0, 7 - len(action))
     dx = int(np.clip(padded[0] * 18.0, -32.0, 32.0))
     dy = int(np.clip(padded[1] * 18.0, -32.0, 32.0))
@@ -253,13 +288,80 @@ class NeoVerseRuntimeStore:
         )
 
     def build_site_world(self, spec: Mapping[str, Any]) -> Dict[str, Any]:
+        """Deprecated compatibility wrapper for spec-only registration."""
         scene_id = str(spec.get("scene_id") or "").strip()
         capture_id = str(spec.get("capture_id") or "").strip()
         if not scene_id or not capture_id:
             raise RuntimeError("site world build requires scene_id and capture_id")
 
         site_world_id = _stable_id("siteworld", scene_id, capture_id)
-        build_id = _stable_id("build", scene_id, capture_id, _utc_now_iso())
+        registration = {
+            "schema_version": "v1",
+            "site_world_id": site_world_id,
+            "scene_id": scene_id,
+            "capture_id": capture_id,
+            "site_submission_id": spec.get("site_submission_id"),
+            "status": "ready",
+            "task_catalog": list(spec.get("task_catalog") or []),
+            "scenario_catalog": list(spec.get("scenario_catalog") or []),
+            "start_state_catalog": list(spec.get("start_state_catalog") or []),
+            "robot_profiles": list(spec.get("robot_profiles") or []),
+            "canonical_package_uri": spec.get("canonical_package_uri"),
+            "canonical_package_version": spec.get("canonical_package_version"),
+            "blockers": [],
+            "warnings": [],
+            "runtime_capabilities": {
+                "supports_step_rollout": True,
+                "supports_batch_rollout": True,
+                "supports_camera_views": True,
+                "supports_stream": True,
+                "protected_region_locking": True,
+                "runtime_layer_compositing": True,
+                "debug_render_outputs": True,
+            },
+        }
+        health = {
+            "schema_version": "v1",
+            "site_world_id": site_world_id,
+            "scene_id": scene_id,
+            "capture_id": capture_id,
+            "site_submission_id": spec.get("site_submission_id"),
+            "healthy": True,
+            "launchable": True,
+            "status": "healthy",
+            "blockers": [],
+            "warnings": [],
+            "runtime_capabilities": dict(registration["runtime_capabilities"]),
+            "canonical_package_version": spec.get("canonical_package_version"),
+        }
+        return self.register_site_world_package(
+            spec=spec,
+            registration=registration,
+            health=health,
+        )
+
+    def register_site_world_package(
+        self,
+        *,
+        spec: Mapping[str, Any],
+        registration: Mapping[str, Any],
+        health: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        scene_id = str(spec.get("scene_id") or registration.get("scene_id") or "").strip()
+        capture_id = str(spec.get("capture_id") or registration.get("capture_id") or "").strip()
+        if not scene_id or not capture_id:
+            raise RuntimeError("site world registration requires scene_id and capture_id")
+
+        site_world_id = _stable_id("siteworld", scene_id, capture_id)
+        upstream_site_world_id = str(registration.get("site_world_id") or "").strip()
+        if upstream_site_world_id:
+            site_world_id = upstream_site_world_id
+        build_id = str(registration.get("build_id") or "").strip() or _stable_id(
+            "build",
+            scene_id,
+            capture_id,
+            _utc_now_iso(),
+        )
         site_world_dir = self._site_world_dir(site_world_id)
         cache_dir = site_world_dir / "cache" / build_id
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -298,29 +400,47 @@ class NeoVerseRuntimeStore:
             raise RuntimeError(version_error)
         runtime_layer_snapshots = snapshot_runtime_layer_bundle(runtime_layer_bundle, cache_dir)
 
-        supported_cameras: list[str] = []
-        seen: set[str] = set()
-        for profile in spec.get("robot_profiles", []) or []:
-            if not isinstance(profile, Mapping):
-                continue
-            for camera in profile.get("observation_cameras", []) or []:
-                if not isinstance(camera, Mapping):
+        supported_cameras = list(registration.get("supported_cameras") or [])
+        if not supported_cameras:
+            seen: set[str] = set()
+            for profile in spec.get("robot_profiles", []) or []:
+                if not isinstance(profile, Mapping):
                     continue
-                camera_id = str(camera.get("id") or "").strip()
-                if camera_id and camera_id not in seen:
-                    seen.add(camera_id)
-                    supported_cameras.append(camera_id)
+                for camera in profile.get("observation_cameras", []) or []:
+                    if not isinstance(camera, Mapping):
+                        continue
+                    camera_id = str(camera.get("id") or "").strip()
+                    if camera_id and camera_id not in seen:
+                        seen.add(camera_id)
+                        supported_cameras.append(camera_id)
         if not supported_cameras:
             supported_cameras = ["head_rgb"]
 
-        registration = {
+        launchable = bool(health.get("launchable", True)) and validation.launchable
+        runtime_blockers = _dedupe_strings(
+            list(registration.get("blockers") or []),
+            list(health.get("blockers") or []),
+            validation.blockers,
+        )
+        runtime_warnings = _dedupe_strings(
+            list(registration.get("warnings") or []),
+            list(health.get("warnings") or []),
+            validation.warnings,
+        )
+
+        registration_payload = {
+            **dict(registration),
             "schema_version": "v1",
             "site_world_id": site_world_id,
             "build_id": build_id,
             "scene_id": scene_id,
             "capture_id": capture_id,
             "site_submission_id": spec.get("site_submission_id"),
-            "status": "ready" if validation.launchable else "blocked",
+            "status": (
+                "ready"
+                if launchable
+                else _blocked_status(registration.get("status"), health.get("status"))
+            ),
             "runtime_base_url": self.base_url,
             "websocket_base_url": self.ws_base_url,
             "vm_instance_id": os.getenv("VASTAI_INSTANCE_ID") or os.getenv("HOSTNAME") or "local-vm",
@@ -346,23 +466,50 @@ class NeoVerseRuntimeStore:
             },
             "health_uri": f"{self.base_url}/v1/site-worlds/{site_world_id}/health",
             "generated_at": _utc_now_iso(),
+            "blockers": runtime_blockers,
+            "warnings": runtime_warnings,
+            "grounding_status": spec.get("grounding_status")
+            or (spec.get("runtime_layer_policy") or {}).get("grounding_status"),
+            "ungrounded_reason": spec.get("ungrounded_reason")
+            or (spec.get("runtime_layer_policy") or {}).get("ungrounded_reason"),
+            "empty_index_cause": spec.get("empty_index_cause"),
         }
-        health = {
+        health_payload = {
+            **dict(health),
             "schema_version": "v1",
             "site_world_id": site_world_id,
             "build_id": build_id,
-            "healthy": validation.launchable,
-            "launchable": validation.launchable,
-            "status": "healthy" if validation.launchable else "blocked",
-            "blockers": validation.blockers,
-            "warnings": validation.warnings,
+            "scene_id": scene_id,
+            "capture_id": capture_id,
+            "site_submission_id": spec.get("site_submission_id"),
+            "healthy": launchable,
+            "launchable": launchable,
+            "status": (
+                "healthy"
+                if launchable
+                else _blocked_status(health.get("status"), registration.get("status"))
+            ),
+            "blockers": runtime_blockers,
+            "warnings": runtime_warnings,
             "canonical_package_version": spec.get("canonical_package_version"),
             "last_heartbeat_at": _utc_now_iso(),
+            "runtime_base_url": self.base_url,
+            "websocket_base_url": self.ws_base_url,
+            "vm_instance_id": os.getenv("VASTAI_INSTANCE_ID") or os.getenv("HOSTNAME") or "local-vm",
+            "supported_cameras": supported_cameras,
+            "scenario_catalog": list(spec.get("scenario_catalog") or []),
+            "start_state_catalog": list(spec.get("start_state_catalog") or []),
+            "task_catalog": list(spec.get("task_catalog") or []),
+            "robot_profiles": list(spec.get("robot_profiles") or []),
+            "runtime_capabilities": dict(registration_payload.get("runtime_capabilities") or {}),
+            "grounding_status": registration_payload.get("grounding_status"),
+            "ungrounded_reason": registration_payload.get("ungrounded_reason"),
+            "empty_index_cause": registration_payload.get("empty_index_cause"),
         }
         _write_json(self._site_world_spec_path(site_world_id), dict(spec))
-        _write_json(self._site_world_state_path(site_world_id), registration)
-        _write_json(self._site_world_health_path(site_world_id), health)
-        return registration
+        _write_json(self._site_world_state_path(site_world_id), registration_payload)
+        _write_json(self._site_world_health_path(site_world_id), health_payload)
+        return registration_payload
 
     def load_site_world(self, site_world_id: str) -> Dict[str, Any]:
         path = self._site_world_state_path(site_world_id)

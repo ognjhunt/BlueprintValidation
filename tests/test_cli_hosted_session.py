@@ -195,6 +195,8 @@ def test_hosted_session_cli_flow(monkeypatch, tmp_path, sample_config):
         spec_path,
         {
             "schema_version": "v1",
+            "scene_id": "scene-1",
+            "capture_id": "cap-1",
             "canonical_package_version": "pkg-v1",
             "qualification_state": "ready",
             "downstream_evaluation_eligibility": True,
@@ -510,6 +512,9 @@ def test_hosted_session_cli_requires_explicit_unsafe_flag_for_blocked_site_world
         spec_path,
         {
             "schema_version": "v1",
+            "scene_id": "scene-1",
+            "capture_id": "cap-1",
+            "canonical_package_version": "pkg-v1",
             "qualification_state": "not_ready_yet",
             "downstream_evaluation_eligibility": False,
             "conditioning": {

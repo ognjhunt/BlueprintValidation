@@ -11,8 +11,9 @@ from pydantic import BaseModel, Field
 import uvicorn
 import asyncio
 
+from blueprint_contracts.site_world_contract import normalize_trajectory_payload
+
 from .neoverse_runtime_core import NeoVerseRuntimeStore
-from .site_world_intake import normalize_trajectory_payload
 
 
 def _runtime_store() -> NeoVerseRuntimeStore:
@@ -72,7 +73,9 @@ def runtime_info() -> Dict[str, Any]:
         "runtime_base_url": STORE.base_url,
         "websocket_base_url": STORE.ws_base_url,
         "capabilities": {
-            "site_world_build": True,
+            "site_world_registration": True,
+            "site_world_build": False,
+            "legacy_site_world_build": True,
             "session_reset": True,
             "session_step": True,
             "session_render": True,
@@ -86,9 +89,21 @@ def runtime_info() -> Dict[str, Any]:
 
 
 @app.post("/v1/site-worlds")
-def build_site_world(spec: Dict[str, Any]) -> Dict[str, Any]:
+def build_site_world(payload: Dict[str, Any]) -> Dict[str, Any]:
     try:
-        registration = dict(STORE.build_site_world(spec))
+        if all(
+            isinstance(payload.get(key), dict)
+            for key in ("spec", "registration", "health")
+        ):
+            registration = dict(
+                STORE.register_site_world_package(
+                    spec=dict(payload["spec"]),
+                    registration=dict(payload["registration"]),
+                    health=dict(payload["health"]),
+                )
+            )
+        else:
+            registration = dict(STORE.build_site_world(payload))
         health = dict(STORE.load_site_world_health(str(registration.get("site_world_id") or "")))
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

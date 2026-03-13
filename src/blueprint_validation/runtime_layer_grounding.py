@@ -8,26 +8,37 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 import numpy as np
+from blueprint_contracts.canonical_package import (
+    compute_canonical_package_version as shared_compute_canonical_package_version,
+)
+from blueprint_contracts.canonical_package import (
+    normalized_json_bytes as shared_normalized_json_bytes,
+)
+from blueprint_contracts.canonical_package import (
+    verify_canonical_package_version as shared_verify_canonical_package_version,
+)
+from blueprint_contracts.runtime_layer_contract import (
+    DEGRADED_EDITABLE_RATIO_THRESHOLD,
+    EDITABLE_LOW_CONFIDENCE_THRESHOLD,
+    LOCK_VIOLATION_RETRY_BUDGET,
+    PROTECTED_OBSERVED_THRESHOLD,
+    PROTECTED_RECONSTRUCTED_THRESHOLD,
+    TASK_CRITICAL_DILATION_PX,
+    TASK_CRITICAL_OVERRIDE_THRESHOLD,
+    load_runtime_layer_bundle as shared_load_runtime_layer_bundle,
+    validate_runtime_layer_spec as shared_validate_runtime_layer_spec,
+)
 
 try:
     import cv2
 except ModuleNotFoundError:  # pragma: no cover
     cv2 = None
 
-from .site_world_intake import normalize_trajectory_payload
-
-
-PROTECTED_OBSERVED_THRESHOLD = 0.85
-PROTECTED_RECONSTRUCTED_THRESHOLD = 0.80
-EDITABLE_LOW_CONFIDENCE_THRESHOLD = 0.65
-TASK_CRITICAL_OVERRIDE_THRESHOLD = 0.70
-TASK_CRITICAL_DILATION_PX = 3
-DEGRADED_EDITABLE_RATIO_THRESHOLD = 0.40
-LOCK_VIOLATION_RETRY_BUDGET = 1
+from blueprint_contracts.site_world_contract import normalize_trajectory_payload
 
 
 def normalized_json_bytes(payload: Any) -> bytes:
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return shared_normalized_json_bytes(payload)
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
@@ -69,34 +80,11 @@ def _presentation_policy_paths(spec: Mapping[str, Any]) -> Dict[str, Path]:
 
 
 def validate_runtime_layer_spec(spec: Mapping[str, Any]) -> list[str]:
-    errors: list[str] = []
-    if not str(spec.get("canonical_package_version") or "").strip():
-        errors.append("missing_canonical_package_version")
-    policy = dict(spec.get("runtime_layer_policy") or {}) if isinstance(spec.get("runtime_layer_policy"), Mapping) else {}
-    for key in (
-        "protected_regions_manifest_uri",
-        "canonical_render_policy_uri",
-        "presentation_variance_policy_uri",
-        "protected_regions_manifest_path",
-        "canonical_render_policy_path",
-        "presentation_variance_policy_path",
-    ):
-        if not str(policy.get(key) or "").strip():
-            errors.append(f"missing_runtime_layer_policy:{key}")
-    for path in _presentation_policy_paths(spec).values():
-        if not path.is_file():
-            errors.append(f"missing_runtime_layer_policy_file:{path.name}")
-    return errors
+    return shared_validate_runtime_layer_spec(spec)
 
 
 def load_runtime_layer_bundle(spec: Mapping[str, Any]) -> Dict[str, Any]:
-    paths = _presentation_policy_paths(spec)
-    return {
-        "protected_regions_manifest": _read_json(paths["protected_regions_manifest_path"]),
-        "canonical_render_policy": _read_json(paths["canonical_render_policy_path"]),
-        "presentation_variance_policy": _read_json(paths["presentation_variance_policy_path"]),
-        "paths": {key: str(value) for key, value in paths.items()},
-    }
+    return shared_load_runtime_layer_bundle(spec)
 
 
 def compute_canonical_package_version(
@@ -110,21 +98,16 @@ def compute_canonical_package_version(
     canonical_render_policy: Mapping[str, Any],
     presentation_variance_policy: Mapping[str, Any],
 ) -> str:
-    normalized_spec = dict(site_world_spec)
-    normalized_spec.pop("canonical_package_version", None)
-    digest = hashlib.sha256()
-    for payload in (
-        scene_memory_manifest,
-        conditioning_bundle,
-        object_geometry_manifest,
-        task_anchor_manifest,
-        normalized_spec,
-        protected_regions_manifest,
-        canonical_render_policy,
-        presentation_variance_policy,
-    ):
-        digest.update(normalized_json_bytes(payload))
-    return digest.hexdigest()
+    return shared_compute_canonical_package_version(
+        scene_memory_manifest=scene_memory_manifest,
+        conditioning_bundle=conditioning_bundle,
+        object_geometry_manifest=object_geometry_manifest,
+        task_anchor_manifest=task_anchor_manifest,
+        site_world_spec=site_world_spec,
+        protected_regions_manifest=protected_regions_manifest,
+        canonical_render_policy=canonical_render_policy,
+        presentation_variance_policy=presentation_variance_policy,
+    )
 
 
 def verify_canonical_package_version(
@@ -134,37 +117,12 @@ def verify_canonical_package_version(
     canonical_render_policy: Mapping[str, Any],
     presentation_variance_policy: Mapping[str, Any],
 ) -> Optional[str]:
-    conditioning = dict(spec.get("conditioning") or {}) if isinstance(spec.get("conditioning"), Mapping) else {}
-    geometry = dict(spec.get("geometry") or {}) if isinstance(spec.get("geometry"), Mapping) else {}
-    local_paths = dict(conditioning.get("local_paths") or {}) if isinstance(conditioning.get("local_paths"), Mapping) else {}
-
-    def _optional_path(*values: Any) -> Optional[Path]:
-        for value in values:
-            text = str(value or "").strip()
-            if text:
-                return Path(text).resolve()
-        return None
-
-    scene_memory_manifest_path = _optional_path(conditioning.get("scene_memory_manifest_path"), local_paths.get("scene_memory_manifest_path"))
-    conditioning_bundle_path = _optional_path(conditioning.get("conditioning_bundle_path"), local_paths.get("conditioning_bundle_path"))
-    object_geometry_manifest_path = _optional_path(geometry.get("object_geometry_manifest_path"))
-    task_anchor_manifest_path = _optional_path(spec.get("task_anchor_manifest_path"))
-    if not all(path is not None and path.is_file() for path in (scene_memory_manifest_path, conditioning_bundle_path, object_geometry_manifest_path, task_anchor_manifest_path)):
-        return "canonical_package_verification_inputs_missing"
-    observed = compute_canonical_package_version(
-        scene_memory_manifest=_read_json(scene_memory_manifest_path),
-        conditioning_bundle=_read_json(conditioning_bundle_path),
-        object_geometry_manifest=_read_json(object_geometry_manifest_path),
-        task_anchor_manifest=_read_json(task_anchor_manifest_path),
-        site_world_spec=spec,
+    return shared_verify_canonical_package_version(
+        spec=spec,
         protected_regions_manifest=protected_regions_manifest,
         canonical_render_policy=canonical_render_policy,
         presentation_variance_policy=presentation_variance_policy,
     )
-    expected = str(spec.get("canonical_package_version") or "").strip()
-    if expected and observed != expected:
-        return f"canonical_package_version_mismatch:{observed}"
-    return None
 
 
 def snapshot_runtime_layer_bundle(bundle: Mapping[str, Any], cache_dir: Path) -> Dict[str, str]:

@@ -11,10 +11,9 @@ import warnings
 
 import yaml
 
+from blueprint_contracts.handoff_contract import load_and_validate_qualified_opportunity_handoff
+
 from .config_validation import validate_config_keys
-from .validation.qualified_opportunity import (
-    load_and_validate_qualified_opportunity_handoff,
-)
 
 
 @dataclass

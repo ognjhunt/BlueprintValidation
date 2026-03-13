@@ -7,19 +7,30 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
-import cv2
 import numpy as np
+from blueprint_contracts.site_world_contract import SiteWorldIntakeError, load_site_world_bundle
 
 from .config import PolicyAdapterConfig, ValidationConfig
 from .neoverse_runtime_client import NeoVerseRuntimeClient, NeoVerseRuntimeClientConfig
+from .optional_dependencies import require_optional_dependency
 from .policy_adapters import get_policy_adapter
 from .public_contract import public_runtime_label
-from .site_world_intake import SiteWorldIntakeError, load_site_world_bundle
 from .training.rlds_export import export_rollouts_to_rlds_jsonl
 
 
 class HostedSessionError(RuntimeError):
     pass
+
+
+def _require_cv2():
+    try:
+        return require_optional_dependency(
+            "cv2",
+            extra="vision",
+            purpose="hosted session image and video handling",
+        )
+    except RuntimeError as exc:
+        raise HostedSessionError(str(exc)) from exc
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
@@ -69,11 +80,13 @@ def _camera_catalog(robot_profile: Mapping[str, Any]) -> List[Dict[str, Any]]:
 
 
 def _save_frame(path: Path, frame: np.ndarray) -> None:
+    cv2 = _require_cv2()
     path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(path), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
 
 
 def _load_frame(path: str) -> np.ndarray:
+    cv2 = _require_cv2()
     frame = cv2.imread(str(path))
     if frame is None:
         raise HostedSessionError(f"Could not load observation frame from {path}")
@@ -81,6 +94,7 @@ def _load_frame(path: str) -> np.ndarray:
 
 
 def _decode_png(payload: bytes) -> np.ndarray:
+    cv2 = _require_cv2()
     array = np.frombuffer(payload, dtype=np.uint8)
     frame = cv2.imdecode(array, cv2.IMREAD_COLOR)
     if frame is None:
@@ -89,6 +103,7 @@ def _decode_png(payload: bytes) -> np.ndarray:
 
 
 def _write_video(frame_paths: Sequence[str], output_path: Path) -> None:
+    cv2 = _require_cv2()
     if not frame_paths:
         raise HostedSessionError(f"No frames available for video export: {output_path}")
     first = cv2.imread(str(frame_paths[0]))

@@ -11,6 +11,8 @@ import pytest
 from blueprint_validation.common import write_json
 from blueprint_validation.rendering.vlm_scene_detector import SceneDetectionResult
 
+pytestmark = pytest.mark.integration
+
 
 def test_stage3b_policy_finetune_skips_when_disabled(sample_config, tmp_path):
     from blueprint_validation.stages.s3b_policy_finetune import PolicyFinetuneStage

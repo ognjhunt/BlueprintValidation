@@ -153,7 +153,7 @@ def _enforce_repro_guardrails(config_path: Path) -> None:
 @click.option("--dry-run", is_flag=True, default=False, help="Print actions without executing.")
 @click.pass_context
 def cli(ctx: click.Context, config_path: str, work_dir: str, verbose: bool, dry_run: bool) -> None:
-    """BlueprintValidation: post-qualification evaluation and adaptation pipeline."""
+    """BlueprintValidation: downstream site-world session, evaluation, and export tooling."""
     setup_logging(verbose)
     _load_local_env_defaults()
     _enforce_repro_guardrails(Path(config_path))
@@ -281,7 +281,7 @@ def _target_option(*, required: bool = True, help_text: str | None = None):
 @cli.command()
 @click.pass_context
 def build_scene_package(ctx: click.Context) -> None:
-    """Build a direct scene package from a raw PLY and local USD assets."""
+    """Legacy: build a direct scene package from a raw PLY and local USD assets."""
     from .scene_builder import SceneAssetManifestError, build_scene_package as _build_scene_package
 
     config = ctx.obj["config"]
@@ -311,7 +311,7 @@ def build_scene_package(ctx: click.Context) -> None:
 @cli.command()
 @click.option("--scene-root", type=click.Path(exists=True, file_okay=False), required=True)
 def validate_scene_package(scene_root: str) -> None:
-    """Validate a local scene handoff directory for teleop use."""
+    """Legacy: validate a local scene handoff directory for teleop use."""
     from .teleop import TeleopManifestError, load_and_validate_scene_package
 
     try:

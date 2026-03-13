@@ -239,11 +239,46 @@ def _refresh_canonical_package_version(spec: dict) -> None:
     )
 
 
+def _register_site_world(store: NeoVerseRuntimeStore, spec: dict) -> dict:
+    return store.register_site_world_package(
+        spec=spec,
+        registration={
+            "schema_version": "v1",
+            "site_world_id": "siteworld-1",
+            "scene_id": spec["scene_id"],
+            "capture_id": spec["capture_id"],
+            "site_submission_id": spec.get("site_submission_id"),
+            "status": "ready",
+            "task_catalog": list(spec.get("task_catalog") or []),
+            "scenario_catalog": list(spec.get("scenario_catalog") or []),
+            "start_state_catalog": list(spec.get("start_state_catalog") or []),
+            "robot_profiles": list(spec.get("robot_profiles") or []),
+            "canonical_package_uri": spec.get("canonical_package_uri"),
+            "canonical_package_version": spec.get("canonical_package_version"),
+            "blockers": [],
+            "warnings": [],
+        },
+        health={
+            "schema_version": "v1",
+            "site_world_id": "siteworld-1",
+            "scene_id": spec["scene_id"],
+            "capture_id": spec["capture_id"],
+            "site_submission_id": spec.get("site_submission_id"),
+            "healthy": True,
+            "launchable": True,
+            "status": "healthy",
+            "blockers": [],
+            "warnings": [],
+            "canonical_package_version": spec.get("canonical_package_version"),
+        },
+    )
+
+
 def test_runtime_store_builds_and_steps_site_world(tmp_path: Path) -> None:
     spec = _build_runtime_ready_spec(tmp_path)
 
     store = NeoVerseRuntimeStore(tmp_path / "runtime", base_url="http://runtime.local")
-    registration = store.build_site_world(spec)
+    registration = _register_site_world(store, spec)
     assert registration["status"] == "ready"
     assert registration["canonical_package_version"] == spec["canonical_package_version"]
     assert registration["runtime_capabilities"]["protected_region_locking"] is True
@@ -290,7 +325,7 @@ def test_runtime_store_builds_and_steps_site_world(tmp_path: Path) -> None:
 def test_runtime_store_rejects_canonical_package_mismatch(tmp_path: Path) -> None:
     spec = _build_runtime_ready_spec(tmp_path)
     store = NeoVerseRuntimeStore(tmp_path / "runtime", base_url="http://runtime.local")
-    registration = store.build_site_world(spec)
+    registration = _register_site_world(store, spec)
 
     with pytest.raises(RuntimeError, match="canonical_package_version_mismatch"):
         store.create_session(
@@ -311,7 +346,7 @@ def test_runtime_store_requires_explicit_unsafe_flag_for_blocked_site_world(tmp_
     _refresh_canonical_package_version(spec)
 
     store = NeoVerseRuntimeStore(tmp_path / "runtime", base_url="http://runtime.local")
-    registration = store.build_site_world(spec)
+    registration = _register_site_world(store, spec)
     assert registration["status"] == "blocked"
     assert store.load_site_world_health(str(registration["site_world_id"]))["launchable"] is False
 
@@ -349,7 +384,7 @@ def test_runtime_store_blocks_ungrounded_site_world_without_unsafe_override(tmp_
     _refresh_canonical_package_version(spec)
 
     store = NeoVerseRuntimeStore(tmp_path / "runtime", base_url="http://runtime.local")
-    registration = store.build_site_world(spec)
+    registration = _register_site_world(store, spec)
     health = store.load_site_world_health(str(registration["site_world_id"]))
 
     assert registration["status"] == "blocked"
@@ -367,7 +402,7 @@ def test_runtime_store_blocks_when_manifest_reports_ungrounded(tmp_path: Path) -
     _refresh_canonical_package_version(spec)
 
     store = NeoVerseRuntimeStore(tmp_path / "runtime", base_url="http://runtime.local")
-    registration = store.build_site_world(spec)
+    registration = _register_site_world(store, spec)
     health = store.load_site_world_health(str(registration["site_world_id"]))
 
     assert registration["status"] == "blocked"
@@ -378,7 +413,7 @@ def test_runtime_store_blocks_when_manifest_reports_ungrounded(tmp_path: Path) -
 def test_runtime_store_prefers_spec_metadata_when_registration_is_thin(tmp_path: Path) -> None:
     spec = _build_runtime_ready_spec(tmp_path)
     store = NeoVerseRuntimeStore(tmp_path / "runtime", base_url="http://runtime.local")
-    registration = store.build_site_world(spec)
+    registration = _register_site_world(store, spec)
     site_world_id = str(registration["site_world_id"])
 
     registration_path = tmp_path / "runtime" / "site_worlds" / site_world_id / "site_world_registration.json"
@@ -410,7 +445,7 @@ def test_runtime_store_prefers_spec_metadata_when_registration_is_thin(tmp_path:
 def test_runtime_store_reset_rejects_unknown_catalog_ids(tmp_path: Path) -> None:
     spec = _build_runtime_ready_spec(tmp_path)
     store = NeoVerseRuntimeStore(tmp_path / "runtime", base_url="http://runtime.local")
-    registration = store.build_site_world(spec)
+    registration = _register_site_world(store, spec)
     store.create_session(
         str(registration["site_world_id"]),
         session_id="session-reset-invalid",

@@ -9,8 +9,9 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence
 
-import cv2
 import numpy as np
+
+from .optional_dependencies import require_optional_dependency
 
 
 NEOVERSE_REPO_URL = "https://github.com/IamCreateAI/NeoVerse.git"
@@ -22,6 +23,17 @@ NEOVERSE_DEFAULT_MAX_EPISODE_STEPS = 6
 
 class NeoVerseRuntimeContractError(RuntimeError):
     pass
+
+
+def _require_cv2():
+    try:
+        return require_optional_dependency(
+            "cv2",
+            extra="vision",
+            purpose="NeoVerse hosted runtime video handling",
+        )
+    except RuntimeError as exc:
+        raise NeoVerseRuntimeContractError(str(exc)) from exc
 
 
 def resolve_neoverse_inference_script(repo_path: Path, inference_script: Optional[str]) -> Path:
@@ -91,6 +103,7 @@ def resolve_conditioning_input_path(
 
 
 def _read_last_video_frame(video_path: Path) -> np.ndarray:
+    cv2 = _require_cv2()
     cap = cv2.VideoCapture(str(video_path))
     try:
         last_frame: Optional[np.ndarray] = None
@@ -107,6 +120,7 @@ def _read_last_video_frame(video_path: Path) -> np.ndarray:
 
 
 def _read_input_dimensions(input_path: Path) -> tuple[int, int]:
+    cv2 = _require_cv2()
     suffix = input_path.suffix.lower()
     if suffix in {".png", ".jpg", ".jpeg", ".bmp", ".webp"}:
         frame = cv2.imread(str(input_path))
@@ -125,6 +139,7 @@ def _read_input_dimensions(input_path: Path) -> tuple[int, int]:
 
 
 def _coerce_camera_frames(frame: np.ndarray, robot_profile: Mapping[str, Any]) -> Dict[str, np.ndarray]:
+    cv2 = _require_cv2()
     cameras = robot_profile.get("observation_cameras")
     if not isinstance(cameras, list) or not cameras:
         return {"head_rgb": frame}

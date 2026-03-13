@@ -402,42 +402,53 @@ wheels = [
 ]
 
 [[package]]
+name = "blueprint-contracts"
+version = "0.1.0"
+source = { directory = "../BlueprintContracts" }
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=7.0.0" }]
+
+[[package]]
 name = "blueprint-validation"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "accelerate" },
+    { name = "blueprint-contracts" },
     { name = "click" },
     { name = "defusedxml" },
     { name = "fastapi" },
     { name = "google-genai" },
-    { name = "gsplat" },
     { name = "jinja2" },
-    { name = "lpips" },
-    { name = "matplotlib" },
     { name = "numpy" },
-    { name = "opencv-python" },
-    { name = "peft" },
     { name = "pillow" },
     { name = "plyfile" },
     { name = "pyyaml" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "torch" },
-    { name = "torchmetrics", extra = ["image"] },
-    { name = "torchvision" },
     { name = "tqdm" },
-    { name = "transformers" },
     { name = "uvicorn" },
     { name = "websockets" },
 ]
 
 [package.optional-dependencies]
-dev = [
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
+full = [
+    { name = "accelerate" },
+    { name = "gsplat" },
+    { name = "lerobot" },
+    { name = "lpips" },
+    { name = "matplotlib" },
+    { name = "opencv-python" },
+    { name = "peft" },
+    { name = "pybullet" },
+    { name = "tensorflow" },
+    { name = "tensorflow-datasets" },
+    { name = "torch" },
+    { name = "torchmetrics", extra = ["image"] },
+    { name = "torchvision" },
+    { name = "transformers" },
 ]
 manipulation = [
     { name = "pybullet" },
@@ -445,46 +456,95 @@ manipulation = [
 pi05 = [
     { name = "lerobot" },
 ]
+render = [
+    { name = "gsplat" },
+    { name = "lpips" },
+    { name = "matplotlib" },
+    { name = "opencv-python" },
+    { name = "torch" },
+    { name = "torchmetrics", extra = ["image"] },
+    { name = "torchvision" },
+]
 rlds = [
     { name = "tensorflow" },
     { name = "tensorflow-datasets" },
 ]
+training = [
+    { name = "accelerate" },
+    { name = "peft" },
+    { name = "torch" },
+    { name = "torchvision" },
+    { name = "transformers" },
+]
+vision = [
+    { name = "opencv-python" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
+]
 
 [package.metadata]
 requires-dist = [
-    { name = "accelerate", specifier = ">=1.0.0" },
+    { name = "accelerate", marker = "extra == 'full'", specifier = ">=1.0.0" },
+    { name = "accelerate", marker = "extra == 'training'", specifier = ">=1.0.0" },
+    { name = "blueprint-contracts", directory = "../BlueprintContracts" },
     { name = "click", specifier = ">=8.0" },
     { name = "defusedxml", specifier = ">=0.7.1" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "google-genai", specifier = ">=1.0.0" },
-    { name = "gsplat", specifier = ">=1.0.0" },
+    { name = "gsplat", marker = "extra == 'full'", specifier = ">=1.0.0" },
+    { name = "gsplat", marker = "extra == 'render'", specifier = ">=1.0.0" },
     { name = "jinja2", specifier = ">=3.1.0" },
+    { name = "lerobot", marker = "extra == 'full'", specifier = ">=0.3.0" },
     { name = "lerobot", marker = "extra == 'pi05'", specifier = ">=0.3.0" },
-    { name = "lpips", specifier = ">=0.1.4" },
-    { name = "matplotlib", specifier = ">=3.8.0" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8.0" },
+    { name = "lpips", marker = "extra == 'full'", specifier = ">=0.1.4" },
+    { name = "lpips", marker = "extra == 'render'", specifier = ">=0.1.4" },
+    { name = "matplotlib", marker = "extra == 'full'", specifier = ">=3.8.0" },
+    { name = "matplotlib", marker = "extra == 'render'", specifier = ">=3.8.0" },
     { name = "numpy", specifier = ">=1.24.0,<2" },
-    { name = "opencv-python", specifier = ">=4.8.0" },
-    { name = "peft", specifier = ">=0.7.0" },
+    { name = "opencv-python", marker = "extra == 'full'", specifier = ">=4.8.0" },
+    { name = "opencv-python", marker = "extra == 'render'", specifier = ">=4.8.0" },
+    { name = "opencv-python", marker = "extra == 'vision'", specifier = ">=4.8.0" },
+    { name = "peft", marker = "extra == 'full'", specifier = ">=0.7.0" },
+    { name = "peft", marker = "extra == 'training'", specifier = ">=0.7.0" },
     { name = "pillow", specifier = ">=10.0.0" },
     { name = "plyfile", specifier = ">=1.0" },
+    { name = "pybullet", marker = "extra == 'full'", specifier = ">=3.2.5" },
     { name = "pybullet", marker = "extra == 'manipulation'", specifier = ">=3.2.5" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.0" },
     { name = "scipy", specifier = ">=1.11.0" },
+    { name = "tensorflow", marker = "extra == 'full'", specifier = "==2.15.0" },
     { name = "tensorflow", marker = "extra == 'rlds'", specifier = "==2.15.0" },
+    { name = "tensorflow-datasets", marker = "extra == 'full'", specifier = "==4.9.3" },
     { name = "tensorflow-datasets", marker = "extra == 'rlds'", specifier = "==4.9.3" },
-    { name = "torch", specifier = ">=2.2.0" },
-    { name = "torchmetrics", extras = ["image"], specifier = ">=1.0.0" },
-    { name = "torchvision", specifier = ">=0.17.0" },
+    { name = "torch", marker = "extra == 'full'", specifier = ">=2.2.0" },
+    { name = "torch", marker = "extra == 'render'", specifier = ">=2.2.0" },
+    { name = "torch", marker = "extra == 'training'", specifier = ">=2.2.0" },
+    { name = "torchmetrics", extras = ["image"], marker = "extra == 'full'", specifier = ">=1.0.0" },
+    { name = "torchmetrics", extras = ["image"], marker = "extra == 'render'", specifier = ">=1.0.0" },
+    { name = "torchvision", marker = "extra == 'full'", specifier = ">=0.17.0" },
+    { name = "torchvision", marker = "extra == 'render'", specifier = ">=0.17.0" },
+    { name = "torchvision", marker = "extra == 'training'", specifier = ">=0.17.0" },
     { name = "tqdm", specifier = ">=4.60.0" },
-    { name = "transformers", specifier = ">=4.40.0" },
+    { name = "transformers", marker = "extra == 'full'", specifier = ">=4.40.0" },
+    { name = "transformers", marker = "extra == 'training'", specifier = ">=4.40.0" },
     { name = "uvicorn", specifier = ">=0.30.0" },
     { name = "websockets", specifier = ">=15.0.0" },
 ]
-provides-extras = ["manipulation", "rlds", "pi05", "dev"]
+provides-extras = ["vision", "render", "training", "manipulation", "rlds", "pi05", "full"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "mypy", specifier = ">=1.8.0" },
+    { name = "pytest", specifier = ">=7.0.0" },
+    { name = "pytest-cov", specifier = ">=4.0.0" },
+    { name = "ruff", specifier = ">=0.6.0" },
+]
 
 [[package]]
 name = "certifi"

@@ -9,7 +9,7 @@ from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
-from .site_world_intake import normalize_trajectory_payload
+from blueprint_contracts.site_world_contract import normalize_trajectory_payload
 
 try:
     from websockets.sync.client import connect as websocket_connect
@@ -113,6 +113,23 @@ class NeoVerseRuntimeClient:
             "healthz": dict(self.healthcheck()),
             "runtime": dict(self.runtime_info()),
         }
+
+    def register_site_world_package(
+        self,
+        *,
+        spec: Mapping[str, Any],
+        registration: Mapping[str, Any],
+        health: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        return self._request_json(
+            method="POST",
+            path="/v1/site-worlds",
+            payload={
+                "spec": dict(spec),
+                "registration": dict(registration),
+                "health": dict(health),
+            },
+        )
 
     def build_site_world(self, spec: Mapping[str, Any]) -> Mapping[str, Any]:
         return self._request_json(method="POST", path="/v1/site-worlds", payload=spec)

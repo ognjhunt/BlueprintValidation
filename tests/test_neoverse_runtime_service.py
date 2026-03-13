@@ -7,12 +7,13 @@ from fastapi.testclient import TestClient
 import blueprint_validation.neoverse_runtime_service as runtime_service
 from blueprint_validation.neoverse_runtime_core import NeoVerseRuntimeStore
 from tests.test_neoverse_runtime_core import _build_runtime_ready_spec
+from tests.test_neoverse_runtime_core import _register_site_world
 
 
 def test_runtime_service_coerces_legacy_trajectory_strings(tmp_path, monkeypatch) -> None:
     spec = _build_runtime_ready_spec(tmp_path)
     store = NeoVerseRuntimeStore(tmp_path / "runtime", base_url="http://testserver")
-    registration = store.build_site_world(spec)
+    registration = _register_site_world(store, spec)
     monkeypatch.setattr(runtime_service, "STORE", store)
 
     client = TestClient(runtime_service.app)
