@@ -1,4 +1,8 @@
-"""Schema and integrity validation helpers."""
+"""Validation helpers for downstream flows and compatibility imports.
+
+Portable contract ownership stays in BlueprintContracts; local helpers here are limited to
+repo-specific manifest checks and downstream advisory utilities.
+"""
 
 from .manifest_validation import (
     ManifestValidationError,

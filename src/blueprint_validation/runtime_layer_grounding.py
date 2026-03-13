@@ -1,4 +1,8 @@
-"""Runtime-layer grounding helpers for the NeoVerse runtime service."""
+"""Downstream runtime-layer helpers for the NeoVerse runtime service.
+
+Portable runtime-layer policy schemas, thresholds, and canonical version helpers stay in
+BlueprintContracts. This module adds local runtime compositing and cache behavior only.
+"""
 
 from __future__ import annotations
 

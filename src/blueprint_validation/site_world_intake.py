@@ -1,4 +1,8 @@
-"""Compatibility wrappers for the shared site-world contract."""
+"""Compatibility wrappers for the shared site-world contract.
+
+Ownership for portable site-world loading/validation stays in BlueprintContracts. This
+module exists only to preserve older BlueprintValidation import paths.
+"""
 
 from __future__ import annotations
 

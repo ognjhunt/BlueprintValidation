@@ -1,4 +1,8 @@
-"""Canonical grounding and compositing helpers for the NeoVerse runtime."""
+"""Local grounding/compositing helpers for downstream NeoVerse runtime execution.
+
+This module supports local runtime rendering behavior. It does not own the portable
+site-world or runtime-layer contracts.
+"""
 
 from __future__ import annotations
 

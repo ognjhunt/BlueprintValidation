@@ -11,7 +11,11 @@ The builder is intended as a legacy/contact-critical adapter path:
 - only a few explicit imported manipulable assets
 - enough package structure for teleop and the strict PolaRiS scene bridge
 
-It is no longer the default downstream product path. Preferred intake is now the canonical `scene_memory_bundle`, with scene-package generation reserved for contact-critical validation.
+It is no longer the default downstream product path. Preferred intake is now the built
+site-world package plus the canonical `scene_memory_bundle`, with scene-package generation
+reserved for contact-critical validation and strict simulator fallback paths.
+
+Do not move scene-package contract ownership or package-assembly logic back into this repo.
 
 ## Command
 

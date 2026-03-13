@@ -35,7 +35,9 @@ class _FakeRuntimeClient:
                 "api_version": "v1",
                 "websocket_base_url": "ws://runtime.local",
                 "capabilities": {
-                    "site_world_build": True,
+                    "site_world_package_registration": True,
+                    "site_world_registration": True,
+                    "site_world_build": False,
                     "session_reset": True,
                     "session_step": True,
                     "session_render": True,

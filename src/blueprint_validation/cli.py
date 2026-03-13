@@ -19,6 +19,38 @@ from .config import load_config
 logger = get_logger("cli")
 
 
+_PREFERRED_COMMAND_ORDER = {
+    "session": 0,
+    "preflight": 1,
+    "report": 2,
+}
+
+_SESSION_COMMAND_ORDER = {
+    "create": 0,
+    "reset": 1,
+    "step": 2,
+    "run-batch": 3,
+    "export": 4,
+    "stop": 5,
+}
+
+
+class BlueprintCliGroup(click.Group):
+    """Click group that surfaces the supported downstream workflow first."""
+
+    def list_commands(self, ctx: click.Context) -> list[str]:
+        commands = list(super().list_commands(ctx))
+        return sorted(commands, key=lambda name: (_PREFERRED_COMMAND_ORDER.get(name, 100), name))
+
+
+class SessionCliGroup(click.Group):
+    """Click group that surfaces the supported session lifecycle in order."""
+
+    def list_commands(self, ctx: click.Context) -> list[str]:
+        commands = list(super().list_commands(ctx))
+        return sorted(commands, key=lambda name: (_SESSION_COMMAND_ORDER.get(name, 100), name))
+
+
 def _load_local_env_file(path: Path) -> None:
     """Load simple KEY=VALUE or export KEY=VALUE entries if env is currently unset."""
     if not path.exists():
@@ -135,11 +167,26 @@ def _enforce_repro_guardrails(config_path: Path) -> None:
             )
 
 
-@click.group()
+
+def _config_path_value(config_path: str | Path) -> Path:
+    return Path(config_path).expanduser()
+
+
+def _load_cli_config(ctx: click.Context):
+    if "config" not in ctx.obj:
+        config_path = _config_path_value(ctx.obj["config_path"])
+        if not config_path.exists():
+            raise click.ClickException(f"Config path does not exist: {config_path}")
+        _enforce_repro_guardrails(config_path)
+        ctx.obj["config"] = load_config(config_path)
+    return ctx.obj["config"]
+
+
+@click.group(cls=BlueprintCliGroup)
 @click.option(
     "--config",
     "config_path",
-    type=click.Path(exists=True),
+    type=click.Path(),
     default="validation.yaml",
     help="Path to validation YAML config.",
 )
@@ -147,18 +194,26 @@ def _enforce_repro_guardrails(config_path: Path) -> None:
     "--work-dir",
     type=click.Path(),
     default="./data/outputs",
-    help="Working directory for pipeline outputs.",
+    help="Working directory for downstream outputs and compatibility-pipeline artifacts.",
 )
 @click.option("--verbose/--quiet", default=True, help="Logging verbosity.")
 @click.option("--dry-run", is_flag=True, default=False, help="Print actions without executing.")
 @click.pass_context
 def cli(ctx: click.Context, config_path: str, work_dir: str, verbose: bool, dry_run: bool) -> None:
-    """BlueprintValidation: downstream site-world session, evaluation, and export tooling."""
+    """Consume built site-world packages for runtime sessions, downstream evaluation, and export.
+
+    Supported workflow:
+      1. `session ...` against a built `site_world_registration.json`
+      2. `preflight` for downstream runtime/evaluation readiness
+      3. `report` over downstream outputs
+
+    Older stage-orchestration and direct scene-package commands remain available as
+    compatibility lanes, but they are not the primary supported path.
+    """
     setup_logging(verbose)
     _load_local_env_defaults()
-    _enforce_repro_guardrails(Path(config_path))
     ctx.ensure_object(dict)
-    ctx.obj["config"] = load_config(Path(config_path))
+    ctx.obj["config_path"] = config_path
     ctx.obj["work_dir"] = Path(work_dir)
     ctx.obj["verbose"] = verbose
     ctx.obj["dry_run"] = dry_run
@@ -181,10 +236,10 @@ def cli(ctx: click.Context, config_path: str, work_dir: str, verbose: bool, dry_
 )
 @click.pass_context
 def preflight(ctx: click.Context, profile: str, audit_mode: bool) -> None:
-    """Run preflight checks for the selected execution profile."""
+    """Run downstream runtime and evaluation readiness checks."""
     from .preflight import normalize_preflight_profile, run_preflight
 
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     if audit_mode:
         click.echo("Warning: --audit-mode is deprecated; using --profile audit.")
         profile = "audit"
@@ -203,7 +258,7 @@ def preflight(ctx: click.Context, profile: str, audit_mode: bool) -> None:
 
 
 def _get_facility(ctx: click.Context, facility_id: str):
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     if facility_id not in config.facilities:
         available = ", ".join(config.facilities.keys()) or "(none)"
         click.echo(
@@ -281,10 +336,10 @@ def _target_option(*, required: bool = True, help_text: str | None = None):
 @cli.command()
 @click.pass_context
 def build_scene_package(ctx: click.Context) -> None:
-    """Legacy: build a direct scene package from a raw PLY and local USD assets."""
+    """Legacy: build a direct scene package fallback from raw geometry and local USD assets."""
     from .scene_builder import SceneAssetManifestError, build_scene_package as _build_scene_package
 
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     try:
         result = _build_scene_package(config)
     except (SceneAssetManifestError, RuntimeError, ValueError) as exc:
@@ -311,7 +366,7 @@ def build_scene_package(ctx: click.Context) -> None:
 @cli.command()
 @click.option("--scene-root", type=click.Path(exists=True, file_okay=False), required=True)
 def validate_scene_package(scene_root: str) -> None:
-    """Legacy: validate a local scene handoff directory for teleop use."""
+    """Legacy: validate a local scene-package fallback directory for teleop use."""
     from .teleop import TeleopManifestError, load_and_validate_scene_package
 
     try:
@@ -367,7 +422,7 @@ def build_teleop_manifests(
     calibrations: tuple[str, ...],
     output_dir: str,
 ) -> None:
-    """Build teleop manifests from recorded video/action/state files."""
+    """Compatibility: build teleop manifests from recorded video/action/state files."""
     from .teleop import TeleopManifestError, write_teleop_manifests
 
     video_map = _parse_key_value_pairs(videos)
@@ -453,7 +508,7 @@ def run_vision_pro_relay(
     gripper_close_value: float,
     packet_log_path: Optional[str],
 ) -> None:
-    """Run the Vision Pro JSON bridge relay on the remote GPU box."""
+    """Compatibility: run the Vision Pro JSON bridge relay on the remote GPU box."""
     from .teleop import (
         VisionProRelayConfig,
         VisionProRelayError,
@@ -556,7 +611,7 @@ def record_teleop(
     max_attempts: int,
     attempt_pause_seconds: float,
 ) -> None:
-    """Record one local Isaac teleop demo and emit teleop manifests."""
+    """Compatibility: record one local Isaac teleop demo and emit teleop manifests."""
     from .teleop import IsaacTeleopRuntimeError, TeleopRecorderConfig, record_teleop_session
 
     cfg = TeleopRecorderConfig(
@@ -615,12 +670,12 @@ def record_teleop(
 )
 @click.pass_context
 def render(ctx: click.Context, facility: str, ply_path: Optional[str]) -> None:
-    """Stage 1: Render clips using the resolved gsplat or Isaac backend."""
+    """Compatibility: Stage 1 render for legacy geometry or strict simulator fallback flows."""
     from .stages.render_backend import active_render_backend
     from .stages.s1_isaac_render import IsaacRenderStage
     from .stages.s1_render import RenderStage
 
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     fac = _get_facility(ctx, facility)
     if ply_path:
         fac.ply_path = Path(ply_path)
@@ -669,10 +724,10 @@ def geometry_canary(
     probe_frames: int,
     targeted_only: bool,
 ) -> None:
-    """Stage 1: Run a no-render geometry canary for target-presence checks."""
+    """Compatibility: Stage 1 no-render geometry canary for fallback flows."""
     from .stages.s1_render import RenderStage
 
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     fac = _get_facility(ctx, facility)
     work_dir = _get_stage_work_dir(ctx, facility)
 
@@ -728,10 +783,10 @@ def post_s1_audit(
     geometry_probe_frames: int,
     vlm_rescore_first: int,
 ) -> None:
-    """Run consolidated CPU-only Stage-1 post-run reliability audit."""
+    """Compatibility: CPU-only Stage-1 post-run reliability audit."""
     from .stages.s1_render import RenderStage
 
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     fac = _get_facility(ctx, facility)
     work_dir = _get_stage_work_dir(ctx, facility)
 
@@ -764,10 +819,10 @@ def post_s1_audit(
 @_target_option()
 @click.pass_context
 def compose_robot(ctx: click.Context, facility: str) -> None:
-    """Stage 1b: Composite URDF robot arm into rendered clips."""
+    """Compatibility: Stage 1b robot compositing over legacy rendered clips."""
     from .stages.s1b_robot_composite import RobotCompositeStage
 
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     fac = _get_facility(ctx, facility)
     work_dir = _get_stage_work_dir(ctx, facility)
 
@@ -781,10 +836,10 @@ def compose_robot(ctx: click.Context, facility: str) -> None:
 @_target_option()
 @click.pass_context
 def polish_gemini(ctx: click.Context, facility: str) -> None:
-    """Stage 1c: Optional Gemini image polish for composited clips."""
+    """Compatibility: Stage 1c Gemini polish for legacy rendered clips."""
     from .stages.s1c_gemini_polish import GeminiPolishStage
 
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     fac = _get_facility(ctx, facility)
     work_dir = _get_stage_work_dir(ctx, facility)
 
@@ -798,10 +853,10 @@ def polish_gemini(ctx: click.Context, facility: str) -> None:
 @_target_option()
 @click.pass_context
 def augment_gaussian(ctx: click.Context, facility: str) -> None:
-    """Stage 1d: Full RoboSplat-default augmentation."""
+    """Compatibility: Stage 1d RoboSplat augmentation for legacy rendered clips."""
     from .stages.s1d_gaussian_augment import GaussianAugmentStage
 
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     fac = _get_facility(ctx, facility)
     work_dir = _get_stage_work_dir(ctx, facility)
 
@@ -815,10 +870,10 @@ def augment_gaussian(ctx: click.Context, facility: str) -> None:
 @_target_option()
 @click.pass_context
 def augment_robosplat(ctx: click.Context, facility: str) -> None:
-    """Alias for Stage 1d full RoboSplat augmentation."""
+    """Compatibility: alias for legacy Stage 1d RoboSplat augmentation."""
     from .stages.s1d_gaussian_augment import GaussianAugmentStage
 
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     fac = _get_facility(ctx, facility)
     work_dir = _get_stage_work_dir(ctx, facility)
 
@@ -832,10 +887,10 @@ def augment_robosplat(ctx: click.Context, facility: str) -> None:
 @_target_option()
 @click.pass_context
 def ingest_external_interaction(ctx: click.Context, facility: str) -> None:
-    """Stage 1f: Ingest external interaction manifest into stage-1 source format."""
+    """Compatibility: Stage 1f external interaction ingest for legacy stage inputs."""
     from .stages.s1f_external_interaction_ingest import ExternalInteractionIngestStage
 
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     fac = _get_facility(ctx, facility)
     work_dir = _get_stage_work_dir(ctx, facility)
 
@@ -851,10 +906,10 @@ def ingest_external_interaction(ctx: click.Context, facility: str) -> None:
 @_target_option()
 @click.pass_context
 def ingest_external_rollouts(ctx: click.Context, facility: str) -> None:
-    """Stage 1g: Ingest external teleop rollouts into action-labeled rows."""
+    """Compatibility: Stage 1g external rollout ingest for legacy stage inputs."""
     from .stages.s1g_external_rollout_ingest import ExternalRolloutIngestStage
 
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     fac = _get_facility(ctx, facility)
     work_dir = _get_stage_work_dir(ctx, facility)
 
@@ -870,10 +925,10 @@ def ingest_external_rollouts(ctx: click.Context, facility: str) -> None:
 @_target_option()
 @click.pass_context
 def enrich(ctx: click.Context, facility: str) -> None:
-    """Stage 2: Cosmos Transfer 2.5 enrichment."""
+    """Compatibility: Stage 2 enrichment for legacy stage orchestration."""
     from .stages.s2_enrich import EnrichStage
 
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     fac = _get_facility(ctx, facility)
     work_dir = _get_stage_work_dir(ctx, facility)
 
@@ -889,10 +944,10 @@ def enrich(ctx: click.Context, facility: str) -> None:
 @_target_option()
 @click.pass_context
 def finetune(ctx: click.Context, facility: str) -> None:
-    """Stage 3: DreamDojo fine-tuning."""
+    """Compatibility: Stage 3 DreamDojo fine-tuning via legacy stage orchestration."""
     from .stages.s3_finetune import FinetuneStage
 
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     fac = _get_facility(ctx, facility)
     work_dir = _get_stage_work_dir(ctx, facility)
 
@@ -906,10 +961,10 @@ def finetune(ctx: click.Context, facility: str) -> None:
 @_target_option()
 @click.pass_context
 def finetune_policy(ctx: click.Context, facility: str) -> None:
-    """Optional Stage 3b: OpenVLA-OFT policy fine-tuning."""
+    """Compatibility: Stage 3b OpenVLA-OFT policy fine-tuning via legacy stage orchestration."""
     from .stages.s3b_policy_finetune import PolicyFinetuneStage
 
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     fac = _get_facility(ctx, facility)
     work_dir = _get_stage_work_dir(ctx, facility)
 
@@ -923,10 +978,10 @@ def finetune_policy(ctx: click.Context, facility: str) -> None:
 @_target_option()
 @click.pass_context
 def rl_loop_policy(ctx: click.Context, facility: str) -> None:
-    """Stage 3c: World-VLA-Loop-style policy RL loop."""
+    """Compatibility: Stage 3c policy RL loop via legacy stage orchestration."""
     from .stages.s3c_policy_rl_loop import PolicyRLLoopStage
 
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     fac = _get_facility(ctx, facility)
     work_dir = _get_stage_work_dir(ctx, facility)
 
@@ -940,10 +995,10 @@ def rl_loop_policy(ctx: click.Context, facility: str) -> None:
 @_target_option()
 @click.pass_context
 def eval_policy(ctx: click.Context, facility: str) -> None:
-    """Stage 4: OpenVLA-OFT policy evaluation with VLM judge scoring."""
+    """Compatibility: Stage 4 policy evaluation via legacy stage orchestration."""
     from .stages.s4_policy_eval import PolicyEvalStage
 
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     fac = _get_facility(ctx, facility)
     work_dir = _get_stage_work_dir(ctx, facility)
 
@@ -959,10 +1014,10 @@ def eval_policy(ctx: click.Context, facility: str) -> None:
 @_target_option()
 @click.pass_context
 def export_rlds(ctx: click.Context, facility: str) -> None:
-    """Stage 4a: Export adapted rollouts to RLDS TFRecord dataset."""
+    """Compatibility: Stage 4a RLDS export via legacy stage orchestration."""
     from .stages.s4a_rlds_export import RLDSExportStage
 
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     fac = _get_facility(ctx, facility)
     work_dir = _get_stage_work_dir(ctx, facility)
 
@@ -978,10 +1033,10 @@ def export_rlds(ctx: click.Context, facility: str) -> None:
 @_target_option()
 @click.pass_context
 def export_rollouts(ctx: click.Context, facility: str) -> None:
-    """Stage 4b: Export rollouts to RLDS-style datasets."""
+    """Compatibility: Stage 4b rollout export via legacy stage orchestration."""
     from .stages.s4b_rollout_dataset import RolloutDatasetStage
 
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     fac = _get_facility(ctx, facility)
     work_dir = _get_stage_work_dir(ctx, facility)
 
@@ -997,10 +1052,10 @@ def export_rollouts(ctx: click.Context, facility: str) -> None:
 @_target_option()
 @click.pass_context
 def train_policy_pair(ctx: click.Context, facility: str) -> None:
-    """Stage 4c: Train policy_base and policy_site from paired datasets."""
+    """Compatibility: Stage 4c paired-policy training via legacy stage orchestration."""
     from .stages.s4c_policy_pair_train import PolicyPairTrainStage
 
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     fac = _get_facility(ctx, facility)
     work_dir = _get_stage_work_dir(ctx, facility)
 
@@ -1014,10 +1069,10 @@ def train_policy_pair(ctx: click.Context, facility: str) -> None:
 @_target_option()
 @click.pass_context
 def eval_policy_pair(ctx: click.Context, facility: str) -> None:
-    """Stage 4d: Evaluate policy_base vs policy_site on heldout rollouts."""
+    """Compatibility: Stage 4d paired-policy evaluation via legacy stage orchestration."""
     from .stages.s4d_policy_pair_eval import PolicyPairEvalStage
 
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     fac = _get_facility(ctx, facility)
     work_dir = _get_stage_work_dir(ctx, facility)
 
@@ -1033,10 +1088,10 @@ def eval_policy_pair(ctx: click.Context, facility: str) -> None:
 @_target_option()
 @click.pass_context
 def eval_trained_policy(ctx: click.Context, facility: str) -> None:
-    """Stage 4e: Evaluate Stage 3b fine-tuned policy in adapted world model."""
+    """Compatibility: Stage 4e trained-policy evaluation via legacy stage orchestration."""
     from .stages.s4e_trained_eval import TrainedPolicyEvalStage
 
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     fac = _get_facility(ctx, facility)
     work_dir = _get_stage_work_dir(ctx, facility)
 
@@ -1052,10 +1107,10 @@ def eval_trained_policy(ctx: click.Context, facility: str) -> None:
 @_target_option()
 @click.pass_context
 def eval_visual(ctx: click.Context, facility: str) -> None:
-    """Stage 5: Visual fidelity metrics (PSNR/SSIM/LPIPS)."""
+    """Compatibility: Stage 5 visual fidelity metrics via legacy stage orchestration."""
     from .stages.s5_visual_fidelity import VisualFidelityStage
 
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     fac = _get_facility(ctx, facility)
     work_dir = _get_stage_work_dir(ctx, facility)
 
@@ -1069,10 +1124,10 @@ def eval_visual(ctx: click.Context, facility: str) -> None:
 @_target_option()
 @click.pass_context
 def eval_spatial(ctx: click.Context, facility: str) -> None:
-    """Stage 6: Spatial accuracy verification."""
+    """Compatibility: Stage 6 spatial accuracy verification via legacy stage orchestration."""
     from .stages.s6_spatial_accuracy import SpatialAccuracyStage
 
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     fac = _get_facility(ctx, facility)
     work_dir = _get_stage_work_dir(ctx, facility)
 
@@ -1085,10 +1140,10 @@ def eval_spatial(ctx: click.Context, facility: str) -> None:
 @cli.command("eval-crosssite")
 @click.pass_context
 def eval_crosssite(ctx: click.Context) -> None:
-    """Stage 7: Cross-site discrimination test (requires 2 facilities)."""
+    """Compatibility: Stage 7 cross-site discrimination via legacy stage orchestration."""
     from .stages.s7_cross_site import CrossSiteStage
 
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     if len(config.facilities) < 2:
         click.echo("Cross-site test requires at least 2 facilities in config.", err=True)
         sys.exit(1)
@@ -1109,13 +1164,13 @@ def eval_crosssite(ctx: click.Context) -> None:
 @_target_option(required=False)
 @click.pass_context
 def warmup(ctx: click.Context, facility: str | None) -> None:
-    """Pre-compute CPU-only artifacts (occupancy grids, camera paths, variant prompts).
+    """Compatibility: pre-compute CPU-only artifacts for legacy stage orchestration.
 
     Run this before a GPU session to save 5-15 min per facility at render time.
     """
     from .warmup import warmup_facility
 
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     work_dir = ctx.obj["work_dir"]
 
     if facility:
@@ -1146,10 +1201,10 @@ def warmup(ctx: click.Context, facility: str | None) -> None:
 )
 @click.pass_context
 def bootstrap_task_hints(ctx: click.Context, facility: str | None) -> None:
-    """Stage 0: Bootstrap synthetic task_targets.json when source hints are missing."""
+    """Compatibility: Stage 0 task-hint bootstrap for legacy stage orchestration."""
     from .stages.s0_task_hints_bootstrap import TaskHintsBootstrapStage
 
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     work_dir = ctx.obj["work_dir"]
 
     stage = TaskHintsBootstrapStage()
@@ -1209,11 +1264,11 @@ def run_all(
     resume_from_results: bool,
     skip_preflight: bool,
 ) -> None:
-    """Run the supported site-world preparation pipeline."""
+    """Legacy: run the compatibility pipeline for older build-oriented workflows."""
     from .pipeline import ValidationPipeline
     from .preflight import run_preflight
 
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     work_dir = ctx.obj["work_dir"]
 
     if not skip_preflight:
@@ -1251,10 +1306,10 @@ def run_all(
 @click.option("--output", "output_path", type=click.Path(), default="validation_report.md")
 @click.pass_context
 def report(ctx: click.Context, fmt: str, output_path: str) -> None:
-    """Generate final validation report from existing pipeline outputs."""
+    """Generate a downstream validation report from existing outputs."""
     from .reporting.report_builder import build_report
 
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     work_dir = ctx.obj["work_dir"]
 
     report_path = build_report(config, work_dir, fmt=fmt, output_path=Path(output_path))
@@ -1264,10 +1319,10 @@ def report(ctx: click.Context, fmt: str, output_path: str) -> None:
 @cli.command()
 @click.pass_context
 def status(ctx: click.Context) -> None:
-    """Show current site-world preparation status for all facilities."""
+    """Legacy: show compatibility-pipeline status for all configured facilities."""
     from .common import read_json
 
-    config = ctx.obj["config"]
+    config = _load_cli_config(ctx)
     work_dir = ctx.obj["work_dir"]
 
     stages = [
@@ -1294,9 +1349,9 @@ def status(ctx: click.Context) -> None:
             else:
                 click.echo(f"  {sname}: not started")
 
-@cli.group("session")
+@cli.group("session", cls=SessionCliGroup)
 def session_group() -> None:
-    """Hosted-session runtime commands for WebApp orchestration."""
+    """Run hosted NeoVerse session workflows from built site-world registrations."""
 
 
 @session_group.command("create")
@@ -1369,7 +1424,7 @@ def session_create(
         if debug_mode:
             policy_payload["debug_mode"] = True
         payload = create_session(
-            config=ctx.obj["config"],
+            config=_load_cli_config(ctx),
             session_id=session_id,
             session_work_dir=Path(session_work_dir),
             registration_path=Path(registration_path),
@@ -1411,7 +1466,7 @@ def session_reset(
 
     try:
         payload = reset_session(
-            config=ctx.obj["config"],
+            config=_load_cli_config(ctx),
             session_id=session_id,
             session_work_dir=Path(session_work_dir),
             task_id=task_id,
@@ -1443,7 +1498,7 @@ def session_step(
 
     try:
         payload = step_session(
-            config=ctx.obj["config"],
+            config=_load_cli_config(ctx),
             session_work_dir=Path(session_work_dir),
             episode_id=episode_id,
             action=json.loads(action_json) if action_json else None,
@@ -1479,7 +1534,7 @@ def session_run_batch(
 
     try:
         payload = run_batch(
-            config=ctx.obj["config"],
+            config=_load_cli_config(ctx),
             session_work_dir=Path(session_work_dir),
             num_episodes=num_episodes,
             task_id=task_id,

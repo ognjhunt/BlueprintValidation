@@ -1,4 +1,8 @@
-"""FastAPI service exposing the persistent NeoVerse site-world runtime contract."""
+"""FastAPI service exposing the downstream NeoVerse site-world runtime contract.
+
+The supported intake is a built site-world package (`spec` + `registration` + `health`).
+Spec-only payloads remain available only as a deprecated local compatibility path.
+"""
 
 from __future__ import annotations
 
@@ -73,6 +77,7 @@ def runtime_info() -> Dict[str, Any]:
         "runtime_base_url": STORE.base_url,
         "websocket_base_url": STORE.ws_base_url,
         "capabilities": {
+            "site_world_package_registration": True,
             "site_world_registration": True,
             "site_world_build": False,
             "legacy_site_world_build": True,
@@ -89,7 +94,7 @@ def runtime_info() -> Dict[str, Any]:
 
 
 @app.post("/v1/site-worlds")
-def build_site_world(payload: Dict[str, Any]) -> Dict[str, Any]:
+def register_site_world(payload: Dict[str, Any]) -> Dict[str, Any]:
     try:
         if all(
             isinstance(payload.get(key), dict)

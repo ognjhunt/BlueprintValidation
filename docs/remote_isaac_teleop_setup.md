@@ -58,7 +58,7 @@ bash scripts/run_isaac_record_teleop.sh
 
 This will:
 
-1. validate the scene package
+1. validate the fallback scene package
 2. launch `record-teleop`
 3. write:
    - `actions.json`
@@ -95,3 +95,6 @@ Use:
 - `teleop_session_manifest.json` for action-labeled policy seeding
 
 The existing workflow in [docs/teleop_isaac_workflow.md](/Users/nijelhunt_1/workspace/BlueprintValidation/docs/teleop_isaac_workflow.md) stays the same after the remote recording step.
+
+This is a compatibility/fallback operator flow. The supported BlueprintValidation product story
+still starts from built site-world package consumption for downstream runtime sessions, evaluation, and export.

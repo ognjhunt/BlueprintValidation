@@ -1,4 +1,4 @@
-"""Site-world preparation pipeline orchestrator."""
+"""Compatibility pipeline orchestrator for older build-oriented workflows."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ logger = get_logger("pipeline")
 
 
 class ValidationPipeline:
-    """Runs the supported site-world preparation stages for all facilities."""
+    """Runs the legacy compatibility pipeline for older build-oriented workflows."""
 
     def __init__(self, config: ValidationConfig, work_dir: Path):
         self.config = config

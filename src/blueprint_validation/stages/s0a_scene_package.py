@@ -1,4 +1,4 @@
-"""Stage 0a: resolve or build a simulator-ready scene package."""
+"""Compatibility Stage 0a: resolve or build a simulator-ready fallback scene package."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ class ScenePackageStage(PipelineStage):
 
     @property
     def description(self) -> str:
-        return "Resolve or build a strict scene package for Isaac/PolaRiS fallback paths"
+        return "Resolve or build a strict scene package for Isaac/PolaRiS compatibility fallback paths"
 
     def run(
         self,

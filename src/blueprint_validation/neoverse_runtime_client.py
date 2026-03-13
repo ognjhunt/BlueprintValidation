@@ -1,4 +1,8 @@
-"""HTTP client for the NeoVerse site-world runtime service."""
+"""HTTP client for the downstream NeoVerse site-world runtime service.
+
+The supported intake is built site-world package registration. Spec-only build requests
+remain available only for deprecated local compatibility workflows.
+"""
 
 from __future__ import annotations
 
@@ -121,6 +125,7 @@ class NeoVerseRuntimeClient:
         registration: Mapping[str, Any],
         health: Mapping[str, Any],
     ) -> Mapping[str, Any]:
+        """Register a built site-world package with the runtime service."""
         return self._request_json(
             method="POST",
             path="/v1/site-worlds",
@@ -132,6 +137,7 @@ class NeoVerseRuntimeClient:
         )
 
     def build_site_world(self, spec: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Deprecated compatibility wrapper for spec-only site-world registration."""
         return self._request_json(method="POST", path="/v1/site-worlds", payload=spec)
 
     def get_site_world(self, site_world_id: str) -> Mapping[str, Any]:

@@ -40,7 +40,10 @@ def test_runtime_client_covers_json_and_bytes(monkeypatch):
                         "api_version": "v1",
                         "websocket_base_url": "ws://runtime.local",
                         "capabilities": {
-                            "site_world_build": True,
+                            "site_world_package_registration": True,
+                            "site_world_registration": True,
+                            "site_world_build": False,
+                            "legacy_site_world_build": True,
                             "session_reset": True,
                             "session_step": True,
                             "session_render": True,
@@ -54,7 +57,20 @@ def test_runtime_client_covers_json_and_bytes(monkeypatch):
                 ).encode("utf-8")
             )
         if url.endswith("/v1/site-worlds"):
-            return _FakeResponse(json.dumps({"site_world_id": "siteworld-1"}).encode("utf-8"))
+            request_payload = json.loads(request.data.decode("utf-8"))
+            registration_mode = (
+                "package_registration"
+                if {"spec", "registration", "health"} <= set(request_payload)
+                else "legacy_spec_build"
+            )
+            return _FakeResponse(
+                json.dumps(
+                    {
+                        "site_world_id": "siteworld-1",
+                        "registration_mode": registration_mode,
+                    }
+                ).encode("utf-8")
+            )
         if url.endswith("/v1/site-worlds/siteworld-1"):
             return _FakeResponse(json.dumps({"site_world_id": "siteworld-1", "status": "ready"}).encode("utf-8"))
         if url.endswith("/v1/site-worlds/siteworld-1/health"):
@@ -118,7 +134,12 @@ def test_runtime_client_covers_json_and_bytes(monkeypatch):
     assert client.healthcheck()["status"] == "ok"
     assert client.runtime_info()["api_version"] == "v1"
     assert client.runtime_info()["capabilities"]["protected_region_locking"] is True
-    assert client.build_site_world({"scene_id": "scene-1"})["site_world_id"] == "siteworld-1"
+    assert client.register_site_world_package(
+        spec={"scene_id": "scene-1"},
+        registration={"site_world_id": "siteworld-1"},
+        health={"launchable": True},
+    )["registration_mode"] == "package_registration"
+    assert client.build_site_world({"scene_id": "scene-1"})["registration_mode"] == "legacy_spec_build"
     assert client.get_site_world("siteworld-1")["status"] == "ready"
     assert client.get_site_world_health("siteworld-1")["launchable"] is True
     assert client.create_session(

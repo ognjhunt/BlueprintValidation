@@ -921,7 +921,7 @@ def test_preflight_requires_neoverse_runtime_service_contract(sample_config, mon
             "runtime": {
                 "api_version": "v1",
                 "capabilities": {
-                    "site_world_build": True,
+                    "legacy_site_world_build": True,
                     "session_reset": True,
                     "session_step": True,
                     "session_render": True,
@@ -937,6 +937,9 @@ def test_preflight_requires_neoverse_runtime_service_contract(sample_config, mon
 
     assert by_name["scene_memory_runtime:neoverse:service_contract"].passed is False
     assert "missing required capabilities" in by_name["scene_memory_runtime:neoverse:service_contract"].detail
+    assert "site_world_build support is not sufficient" in by_name[
+        "scene_memory_runtime:neoverse:service_contract"
+    ].detail
 
 
 def test_preflight_module_import_is_lazy_for_heavy_helpers(monkeypatch):

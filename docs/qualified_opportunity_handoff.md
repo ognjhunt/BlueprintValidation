@@ -1,8 +1,9 @@
 # Qualified Opportunity Handoff
 
-`BlueprintValidation` now sits after qualification, not before it.
+`BlueprintValidation` now sits after qualification, not before it, and after canonical package creation for the supported runtime/session flow.
 
-The preferred intake is a rich qualified opportunity handoff plus the smallest set of downstream assets needed for evaluation:
+The preferred intake for qualification context is a rich qualified opportunity handoff plus the
+smallest set of downstream assets needed for evaluation:
 
 - scoped task definition
 - site constraints
@@ -11,6 +12,9 @@ The preferred intake is a rich qualified opportunity handoff plus the smallest s
 - optional preview simulation package
 - optional geometry bundle
 - optional scene package when simulator-backed evaluation is justified
+
+For hosted NeoVerse runtime sessions, the supported runtime handoff remains the built
+`site_world_registration.json` with adjacent `site_world_spec.json` and `site_world_health.json`.
 
 ## Supported Handoffs
 
@@ -53,7 +57,7 @@ When `target_robot_team` is omitted, the handoff is still valid as a neutral qua
 
 ### Legacy thin BlueprintCapturePipeline handoff
 
-This shape is compatibility-only. New qualification flows should prefer the rich handoff plus linked evidence artifacts.
+This shape is compatibility-only. New qualification flows should prefer the rich handoff plus linked evidence artifacts, and runtime execution should still begin from the built site-world package.
 
 The current upstream pipeline writes a slimmer handoff under `.../pipeline/opportunity_handoff.json`.
 

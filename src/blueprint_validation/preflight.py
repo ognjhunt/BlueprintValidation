@@ -376,7 +376,9 @@ def check_neoverse_runtime_service_contract(config: ValidationConfig) -> Preflig
         "session_stream",
     )
     missing = [key for key in required_capabilities if not bool(capabilities.get(key))]
-    if not bool(capabilities.get("site_world_registration")) and not bool(capabilities.get("site_world_build")):
+    if not bool(capabilities.get("site_world_package_registration")) and not bool(
+        capabilities.get("site_world_registration")
+    ):
         missing.append("site_world_registration")
     if status != "ok":
         return PreflightCheck(
@@ -394,7 +396,11 @@ def check_neoverse_runtime_service_contract(config: ValidationConfig) -> Preflig
         return PreflightCheck(
             name=name,
             passed=False,
-            detail=f"{NEOVERSE_RUNTIME_SERVICE_LABEL} is missing required capabilities at {service_url}: {', '.join(missing)}",
+            detail=(
+                f"{NEOVERSE_RUNTIME_SERVICE_LABEL} is missing required capabilities at "
+                f"{service_url}: {', '.join(missing)}. Legacy spec-only site_world_build "
+                "support is not sufficient for the supported downstream package flow."
+            ),
         )
     return PreflightCheck(
         name=name,

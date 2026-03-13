@@ -1,4 +1,8 @@
-"""Compatibility wrappers for the shared qualified opportunity contract."""
+"""Compatibility wrappers for the shared qualified opportunity contract.
+
+Ownership for the handoff schema and validation logic stays in BlueprintContracts. This
+module exists only to preserve older BlueprintValidation import paths.
+"""
 
 from __future__ import annotations
 

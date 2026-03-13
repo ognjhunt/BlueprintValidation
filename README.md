@@ -12,6 +12,9 @@ This repo is intentionally narrow:
 It is not the source of truth for handoff schemas, site-world schemas, runtime-layer policy thresholds,
 or canonical package versioning. Those contracts now live in the shared `BlueprintContracts` package.
 
+Validation starts after package creation. Deterministic package assembly remains upstream in
+`BlueprintCapturePipeline`.
+
 ## Supported Intake
 
 Expected upstream artifacts from `BlueprintCapturePipeline`:
@@ -171,8 +174,8 @@ These are derived interaction/export artifacts. The site world itself remains in
 
 ## Placeholder Service
 
-This repo still includes a local placeholder NeoVerse-compatible service for contract testing and local
-package registration:
+This repo still includes a local placeholder NeoVerse-compatible service for downstream contract
+testing and local package registration from already-built artifacts:
 
 ```bash
 blueprint-neoverse-runtime
@@ -198,6 +201,12 @@ Useful endpoints:
 
 - The supported path is runtime-first and site-world-first.
 - Older orchestration, scene-package, and training-heavy commands remain only as compatibility lanes and are not the primary supported path.
+
+## Maintenance Boundary
+
+- Put portable handoff/site-world/runtime-layer schema changes in `BlueprintContracts`, not here.
+- Put deterministic package assembly changes in `BlueprintCapturePipeline`, not here.
+- Keep changes in this repo focused on package consumption, runtime execution, evaluation, export, or explicit compatibility wrappers.
 
 ## Tests
 

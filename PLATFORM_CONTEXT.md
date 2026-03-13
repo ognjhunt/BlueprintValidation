@@ -37,6 +37,12 @@ The supported intake is the built site-world package produced upstream:
 
 Qualified-opportunity handoffs and scene-memory artifacts are upstream inputs or references, not canonical truth this repo creates.
 
+## Maintenance Guidance
+
+- Changes to portable schemas, versioning rules, and runtime-layer thresholds belong in `BlueprintContracts`.
+- Changes to deterministic handoff/package assembly belong upstream in `BlueprintCapturePipeline`.
+- Local placeholder runtime code here may cache or mirror built artifacts for testing, but it must not become the canonical source of truth.
+
 ## Practical Rule For Agents
 
 When making changes here:

@@ -96,7 +96,7 @@ bash scripts/run_vision_pro_teleop_stack.sh
 
 The recorder + relay pair will:
 
-- validate the scene package
+- validate the fallback scene package
 - start `record-teleop --teleop-device vision_pro`
 - wait for a bridge client on `BRIDGE_HOST:BRIDGE_PORT`
 - record videos, actions, and state
@@ -121,5 +121,8 @@ ssh "$REMOTE_TARGET" "cd '$REMOTE_ROOT' && bash scripts/run_vision_pro_relay.sh"
 ## Important limitation
 
 This repo now has the **remote recorder-side Vision Pro bridge**.
+
+This is a compatibility/fallback operator flow. The primary BlueprintValidation product path
+remains consumption of built site-world packages for downstream runtime sessions, evaluation, and export.
 
 It does **not** contain the Vision Pro headset app or the NVIDIA sample-client modifications needed to emit these control packets. You still need the official NVIDIA Vision Pro teleop stack plus a small relay on top of it.

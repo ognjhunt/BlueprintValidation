@@ -281,6 +281,9 @@ def test_runtime_store_builds_and_steps_site_world(tmp_path: Path) -> None:
     registration = _register_site_world(store, spec)
     assert registration["status"] == "ready"
     assert registration["canonical_package_version"] == spec["canonical_package_version"]
+    assert registration["registration_mode"] == "package_registration"
+    assert registration["intake_source"] == "built_site_world_package"
+    assert registration["compatibility_notice"] == ""
     assert registration["runtime_capabilities"]["protected_region_locking"] is True
 
     session = store.create_session(
@@ -317,9 +320,22 @@ def test_runtime_store_builds_and_steps_site_world(tmp_path: Path) -> None:
     state = store.session_state("session-1")
     assert state["canonical_package_version"] == spec["canonical_package_version"]
     assert "quality_flags" in state
-
     render = store.render_bytes("session-1", "head_rgb")
     assert render.startswith(b"\x89PNG")
+
+
+def test_runtime_store_marks_legacy_spec_build_as_deprecated(tmp_path: Path) -> None:
+    spec = _build_runtime_ready_spec(tmp_path)
+
+    store = NeoVerseRuntimeStore(tmp_path / "runtime", base_url="http://runtime.local")
+    registration = store.build_site_world(spec)
+    health = store.load_site_world_health(str(registration["site_world_id"]))
+
+    assert registration["registration_mode"] == "legacy_spec_build"
+    assert registration["intake_source"] == "legacy_spec_only_payload"
+    assert "Deprecated compatibility path" in registration["compatibility_notice"]
+    assert health["registration_mode"] == "legacy_spec_build"
+    assert "Deprecated compatibility path" in health["compatibility_notice"]
 
 
 def test_runtime_store_rejects_canonical_package_mismatch(tmp_path: Path) -> None:
