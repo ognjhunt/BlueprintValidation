@@ -164,6 +164,7 @@ def run_request(request_path: Path, response_path: Path) -> Dict[str, Any]:
     request_payload = _read_json(request_path)
     repo_root = _neoverse_repo_root()
     python_bin = _neoverse_python_bin(repo_root)
+    python_bin_dir = str(Path(python_bin).expanduser().resolve().parent)
     model_root = _model_root()
     checkpoint_path = _checkpoint_path(model_root)
     workspace_manifest = _workspace_manifest(request_payload)
@@ -202,7 +203,13 @@ def run_request(request_path: Path, response_path: Path) -> Dict[str, Any]:
             command.append("--static_scene")
         if low_vram:
             command.append("--low_vram")
-        completed = subprocess.run(command, capture_output=True, text=True, check=False)
+        env = dict(os.environ)
+        path_entries = [python_bin_dir]
+        existing_path = str(env.get("PATH") or "").strip()
+        if existing_path:
+            path_entries.append(existing_path)
+        env["PATH"] = os.pathsep.join(path_entries)
+        completed = subprocess.run(command, capture_output=True, text=True, check=False, env=env)
         if completed.returncode != 0:
             stderr = (completed.stderr or completed.stdout or "").strip()
             raise RuntimeError(f"NeoVerse inference failed for {camera_id}: {stderr[:500]}")

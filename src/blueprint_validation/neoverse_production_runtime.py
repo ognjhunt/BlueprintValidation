@@ -744,6 +744,33 @@ class NeoVerseProductionRuntimeStore:
         _write_json(path, snapshot)
         return path
 
+    def _render_camera_selection(
+        self,
+        robot_profile: Mapping[str, Any],
+        *,
+        requested_camera_ids: Optional[Sequence[str]] = None,
+    ) -> list[Dict[str, Any]]:
+        cameras = [dict(item) for item in robot_profile.get("observation_cameras", []) if isinstance(item, Mapping)]
+        if not cameras:
+            cameras = [{"id": "head_rgb", "role": "head", "required": True, "default_enabled": True}]
+        if requested_camera_ids:
+            requested = {str(item).strip() for item in requested_camera_ids if str(item).strip()}
+            selected = [camera for camera in cameras if str(camera.get("id") or "").strip() in requested]
+            return selected or cameras[:1]
+        preferred = [camera for camera in cameras if bool(camera.get("required", False))]
+        if not preferred:
+            preferred = [camera for camera in cameras if bool(camera.get("default_enabled", False))]
+        return preferred[:1] or cameras[:1]
+
+    def _canonical_frame_from_runner_output(self, path: Path, camera_id: str) -> Any:
+        if not path.is_file():
+            raise RuntimeError(f"NeoVerse runner frame missing for camera {camera_id}")
+        if path.suffix.lower() in {".mp4", ".mov", ".avi", ".mkv", ".webm"}:
+            frame = _extract_first_frame(path)
+        else:
+            frame = _load_frame(path)
+        return _coerce_camera_frame(frame, camera_id)
+
     def _render_snapshot(self, session_state: Dict[str, Any], snapshot: Dict[str, Any]) -> Dict[str, Any]:
         session_id = str(session_state["session_id"])
         site_world_id = str(session_state["site_world_id"])
@@ -752,9 +779,7 @@ class NeoVerseProductionRuntimeStore:
         render_dir.mkdir(parents=True, exist_ok=True)
         base_frame_path = self._base_frame_path(site_world_id)
         robot_profile = dict(session_state.get("robot_profile") or {})
-        cameras = [dict(item) for item in robot_profile.get("observation_cameras", []) if isinstance(item, Mapping)]
-        if not cameras:
-            cameras = [{"id": "head_rgb", "role": "head", "required": True}]
+        cameras = self._render_camera_selection(robot_profile)
         runner_payload = self.runner.render_snapshot(
             site_world_id=site_world_id,
             session_id=session_id,
@@ -782,9 +807,7 @@ class NeoVerseProductionRuntimeStore:
             if frame_record is None:
                 continue
             raw_path = Path(str(frame_record.get("path") or "")).resolve()
-            if not raw_path.is_file():
-                raise RuntimeError(f"NeoVerse runner frame missing for camera {camera_id}")
-            canonical_frame = _coerce_camera_frame(_load_frame(raw_path), camera_id)
+            canonical_frame = self._canonical_frame_from_runner_output(raw_path, camera_id)
             composite = composite_runtime_layer(
                 canonical_frame=canonical_frame,
                 protected_regions_manifest=runtime_layer_bundle["protected_regions_manifest"],
@@ -1069,10 +1092,45 @@ class NeoVerseProductionRuntimeStore:
             if not snapshot_path.is_file():
                 raise RuntimeError(f"missing world snapshot for {session_id}")
             snapshot = _read_json(snapshot_path)
-            self._render_snapshot(session_state, snapshot)
+            session_id = str(session_state["session_id"])
+            site_world_id = str(session_state["site_world_id"])
+            session_dir = self._session_dir(session_id)
+            render_dir = session_dir / "renders" / str(snapshot["snapshot_id"])
+            render_dir.mkdir(parents=True, exist_ok=True)
+            base_frame_path = self._base_frame_path(site_world_id)
+            robot_profile = dict(session_state.get("robot_profile") or {})
+            runner_payload = self.runner.render_snapshot(
+                site_world_id=site_world_id,
+                session_id=session_id,
+                workspace_dir=Path(str(self.load_site_world(site_world_id).get("workspace_dir") or "")).resolve(),
+                snapshot_path=Path(str(session_state["current_world_snapshot_path"] or self._save_snapshot(session_id, snapshot))),
+                output_dir=render_dir,
+                cameras=self._render_camera_selection(robot_profile, requested_camera_ids=[camera_id]),
+                base_frame_path=base_frame_path,
+            )
+            runtime_layer_bundle = self._runtime_layer_bundle_for_site_world(site_world_id)
+            frame_records = [dict(item) for item in runner_payload.get("camera_frames", []) if isinstance(item, Mapping)]
+            frame_record = next((item for item in frame_records if str(item.get("cameraId") or "") == camera_id), None)
+            if frame_record is None:
+                raise RuntimeError(f"NeoVerse runner frame missing for camera {camera_id}")
+            raw_path = Path(str(frame_record.get("path") or "")).resolve()
+            canonical_frame = self._canonical_frame_from_runner_output(raw_path, camera_id)
+            composite = composite_runtime_layer(
+                canonical_frame=canonical_frame,
+                protected_regions_manifest=runtime_layer_bundle["protected_regions_manifest"],
+                canonical_render_policy=runtime_layer_bundle["canonical_render_policy"],
+                presentation_config=dict(session_state.get("presentation_config") or {}),
+                presentation_variance_policy=runtime_layer_bundle["presentation_variance_policy"],
+                session_dir=session_dir,
+                step_index=int((snapshot.get("world_state") or {}).get("step_index", 0)),
+                camera_id=camera_id,
+            )
+            output_path = render_dir / f"{camera_id}.png"
+            _save_frame(output_path, composite["frame"])
+            latest[camera_id] = str(output_path)
+            session_state["latest_render_paths"] = latest
             _write_json(self._session_state_path(session_id), session_state)
-            latest = dict(session_state.get("latest_render_paths") or {})
-            render_path = Path(str(latest.get(camera_id) or "")).resolve()
+            render_path = output_path
         payload = render_path.read_bytes()
         if not payload:
             raise RuntimeError(f"missing render bytes for {session_id}:{camera_id}")

@@ -26,6 +26,24 @@ from .preflight import run_preflight
 
 _DEFAULT_NEOVERSE_GIT_URL = "https://github.com/IamCreateAI/NeoVerse.git"
 _DEFAULT_NEOVERSE_HF_REPO = "Yuppie1204/NeoVerse"
+_DEFAULT_GSPLAT_FALLBACK_VERSION = "1.5.3"
+_DEFAULT_GSPLAT_GIT_URL = "https://github.com/nerfstudio-project/gsplat.git"
+_DEFAULT_TORCH_SPECS = {
+    "cu121": {
+        "torch": "2.3.1",
+        "torchvision": "0.18.1",
+        "torchaudio": "2.3.1",
+        "index_url": "https://download.pytorch.org/whl/cu121",
+        "scatter_url": "https://data.pyg.org/whl/torch-2.3.1+cu121.html",
+    },
+    "cu128": {
+        "torch": "2.7.1",
+        "torchvision": "0.22.1",
+        "torchaudio": "2.7.1",
+        "index_url": "https://download.pytorch.org/whl/cu128",
+        "scatter_url": "https://data.pyg.org/whl/torch-2.7.1+cu128.html",
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -97,30 +115,102 @@ def _ensure_venv(repo_root: Path, *, python_bin: str) -> Path:
     return venv_python
 
 
+def _ensure_system_build_dependencies() -> None:
+    if not Path("/usr/bin/apt-get").is_file():
+        return
+    python_headers = Path("/usr/include/python3.10/Python.h")
+    if python_headers.is_file():
+        return
+    env = dict(os.environ)
+    env["DEBIAN_FRONTEND"] = "noninteractive"
+    _run(["apt-get", "update"], env=env)
+    _run(["apt-get", "install", "-y", "build-essential", "python3.10-dev"], env=env)
+
+
 def _install_neoverse_requirements(repo_root: Path, venv_python: Path, *, cuda_variant: str) -> None:
-    index_url = {
-        "cu128": "https://download.pytorch.org/whl/cu128",
-        "cu121": "https://download.pytorch.org/whl/cu121",
-    }.get(cuda_variant, "https://download.pytorch.org/whl/cu121")
+    _ensure_system_build_dependencies()
+    spec = _DEFAULT_TORCH_SPECS.get(cuda_variant, _DEFAULT_TORCH_SPECS["cu121"])
     _run(
         [
             str(venv_python),
             "-m",
             "pip",
             "install",
-            "torch",
-            "torchvision",
-            "torchaudio",
+            f"torch=={spec['torch']}",
+            f"torchvision=={spec['torchvision']}",
+            f"torchaudio=={spec['torchaudio']}",
             "--index-url",
-            index_url,
+            str(spec["index_url"]),
         ]
     )
     _run([str(venv_python), "-m", "pip", "install", "-r", str(repo_root / "requirements.txt")], cwd=repo_root)
+    _run(
+        [
+            str(venv_python),
+            "-m",
+            "pip",
+            "install",
+            "torch-scatter",
+            "-f",
+            str(spec["scatter_url"]),
+        ],
+        cwd=repo_root,
+    )
+    gsplat_git_cmd = [
+        str(venv_python),
+        "-m",
+        "pip",
+        "install",
+        "--no-build-isolation",
+        f"git+{_DEFAULT_GSPLAT_GIT_URL}",
+    ]
+    try:
+        _run(gsplat_git_cmd, cwd=repo_root)
+    except RuntimeError as exc:
+        if "ModuleNotFoundError: No module named 'gsplat'" not in str(exc):
+            raise
+        _run(
+            [
+                str(venv_python),
+                "-m",
+                "pip",
+                "install",
+                "--no-build-isolation",
+                f"git+{_DEFAULT_GSPLAT_GIT_URL}@v{_DEFAULT_GSPLAT_FALLBACK_VERSION}",
+            ],
+            cwd=repo_root,
+        )
 
 
 def _download_models(model_root: Path, *, hf_repo: str) -> None:
     model_root.mkdir(parents=True, exist_ok=True)
-    snapshot_download(repo_id=hf_repo, local_dir=str(model_root), local_dir_use_symlinks=False)
+    snapshot_download(repo_id=hf_repo, local_dir=str(model_root / "NeoVerse"), local_dir_use_symlinks=False)
+
+
+def _ensure_neoverse_model_layout(model_root: Path) -> Path:
+    nested_root = model_root / "NeoVerse"
+    if nested_root.is_dir():
+        return nested_root
+
+    flat_markers = [
+        model_root / "reconstructor.ckpt",
+        model_root / "models_t5_umt5-xxl-enc-bf16.pth",
+        model_root / "Wan2.1_VAE.pth",
+        model_root / "diffusion_pytorch_model.safetensors.index.json",
+    ]
+    if not any(path.exists() for path in flat_markers):
+        nested_root.mkdir(parents=True, exist_ok=True)
+        return nested_root
+
+    nested_root.mkdir(parents=True, exist_ok=True)
+    for child in model_root.iterdir():
+        if child.name == "NeoVerse":
+            continue
+        target = nested_root / child.name
+        if target.exists():
+            continue
+        target.symlink_to(child, target_is_directory=child.is_dir())
+    return nested_root
 
 
 def _find_checkpoint(model_root: Path) -> Path:
@@ -142,6 +232,8 @@ def bootstrap_neoverse_runtime(
     skip_install: bool = False,
     skip_download: bool = False,
 ) -> NeoVerseBootstrapResult:
+    repo_root = repo_root.expanduser().resolve()
+    env_file = env_file.expanduser().resolve()
     selected_cuda = cuda_variant or _detect_cuda_variant()
     _ensure_repo(repo_root, git_url=git_url)
     venv_python = _ensure_venv(repo_root, python_bin=bootstrap_python)
@@ -150,6 +242,7 @@ def bootstrap_neoverse_runtime(
     model_root = repo_root / "models"
     if not skip_download:
         _download_models(model_root, hf_repo=hf_repo)
+    _ensure_neoverse_model_layout(model_root)
     checkpoint_path = _find_checkpoint(model_root)
     runner_command = f"{sys.executable} -m blueprint_validation.neoverse_runner_wrapper"
     env_payload = {

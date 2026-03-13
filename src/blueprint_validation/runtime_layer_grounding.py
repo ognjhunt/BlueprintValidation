@@ -37,6 +37,16 @@ except ModuleNotFoundError:  # pragma: no cover
 from blueprint_contracts.site_world_contract import normalize_trajectory_payload
 
 
+_CANONICAL_HASH_VOLATILE_KEYS = {
+    "canonical_package_version",
+    "generated_at",
+    "last_heartbeat_at",
+    "runtime_registration_attempt",
+    "runtime_registration_attempted",
+    "runtime_registration_status",
+}
+
+
 def normalized_json_bytes(payload: Any) -> bytes:
     return shared_normalized_json_bytes(payload)
 
@@ -110,6 +120,18 @@ def compute_canonical_package_version(
     )
 
 
+def _canonical_hash_payload(payload: Any) -> Any:
+    if isinstance(payload, Mapping):
+        return {
+            str(key): _canonical_hash_payload(value)
+            for key, value in payload.items()
+            if str(key) not in _CANONICAL_HASH_VOLATILE_KEYS
+        }
+    if isinstance(payload, list):
+        return [_canonical_hash_payload(item) for item in payload]
+    return payload
+
+
 def verify_canonical_package_version(
     *,
     spec: Mapping[str, Any],
@@ -117,12 +139,48 @@ def verify_canonical_package_version(
     canonical_render_policy: Mapping[str, Any],
     presentation_variance_policy: Mapping[str, Any],
 ) -> Optional[str]:
-    return shared_verify_canonical_package_version(
-        spec=spec,
-        protected_regions_manifest=protected_regions_manifest,
-        canonical_render_policy=canonical_render_policy,
-        presentation_variance_policy=presentation_variance_policy,
+    conditioning = dict(spec.get("conditioning") or {}) if isinstance(spec.get("conditioning"), Mapping) else {}
+    geometry = dict(spec.get("geometry") or {}) if isinstance(spec.get("geometry"), Mapping) else {}
+    local_paths = dict(conditioning.get("local_paths") or {}) if isinstance(conditioning.get("local_paths"), Mapping) else {}
+
+    scene_memory_manifest_path = Path(
+        str(conditioning.get("scene_memory_manifest_path") or local_paths.get("scene_memory_manifest_path") or "").strip()
     )
+    conditioning_bundle_path = Path(
+        str(conditioning.get("conditioning_bundle_path") or local_paths.get("conditioning_bundle_path") or "").strip()
+    )
+    object_geometry_manifest_path = Path(str(geometry.get("object_geometry_manifest_path") or "").strip())
+    task_anchor_manifest_path = Path(str(spec.get("task_anchor_manifest_path") or "").strip())
+    if not all(
+        path and path.is_file()
+        for path in (
+            scene_memory_manifest_path,
+            conditioning_bundle_path,
+            object_geometry_manifest_path,
+            task_anchor_manifest_path,
+        )
+    ):
+        return shared_verify_canonical_package_version(
+            spec=spec,
+            protected_regions_manifest=protected_regions_manifest,
+            canonical_render_policy=canonical_render_policy,
+            presentation_variance_policy=presentation_variance_policy,
+        )
+
+    observed = shared_compute_canonical_package_version(
+        scene_memory_manifest=_canonical_hash_payload(_read_json(scene_memory_manifest_path)),
+        conditioning_bundle=_canonical_hash_payload(_read_json(conditioning_bundle_path)),
+        object_geometry_manifest=_canonical_hash_payload(_read_json(object_geometry_manifest_path)),
+        task_anchor_manifest=_canonical_hash_payload(_read_json(task_anchor_manifest_path)),
+        site_world_spec=_canonical_hash_payload(spec),
+        protected_regions_manifest=_canonical_hash_payload(protected_regions_manifest),
+        canonical_render_policy=_canonical_hash_payload(canonical_render_policy),
+        presentation_variance_policy=_canonical_hash_payload(presentation_variance_policy),
+    )
+    expected = str(spec.get("canonical_package_version") or "").strip()
+    if expected and observed != expected:
+        return f"canonical_package_version_mismatch:{observed}"
+    return None
 
 
 def snapshot_runtime_layer_bundle(bundle: Mapping[str, Any], cache_dir: Path) -> Dict[str, str]:

@@ -89,9 +89,20 @@ def _load_local_env_defaults() -> None:
         _load_local_env_file(candidate)
 
 
+def _resolve_config_path(config_path: str) -> Path:
+    requested = Path(config_path).expanduser()
+    if requested.exists():
+        return requested.resolve()
+    if requested == Path("validation.yaml"):
+        fallback = Path(__file__).resolve().parents[2] / "configs" / "example_validation.yaml"
+        if fallback.exists():
+            return fallback.resolve()
+    return requested.resolve()
+
+
 def _load_cli_config(ctx: click.Context):
     if "config" not in ctx.obj:
-        config_path = Path(ctx.obj["config_path"]).expanduser().resolve()
+        config_path = _resolve_config_path(str(ctx.obj["config_path"]))
         if not config_path.exists():
             raise click.ClickException(f"Config path does not exist: {config_path}")
         config = load_config(config_path)
