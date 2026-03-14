@@ -10,6 +10,7 @@ import signal
 import subprocess
 import threading
 import time
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Protocol, Sequence
@@ -48,6 +49,33 @@ from .runtime_layer_grounding import (
     validate_runtime_layer_spec,
     verify_canonical_package_version,
 )
+
+
+def _presentation_map(spec: Mapping[str, Any]) -> dict[str, Any]:
+    return dict(spec.get("presentation") or {}) if isinstance(spec.get("presentation"), Mapping) else {}
+
+
+def _presentation_ref(presentation: Mapping[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = str(presentation.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _has_dedicated_presentation_bundle(spec: Mapping[str, Any]) -> bool:
+    presentation = _presentation_map(spec)
+    manifest_ref = _presentation_ref(
+        presentation,
+        "presentation_world_manifest_path",
+        "presentation_world_manifest_uri",
+    )
+    asset_ref = _presentation_ref(
+        presentation,
+        "primary_asset_path",
+        "primary_asset_uri",
+    )
+    return bool(manifest_ref and asset_ref)
 
 
 @dataclass(frozen=True)
@@ -366,6 +394,93 @@ class NeoVerseProductionRuntimeStore:
     def _snapshot_dir(self, session_id: str) -> Path:
         return self._session_dir(session_id) / "world_snapshots"
 
+    def _presentation_world_manifest_path(self, site_world_id: str, build_id: str) -> Path:
+        return self._workspace_dir(site_world_id, build_id) / "presentation_world_manifest.json"
+
+    def _runtime_demo_manifest_path(self, site_world_id: str, build_id: str) -> Path:
+        return self._workspace_dir(site_world_id, build_id) / "runtime_demo_manifest.json"
+
+    def _site_world_endpoint_url(self, site_world_id: str, suffix: str) -> str:
+        quoted_id = urllib.parse.quote(site_world_id, safe="")
+        return f"{self.base_url}/v1/site-worlds/{quoted_id}/{suffix}"
+
+    def _build_synthetic_presentation_manifests(
+        self,
+        *,
+        site_world_id: str,
+        build_id: str,
+        spec: Mapping[str, Any],
+        registration: Mapping[str, Any],
+        health: Mapping[str, Any],
+    ) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+        presentation = _presentation_map(spec)
+        presentation_manifest_path = self._presentation_world_manifest_path(site_world_id, build_id)
+        runtime_demo_manifest_path = self._runtime_demo_manifest_path(site_world_id, build_id)
+        presentation_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+
+        presentation_manifest = {
+            "schema_version": "v1",
+            "site_world_id": site_world_id,
+            "scene_id": registration.get("scene_id") or spec.get("scene_id"),
+            "capture_id": registration.get("capture_id") or spec.get("capture_id"),
+            "build_id": build_id,
+            "status": "ready",
+            "bundle_status": "ready",
+            "derivation_mode": "canonical_pretty",
+            "scene_kind": "canonical_object_geometry",
+            "fallback_policy": "canonical_only",
+            "canonical_package_uri": spec.get("canonical_package_uri"),
+            "canonical_package_version": spec.get("canonical_package_version"),
+            "ui_optional": True,
+            "ui_base_url": None,
+            "readiness": {
+                "bundle_status": "ready",
+                "launchable": bool(health.get("launchable", True)),
+            },
+            "orientation": (
+                dict(presentation.get("orientation") or {})
+                if isinstance(presentation.get("orientation"), Mapping)
+                else {}
+            ),
+        }
+        runtime_demo_manifest = {
+            "schema_version": "v1",
+            "site_world_id": site_world_id,
+            "scene_id": registration.get("scene_id") or spec.get("scene_id"),
+            "capture_id": registration.get("capture_id") or spec.get("capture_id"),
+            "build_id": build_id,
+            "status": "ready",
+            "bundle_status": "ready",
+            "derivation_mode": "canonical_pretty",
+            "scene_kind": "canonical_object_geometry",
+            "fallback_policy": "canonical_only",
+            "canonical_package_uri": spec.get("canonical_package_uri"),
+            "canonical_package_version": spec.get("canonical_package_version"),
+            "ui_base_url": None,
+            "ui_optional": True,
+            "presentation_world_manifest_url": self._site_world_endpoint_url(site_world_id, "presentation-world-manifest"),
+        }
+        _write_json(presentation_manifest_path, presentation_manifest)
+        _write_json(runtime_demo_manifest_path, runtime_demo_manifest)
+
+        presentation_update = {
+            **presentation,
+            "presentation_world_manifest_path": str(presentation_manifest_path),
+            "runtime_demo_manifest_path": str(runtime_demo_manifest_path),
+            "presentation_world_manifest_uri": "",
+            "runtime_demo_manifest_uri": "",
+            "derivation_mode": "canonical_pretty",
+            "scene_kind": "canonical_object_geometry",
+            "fallback_policy": "canonical_only",
+            "bundle_status": "ready",
+            "status": "ready",
+            "ui_optional": True,
+            "ui_base_url": None,
+        }
+        for key in ("primary_asset_path", "primary_asset_uri", "bundle_type", "renderer_backend"):
+            presentation_update.pop(key, None)
+        return presentation_manifest, runtime_demo_manifest, presentation_update
+
     def validate_spec(
         self,
         spec: Mapping[str, Any],
@@ -425,7 +540,7 @@ class NeoVerseProductionRuntimeStore:
         if _preferred_local_path(local_map.get("object_index_path"), geometry_map.get("object_index_path")) is None:
             warnings.append("object_index_path_missing")
 
-        presentation = dict(spec.get("presentation") or {}) if isinstance(spec.get("presentation"), Mapping) else {}
+        presentation = _presentation_map(spec)
         if presentation:
             presentation_manifest_path = _preferred_local_path(
                 presentation.get("presentation_world_manifest_path"),
@@ -438,7 +553,9 @@ class NeoVerseProductionRuntimeStore:
                 presentation.get("primary_asset_uri"),
             )
             bundle_status = str(presentation.get("bundle_status") or "").strip().lower()
-            if primary_asset_path is None:
+            derivation_mode = str(presentation.get("derivation_mode") or "").strip().lower()
+            requires_dedicated_asset = derivation_mode != "canonical_pretty"
+            if primary_asset_path is None and requires_dedicated_asset:
                 warnings.append("presentation_primary_asset_missing")
             elif bundle_status not in {"", "ready", "demo_ready"}:
                 warnings.append(f"presentation_bundle_status:{bundle_status}")
@@ -563,6 +680,90 @@ class NeoVerseProductionRuntimeStore:
         if not supported_cameras:
             supported_cameras = ["head_rgb"]
 
+        persisted_spec = json.loads(json.dumps(dict(spec)))
+        persisted_presentation = _presentation_map(persisted_spec)
+        dedicated_presentation_bundle = _has_dedicated_presentation_bundle(spec)
+        presentation_manifest_path = _preferred_local_path(
+            persisted_presentation.get("presentation_world_manifest_path"),
+            persisted_presentation.get("presentation_world_manifest_uri"),
+        )
+        runtime_demo_manifest_path = _preferred_local_path(
+            persisted_presentation.get("runtime_demo_manifest_path"),
+            persisted_presentation.get("runtime_demo_manifest_uri"),
+        )
+        presentation_derivation_mode = str(persisted_presentation.get("derivation_mode") or "").strip()
+        presentation_ui_optional = bool(persisted_presentation.get("ui_optional"))
+
+        if not dedicated_presentation_bundle:
+            synthetic_presentation_manifest, synthetic_runtime_demo_manifest, presentation_update = (
+                self._build_synthetic_presentation_manifests(
+                    site_world_id=site_world_id,
+                    build_id=build_id,
+                    spec=spec,
+                    registration=registration,
+                    health=health,
+                )
+            )
+            persisted_spec["presentation"] = presentation_update
+            persisted_presentation = presentation_update
+            presentation_manifest_path = Path(
+                str(presentation_update["presentation_world_manifest_path"])
+            ).resolve()
+            runtime_demo_manifest_path = Path(
+                str(presentation_update["runtime_demo_manifest_path"])
+            ).resolve()
+            presentation_derivation_mode = str(
+                synthetic_presentation_manifest.get("derivation_mode") or "canonical_pretty"
+            )
+            presentation_ui_optional = bool(
+                synthetic_runtime_demo_manifest.get("ui_optional", True)
+            )
+        elif presentation_manifest_path is None and str(
+            persisted_presentation.get("presentation_world_manifest_path") or ""
+        ).strip():
+            presentation_manifest_path = Path(
+                str(persisted_presentation.get("presentation_world_manifest_path") or "")
+            ).expanduser().resolve()
+
+        if dedicated_presentation_bundle and runtime_demo_manifest_path is None:
+            synthetic_runtime_demo_manifest = {
+                "schema_version": "v1",
+                "site_world_id": site_world_id,
+                "scene_id": registration.get("scene_id") or spec.get("scene_id"),
+                "capture_id": registration.get("capture_id") or spec.get("capture_id"),
+                "build_id": build_id,
+                "status": "ready",
+                "bundle_status": "ready",
+                "derivation_mode": str(
+                    persisted_presentation.get("derivation_mode") or "dedicated_presentation"
+                ),
+                "scene_kind": str(
+                    persisted_presentation.get("scene_kind") or "derived_presentation"
+                ),
+                "fallback_policy": str(
+                    persisted_presentation.get("fallback_policy") or "canonical_only"
+                ),
+                "canonical_package_uri": spec.get("canonical_package_uri"),
+                "canonical_package_version": spec.get("canonical_package_version"),
+                "ui_base_url": None,
+                "ui_optional": True,
+                "presentation_world_manifest_url": self._site_world_endpoint_url(
+                    site_world_id,
+                    "presentation-world-manifest",
+                ),
+            }
+            runtime_demo_manifest_path = self._runtime_demo_manifest_path(site_world_id, build_id)
+            _write_json(runtime_demo_manifest_path, synthetic_runtime_demo_manifest)
+            persisted_presentation = {
+                **persisted_presentation,
+                "runtime_demo_manifest_path": str(runtime_demo_manifest_path),
+                "runtime_demo_manifest_uri": "",
+                "ui_optional": True,
+                "ui_base_url": None,
+            }
+            persisted_spec["presentation"] = persisted_presentation
+            presentation_ui_optional = True
+
         launchable = bool(health.get("launchable", True)) and launchable
         blockers = _dedupe_strings(list(registration.get("blockers") or []), list(health.get("blockers") or []), runtime_blockers)
         warnings = _dedupe_strings(list(registration.get("warnings") or []), list(health.get("warnings") or []), runtime_warnings)
@@ -614,10 +815,24 @@ class NeoVerseProductionRuntimeStore:
             "grounding_status": spec.get("grounding_status") or (spec.get("runtime_layer_policy") or {}).get("grounding_status"),
             "ungrounded_reason": spec.get("ungrounded_reason") or (spec.get("runtime_layer_policy") or {}).get("ungrounded_reason"),
             "empty_index_cause": spec.get("empty_index_cause"),
+            "presentation_world_manifest_path": str(presentation_manifest_path or ""),
+            "runtime_demo_manifest_path": str(runtime_demo_manifest_path or ""),
+            "presentation_world_manifest_url": (
+                self._site_world_endpoint_url(site_world_id, "presentation-world-manifest")
+                if presentation_manifest_path and presentation_manifest_path.is_file()
+                else None
+            ),
+            "runtime_demo_manifest_url": (
+                self._site_world_endpoint_url(site_world_id, "runtime-demo-manifest")
+                if runtime_demo_manifest_path and runtime_demo_manifest_path.is_file()
+                else None
+            ),
+            "presentation_derivation_mode": presentation_derivation_mode or None,
+            "presentation_ui_optional": presentation_ui_optional,
         }
         self._augment_runner_workspace_manifest(
             workspace_manifest_path=Path(str(runner_workspace.get("workspace_manifest_path") or "")).resolve(),
-            spec=spec,
+            spec=persisted_spec,
             registration_payload=registration_payload,
             conditioning_source=conditioning_source,
             base_frame_path=base_frame_path,
@@ -647,7 +862,7 @@ class NeoVerseProductionRuntimeStore:
             "runtime_checkpoint_identity": dict(registration_payload.get("runtime_checkpoint_identity") or {}),
             "readiness": self.runner.readiness(),
         }
-        _write_json(self._site_world_spec_path(site_world_id), dict(spec))
+        _write_json(self._site_world_spec_path(site_world_id), dict(persisted_spec))
         _write_json(self._site_world_state_path(site_world_id), registration_payload)
         _write_json(self._site_world_health_path(site_world_id), health_payload)
         self._presentation_bundle_renderer.invalidate(site_world_id)
@@ -720,7 +935,7 @@ class NeoVerseProductionRuntimeStore:
             else {}
         )
         geometry = dict(spec.get("geometry") or {}) if isinstance(spec.get("geometry"), Mapping) else {}
-        presentation = dict(spec.get("presentation") or {}) if isinstance(spec.get("presentation"), Mapping) else {}
+        presentation = _presentation_map(spec)
         workspace_manifest = _read_json(workspace_manifest_path)
         manifest_registration = (
             dict(workspace_manifest.get("registration") or {})
@@ -793,6 +1008,13 @@ class NeoVerseProductionRuntimeStore:
                     _preferred_local_path(
                         presentation.get("primary_asset_path"),
                         presentation.get("primary_asset_uri"),
+                    )
+                    or ""
+                ),
+                "runtime_demo_manifest_path": str(
+                    _preferred_local_path(
+                        presentation.get("runtime_demo_manifest_path"),
+                        presentation.get("runtime_demo_manifest_uri"),
                     )
                     or ""
                 ),
@@ -1288,26 +1510,36 @@ class NeoVerseProductionRuntimeStore:
         cameras: Sequence[Mapping[str, Any]],
     ) -> Dict[str, Any]:
         site_world_id = str(session_state["site_world_id"])
-        spec = self._load_site_world_bundle(site_world_id)["resolved"]
+        bundle = self._load_site_world_bundle(site_world_id)
+        spec = dict(bundle["resolved"])
+        if isinstance(bundle.get("spec"), Mapping):
+            original_presentation = _presentation_map(bundle["spec"])
+            resolved_presentation = _presentation_map(spec)
+            if original_presentation:
+                spec["presentation"] = {
+                    **original_presentation,
+                    **resolved_presentation,
+                }
         world_state = dict(snapshot.get("world_state") or {})
         presentation_error: Optional[str] = None
-        try:
-            return self._presentation_runner_payload(
-                site_world_id=site_world_id,
-                spec=spec,
-                world_state=world_state,
-                render_dir=render_dir,
-                cameras=cameras,
-            )
-        except Exception as exc:
-            presentation_error = str(exc)
-            logger_message = {
-                "site_world_id": site_world_id,
-                "session_id": session_state.get("session_id"),
-                "snapshot_id": snapshot.get("snapshot_id"),
-                "error": presentation_error,
-            }
-            self._log_runtime_stage("preview.presentation_fallback", **logger_message)
+        if _has_dedicated_presentation_bundle(spec):
+            try:
+                return self._presentation_runner_payload(
+                    site_world_id=site_world_id,
+                    spec=spec,
+                    world_state=world_state,
+                    render_dir=render_dir,
+                    cameras=cameras,
+                )
+            except Exception as exc:
+                presentation_error = str(exc)
+                logger_message = {
+                    "site_world_id": site_world_id,
+                    "session_id": session_state.get("session_id"),
+                    "snapshot_id": snapshot.get("snapshot_id"),
+                    "error": presentation_error,
+                }
+                self._log_runtime_stage("preview.presentation_fallback", **logger_message)
         camera_frames: list[Dict[str, Any]] = []
         per_camera_debug: dict[str, Any] = {}
         for camera in cameras:

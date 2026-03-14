@@ -206,6 +206,110 @@ def test_runtime_backends_report_distinct_kinds(tmp_path: Path) -> None:
     assert production.runtime_info(service_version="1.0.0")["runtime_kind"] == "neoverse_production"
 
 
+def test_production_runtime_synthesizes_presentation_manifests_when_missing(
+    tmp_path: Path,
+    sample_site_world_bundle: dict[str, Path],
+    monkeypatch,
+) -> None:
+    store = NeoVerseProductionRuntimeStore(
+        root_dir=tmp_path / "runtime",
+        base_url="http://prod.local",
+        runner=_StubNeoVerseRunner(),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._load_frame",
+        lambda _path: np.zeros((16, 16, 3), dtype=np.uint8),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._save_frame",
+        lambda path, _frame: path.parent.mkdir(parents=True, exist_ok=True) or path.write_bytes(b"frame"),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._coerce_camera_frame",
+        lambda frame, _camera_id: frame,
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime.verify_canonical_package_version",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(store, "validate_spec", lambda *args, **kwargs: (True, [], []))
+
+    registration = json.loads(sample_site_world_bundle["registration_path"].read_text(encoding="utf-8"))
+    health = json.loads(sample_site_world_bundle["health_path"].read_text(encoding="utf-8"))
+    spec = json.loads(sample_site_world_bundle["spec_path"].read_text(encoding="utf-8"))
+    spec.pop("presentation", None)
+
+    payload = store.register_site_world_package(spec=spec, registration=registration, health=health)
+
+    presentation_manifest_path = Path(str(payload["presentation_world_manifest_path"]))
+    runtime_demo_manifest_path = Path(str(payload["runtime_demo_manifest_path"]))
+    assert presentation_manifest_path.is_file()
+    assert runtime_demo_manifest_path.is_file()
+    assert payload["presentation_derivation_mode"] == "canonical_pretty"
+    assert payload["presentation_ui_optional"] is True
+
+    persisted_spec = json.loads(
+        store._site_world_spec_path(registration["site_world_id"]).read_text(encoding="utf-8")
+    )
+    assert persisted_spec["presentation"]["presentation_world_manifest_path"] == str(presentation_manifest_path)
+    assert persisted_spec["presentation"]["runtime_demo_manifest_path"] == str(runtime_demo_manifest_path)
+    assert persisted_spec["presentation"]["derivation_mode"] == "canonical_pretty"
+
+    runtime_demo_manifest = json.loads(runtime_demo_manifest_path.read_text(encoding="utf-8"))
+    assert runtime_demo_manifest["ui_base_url"] is None
+    assert runtime_demo_manifest["ui_optional"] is True
+    assert runtime_demo_manifest["canonical_package_version"] == spec["canonical_package_version"]
+
+
+def test_production_runtime_preserves_dedicated_presentation_package(
+    tmp_path: Path,
+    sample_site_world_bundle: dict[str, Path],
+    monkeypatch,
+) -> None:
+    store = NeoVerseProductionRuntimeStore(
+        root_dir=tmp_path / "runtime",
+        base_url="http://prod.local",
+        runner=_StubNeoVerseRunner(),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._load_frame",
+        lambda _path: np.zeros((16, 16, 3), dtype=np.uint8),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._save_frame",
+        lambda path, _frame: path.parent.mkdir(parents=True, exist_ok=True) or path.write_bytes(b"frame"),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._coerce_camera_frame",
+        lambda frame, _camera_id: frame,
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime.verify_canonical_package_version",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(store, "validate_spec", lambda *args, **kwargs: (True, [], []))
+
+    registration = json.loads(sample_site_world_bundle["registration_path"].read_text(encoding="utf-8"))
+    health = json.loads(sample_site_world_bundle["health_path"].read_text(encoding="utf-8"))
+    spec = json.loads(sample_site_world_bundle["spec_path"].read_text(encoding="utf-8"))
+
+    payload = store.register_site_world_package(spec=spec, registration=registration, health=health)
+
+    assert payload["presentation_world_manifest_path"] == spec["presentation"]["presentation_world_manifest_path"]
+    assert payload["runtime_demo_manifest_path"] == spec["presentation"]["runtime_demo_manifest_path"]
+    persisted_spec = json.loads(
+        store._site_world_spec_path(registration["site_world_id"]).read_text(encoding="utf-8")
+    )
+    assert (
+        persisted_spec["presentation"]["presentation_world_manifest_path"]
+        == spec["presentation"]["presentation_world_manifest_path"]
+    )
+    assert (
+        persisted_spec["presentation"]["runtime_demo_manifest_path"]
+        == spec["presentation"]["runtime_demo_manifest_path"]
+    )
+
+
 def test_production_runtime_round_trip_and_restart_recovery(
     tmp_path: Path,
     sample_site_world_bundle: dict[str, Path],

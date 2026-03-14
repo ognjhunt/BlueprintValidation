@@ -3,12 +3,18 @@ from __future__ import annotations
 import json
 
 import numpy as np
+import pytest
 from fastapi.testclient import TestClient
 
-from blueprint_validation.gen3c_runtime import Gen3CAsyncCachedRuntimeStore
-from blueprint_validation.multi_backend_runtime import MultiBackendRuntimeStore
 from blueprint_validation.neoverse_production_runtime import NeoVerseProductionRuntimeStore
 from blueprint_validation.runtime_service_app import create_runtime_app
+
+try:
+    from blueprint_validation.gen3c_runtime import Gen3CAsyncCachedRuntimeStore
+    from blueprint_validation.multi_backend_runtime import MultiBackendRuntimeStore
+except ImportError:
+    Gen3CAsyncCachedRuntimeStore = None
+    MultiBackendRuntimeStore = None
 
 
 class _FlakyNeoVerseRunner:
@@ -127,11 +133,83 @@ def test_failed_reset_still_allows_state_snapshot_read(
     assert runner.calls == 1
 
 
+def test_runtime_service_exposes_synthetic_presentation_manifests(
+    tmp_path,
+    sample_site_world_bundle,
+    monkeypatch,
+):
+    runner = _FlakyNeoVerseRunner()
+    store = NeoVerseProductionRuntimeStore(
+        root_dir=tmp_path / "runtime",
+        base_url="http://prod.local",
+        runner=runner,
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._load_frame",
+        lambda _path: np.zeros((16, 16, 3), dtype=np.uint8),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._save_frame",
+        lambda path, _frame: path.parent.mkdir(parents=True, exist_ok=True) or path.write_bytes(b"frame"),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._coerce_camera_frame",
+        lambda frame, _camera_id: frame,
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime.verify_canonical_package_version",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(store, "validate_spec", lambda *args, **kwargs: (True, [], []))
+
+    registration = json.loads(sample_site_world_bundle["registration_path"].read_text(encoding="utf-8"))
+    health = json.loads(sample_site_world_bundle["health_path"].read_text(encoding="utf-8"))
+    spec = json.loads(sample_site_world_bundle["spec_path"].read_text(encoding="utf-8"))
+    spec.pop("presentation", None)
+
+    app = create_runtime_app(backend=store, title="test-runtime")
+    client = TestClient(app)
+
+    register_response = client.post(
+        "/v1/site-worlds",
+        json={
+            "spec": spec,
+            "registration": registration,
+            "health": health,
+        },
+    )
+    assert register_response.status_code == 200
+    payload = register_response.json()
+    assert payload["presentation_world_manifest_url"].endswith(
+        f"/v1/site-worlds/{registration['site_world_id']}/presentation-world-manifest"
+    )
+    assert payload["runtime_demo_manifest_url"].endswith(
+        f"/v1/site-worlds/{registration['site_world_id']}/runtime-demo-manifest"
+    )
+    assert payload["presentation_derivation_mode"] == "canonical_pretty"
+    assert payload["presentation_ui_optional"] is True
+
+    presentation_response = client.get(
+        f"/v1/site-worlds/{registration['site_world_id']}/presentation-world-manifest"
+    )
+    assert presentation_response.status_code == 200
+    assert presentation_response.json()["derivation_mode"] == "canonical_pretty"
+
+    runtime_demo_response = client.get(
+        f"/v1/site-worlds/{registration['site_world_id']}/runtime-demo-manifest"
+    )
+    assert runtime_demo_response.status_code == 200
+    assert runtime_demo_response.json()["ui_base_url"] is None
+    assert runtime_demo_response.json()["ui_optional"] is True
+
+
 def test_runtime_service_routes_requested_gen3c_backend(
     tmp_path,
     sample_site_world_bundle,
     monkeypatch,
 ):
+    if MultiBackendRuntimeStore is None or Gen3CAsyncCachedRuntimeStore is None:
+        pytest.skip("multi-backend runtime modules are not available in this checkout")
     runner = _FlakyNeoVerseRunner()
     neoverse_store = NeoVerseProductionRuntimeStore(
         root_dir=tmp_path / "runtime-neoverse",

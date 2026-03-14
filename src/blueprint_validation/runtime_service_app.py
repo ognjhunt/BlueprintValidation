@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 from typing import Any, Dict, Protocol
 
 from fastapi import FastAPI, HTTPException, Response, WebSocket
@@ -107,6 +109,17 @@ class ExplorerRenderRequest(BaseModel):
     refine_mode: str | None = None
 
 
+def _load_manifest_payload(site_world: Dict[str, Any], key: str) -> Dict[str, Any]:
+    value = str(site_world.get(key) or "").strip()
+    if not value:
+        raise FileNotFoundError(key)
+    path = Path(value).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(str(path))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
 def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
     app = FastAPI(title=title, version="1.0.0")
 
@@ -161,6 +174,28 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
             return dict(backend.load_site_world_health(site_world_id))
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=f"site world not found: {site_world_id}") from exc
+
+    @app.get("/v1/site-worlds/{site_world_id}/presentation-world-manifest")
+    def get_presentation_world_manifest(site_world_id: str) -> Dict[str, Any]:
+        try:
+            site_world = dict(backend.load_site_world(site_world_id))
+            return _load_manifest_payload(site_world, "presentation_world_manifest_path")
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=f"presentation world manifest not found: {site_world_id}",
+            ) from exc
+
+    @app.get("/v1/site-worlds/{site_world_id}/runtime-demo-manifest")
+    def get_runtime_demo_manifest(site_world_id: str) -> Dict[str, Any]:
+        try:
+            site_world = dict(backend.load_site_world(site_world_id))
+            return _load_manifest_payload(site_world, "runtime_demo_manifest_path")
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=f"runtime demo manifest not found: {site_world_id}",
+            ) from exc
 
     @app.post("/v1/site-worlds/{site_world_id}/sessions")
     def create_session(site_world_id: str, request: SessionCreateRequest) -> Dict[str, Any]:
