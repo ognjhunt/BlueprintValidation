@@ -159,6 +159,14 @@ def _output_frame_path(output_dir: Path, camera_id: str) -> Path:
     return output_dir / f"{camera_id}-frame0.png"
 
 
+def _attempt_log_paths(output_dir: Path, camera_id: str, reconstructor_device: str) -> tuple[Path, Path]:
+    suffix = reconstructor_device.replace(":", "_")
+    return (
+        output_dir / f"{camera_id}-{suffix}.stdout.log",
+        output_dir / f"{camera_id}-{suffix}.stderr.log",
+    )
+
+
 def _extract_first_frame(video_path: Path, frame_path: Path) -> None:
     cv2 = _require_cv2()
     capture = cv2.VideoCapture(str(video_path))
@@ -248,10 +256,15 @@ def run_request(request_path: Path, response_path: Path) -> Dict[str, Any]:
             attempt_env = dict(env)
             attempt_env["NEOVERSE_RUNTIME_RECONSTRUCTOR_DEVICE"] = reconstructor_device
             completed = subprocess.run(command, capture_output=True, text=True, check=False, env=attempt_env)
+            stdout_log_path, stderr_log_path = _attempt_log_paths(output_dir, camera_id, reconstructor_device)
+            stdout_log_path.write_text(completed.stdout or "", encoding="utf-8")
+            stderr_log_path.write_text(completed.stderr or "", encoding="utf-8")
             if completed.returncode == 0:
                 break
             stderr = (completed.stderr or completed.stdout or "").strip()
-            attempt_errors.append(f"{reconstructor_device}: {stderr[:500]}")
+            attempt_errors.append(
+                f"{reconstructor_device}: {stderr[:500]} [logs: {stdout_log_path.name}, {stderr_log_path.name}]"
+            )
         if completed is None or completed.returncode != 0:
             raise RuntimeError(
                 f"NeoVerse inference failed for {camera_id}: {' | '.join(attempt_errors)}"

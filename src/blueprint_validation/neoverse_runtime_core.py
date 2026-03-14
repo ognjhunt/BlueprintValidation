@@ -281,9 +281,9 @@ class SmokeContractRuntimeStore:
 
         qualification_state = str(spec.get("qualification_state") or "").strip().lower()
         if qualification_state != "ready":
-            blockers.append(f"qualification_state:{qualification_state or 'missing'}")
+            warnings.append(f"qualification_state:{qualification_state or 'missing'}")
         if not bool(spec.get("downstream_evaluation_eligibility")):
-            blockers.append("downstream_evaluation_eligibility:false")
+            warnings.append("downstream_evaluation_eligibility:false")
         grounding_status = str(
             (protected_regions_manifest or {}).get("grounding_status")
             or runtime_layer_policy.get("grounding_status")

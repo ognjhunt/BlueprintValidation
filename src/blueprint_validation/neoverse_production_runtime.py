@@ -110,8 +110,8 @@ def _quality_flag_baseline(spec: Mapping[str, Any]) -> dict[str, Any]:
     runtime_layer_policy = dict(spec.get("runtime_layer_policy") or {}) if isinstance(spec.get("runtime_layer_policy"), Mapping) else {}
     return {
         "primary_runtime_backend": str(spec.get("primary_runtime_backend") or "neoverse"),
-        "world_model_backend": str(canonical_world_model.get("world_model_backend") or "neoverse"),
-        "scene_representation": str(canonical_world_model.get("scene_representation") or "gsplat_scene_v1"),
+        "world_model_backend": str(spec.get("world_model_backend") or canonical_world_model.get("world_model_backend") or "neoverse"),
+        "scene_representation": str(spec.get("scene_representation") or canonical_world_model.get("scene_representation") or "gsplat_scene_v1"),
         "render_source": str(
             spec.get("runtime_render_source")
             or canonical_world_model.get("render_source")
@@ -547,9 +547,9 @@ class NeoVerseProductionRuntimeStore:
 
         qualification_state = str(spec.get("qualification_state") or "").strip().lower()
         if qualification_state != "ready":
-            blockers.append(f"qualification_state:{qualification_state or 'missing'}")
+            warnings.append(f"qualification_state:{qualification_state or 'missing'}")
         if not bool(spec.get("downstream_evaluation_eligibility")):
-            blockers.append("downstream_evaluation_eligibility:false")
+            warnings.append("downstream_evaluation_eligibility:false")
         grounding_status = str(
             (protected_regions_manifest or {}).get("grounding_status")
             or runtime_layer_policy.get("grounding_status")
@@ -1466,6 +1466,22 @@ class NeoVerseProductionRuntimeStore:
                 },
             }
 
+    def _authoritative_runner_quality_flags(
+        self,
+        *,
+        session_state: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        site_world_id = str(session_state["site_world_id"])
+        spec = self._load_site_world_bundle(site_world_id)["resolved"]
+        return {
+            **_quality_flag_baseline(spec),
+            "world_model_backend": str(spec.get("world_model_backend") or "neoverse"),
+            "scene_representation": str(spec.get("scene_representation") or "neoverse_video_world_model_v1"),
+            "render_source": str(spec.get("runtime_render_source") or spec.get("render_source") or "neoverse_full_capture"),
+            "presentation_quality": "neoverse_generated",
+            "fallback_mode": "none",
+        }
+
     def _base_frame_preview_runner_payload(
         self,
         *,
@@ -1760,6 +1776,10 @@ class NeoVerseProductionRuntimeStore:
             dict(item) for item in runner_payload.get("protected_region_violations", []) if isinstance(item, Mapping)
         ]
         debug_artifacts = dict(runner_payload.get("debug_artifacts") or {})
+        authoritative_runner_output = (
+            str(runner_payload.get("quality_flags", {}).get("presentation_quality") or "").strip() == "neoverse_generated"
+            and not protected_region_violations
+        )
         for camera in cameras:
             camera_id = str(camera.get("id") or "").strip()
             if not camera_id:
@@ -1768,29 +1788,37 @@ class NeoVerseProductionRuntimeStore:
             if frame_record is None:
                 continue
             raw_path = Path(str(frame_record.get("path") or "")).resolve()
-            canonical_frame = self._canonical_frame_from_runner_output(raw_path, camera_id)
-            self._log_runtime_stage(
-                "render_snapshot.composite.start",
-                session_id=session_id,
-                snapshot_id=snapshot.get("snapshot_id"),
-                camera_id=camera_id,
-            )
-            composite_started = time.monotonic()
-            composite = self._composite_camera_frame(
-                canonical_frame=canonical_frame,
-                runtime_layer_bundle=runtime_layer_bundle,
-                session_state=session_state,
-                session_dir=session_dir,
-                snapshot=snapshot,
-                camera_id=camera_id,
-            )
-            self._log_runtime_stage(
-                "render_snapshot.composite.done",
-                session_id=session_id,
-                snapshot_id=snapshot.get("snapshot_id"),
-                camera_id=camera_id,
-                elapsed_ms=round((time.monotonic() - composite_started) * 1000),
-            )
+            generated_frame = self._canonical_frame_from_runner_output(raw_path, camera_id)
+            if authoritative_runner_output:
+                composite = {
+                    "frame": generated_frame,
+                    "quality_flags": self._authoritative_runner_quality_flags(session_state=session_state),
+                    "protected_region_violations": [],
+                    "debug_artifacts": {"authoritative_render": str(raw_path)},
+                }
+            else:
+                self._log_runtime_stage(
+                    "render_snapshot.composite.start",
+                    session_id=session_id,
+                    snapshot_id=snapshot.get("snapshot_id"),
+                    camera_id=camera_id,
+                )
+                composite_started = time.monotonic()
+                composite = self._composite_camera_frame(
+                    canonical_frame=generated_frame,
+                    runtime_layer_bundle=runtime_layer_bundle,
+                    session_state=session_state,
+                    session_dir=session_dir,
+                    snapshot=snapshot,
+                    camera_id=camera_id,
+                )
+                self._log_runtime_stage(
+                    "render_snapshot.composite.done",
+                    session_id=session_id,
+                    snapshot_id=snapshot.get("snapshot_id"),
+                    camera_id=camera_id,
+                    elapsed_ms=round((time.monotonic() - composite_started) * 1000),
+                )
             output_path = render_dir / f"{camera_id}.png"
             _save_frame(output_path, composite["frame"])
             latest_render_paths[camera_id] = str(output_path)

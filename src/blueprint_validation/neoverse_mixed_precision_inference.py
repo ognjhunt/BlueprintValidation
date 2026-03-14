@@ -127,6 +127,10 @@ def _render_once(
     from diffsynth.utils.auxiliary import CameraTrajectory, homo_matrix_inverse, load_video
     from torchvision.transforms import functional as tvf
 
+    print(
+        f"[neoverse_mixed_precision] loading views input={input_path} frames={num_frames} static_scene={static_scene}",
+        flush=True,
+    )
     images = load_video(
         str(input_path),
         num_frames,
@@ -137,6 +141,10 @@ def _render_once(
     camera_trajectory = CameraTrajectory.from_predefined(trajectory_name, num_frames=num_frames, mode="relative")
     height, width = images[0].size[1], images[0].size[0]
     view_device = device if reconstructor_device.startswith("cuda") else reconstructor_device
+    print(
+        f"[neoverse_mixed_precision] prepared views size={width}x{height} reconstructor_device={reconstructor_device} target_device={device}",
+        flush=True,
+    )
     timestamps = torch.zeros((1, len(images)), dtype=torch.int64, device=view_device)
     if not static_scene:
         timestamps = torch.arange(0, len(images), dtype=torch.int64, device=view_device).unsqueeze(0)
@@ -150,6 +158,7 @@ def _render_once(
     }
     if getattr(pipe, "vram_management_enabled", False):
         pipe.load_models_to_device([])
+    print("[neoverse_mixed_precision] running reconstructor", flush=True)
     pipe.reconstructor.to(reconstructor_device)
     with torch.autocast("cuda", enabled=False):
         predictions = pipe.reconstructor(views, is_inference=True, use_motion=False)
@@ -171,6 +180,7 @@ def _render_once(
             for key, value in views.items()
         }
 
+    print("[neoverse_mixed_precision] running gaussian rasterizer", flush=True)
     gaussians = predictions["splats"]
     intrinsics = predictions["rendered_intrinsics"][0]
     extrinsics = predictions["rendered_extrinsics"][0]
@@ -193,6 +203,10 @@ def _render_once(
     target_mask = (target_alpha > 1.0).float()
     target_rgb[0, 0] = views["img"][0, 0].permute(1, 2, 0)
     target_mask[0, 0] = 1.0
+    print(
+        f"[neoverse_mixed_precision] running diffusion frames={len(camera_trajectory)} steps={inference_steps} cfg={cfg_scale}",
+        flush=True,
+    )
     frames = pipe(
         prompt=prompt,
         negative_prompt="",
@@ -211,6 +225,7 @@ def _render_once(
         target_poses=target_cam2world.unsqueeze(0),
         target_intrs=intrinsics.unsqueeze(0),
     )
+    print(f"[neoverse_mixed_precision] saving video to {output_path}", flush=True)
     save_video(frames, str(output_path), fps=16)
 
 
