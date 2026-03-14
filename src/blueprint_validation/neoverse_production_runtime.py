@@ -38,6 +38,7 @@ from .presentation_bundle_renderer import PresentationBundleRenderer
 from .pose_driven_preview import PoseDrivenPreviewRenderer
 from .runtime_backend import RuntimeMetadata
 from .runtime_layer_grounding import (
+    composite_masked_refinement,
     composite_runtime_layer,
     load_runtime_layer_bundle,
     snapshot_runtime_layer_bundle,
@@ -816,6 +817,7 @@ class NeoVerseProductionRuntimeStore:
         site_world_id: str,
         *,
         session_id: Optional[str] = None,
+        requested_backend: Optional[str] = None,
         robot_profile_id: str,
         task_id: str,
         scenario_id: str,
@@ -829,6 +831,7 @@ class NeoVerseProductionRuntimeStore:
         debug_mode: bool | None = None,
         unsafe_allow_blocked_site_world: bool = False,
     ) -> Dict[str, Any]:
+        del requested_backend
         bundle = self._load_site_world_bundle(site_world_id)
         registration = bundle["registration"]
         site_world = bundle["resolved"]
@@ -893,6 +896,17 @@ class NeoVerseProductionRuntimeStore:
             "reward": 0.0,
             "action_trace": [],
             "latest_render_paths": {},
+            "explorer_state": {
+                "pose": {"x": 0.0, "y": 0.0, "z": 0.0, "yaw": 0.0, "pitch": 0.0},
+                "camera_id": "head_rgb",
+                "latest_frame_paths": {},
+                "grounded_source": None,
+                "refine_status": "idle",
+                "quality_flags": {},
+                "debug_artifacts": {},
+                "viewport": {},
+                "snapshot_id": None,
+            },
             "current_world_snapshot_id": None,
             "current_world_snapshot_path": None,
             "render_manifest_path": None,
@@ -959,6 +973,33 @@ class NeoVerseProductionRuntimeStore:
     def _clear_render_failure(self, session_state: Dict[str, Any]) -> None:
         session_state["latest_render_error_code"] = None
         session_state["latest_render_error_message"] = None
+
+    def _default_explorer_pose(self) -> Dict[str, float]:
+        return {"x": 0.0, "y": 0.0, "z": 0.0, "yaw": 0.0, "pitch": 0.0}
+
+    def _normalized_explorer_pose(self, pose: Mapping[str, Any] | None) -> Dict[str, float]:
+        source = dict(pose or {})
+        return {
+            "x": float(source.get("x") or 0.0),
+            "y": float(source.get("y") or 0.0),
+            "z": float(source.get("z") or 0.0),
+            "yaw": float(source.get("yaw") or 0.0),
+            "pitch": float(source.get("pitch") or 0.0),
+        }
+
+    def _explorer_state(self, session_state: Dict[str, Any]) -> Dict[str, Any]:
+        existing = dict(session_state.get("explorer_state") or {})
+        existing.setdefault("pose", self._default_explorer_pose())
+        existing.setdefault("camera_id", "head_rgb")
+        existing.setdefault("latest_frame_paths", {})
+        existing.setdefault("grounded_source", None)
+        existing.setdefault("refine_status", "idle")
+        existing.setdefault("quality_flags", {})
+        existing.setdefault("debug_artifacts", {})
+        existing.setdefault("viewport", {})
+        existing.setdefault("snapshot_id", None)
+        session_state["explorer_state"] = existing
+        return existing
 
     def _recover_render_state(self, session_state: Dict[str, Any]) -> bool:
         session_id = str(session_state.get("session_id") or "")
@@ -1269,7 +1310,7 @@ class NeoVerseProductionRuntimeStore:
         per_camera_debug: dict[str, Any] = {}
         for camera in cameras:
             camera_id = str(camera.get("id") or camera.get("cameraId") or "head_rgb").strip() or "head_rgb"
-            preview_frame, debug = self._pose_preview_renderer.render_camera(
+            preview_frame, debug, _coverage_mask = self._pose_preview_renderer.render_camera(
                 site_world_id=site_world_id,
                 spec=spec,
                 world_state=world_state,
@@ -1966,6 +2007,7 @@ class NeoVerseProductionRuntimeStore:
 
     def session_state(self, session_id: str) -> Dict[str, Any]:
         session_state = self.load_session(session_id)
+        explorer_state = self._explorer_state(session_state)
         snapshot_path = Path(str(session_state.get("current_world_snapshot_path") or "")).resolve()
         if not snapshot_path.is_file():
             snapshot = self._snapshot_from_state(session_state, self._initial_world_state(session_state))
@@ -2047,6 +2089,14 @@ class NeoVerseProductionRuntimeStore:
             "runtime_engine_identity": dict(session_state.get("runtime_engine_identity") or {}),
             "runtime_model_identity": dict(session_state.get("runtime_model_identity") or {}),
             "runtime_checkpoint_identity": dict(session_state.get("runtime_checkpoint_identity") or {}),
+            "explorer_state": {
+                **explorer_state,
+                "latest_frame_paths": {
+                    str(key): str(value)
+                    for key, value in dict(explorer_state.get("latest_frame_paths") or {}).items()
+                    if Path(str(value)).is_file()
+                },
+            },
         }
 
     def render_bytes(self, session_id: str, camera_id: str) -> bytes:
@@ -2203,4 +2253,214 @@ class NeoVerseProductionRuntimeStore:
         payload = render_path.read_bytes()
         if not payload:
             raise RuntimeError(f"missing render bytes for {session_id}:{camera_id}")
+        return payload
+
+    def explorer_render(
+        self,
+        session_id: str,
+        *,
+        camera_id: str,
+        pose: Mapping[str, Any],
+        viewport_width: int | None,
+        viewport_height: int | None,
+        refine_mode: str | None,
+    ) -> Dict[str, Any]:
+        session_state = self.load_session(session_id)
+        explorer_state = self._explorer_state(session_state)
+        site_world_id = str(session_state["site_world_id"])
+        spec = self._load_site_world_bundle(site_world_id)["resolved"]
+        snapshot_path = Path(str(session_state.get("current_world_snapshot_path") or "")).resolve()
+        if not snapshot_path.is_file():
+            snapshot = self._snapshot_from_state(session_state, self._initial_world_state(session_state))
+            snapshot_path = self._save_snapshot(session_id, snapshot)
+            session_state["current_world_snapshot_id"] = snapshot["snapshot_id"]
+            session_state["current_world_snapshot_path"] = str(snapshot_path)
+            self._persist_session_state(session_state)
+        snapshot = _read_json(snapshot_path)
+        world_state = dict(snapshot.get("world_state") or self._initial_world_state(session_state))
+        normalized_pose = self._normalized_explorer_pose(pose or explorer_state.get("pose"))
+        requested_width = int(viewport_width or 0) or None
+        requested_height = int(viewport_height or 0) or None
+        snapshot_id = str(snapshot.get("snapshot_id") or session_state.get("current_world_snapshot_id") or "snapshot")
+        render_dir = self._session_dir(session_id) / "explorer_renders" / snapshot_id / _stable_id(
+            "explorer-view",
+            camera_id,
+            json.dumps(normalized_pose, sort_keys=True),
+            str(requested_width or ""),
+            str(requested_height or ""),
+            str(refine_mode or ""),
+        )
+        render_dir.mkdir(parents=True, exist_ok=True)
+        output_path = render_dir / f"{camera_id}.png"
+        debug_artifacts: Dict[str, Any] = {}
+        grounded_source = "runtime_fallback"
+        refine_status = "idle"
+
+        try:
+            grounded_frame, preview_debug, coverage_mask = self._pose_preview_renderer.render_camera(
+                site_world_id=site_world_id,
+                spec=spec,
+                world_state=world_state,
+                camera_id=camera_id,
+                explorer_pose=normalized_pose,
+                requested_width=requested_width,
+                requested_height=requested_height,
+            )
+            grounded_source = "arkit_rgbd"
+            debug_artifacts.update({"grounded_preview": preview_debug})
+            quality_flags: Dict[str, Any] = {
+                "presentation_quality": "preview",
+                "grounded_source": grounded_source,
+                "preview_mode": "pose_driven",
+                "preview_source": "arkit_rgbd",
+                "preview_size": list(preview_debug.get("preview_size") or []),
+                "coverage_ratio": preview_debug.get("coverage_ratio"),
+            }
+        except Exception as exc:
+            base_frame = _load_frame(self._base_frame_path(site_world_id))
+            grounded_frame = _coerce_camera_frame(base_frame, camera_id)
+            coverage_mask = np.ones(grounded_frame.shape[:2], dtype=bool)
+            debug_artifacts.update({"grounded_preview_error": str(exc)})
+            quality_flags = {
+                "presentation_quality": "degraded",
+                "grounded_source": grounded_source,
+                "preview_mode": "base_frame",
+                "preview_source": "runtime_fallback",
+            }
+
+        final_frame = grounded_frame
+        if str(refine_mode or "").strip().lower() == "request" and grounded_source == "arkit_rgbd":
+            refine_status = "running"
+            try:
+                grounded_input_path = render_dir / f"{camera_id}-grounded-input.png"
+                _save_frame(grounded_input_path, grounded_frame)
+                refinement_snapshot_path = render_dir / "explorer_snapshot.json"
+                refinement_snapshot = {
+                    **snapshot,
+                    "presentation_config": {
+                        **dict(session_state.get("presentation_config") or {}),
+                        "trajectory": {"trajectory": "static"},
+                    },
+                }
+                _write_json(refinement_snapshot_path, refinement_snapshot)
+                robot_profile = dict(session_state.get("robot_profile") or {})
+                camera_summary = next(
+                    (
+                        dict(camera)
+                        for camera in self._render_camera_selection(robot_profile, requested_camera_ids=[camera_id])
+                        if str(camera.get("id") or "") == camera_id
+                    ),
+                    {"id": camera_id, "role": "head", "required": True},
+                )
+                generated_dir = render_dir / "generated"
+                generated_dir.mkdir(parents=True, exist_ok=True)
+                runner_payload = self.runner.render_snapshot(
+                    site_world_id=site_world_id,
+                    session_id=f"{session_id}-explorer",
+                    workspace_dir=render_dir / "explorer_workspace",
+                    snapshot_path=refinement_snapshot_path,
+                    output_dir=generated_dir,
+                    cameras=[camera_summary],
+                    base_frame_path=grounded_input_path,
+                )
+                frame_records = [
+                    dict(item)
+                    for item in runner_payload.get("camera_frames", [])
+                    if isinstance(item, Mapping)
+                ]
+                frame_record = next(
+                    (item for item in frame_records if str(item.get("cameraId") or "") == camera_id),
+                    frame_records[0] if frame_records else None,
+                )
+                if frame_record is None:
+                    raise RuntimeError(f"NeoVerse explorer refinement did not return a frame for {camera_id}")
+                generated_frame = self._canonical_frame_from_runner_output(
+                    Path(str(frame_record.get("path") or "")).resolve(),
+                    camera_id,
+                )
+                runtime_layer_bundle = self._runtime_layer_bundle_for_site_world(site_world_id)
+                refinement = composite_masked_refinement(
+                    grounded_frame=grounded_frame,
+                    generated_frame=generated_frame,
+                    coverage_mask=coverage_mask,
+                    protected_regions_manifest=runtime_layer_bundle["protected_regions_manifest"],
+                    canonical_render_policy=runtime_layer_bundle["canonical_render_policy"],
+                    presentation_config=dict(session_state.get("presentation_config") or {}),
+                    presentation_variance_policy=runtime_layer_bundle["presentation_variance_policy"],
+                    session_dir=self._session_dir(session_id),
+                    step_index=int(world_state.get("step_index", 0) or 0),
+                    camera_id=camera_id,
+                )
+                final_frame = refinement["frame"]
+                quality_flags = {
+                    **quality_flags,
+                    **dict(refinement.get("quality_flags") or {}),
+                }
+                debug_artifacts.update(dict(runner_payload.get("debug_artifacts") or {}))
+                debug_artifacts.update(dict(refinement.get("debug_artifacts") or {}))
+                if refinement.get("protected_region_violations"):
+                    quality_flags["protected_region_violations"] = list(refinement.get("protected_region_violations") or [])
+                refine_status = "complete"
+            except Exception as exc:
+                debug_artifacts.update({"refinement_error": str(exc)})
+                quality_flags = {
+                    **quality_flags,
+                    "refinement_applied": False,
+                }
+                refine_status = "failed"
+
+        _save_frame(output_path, final_frame)
+        explorer_state.update(
+            {
+                "pose": normalized_pose,
+                "camera_id": camera_id,
+                "latest_frame_paths": {camera_id: str(output_path)},
+                "grounded_source": grounded_source,
+                "refine_status": refine_status,
+                "quality_flags": quality_flags,
+                "debug_artifacts": debug_artifacts,
+                "viewport": {
+                    "requested_width": requested_width,
+                    "requested_height": requested_height,
+                    "output_width": int(final_frame.shape[1]),
+                    "output_height": int(final_frame.shape[0]),
+                },
+                "snapshot_id": snapshot_id,
+            }
+        )
+        session_state["explorer_state"] = explorer_state
+        self._persist_session_state(session_state)
+        return {
+            "session_id": session_id,
+            "camera_id": camera_id,
+            "frame_path": f"{self.base_url}/v1/sessions/{session_id}/explorer-frame?camera_id={camera_id}",
+            "pose": normalized_pose,
+            "viewport": dict(explorer_state.get("viewport") or {}),
+            "grounded_source": grounded_source,
+            "refine_status": refine_status,
+            "quality_flags": quality_flags,
+            "debug_artifacts": debug_artifacts,
+            "snapshot_id": snapshot_id,
+        }
+
+    def explorer_frame_bytes(self, session_id: str, camera_id: str) -> bytes:
+        session_state = self.load_session(session_id)
+        explorer_state = self._explorer_state(session_state)
+        latest = dict(explorer_state.get("latest_frame_paths") or {})
+        frame_path = Path(str(latest.get(camera_id) or "")).resolve()
+        if not frame_path.is_file():
+            payload = self.explorer_render(
+                session_id,
+                camera_id=camera_id,
+                pose=dict(explorer_state.get("pose") or self._default_explorer_pose()),
+                viewport_width=int((explorer_state.get("viewport") or {}).get("requested_width") or 0) or None,
+                viewport_height=int((explorer_state.get("viewport") or {}).get("requested_height") or 0) or None,
+                refine_mode=None,
+            )
+            frame_path = Path(str((self._explorer_state(self.load_session(session_id)).get("latest_frame_paths") or {}).get(camera_id) or "")).resolve()
+            if not frame_path.is_file():
+                raise RuntimeError(f"missing explorer render bytes for {session_id}:{camera_id}: {payload}")
+        payload = frame_path.read_bytes()
+        if not payload:
+            raise RuntimeError(f"missing explorer render bytes for {session_id}:{camera_id}")
         return payload

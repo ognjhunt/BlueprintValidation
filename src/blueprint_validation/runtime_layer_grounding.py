@@ -501,6 +501,118 @@ def composite_runtime_layer(
     }
 
 
+def composite_masked_refinement(
+    *,
+    grounded_frame: np.ndarray,
+    generated_frame: np.ndarray,
+    coverage_mask: np.ndarray,
+    protected_regions_manifest: Mapping[str, Any],
+    canonical_render_policy: Mapping[str, Any],
+    presentation_config: Mapping[str, Any],
+    presentation_variance_policy: Mapping[str, Any],
+    session_dir: Path,
+    step_index: int,
+    camera_id: str,
+) -> Dict[str, Any]:
+    runtime_presentation_config = _sanitized_presentation_config(
+        presentation_config,
+        presentation_variance_policy,
+    )
+    allow_ungrounded_editable = bool(runtime_presentation_config.get("unsafe_allow_blocked_site_world"))
+    masks = build_target_view_masks(
+        protected_regions_manifest=protected_regions_manifest,
+        frame_shape=grounded_frame.shape[:2],
+        allow_ungrounded_editable=allow_ungrounded_editable,
+    )
+    locked_mask = masks["locked_mask"]
+    blocked_mask = masks["blocked_mask"]
+    uncertain_mask = masks["uncertain_mask"]
+    editable_mask = masks["editable_mask"]
+    unprojectable_region_count = int(masks.get("unprojectable_region_count", 0) or 0)
+    grounding_status = str(protected_regions_manifest.get("grounding_status") or "grounded").strip().lower()
+    if generated_frame.shape[:2] != grounded_frame.shape[:2]:
+        if cv2 is None:
+            raise RuntimeError("opencv-python is required for masked refinement resizing")
+        generated_frame = cv2.resize(
+            generated_frame,
+            (grounded_frame.shape[1], grounded_frame.shape[0]),
+            interpolation=cv2.INTER_CUBIC,
+        )
+    if coverage_mask.shape != grounded_frame.shape[:2]:
+        if cv2 is None:
+            raise RuntimeError("opencv-python is required for masked refinement coverage resizing")
+        coverage_mask = cv2.resize(
+            coverage_mask.astype(np.uint8),
+            (grounded_frame.shape[1], grounded_frame.shape[0]),
+            interpolation=cv2.INTER_NEAREST,
+        ) > 0
+
+    refinement_mask = np.logical_and(editable_mask, np.logical_or(~coverage_mask, uncertain_mask))
+    refinement_mask = np.logical_and(refinement_mask, ~np.logical_or(locked_mask, blocked_mask))
+    final_frame = grounded_frame.copy()
+    final_frame[refinement_mask] = generated_frame[refinement_mask]
+
+    changed_pixels = np.any(final_frame != grounded_frame, axis=2)
+    violations: list[Dict[str, Any]] = []
+    fallback_mode = _policy_fallback_mode(canonical_render_policy)
+    if bool(np.any(changed_pixels & np.logical_or(locked_mask, blocked_mask))):
+        violations.append(
+            {
+                "attempt": 1,
+                "reason": "locked_region_modified",
+                "fallback_mode": fallback_mode,
+            }
+        )
+        final_frame = grounded_frame.copy()
+        refinement_mask[:] = False
+
+    editable_ratio = float(editable_mask.sum()) / float(max(1, editable_mask.size))
+    refined_ratio = float(refinement_mask.sum()) / float(max(1, refinement_mask.size))
+    degraded_threshold = _policy_degraded_threshold(canonical_render_policy)
+    quality_flags = {
+        "presentation_quality": "degraded" if editable_ratio > degraded_threshold else "normal",
+        "editable_ratio": round(editable_ratio, 4),
+        "locked_ratio": round(float(locked_mask.sum()) / float(max(1, locked_mask.size)), 4),
+        "grounding_status": grounding_status or "grounded",
+        "fallback_mode": fallback_mode if violations else None,
+        "unsafe_editable_override": bool(allow_ungrounded_editable and grounding_status == "ungrounded"),
+        "unprojectable_region_count": unprojectable_region_count,
+        "refinement_applied": bool(np.any(refinement_mask)),
+        "refinement_mask_ratio": round(refined_ratio, 4),
+        "refinement_source": "masked_neoverse",
+    }
+
+    debug_artifacts: Dict[str, str] = {}
+    if bool(runtime_presentation_config.get("debug_mode")):
+        debug_dir = session_dir / "debug" / f"step_{step_index:03d}" / camera_id / "refinement"
+        grounded_path = debug_dir / "grounded_base.png"
+        generated_path = debug_dir / "generated_upsampled.png"
+        mask_path = debug_dir / "refinement_mask.png"
+        composite_path = debug_dir / "refined_composite.png"
+        _save_rgb(grounded_path, grounded_frame)
+        _save_rgb(generated_path, generated_frame)
+        _save_mask_png(mask_path, refinement_mask)
+        _save_rgb(composite_path, final_frame)
+        debug_artifacts = {
+            "grounded_base": str(grounded_path),
+            "generated_upsampled": str(generated_path),
+            "refinement_mask": str(mask_path),
+            "refined_composite": str(composite_path),
+        }
+
+    return {
+        "frame": final_frame,
+        "locked_mask": locked_mask,
+        "blocked_mask": blocked_mask,
+        "uncertain_mask": uncertain_mask,
+        "editable_mask": editable_mask,
+        "refinement_mask": refinement_mask,
+        "quality_flags": quality_flags,
+        "protected_region_violations": violations,
+        "debug_artifacts": debug_artifacts,
+    }
+
+
 def update_presentation_session_manifest(*, session_dir: Path, payload: Mapping[str, Any]) -> Dict[str, Any]:
     path = session_dir / "presentation_session_manifest.json"
     existing = _read_json(path) if path.is_file() else {}

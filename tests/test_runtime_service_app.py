@@ -5,6 +5,8 @@ import json
 import numpy as np
 from fastapi.testclient import TestClient
 
+from blueprint_validation.gen3c_runtime import Gen3CAsyncCachedRuntimeStore
+from blueprint_validation.multi_backend_runtime import MultiBackendRuntimeStore
 from blueprint_validation.neoverse_production_runtime import NeoVerseProductionRuntimeStore
 from blueprint_validation.runtime_service_app import create_runtime_app
 
@@ -123,3 +125,151 @@ def test_failed_reset_still_allows_state_snapshot_read(
     assert state_payload["observation"]["worldSnapshot"]["snapshotId"]
     assert state_payload["observation"]["runtimeMetadata"]["latest_render_error_code"] == "render_snapshot_failed"
     assert runner.calls == 1
+
+
+def test_runtime_service_routes_requested_gen3c_backend(
+    tmp_path,
+    sample_site_world_bundle,
+    monkeypatch,
+):
+    runner = _FlakyNeoVerseRunner()
+    neoverse_store = NeoVerseProductionRuntimeStore(
+        root_dir=tmp_path / "runtime-neoverse",
+        base_url="http://prod.local",
+        runner=runner,
+    )
+    store = MultiBackendRuntimeStore(
+        root_dir=tmp_path / "runtime-router",
+        neoverse_backend=neoverse_store,
+        gen3c_backend=Gen3CAsyncCachedRuntimeStore(
+            root_dir=tmp_path / "runtime-gen3c",
+            base_url="http://prod.local",
+        ),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._load_frame",
+        lambda _path: np.zeros((16, 16, 3), dtype=np.uint8),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._save_frame",
+        lambda path, _frame: path.parent.mkdir(parents=True, exist_ok=True) or path.write_bytes(b"frame"),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._coerce_camera_frame",
+        lambda frame, _camera_id: frame,
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime.composite_runtime_layer",
+        lambda **_kwargs: {
+            "frame": np.zeros((16, 16, 3), dtype=np.uint8),
+            "quality_flags": {"presentation_quality": "high"},
+            "protected_region_violations": [],
+            "debug_artifacts": {},
+        },
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime.verify_canonical_package_version",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(neoverse_store, "validate_spec", lambda *args, **kwargs: (True, [], []))
+
+    registration = json.loads(sample_site_world_bundle["registration_path"].read_text(encoding="utf-8"))
+    health = json.loads(sample_site_world_bundle["health_path"].read_text(encoding="utf-8"))
+    spec = json.loads(sample_site_world_bundle["spec_path"].read_text(encoding="utf-8"))
+    spec["runtime_eligibility"] = {
+        "launchable": True,
+        "readiness_state": "launchable",
+        "blockers": [],
+        "warnings": [],
+        "grounding_status": "grounded",
+        "default_backend": "neoverse",
+        "launchable_backends": ["neoverse", "gen3c"],
+        "backend_variants": {},
+    }
+    spec["backend_variants"] = {
+        "neoverse": {
+            "backend_id": "neoverse",
+            "site_world_id": registration["site_world_id"],
+            "bundle_manifest_uri": "gs://bucket/neoverse/bundle_manifest.json",
+            "adapter_manifest_uri": "gs://bucket/neoverse/adapter.json",
+            "launchable": True,
+            "readiness_state": "launchable",
+            "blockers": [],
+            "warnings": [],
+            "runtime_mode": "interactive",
+            "grounding_status": "grounded",
+            "provenance": {
+                "grounding_level": "observed",
+                "confidence": 0.95,
+                "evidence_sources": ["gs://bucket/scene_memory_manifest.json"],
+                "canonical_truth": True,
+                "presentation_only": False,
+            },
+            "conversion": {"deterministic": True, "source_artifacts": ["conditioning_bundle.json"]},
+            "canonical_write_allowed": True,
+        },
+        "gen3c": {
+            "backend_id": "gen3c",
+            "site_world_id": registration["site_world_id"],
+            "bundle_manifest_uri": "gs://bucket/gen3c/bundle_manifest.json",
+            "adapter_manifest_uri": "gs://bucket/gen3c/adapter.json",
+            "launchable": True,
+            "readiness_state": "launchable",
+            "blockers": [],
+            "warnings": ["missing_optional_confidence"],
+            "runtime_mode": "async_cached",
+            "grounding_status": "grounded",
+            "provenance": {
+                "grounding_level": "generated",
+                "confidence": 0.7,
+                "evidence_sources": ["gs://bucket/conditioning_bundle.json"],
+                "canonical_truth": False,
+                "presentation_only": True,
+            },
+            "conversion": {"deterministic": True, "source_artifacts": ["arkit_poses.json", "arkit_intrinsics.json", "depth/"]},
+            "canonical_write_allowed": False,
+            "quality_flags": {"async_cached": True, "generative_backend": True},
+        },
+    }
+    spec["runtime_eligibility"]["backend_variants"] = spec["backend_variants"]
+    health["backend_variants"] = spec["backend_variants"]
+    health["launchable_backends"] = ["neoverse", "gen3c"]
+    health["default_backend"] = "neoverse"
+    registration["backend_variants"] = spec["backend_variants"]
+    registration["launchable_backends"] = ["neoverse", "gen3c"]
+    registration["default_backend"] = "neoverse"
+
+    app = create_runtime_app(backend=store, title="test-runtime")
+    client = TestClient(app)
+    register_response = client.post(
+        "/v1/site-worlds",
+        json={"spec": spec, "registration": registration, "health": health},
+    )
+    assert register_response.status_code == 200
+
+    create_response = client.post(
+        f"/v1/site-worlds/{registration['site_world_id']}/sessions",
+        json={
+            "session_id": "session-gen3c",
+            "requested_backend": "gen3c",
+            "robot_profile_id": "mobile_manipulator_rgb_v1",
+            "task_id": "task-1",
+            "scenario_id": "scenario-default",
+            "start_state_id": "start-default",
+        },
+    )
+    assert create_response.status_code == 200
+    create_payload = create_response.json()
+    assert create_payload["runtime_backend_selected"] == "gen3c"
+    assert create_payload["runtime_execution_mode"] == "async_cached"
+
+    reset_response = client.post("/v1/sessions/session-gen3c/reset", json={})
+    assert reset_response.status_code == 200
+    reset_payload = reset_response.json()
+    assert reset_payload["episode"]["qualityFlags"]["async_cached"] is True
+
+    state_response = client.get("/v1/sessions/session-gen3c/state")
+    assert state_response.status_code == 200
+    state_payload = state_response.json()
+    assert state_payload["runtime_backend_selected"] == "gen3c"
+    assert state_payload["runtime_execution_mode"] == "async_cached"

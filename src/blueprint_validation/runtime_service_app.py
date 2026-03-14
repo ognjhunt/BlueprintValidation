@@ -48,6 +48,21 @@ class RuntimeBackend(Protocol):
     def render_bytes(self, session_id: str, camera_id: str) -> bytes:
         ...
 
+    def explorer_render(
+        self,
+        session_id: str,
+        *,
+        camera_id: str,
+        pose: Dict[str, Any],
+        viewport_width: int | None,
+        viewport_height: int | None,
+        refine_mode: str | None,
+    ) -> Dict[str, Any]:
+        ...
+
+    def explorer_frame_bytes(self, session_id: str, camera_id: str) -> bytes:
+        ...
+
 
 class SessionCreateRequest(BaseModel):
     session_id: str | None = None
@@ -55,6 +70,7 @@ class SessionCreateRequest(BaseModel):
     task_id: str
     scenario_id: str
     start_state_id: str
+    requested_backend: str | None = None
     notes: str = ""
     canonical_package_uri: str | None = None
     canonical_package_version: str | None = None
@@ -73,6 +89,22 @@ class SessionResetRequest(BaseModel):
 
 class SessionStepRequest(BaseModel):
     action: list[float] = Field(default_factory=list)
+
+
+class ExplorerPoseRequest(BaseModel):
+    x: float = 0.0
+    y: float = 0.0
+    z: float = 0.0
+    yaw: float = 0.0
+    pitch: float = 0.0
+
+
+class ExplorerRenderRequest(BaseModel):
+    camera_id: str = "head_rgb"
+    pose: ExplorerPoseRequest = Field(default_factory=ExplorerPoseRequest)
+    viewport_width: int | None = None
+    viewport_height: int | None = None
+    refine_mode: str | None = None
 
 
 def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
@@ -142,6 +174,7 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
                     task_id=request.task_id,
                     scenario_id=request.scenario_id,
                     start_state_id=request.start_state_id,
+                    requested_backend=request.requested_backend,
                     notes=request.notes,
                     canonical_package_uri=request.canonical_package_uri,
                     canonical_package_version=request.canonical_package_version,
@@ -204,6 +237,34 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
     def render_session(session_id: str, camera_id: str = "head_rgb") -> Response:
         try:
             payload = backend.render_bytes(session_id, camera_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=f"session not found: {session_id}") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return Response(content=payload, media_type="image/png")
+
+    @app.post("/v1/sessions/{session_id}/explorer-render")
+    def explorer_render(session_id: str, request: ExplorerRenderRequest) -> Dict[str, Any]:
+        try:
+            return dict(
+                backend.explorer_render(
+                    session_id,
+                    camera_id=request.camera_id,
+                    pose=request.pose.model_dump(),
+                    viewport_width=request.viewport_width,
+                    viewport_height=request.viewport_height,
+                    refine_mode=request.refine_mode,
+                )
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=f"session not found: {session_id}") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/v1/sessions/{session_id}/explorer-frame")
+    def explorer_frame(session_id: str, camera_id: str = "head_rgb") -> Response:
+        try:
+            payload = backend.explorer_frame_bytes(session_id, camera_id)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=f"session not found: {session_id}") from exc
         except Exception as exc:

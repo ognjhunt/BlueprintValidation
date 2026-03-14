@@ -153,6 +153,7 @@ class NeoVerseRuntimeClient:
         site_world_id: str,
         *,
         session_id: Optional[str] = None,
+        requested_backend: Optional[str] = None,
         robot_profile_id: str,
         task_id: str,
         scenario_id: str,
@@ -171,6 +172,7 @@ class NeoVerseRuntimeClient:
             path=f"/v1/site-worlds/{urllib_parse.quote(site_world_id)}/sessions",
             payload={
                 "session_id": session_id,
+                "requested_backend": requested_backend,
                 "robot_profile_id": robot_profile_id,
                 "task_id": task_id,
                 "scenario_id": scenario_id,
@@ -222,6 +224,38 @@ class NeoVerseRuntimeClient:
             method="GET",
             path=(
                 f"/v1/sessions/{urllib_parse.quote(session_id)}/render"
+                f"?camera_id={urllib_parse.quote(camera_id)}"
+            ),
+            accept="image/png",
+        )
+
+    def explorer_render(
+        self,
+        session_id: str,
+        *,
+        camera_id: str = "head_rgb",
+        pose: Mapping[str, Any] | None = None,
+        viewport_width: int | None = None,
+        viewport_height: int | None = None,
+        refine_mode: str | None = None,
+    ) -> Mapping[str, Any]:
+        return self._request_json(
+            method="POST",
+            path=f"/v1/sessions/{urllib_parse.quote(session_id)}/explorer-render",
+            payload={
+                "camera_id": camera_id,
+                "pose": dict(pose or {}),
+                "viewport_width": viewport_width,
+                "viewport_height": viewport_height,
+                "refine_mode": refine_mode,
+            },
+        )
+
+    def explorer_frame_bytes(self, session_id: str, *, camera_id: str = "head_rgb") -> bytes:
+        return self._request_bytes(
+            method="GET",
+            path=(
+                f"/v1/sessions/{urllib_parse.quote(session_id)}/explorer-frame"
                 f"?camera_id={urllib_parse.quote(camera_id)}"
             ),
             accept="image/png",

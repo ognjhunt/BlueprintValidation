@@ -443,6 +443,7 @@ def test_production_runtime_falls_back_to_pose_driven_when_presentation_render_f
         lambda **_kwargs: (
             np.zeros((16, 16, 3), dtype=np.uint8),
             {"preview_mode": "pose_driven_rgbd", "source_frame_id": "000001", "coverage_ratio": 1.0},
+            np.ones((16, 16), dtype=bool),
         ),
     )
 
@@ -504,6 +505,7 @@ def test_production_runtime_legacy_spec_without_presentation_uses_pose_preview(
         lambda **_kwargs: (
             np.zeros((16, 16, 3), dtype=np.uint8),
             {"preview_mode": "pose_driven_rgbd", "source_frame_id": "000001", "coverage_ratio": 1.0},
+            np.ones((16, 16), dtype=bool),
         ),
     )
 

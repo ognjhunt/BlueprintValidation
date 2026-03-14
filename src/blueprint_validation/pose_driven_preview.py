@@ -4,6 +4,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 import json
 import math
+import os
 import threading
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
@@ -130,10 +131,49 @@ class SpatialPreviewScene:
         except (TypeError, ValueError):
             return 0
 
-    def _preview_output_size(self) -> tuple[int, int]:
+    def _preview_long_edge_bounds(self) -> tuple[int, int]:
+        max_long_edge_raw = str(os.environ.get("BLUEPRINT_EXPLORER_MAX_LONG_EDGE") or "").strip() or "1600"
+        min_long_edge_raw = str(os.environ.get("BLUEPRINT_EXPLORER_MIN_LONG_EDGE") or "").strip() or "1280"
+        try:
+            max_long_edge = max(1, int(max_long_edge_raw))
+        except ValueError:
+            max_long_edge = 1600
+        try:
+            min_long_edge = max(1, int(min_long_edge_raw))
+        except ValueError:
+            min_long_edge = 1280
+        return min(min_long_edge, max_long_edge), max_long_edge
+
+    def _display_source_size(self) -> tuple[int, int]:
         if self.display_orientation == "portrait":
-            return (480, 640)
-        return (640, 480)
+            return self.raw_video_height, self.raw_video_width
+        return self.raw_video_width, self.raw_video_height
+
+    def _preview_output_size(
+        self,
+        *,
+        requested_width: Optional[int] = None,
+        requested_height: Optional[int] = None,
+    ) -> tuple[int, int]:
+        source_width, source_height = self._display_source_size()
+        source_long_edge = max(source_width, source_height)
+        source_short_edge = min(source_width, source_height)
+        min_long_edge, max_long_edge = self._preview_long_edge_bounds()
+        requested_long_edge = max(int(requested_width or 0), int(requested_height or 0), 0)
+        if source_long_edge <= min_long_edge:
+            target_long_edge = source_long_edge
+        else:
+            target_long_edge = min(
+                source_long_edge,
+                max_long_edge,
+                max(requested_long_edge, min_long_edge),
+            )
+        if source_long_edge <= 0 or source_short_edge <= 0:
+            return (640, 480)
+        scale = float(target_long_edge) / float(source_long_edge)
+        target_width = max(1, int(round(source_width * scale)))
+        target_height = max(1, int(round(source_height * scale)))
+        return target_width, target_height
 
     def _cv2(self):
         return require_optional_dependency("cv2", extra="vision", purpose="pose-driven preview rendering")
@@ -232,14 +272,42 @@ class SpatialPreviewScene:
         )
         return self.anchor_pose.world_from_camera @ delta
 
-    def view_config(self, world_state: Mapping[str, Any], camera_id: str) -> dict[str, Any]:
-        target_world_from_camera = self._target_pose(world_state, camera_id)
+    def _target_pose_from_explorer(self, explorer_pose: Mapping[str, Any]) -> np.ndarray:
+        x = float(explorer_pose.get("x") or 0.0)
+        y = float(explorer_pose.get("y") or 0.0)
+        z = float(explorer_pose.get("z") or 0.0)
+        yaw = float(explorer_pose.get("yaw") or 0.0)
+        pitch = float(explorer_pose.get("pitch") or 0.0)
+        delta = _transform_matrix(
+            [x, -y, z],
+            yaw_radians=yaw,
+            pitch_radians=pitch,
+        )
+        return self.anchor_pose.world_from_camera @ delta
+
+    def view_config(
+        self,
+        world_state: Mapping[str, Any],
+        camera_id: str,
+        *,
+        explorer_pose: Optional[Mapping[str, Any]] = None,
+        requested_width: Optional[int] = None,
+        requested_height: Optional[int] = None,
+    ) -> dict[str, Any]:
+        target_world_from_camera = (
+            self._target_pose_from_explorer(explorer_pose)
+            if explorer_pose is not None
+            else self._target_pose(world_state, camera_id)
+        )
         fx, fy, cx, cy = self._camera_intrinsics_for(
             self.intrinsics_width,
             self.intrinsics_height,
             camera_id,
         )
-        preview_width, preview_height = self._preview_output_size()
+        preview_width, preview_height = self._preview_output_size(
+            requested_width=requested_width,
+            requested_height=requested_height,
+        )
         return {
             "world_from_camera": target_world_from_camera,
             "raw_width": self.intrinsics_width,
@@ -297,9 +365,23 @@ class SpatialPreviewScene:
         matrix = np.float32([[scale, 0.0, shift_x], [0.0, scale, shift_y]])
         return cv2.warpAffine(source_rgb, matrix, (width, height), borderMode=cv2.BORDER_REFLECT)
 
-    def render(self, world_state: Mapping[str, Any], camera_id: str) -> tuple[np.ndarray, dict[str, Any]]:
+    def render(
+        self,
+        world_state: Mapping[str, Any],
+        camera_id: str,
+        *,
+        explorer_pose: Optional[Mapping[str, Any]] = None,
+        requested_width: Optional[int] = None,
+        requested_height: Optional[int] = None,
+    ) -> tuple[np.ndarray, dict[str, Any], np.ndarray]:
         cv2 = self._cv2()
-        view = self.view_config(world_state, camera_id)
+        view = self.view_config(
+            world_state,
+            camera_id,
+            explorer_pose=explorer_pose,
+            requested_width=requested_width,
+            requested_height=requested_height,
+        )
         target_world_from_camera = np.asarray(view["world_from_camera"], dtype=np.float32)
         source_sample = self._select_source_sample(target_world_from_camera)
         source_rgb = self.rgb_frame(source_sample.video_frame_index)
@@ -379,6 +461,11 @@ class SpatialPreviewScene:
         elif self.display_orientation == "portrait":
             target_rgb = cv2.rotate(target_rgb, cv2.ROTATE_90_COUNTERCLOCKWISE)
         preview_rgb = cv2.resize(target_rgb, (preview_width, preview_height), interpolation=cv2.INTER_CUBIC)
+        preview_coverage = cv2.resize(
+            coverage,
+            (preview_width, preview_height),
+            interpolation=cv2.INTER_NEAREST,
+        ) > 0
         return preview_rgb, {
             "preview_mode": "pose_driven_rgbd",
             "source_frame_id": source_sample.frame_id,
@@ -388,7 +475,7 @@ class SpatialPreviewScene:
             "display_rotation_degrees": int(view["display_rotation_degrees"]),
             "raw_video_size": [self.raw_video_width, self.raw_video_height],
             "preview_size": [preview_width, preview_height],
-        }
+        }, preview_coverage
 
 
 class PoseDrivenPreviewRenderer:
@@ -566,6 +653,15 @@ class PoseDrivenPreviewRenderer:
         spec: Mapping[str, Any],
         world_state: Mapping[str, Any],
         camera_id: str,
-    ) -> tuple[np.ndarray, dict[str, Any]]:
+        explorer_pose: Optional[Mapping[str, Any]] = None,
+        requested_width: Optional[int] = None,
+        requested_height: Optional[int] = None,
+    ) -> tuple[np.ndarray, dict[str, Any], np.ndarray]:
         scene = self.scene(site_world_id, spec)
-        return scene.render(world_state, camera_id)
+        return scene.render(
+            world_state,
+            camera_id,
+            explorer_pose=explorer_pose,
+            requested_width=requested_width,
+            requested_height=requested_height,
+        )
