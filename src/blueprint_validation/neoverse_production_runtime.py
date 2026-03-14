@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import signal
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Protocol, Sequence
@@ -49,6 +51,11 @@ class NeoVerseRunnerConfig:
     runner_command: str
     device: str
     gpu_enabled: bool
+    render_timeout_seconds: float
+
+
+class NeoVerseRunnerTimeoutError(RuntimeError):
+    """Raised when the production render subprocess exceeds its timeout."""
 
 
 class NeoVerseRunner(Protocol):
@@ -204,10 +211,36 @@ class LocalNeoVerseRunnerAdapter:
         }
         _write_json(request_path, request_payload)
         command = shlex.split(self.config.runner_command.strip()) + [str(request_path), str(response_path)]
-        completed = subprocess.run(command, capture_output=True, text=True, check=False)
-        if completed.returncode != 0:
-            stderr = (completed.stderr or completed.stdout or "").strip()
-            raise RuntimeError(f"NeoVerse runner failed with exit code {completed.returncode}: {stderr[:500]}")
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        try:
+            stdout, stderr = process.communicate(timeout=max(1.0, float(self.config.render_timeout_seconds)))
+        except subprocess.TimeoutExpired as exc:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                stdout, stderr = process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                stdout, stderr = process.communicate()
+            details = (stderr or stdout or "").strip()
+            raise NeoVerseRunnerTimeoutError(
+                f"NeoVerse runner timed out after {self.config.render_timeout_seconds:.1f}s"
+                + (f": {details[:300]}" if details else "")
+            ) from exc
+        if process.returncode != 0:
+            stderr = (stderr or stdout or "").strip()
+            raise RuntimeError(f"NeoVerse runner failed with exit code {process.returncode}: {stderr[:500]}")
         if not response_path.exists():
             raise RuntimeError("NeoVerse runner did not produce a render response manifest.")
         response = _read_json(response_path)
@@ -242,8 +275,20 @@ class NeoVerseProductionRuntimeStore:
                 runner_command=str(os.getenv("NEOVERSE_RUNNER_COMMAND", "")).strip(),
                 device=str(os.getenv("NEOVERSE_DEVICE", "cuda")).strip() or "cuda",
                 gpu_enabled=_env_truthy("NEOVERSE_GPU_ENABLED") if os.getenv("NEOVERSE_GPU_ENABLED") else True,
+                render_timeout_seconds=float(str(os.getenv("NEOVERSE_RENDER_TIMEOUT_SECONDS", "45")).strip() or "45"),
             )
         )
+
+    def _log_runtime_stage(self, event: str, **fields: Any) -> None:
+        payload = " ".join(
+            f"{key}={json.dumps(value, sort_keys=True)}"
+            for key, value in fields.items()
+            if value is not None
+        )
+        message = f"[neoverse_runtime] {event}"
+        if payload:
+            message = f"{message} {payload}"
+        print(message, flush=True)
 
     def _site_world_dir(self, site_world_id: str) -> Path:
         return self.site_worlds_dir / site_world_id
@@ -830,6 +875,96 @@ class NeoVerseProductionRuntimeStore:
             frame = _load_frame(path)
         return _coerce_camera_frame(frame, camera_id)
 
+    def _fallback_runner_payload(
+        self,
+        *,
+        render_dir: Path,
+        cameras: Sequence[Mapping[str, Any]],
+        base_frame_path: Path,
+        error: Exception,
+    ) -> Dict[str, Any]:
+        base_frame = _load_frame(base_frame_path)
+        camera_frames: list[Dict[str, Any]] = []
+        for camera in cameras:
+            camera_id = str(camera.get("id") or camera.get("cameraId") or "head_rgb").strip() or "head_rgb"
+            canonical_frame = _coerce_camera_frame(base_frame, camera_id)
+            output_path = render_dir / f"{camera_id}-runner-fallback.png"
+            _save_frame(output_path, canonical_frame)
+            camera_frames.append(
+                {
+                    "cameraId": camera_id,
+                    "path": str(output_path),
+                    "fallback": True,
+                }
+            )
+        return {
+            "camera_frames": camera_frames,
+            "quality_flags": {
+                "presentation_quality": "degraded",
+                "runner_fallback": "base_frame",
+            },
+            "protected_region_violations": [],
+            "debug_artifacts": {
+                "runner_fallback": "base_frame",
+                "runner_error": str(error),
+            },
+        }
+
+    def _composite_camera_frame(
+        self,
+        *,
+        canonical_frame: Any,
+        runtime_layer_bundle: Mapping[str, Any],
+        session_state: Dict[str, Any],
+        session_dir: Path,
+        snapshot: Mapping[str, Any],
+        camera_id: str,
+    ) -> Dict[str, Any]:
+        try:
+            return composite_runtime_layer(
+                canonical_frame=canonical_frame,
+                protected_regions_manifest=runtime_layer_bundle["protected_regions_manifest"],
+                canonical_render_policy=runtime_layer_bundle["canonical_render_policy"],
+                presentation_config=dict(session_state.get("presentation_config") or {}),
+                presentation_variance_policy=runtime_layer_bundle["presentation_variance_policy"],
+                session_dir=session_dir,
+                step_index=int((snapshot.get("world_state") or {}).get("step_index", 0)),
+                camera_id=camera_id,
+            )
+        except Exception as exc:
+            self._log_runtime_stage(
+                "render_snapshot.composite_fallback",
+                session_id=session_state.get("session_id"),
+                camera_id=camera_id,
+                error=str(exc),
+            )
+            return {
+                "frame": canonical_frame,
+                "quality_flags": {
+                    "presentation_quality": "degraded",
+                    "composite_fallback": "canonical_frame",
+                },
+                "protected_region_violations": [],
+                "debug_artifacts": {
+                    "composite_fallback": "canonical_frame",
+                    "composite_error": str(exc),
+                },
+            }
+
+    def _action_trace_payload(self, session_state: Dict[str, Any]) -> list[Dict[str, Any]]:
+        action_space = dict((session_state.get("robot_profile") or {}).get("action_space") or {})
+        labels = [str(label).strip() or f"action_{index}" for index, label in enumerate(action_space.get("labels") or [])]
+        payload: list[Dict[str, Any]] = []
+        for index, action in enumerate(list(session_state.get("action_trace", []))):
+            if not isinstance(action, Sequence) or isinstance(action, (str, bytes, bytearray)):
+                continue
+            row: Dict[str, Any] = {"index": index}
+            for action_index, value in enumerate(action):
+                label = labels[action_index] if action_index < len(labels) else f"action_{action_index}"
+                row[label] = float(value)
+            payload.append(row)
+        return payload
+
     def _render_snapshot(self, session_state: Dict[str, Any], snapshot: Dict[str, Any]) -> Dict[str, Any]:
         session_id = str(session_state["session_id"])
         site_world_id = str(session_state["site_world_id"])
@@ -839,15 +974,54 @@ class NeoVerseProductionRuntimeStore:
         base_frame_path = self._base_frame_path(site_world_id)
         robot_profile = dict(session_state.get("robot_profile") or {})
         cameras = self._render_camera_selection(robot_profile)
-        runner_payload = self.runner.render_snapshot(
-            site_world_id=site_world_id,
+        workspace_dir = Path(str(self.load_site_world(site_world_id).get("workspace_dir") or "")).resolve()
+        snapshot_path = Path(str(session_state["current_world_snapshot_path"] or self._save_snapshot(session_id, snapshot)))
+        self._log_runtime_stage(
+            "render_snapshot.start",
             session_id=session_id,
-            workspace_dir=Path(str(self.load_site_world(site_world_id).get("workspace_dir") or "")).resolve(),
-            snapshot_path=Path(str(session_state["current_world_snapshot_path"] or self._save_snapshot(session_id, snapshot))),
-            output_dir=render_dir,
-            cameras=cameras,
-            base_frame_path=base_frame_path,
+            snapshot_id=snapshot.get("snapshot_id"),
+            site_world_id=site_world_id,
+            cameras=[str(camera.get("id") or "") for camera in cameras],
         )
+        runner_started = time.monotonic()
+        try:
+            self._log_runtime_stage(
+                "render_snapshot.runner.start",
+                session_id=session_id,
+                snapshot_id=snapshot.get("snapshot_id"),
+                workspace_dir=str(workspace_dir),
+                snapshot_path=str(snapshot_path),
+            )
+            runner_payload = self.runner.render_snapshot(
+                site_world_id=site_world_id,
+                session_id=session_id,
+                workspace_dir=workspace_dir,
+                snapshot_path=snapshot_path,
+                output_dir=render_dir,
+                cameras=cameras,
+                base_frame_path=base_frame_path,
+            )
+            self._log_runtime_stage(
+                "render_snapshot.runner.done",
+                session_id=session_id,
+                snapshot_id=snapshot.get("snapshot_id"),
+                elapsed_ms=round((time.monotonic() - runner_started) * 1000),
+                frame_count=len(runner_payload.get("camera_frames") or []),
+            )
+        except NeoVerseRunnerTimeoutError as exc:
+            self._log_runtime_stage(
+                "render_snapshot.runner.timeout",
+                session_id=session_id,
+                snapshot_id=snapshot.get("snapshot_id"),
+                elapsed_ms=round((time.monotonic() - runner_started) * 1000),
+                error=str(exc),
+            )
+            runner_payload = self._fallback_runner_payload(
+                render_dir=render_dir,
+                cameras=cameras,
+                base_frame_path=base_frame_path,
+                error=exc,
+            )
         runtime_layer_bundle = self._runtime_layer_bundle_for_site_world(site_world_id)
         frame_records = [dict(item) for item in runner_payload.get("camera_frames", []) if isinstance(item, Mapping)]
         if not frame_records:
@@ -867,23 +1041,39 @@ class NeoVerseProductionRuntimeStore:
                 continue
             raw_path = Path(str(frame_record.get("path") or "")).resolve()
             canonical_frame = self._canonical_frame_from_runner_output(raw_path, camera_id)
-            composite = composite_runtime_layer(
-                canonical_frame=canonical_frame,
-                protected_regions_manifest=runtime_layer_bundle["protected_regions_manifest"],
-                canonical_render_policy=runtime_layer_bundle["canonical_render_policy"],
-                presentation_config=dict(session_state.get("presentation_config") or {}),
-                presentation_variance_policy=runtime_layer_bundle["presentation_variance_policy"],
-                session_dir=session_dir,
-                step_index=int((snapshot.get("world_state") or {}).get("step_index", 0)),
+            self._log_runtime_stage(
+                "render_snapshot.composite.start",
+                session_id=session_id,
+                snapshot_id=snapshot.get("snapshot_id"),
                 camera_id=camera_id,
+            )
+            composite_started = time.monotonic()
+            composite = self._composite_camera_frame(
+                canonical_frame=canonical_frame,
+                runtime_layer_bundle=runtime_layer_bundle,
+                session_state=session_state,
+                session_dir=session_dir,
+                snapshot=snapshot,
+                camera_id=camera_id,
+            )
+            self._log_runtime_stage(
+                "render_snapshot.composite.done",
+                session_id=session_id,
+                snapshot_id=snapshot.get("snapshot_id"),
+                camera_id=camera_id,
+                elapsed_ms=round((time.monotonic() - composite_started) * 1000),
             )
             output_path = render_dir / f"{camera_id}.png"
             _save_frame(output_path, composite["frame"])
             latest_render_paths[camera_id] = str(output_path)
             if not primary_camera_id:
                 primary_camera_id = camera_id
-                quality_flags = dict(composite.get("quality_flags") or quality_flags)
-                debug_artifacts = dict(composite.get("debug_artifacts") or debug_artifacts)
+                merged_quality_flags = dict(quality_flags)
+                merged_quality_flags.update(dict(composite.get("quality_flags") or {}))
+                quality_flags = merged_quality_flags
+                merged_debug_artifacts = dict(debug_artifacts)
+                merged_debug_artifacts.update(dict(composite.get("debug_artifacts") or {}))
+                debug_artifacts = merged_debug_artifacts
             protected_region_violations.extend(
                 [
                     {**dict(item), "camera_id": camera_id}
@@ -914,6 +1104,13 @@ class NeoVerseProductionRuntimeStore:
         session_state["quality_flags"] = quality_flags
         session_state["protected_region_violations"] = protected_region_violations
         session_state["debug_artifacts"] = debug_artifacts
+        self._log_runtime_stage(
+            "render_snapshot.persist_manifest",
+            session_id=session_id,
+            snapshot_id=snapshot.get("snapshot_id"),
+            primary_camera_id=primary_camera_id,
+            render_manifest_path=str(render_dir / "render_manifest.json"),
+        )
         update_presentation_session_manifest(
             session_dir=session_dir,
             payload={
@@ -964,7 +1161,7 @@ class NeoVerseProductionRuntimeStore:
             "failureReason": session_state.get("failure_reason"),
             "observation": observation,
             "observationCameras": observation.get("cameraFrames", []),
-            "actionTrace": list(session_state.get("action_trace", [])),
+            "actionTrace": self._action_trace_payload(session_state),
             "artifactUris": {},
             "runtimeKind": "neoverse_production",
             "productionGrade": True,
@@ -986,6 +1183,13 @@ class NeoVerseProductionRuntimeStore:
         scenario_id: Optional[str] = None,
         start_state_id: Optional[str] = None,
     ) -> Dict[str, Any]:
+        self._log_runtime_stage(
+            "reset_session.start",
+            session_id=session_id,
+            task_id=task_id,
+            scenario_id=scenario_id,
+            start_state_id=start_state_id,
+        )
         session_state = self.load_session(session_id)
         bundle = self._load_site_world_bundle(str(session_state.get("site_world_id") or ""))
         site_world = bundle["resolved"]
@@ -1010,12 +1214,39 @@ class NeoVerseProductionRuntimeStore:
         session_state["render_manifest_path"] = None
         self._clear_render_failure(session_state)
         self._persist_session_state(session_state)
+        self._log_runtime_stage(
+            "reset_session.persisted_initial_state",
+            session_id=session_id,
+            snapshot_id=snapshot.get("snapshot_id"),
+            snapshot_path=str(snapshot_path),
+        )
         try:
+            self._log_runtime_stage(
+                "reset_session.render_snapshot.start",
+                session_id=session_id,
+                snapshot_id=snapshot.get("snapshot_id"),
+            )
             observation = self._render_snapshot(session_state, snapshot)
+            self._log_runtime_stage(
+                "reset_session.render_snapshot.done",
+                session_id=session_id,
+                snapshot_id=snapshot.get("snapshot_id"),
+            )
         except Exception as exc:
+            self._log_runtime_stage(
+                "reset_session.render_snapshot.error",
+                session_id=session_id,
+                snapshot_id=snapshot.get("snapshot_id"),
+                error=str(exc),
+            )
             if self._recover_render_state(session_state):
                 self._clear_render_failure(session_state)
                 self._persist_session_state(session_state)
+                self._log_runtime_stage(
+                    "reset_session.recovered_render_state",
+                    session_id=session_id,
+                    snapshot_id=snapshot.get("snapshot_id"),
+                )
                 observation = self._observation_from_current_state(session_state)
                 return {
                     "session_id": session_id,
@@ -1029,6 +1260,12 @@ class NeoVerseProductionRuntimeStore:
             raise
         self._clear_render_failure(session_state)
         self._persist_session_state(session_state)
+        self._log_runtime_stage(
+            "reset_session.done",
+            session_id=session_id,
+            snapshot_id=snapshot.get("snapshot_id"),
+            primary_camera_id=observation.get("primaryCameraId"),
+        )
         return {
             "session_id": session_id,
             "episode": self._episode_payload(session_state, observation),
@@ -1187,7 +1424,7 @@ class NeoVerseProductionRuntimeStore:
             "done": session_state.get("done"),
             "reward": session_state.get("reward"),
             "observation": observation,
-            "action_trace": session_state.get("action_trace", []),
+            "action_trace": self._action_trace_payload(session_state),
             "canonical_package_version": session_state.get("canonical_package_version"),
             "presentation_config": dict(session_state.get("presentation_config") or {}),
             "quality_flags": dict(session_state.get("quality_flags") or {}),
@@ -1224,15 +1461,48 @@ class NeoVerseProductionRuntimeStore:
                 render_dir.mkdir(parents=True, exist_ok=True)
                 base_frame_path = self._base_frame_path(site_world_id)
                 robot_profile = dict(session_state.get("robot_profile") or {})
-                runner_payload = self.runner.render_snapshot(
-                    site_world_id=site_world_id,
+                cameras = self._render_camera_selection(robot_profile, requested_camera_ids=[camera_id])
+                workspace_dir = Path(str(self.load_site_world(site_world_id).get("workspace_dir") or "")).resolve()
+                render_snapshot_path = Path(str(session_state["current_world_snapshot_path"] or self._save_snapshot(session_id, snapshot)))
+                self._log_runtime_stage(
+                    "render_bytes.runner.start",
                     session_id=session_id,
-                    workspace_dir=Path(str(self.load_site_world(site_world_id).get("workspace_dir") or "")).resolve(),
-                    snapshot_path=Path(str(session_state["current_world_snapshot_path"] or self._save_snapshot(session_id, snapshot))),
-                    output_dir=render_dir,
-                    cameras=self._render_camera_selection(robot_profile, requested_camera_ids=[camera_id]),
-                    base_frame_path=base_frame_path,
+                    snapshot_id=snapshot.get("snapshot_id"),
+                    camera_id=camera_id,
                 )
+                runner_started = time.monotonic()
+                try:
+                    runner_payload = self.runner.render_snapshot(
+                        site_world_id=site_world_id,
+                        session_id=session_id,
+                        workspace_dir=workspace_dir,
+                        snapshot_path=render_snapshot_path,
+                        output_dir=render_dir,
+                        cameras=cameras,
+                        base_frame_path=base_frame_path,
+                    )
+                    self._log_runtime_stage(
+                        "render_bytes.runner.done",
+                        session_id=session_id,
+                        snapshot_id=snapshot.get("snapshot_id"),
+                        camera_id=camera_id,
+                        elapsed_ms=round((time.monotonic() - runner_started) * 1000),
+                    )
+                except NeoVerseRunnerTimeoutError as exc:
+                    self._log_runtime_stage(
+                        "render_bytes.runner.timeout",
+                        session_id=session_id,
+                        snapshot_id=snapshot.get("snapshot_id"),
+                        camera_id=camera_id,
+                        elapsed_ms=round((time.monotonic() - runner_started) * 1000),
+                        error=str(exc),
+                    )
+                    runner_payload = self._fallback_runner_payload(
+                        render_dir=render_dir,
+                        cameras=cameras,
+                        base_frame_path=base_frame_path,
+                        error=exc,
+                    )
                 runtime_layer_bundle = self._runtime_layer_bundle_for_site_world(site_world_id)
                 frame_records = [dict(item) for item in runner_payload.get("camera_frames", []) if isinstance(item, Mapping)]
                 frame_record = next((item for item in frame_records if str(item.get("cameraId") or "") == camera_id), None)
@@ -1240,20 +1510,36 @@ class NeoVerseProductionRuntimeStore:
                     raise RuntimeError(f"NeoVerse runner frame missing for camera {camera_id}")
                 raw_path = Path(str(frame_record.get("path") or "")).resolve()
                 canonical_frame = self._canonical_frame_from_runner_output(raw_path, camera_id)
-                composite = composite_runtime_layer(
-                    canonical_frame=canonical_frame,
-                    protected_regions_manifest=runtime_layer_bundle["protected_regions_manifest"],
-                    canonical_render_policy=runtime_layer_bundle["canonical_render_policy"],
-                    presentation_config=dict(session_state.get("presentation_config") or {}),
-                    presentation_variance_policy=runtime_layer_bundle["presentation_variance_policy"],
-                    session_dir=session_dir,
-                    step_index=int((snapshot.get("world_state") or {}).get("step_index", 0)),
+                self._log_runtime_stage(
+                    "render_bytes.composite.start",
+                    session_id=session_id,
+                    snapshot_id=snapshot.get("snapshot_id"),
                     camera_id=camera_id,
+                )
+                composite_started = time.monotonic()
+                composite = self._composite_camera_frame(
+                    canonical_frame=canonical_frame,
+                    runtime_layer_bundle=runtime_layer_bundle,
+                    session_state=session_state,
+                    session_dir=session_dir,
+                    snapshot=snapshot,
+                    camera_id=camera_id,
+                )
+                self._log_runtime_stage(
+                    "render_bytes.composite.done",
+                    session_id=session_id,
+                    snapshot_id=snapshot.get("snapshot_id"),
+                    camera_id=camera_id,
+                    elapsed_ms=round((time.monotonic() - composite_started) * 1000),
                 )
                 output_path = render_dir / f"{camera_id}.png"
                 _save_frame(output_path, composite["frame"])
                 latest[camera_id] = str(output_path)
                 session_state["latest_render_paths"] = latest
+                session_state["quality_flags"] = dict(composite.get("quality_flags") or session_state.get("quality_flags") or {})
+                session_state["protected_region_violations"] = list(composite.get("protected_region_violations") or [])
+                session_state["debug_artifacts"] = dict(runner_payload.get("debug_artifacts") or {})
+                session_state["debug_artifacts"].update(dict(composite.get("debug_artifacts") or {}))
                 self._clear_render_failure(session_state)
                 self._persist_session_state(session_state)
                 render_path = output_path

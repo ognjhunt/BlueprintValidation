@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from blueprint_validation.neoverse_production_runtime import NeoVerseProductionRuntimeStore
+from blueprint_validation.neoverse_production_runtime import NeoVerseProductionRuntimeStore, NeoVerseRunnerTimeoutError
 from blueprint_validation.neoverse_runtime_core import SmokeContractRuntimeStore
 
 
@@ -114,6 +114,22 @@ class _FlakyNeoVerseRunner(_StubNeoVerseRunner):
         )
 
 
+class _TimeoutNeoVerseRunner(_StubNeoVerseRunner):
+    def render_snapshot(
+        self,
+        *,
+        site_world_id,
+        session_id,
+        workspace_dir,
+        snapshot_path,
+        output_dir,
+        cameras,
+        base_frame_path,
+    ):
+        del site_world_id, session_id, workspace_dir, snapshot_path, output_dir, cameras, base_frame_path
+        raise NeoVerseRunnerTimeoutError("NeoVerse runner timed out after 45.0s")
+
+
 def _write_partial_render_artifacts(
     store: NeoVerseProductionRuntimeStore,
     session_state: dict[str, object],
@@ -214,6 +230,18 @@ def test_production_runtime_round_trip_and_restart_recovery(
 
     step_payload = store.step_session("session-1", action=[0.2, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0])
     assert step_payload["episode"]["stepIndex"] == 1
+    assert step_payload["episode"]["actionTrace"] == [
+        {
+            "index": 0,
+            "action_0": 0.2,
+            "action_1": 0.1,
+            "action_2": 0.0,
+            "action_3": 0.0,
+            "action_4": 0.0,
+            "action_5": 0.0,
+            "action_6": 0.0,
+        }
+    ]
 
     restarted_store = NeoVerseProductionRuntimeStore(
         root_dir=tmp_path / "runtime",
@@ -243,6 +271,18 @@ def test_production_runtime_round_trip_and_restart_recovery(
     )
     state_payload = restarted_store.session_state("session-1")
     assert state_payload["runtime_kind"] == "neoverse_production"
+    assert state_payload["action_trace"] == [
+        {
+            "index": 0,
+            "action_0": 0.2,
+            "action_1": 0.1,
+            "action_2": 0.0,
+            "action_3": 0.0,
+            "action_4": 0.0,
+            "action_5": 0.0,
+            "action_6": 0.0,
+        }
+    ]
     assert restarted_store.render_bytes("session-1", "head_rgb")
 
 
@@ -438,6 +478,66 @@ def test_production_runtime_persists_step_snapshot_when_render_fails(
     assert state_payload["observation"]["worldSnapshot"]["snapshotId"] == persisted["current_world_snapshot_id"]
 
 
+def test_production_runtime_degrades_reset_when_runner_times_out(
+    tmp_path: Path,
+    sample_site_world_bundle: dict[str, Path],
+    monkeypatch,
+) -> None:
+    store = NeoVerseProductionRuntimeStore(
+        root_dir=tmp_path / "runtime",
+        base_url="http://prod.local",
+        runner=_TimeoutNeoVerseRunner(),
+    )
+    monkeypatch.setattr(store, "validate_spec", lambda *args, **kwargs: (True, [], []))
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._load_frame",
+        lambda _path: np.zeros((16, 16, 3), dtype=np.uint8),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._save_frame",
+        lambda path, _frame: path.parent.mkdir(parents=True, exist_ok=True) or path.write_bytes(b"frame"),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._coerce_camera_frame",
+        lambda frame, _camera_id: frame,
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime.composite_runtime_layer",
+        lambda **_kwargs: {
+            "frame": np.zeros((16, 16, 3), dtype=np.uint8),
+            "quality_flags": {"presentation_quality": "degraded"},
+            "protected_region_violations": [],
+            "debug_artifacts": {},
+        },
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime.verify_canonical_package_version",
+        lambda **_kwargs: None,
+    )
+
+    registration = json.loads(sample_site_world_bundle["registration_path"].read_text(encoding="utf-8"))
+    health = json.loads(sample_site_world_bundle["health_path"].read_text(encoding="utf-8"))
+    spec = json.loads(sample_site_world_bundle["spec_path"].read_text(encoding="utf-8"))
+    store.register_site_world_package(spec=spec, registration=registration, health=health)
+    store.create_session(
+        registration["site_world_id"],
+        session_id="session-reset-timeout",
+        robot_profile_id="mobile_manipulator_rgb_v1",
+        task_id="task-1",
+        scenario_id="scenario-default",
+        start_state_id="start-default",
+    )
+
+    reset_payload = store.reset_session("session-reset-timeout")
+
+    assert reset_payload["episode"]["observation"]["primaryCameraId"] == "head_rgb"
+    persisted = store.load_session("session-reset-timeout")
+    assert persisted["latest_render_error_code"] is None
+    assert Path(str(persisted["latest_render_paths"]["head_rgb"])).is_file()
+    assert persisted["debug_artifacts"]["runner_fallback"] == "base_frame"
+    assert "timed out" in persisted["debug_artifacts"]["runner_error"]
+
+
 def test_production_runtime_recovers_reset_from_partial_render_artifacts(
     tmp_path: Path,
     sample_site_world_bundle: dict[str, Path],
@@ -558,3 +658,69 @@ def test_production_runtime_recovers_render_bytes_from_manifest_when_state_is_st
     assert persisted["latest_render_paths"]["head_rgb"] == str(render_path)
     assert persisted["render_manifest_path"] == str(manifest_path)
     assert persisted["latest_render_error_code"] is None
+
+
+def test_production_runtime_degrades_render_bytes_when_runner_times_out(
+    tmp_path: Path,
+    sample_site_world_bundle: dict[str, Path],
+    monkeypatch,
+) -> None:
+    store = NeoVerseProductionRuntimeStore(
+        root_dir=tmp_path / "runtime",
+        base_url="http://prod.local",
+        runner=_StubNeoVerseRunner(),
+    )
+    monkeypatch.setattr(store, "validate_spec", lambda *args, **kwargs: (True, [], []))
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._load_frame",
+        lambda _path: np.zeros((16, 16, 3), dtype=np.uint8),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._save_frame",
+        lambda path, _frame: path.parent.mkdir(parents=True, exist_ok=True) or path.write_bytes(b"frame"),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._coerce_camera_frame",
+        lambda frame, _camera_id: frame,
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime.composite_runtime_layer",
+        lambda **_kwargs: {
+            "frame": np.zeros((16, 16, 3), dtype=np.uint8),
+            "quality_flags": {"presentation_quality": "degraded"},
+            "protected_region_violations": [],
+            "debug_artifacts": {},
+        },
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime.verify_canonical_package_version",
+        lambda **_kwargs: None,
+    )
+
+    registration = json.loads(sample_site_world_bundle["registration_path"].read_text(encoding="utf-8"))
+    health = json.loads(sample_site_world_bundle["health_path"].read_text(encoding="utf-8"))
+    spec = json.loads(sample_site_world_bundle["spec_path"].read_text(encoding="utf-8"))
+    store.register_site_world_package(spec=spec, registration=registration, health=health)
+    store.create_session(
+        registration["site_world_id"],
+        session_id="session-render-timeout",
+        robot_profile_id="mobile_manipulator_rgb_v1",
+        task_id="task-1",
+        scenario_id="scenario-default",
+        start_state_id="start-default",
+    )
+    store.reset_session("session-render-timeout")
+    store.runner = _TimeoutNeoVerseRunner()
+
+    session_state = store.load_session("session-render-timeout")
+    Path(str(session_state["latest_render_paths"]["head_rgb"])).unlink()
+    session_state["latest_render_paths"] = {}
+    session_state["render_manifest_path"] = None
+    store._persist_session_state(session_state)
+
+    payload = store.render_bytes("session-render-timeout", "head_rgb")
+
+    assert payload == b"frame"
+    persisted = store.load_session("session-render-timeout")
+    assert Path(str(persisted["latest_render_paths"]["head_rgb"])).is_file()
+    assert persisted["debug_artifacts"]["runner_fallback"] == "base_frame"
