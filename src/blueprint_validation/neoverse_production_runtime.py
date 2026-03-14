@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Protocol, Sequence
 
+import numpy as np
+
 from blueprint_contracts.site_world_contract import (
     SiteWorldIntakeError,
     load_site_world_bundle,

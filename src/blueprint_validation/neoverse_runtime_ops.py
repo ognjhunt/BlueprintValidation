@@ -167,19 +167,23 @@ def _install_neoverse_requirements(repo_root: Path, venv_python: Path, *, cuda_v
     try:
         _run(gsplat_git_cmd, cwd=repo_root)
     except RuntimeError as exc:
-        if "ModuleNotFoundError: No module named 'gsplat'" not in str(exc):
-            raise
-        _run(
-            [
-                str(venv_python),
-                "-m",
-                "pip",
-                "install",
-                "--no-build-isolation",
-                f"git+{_DEFAULT_GSPLAT_GIT_URL}@v{_DEFAULT_GSPLAT_FALLBACK_VERSION}",
-            ],
-            cwd=repo_root,
-        )
+        fallback_cmd = [
+            str(venv_python),
+            "-m",
+            "pip",
+            "install",
+            "--no-build-isolation",
+            f"git+{_DEFAULT_GSPLAT_GIT_URL}@v{_DEFAULT_GSPLAT_FALLBACK_VERSION}",
+        ]
+        try:
+            _run(fallback_cmd, cwd=repo_root)
+        except RuntimeError as fallback_exc:
+            raise RuntimeError(
+                "Failed to install gsplat from the default Git HEAD and the pinned fallback "
+                f"v{_DEFAULT_GSPLAT_FALLBACK_VERSION}.\n"
+                f"default error: {exc}\n"
+                f"fallback error: {fallback_exc}"
+            ) from fallback_exc
 
 
 def _download_models(model_root: Path, *, hf_repo: str) -> None:

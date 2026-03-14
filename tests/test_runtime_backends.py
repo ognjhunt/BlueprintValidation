@@ -530,6 +530,69 @@ def test_production_runtime_legacy_spec_without_presentation_uses_pose_preview(
     assert runner.calls == 0
 
 
+def test_production_runtime_explorer_render_falls_back_to_base_frame_when_preview_fails(
+    tmp_path: Path,
+    sample_site_world_bundle: dict[str, Path],
+    monkeypatch,
+) -> None:
+    store = NeoVerseProductionRuntimeStore(
+        root_dir=tmp_path / "runtime",
+        base_url="http://prod.local",
+        runner=_StubNeoVerseRunner(),
+    )
+    monkeypatch.setattr(store, "validate_spec", lambda *args, **kwargs: (True, [], []))
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._load_frame",
+        lambda _path: np.zeros((16, 16, 3), dtype=np.uint8),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._save_frame",
+        lambda path, _frame: path.parent.mkdir(parents=True, exist_ok=True) or path.write_bytes(b"frame"),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._coerce_camera_frame",
+        lambda frame, _camera_id: frame,
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime.verify_canonical_package_version",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        store._pose_preview_renderer,
+        "render_camera",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("preview unavailable")),
+    )
+
+    registration = json.loads(sample_site_world_bundle["registration_path"].read_text(encoding="utf-8"))
+    health = json.loads(sample_site_world_bundle["health_path"].read_text(encoding="utf-8"))
+    spec = json.loads(sample_site_world_bundle["spec_path"].read_text(encoding="utf-8"))
+    store.register_site_world_package(spec=spec, registration=registration, health=health)
+    store.create_session(
+        registration["site_world_id"],
+        session_id="session-explorer-fallback",
+        robot_profile_id="mobile_manipulator_rgb_v1",
+        task_id="task-1",
+        scenario_id="scenario-default",
+        start_state_id="start-default",
+    )
+
+    payload = store.explorer_render(
+        "session-explorer-fallback",
+        camera_id="head_rgb",
+        pose={"x": 0.0, "y": 0.0, "z": 0.0, "yaw": 0.0, "pitch": 0.0},
+        viewport_width=1600,
+        viewport_height=1200,
+        refine_mode="auto",
+    )
+
+    assert payload["grounded_source"] == "runtime_fallback"
+    assert payload["quality_flags"]["preview_mode"] == "base_frame"
+    assert payload["quality_flags"]["presentation_quality"] == "degraded"
+    assert "preview unavailable" in payload["debug_artifacts"]["grounded_preview_error"]
+    persisted = store.load_session("session-explorer-fallback")
+    assert Path(str(persisted["explorer_state"]["latest_frame_paths"]["head_rgb"])).is_file()
+
+
 def test_production_runtime_accepts_video_runner_outputs(
     tmp_path: Path,
     sample_site_world_bundle: dict[str, Path],
