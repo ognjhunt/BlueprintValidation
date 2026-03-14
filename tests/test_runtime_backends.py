@@ -130,6 +130,26 @@ class _TimeoutNeoVerseRunner(_StubNeoVerseRunner):
         raise NeoVerseRunnerTimeoutError("NeoVerse runner timed out after 45.0s")
 
 
+class _ExplodingNeoVerseRunner(_StubNeoVerseRunner):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def render_snapshot(
+        self,
+        *,
+        site_world_id,
+        session_id,
+        workspace_dir,
+        snapshot_path,
+        output_dir,
+        cameras,
+        base_frame_path,
+    ):
+        del site_world_id, session_id, workspace_dir, snapshot_path, output_dir, cameras, base_frame_path
+        self.calls += 1
+        raise AssertionError("runner should not be called in immediate preview mode")
+
+
 def _write_partial_render_artifacts(
     store: NeoVerseProductionRuntimeStore,
     session_state: dict[str, object],
@@ -284,6 +304,66 @@ def test_production_runtime_round_trip_and_restart_recovery(
         }
     ]
     assert restarted_store.render_bytes("session-1", "head_rgb")
+
+
+def test_production_runtime_immediate_preview_skips_sync_runner(
+    tmp_path: Path,
+    sample_site_world_bundle: dict[str, Path],
+    monkeypatch,
+) -> None:
+    runner = _ExplodingNeoVerseRunner()
+    store = NeoVerseProductionRuntimeStore(
+        root_dir=tmp_path / "runtime",
+        base_url="http://prod.local",
+        runner=runner,
+        enable_immediate_preview=True,
+        enable_async_render_refinement=False,
+    )
+    monkeypatch.setattr(store, "validate_spec", lambda *args, **kwargs: (True, [], []))
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._load_frame",
+        lambda _path: np.zeros((16, 16, 3), dtype=np.uint8),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._save_frame",
+        lambda path, _frame: path.parent.mkdir(parents=True, exist_ok=True) or path.write_bytes(b"frame"),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._coerce_camera_frame",
+        lambda frame, _camera_id: frame,
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime.composite_runtime_layer",
+        lambda **_kwargs: {
+            "frame": np.zeros((16, 16, 3), dtype=np.uint8),
+            "quality_flags": {"presentation_quality": "degraded"},
+            "protected_region_violations": [],
+            "debug_artifacts": {},
+        },
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime.verify_canonical_package_version",
+        lambda **_kwargs: None,
+    )
+
+    registration = json.loads(sample_site_world_bundle["registration_path"].read_text(encoding="utf-8"))
+    health = json.loads(sample_site_world_bundle["health_path"].read_text(encoding="utf-8"))
+    spec = json.loads(sample_site_world_bundle["spec_path"].read_text(encoding="utf-8"))
+    store.register_site_world_package(spec=spec, registration=registration, health=health)
+    store.create_session(
+        registration["site_world_id"],
+        session_id="session-preview",
+        robot_profile_id="mobile_manipulator_rgb_v1",
+        task_id="task-1",
+        scenario_id="scenario-default",
+        start_state_id="start-default",
+    )
+
+    reset_payload = store.reset_session("session-preview")
+
+    assert reset_payload["episode"]["observation"]["primaryCameraId"] == "head_rgb"
+    assert reset_payload["episode"]["qualityFlags"]["render_mode"] == "preview"
+    assert runner.calls == 0
 
 
 def test_production_runtime_accepts_video_runner_outputs(

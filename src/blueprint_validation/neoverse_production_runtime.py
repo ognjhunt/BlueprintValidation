@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 import json
 import os
 import shlex
 import signal
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -259,6 +261,9 @@ class NeoVerseProductionRuntimeStore:
         base_url: str,
         ws_base_url: Optional[str] = None,
         runner: Optional[NeoVerseRunner] = None,
+        enable_immediate_preview: Optional[bool] = None,
+        enable_async_render_refinement: Optional[bool] = None,
+        render_refinement_workers: Optional[int] = None,
     ) -> None:
         self.root_dir = Path(root_dir).resolve()
         self.base_url = base_url.rstrip("/")
@@ -277,6 +282,46 @@ class NeoVerseProductionRuntimeStore:
                 gpu_enabled=_env_truthy("NEOVERSE_GPU_ENABLED") if os.getenv("NEOVERSE_GPU_ENABLED") else True,
                 render_timeout_seconds=float(str(os.getenv("NEOVERSE_RENDER_TIMEOUT_SECONDS", "45")).strip() or "45"),
             )
+        )
+        immediate_preview_from_env = _env_truthy("NEOVERSE_IMMEDIATE_PREVIEW") if os.getenv("NEOVERSE_IMMEDIATE_PREVIEW") else None
+        low_vram_preview_default = _env_truthy("NEOVERSE_LOW_VRAM") if os.getenv("NEOVERSE_LOW_VRAM") else False
+        self.enable_immediate_preview = (
+            enable_immediate_preview
+            if enable_immediate_preview is not None
+            else immediate_preview_from_env
+            if immediate_preview_from_env is not None
+            else low_vram_preview_default
+        )
+        async_refinement_from_env = (
+            _env_truthy("NEOVERSE_ASYNC_RENDER_REFINEMENT")
+            if os.getenv("NEOVERSE_ASYNC_RENDER_REFINEMENT")
+            else None
+        )
+        self.enable_async_render_refinement = (
+            enable_async_render_refinement
+            if enable_async_render_refinement is not None
+            else async_refinement_from_env
+            if async_refinement_from_env is not None
+            else self.enable_immediate_preview
+        )
+        self.render_refinement_workers = max(
+            1,
+            int(
+                render_refinement_workers
+                or str(os.getenv("NEOVERSE_RENDER_REFINEMENT_WORKERS", "1")).strip()
+                or "1"
+            ),
+        )
+        self._render_refinement_lock = threading.Lock()
+        self._render_refinement_targets: Dict[str, str] = {}
+        self._render_refinement_futures: Dict[str, Future[None]] = {}
+        self._render_refinement_executor = (
+            ThreadPoolExecutor(
+                max_workers=self.render_refinement_workers,
+                thread_name_prefix="neoverse-render-refine",
+            )
+            if self.enable_async_render_refinement
+            else None
         )
 
     def _log_runtime_stage(self, event: str, **fields: Any) -> None:
@@ -951,77 +996,56 @@ class NeoVerseProductionRuntimeStore:
                 },
             }
 
-    def _action_trace_payload(self, session_state: Dict[str, Any]) -> list[Dict[str, Any]]:
-        action_space = dict((session_state.get("robot_profile") or {}).get("action_space") or {})
-        labels = [str(label).strip() or f"action_{index}" for index, label in enumerate(action_space.get("labels") or [])]
-        payload: list[Dict[str, Any]] = []
-        for index, action in enumerate(list(session_state.get("action_trace", []))):
-            if not isinstance(action, Sequence) or isinstance(action, (str, bytes, bytearray)):
-                continue
-            row: Dict[str, Any] = {"index": index}
-            for action_index, value in enumerate(action):
-                label = labels[action_index] if action_index < len(labels) else f"action_{action_index}"
-                row[label] = float(value)
-            payload.append(row)
-        return payload
+    def _preview_runner_payload(
+        self,
+        *,
+        render_dir: Path,
+        cameras: Sequence[Mapping[str, Any]],
+        base_frame_path: Path,
+    ) -> Dict[str, Any]:
+        base_frame = _load_frame(base_frame_path)
+        camera_frames: list[Dict[str, Any]] = []
+        for camera in cameras:
+            camera_id = str(camera.get("id") or camera.get("cameraId") or "head_rgb").strip() or "head_rgb"
+            preview_frame = _coerce_camera_frame(base_frame, camera_id)
+            output_path = render_dir / f"{camera_id}-preview.png"
+            _save_frame(output_path, preview_frame)
+            camera_frames.append(
+                {
+                    "cameraId": camera_id,
+                    "path": str(output_path),
+                    "preview": True,
+                }
+            )
+        refinement_status = "pending" if self.enable_async_render_refinement else "disabled"
+        return {
+            "camera_frames": camera_frames,
+            "quality_flags": {
+                "presentation_quality": "preview",
+                "render_mode": "preview",
+                "refinement_status": refinement_status,
+            },
+            "protected_region_violations": [],
+            "debug_artifacts": {
+                "preview_mode": "base_frame",
+                "render_mode": "preview",
+                "refinement_status": refinement_status,
+            },
+        }
 
-    def _render_snapshot(self, session_state: Dict[str, Any], snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    def _materialize_render_snapshot(
+        self,
+        *,
+        session_state: Dict[str, Any],
+        snapshot: Dict[str, Any],
+        runner_payload: Mapping[str, Any],
+        cameras: Sequence[Mapping[str, Any]],
+        render_dir: Path,
+        persist_session_state: bool,
+    ) -> Dict[str, Any]:
         session_id = str(session_state["session_id"])
         site_world_id = str(session_state["site_world_id"])
         session_dir = self._session_dir(session_id)
-        render_dir = session_dir / "renders" / str(snapshot["snapshot_id"])
-        render_dir.mkdir(parents=True, exist_ok=True)
-        base_frame_path = self._base_frame_path(site_world_id)
-        robot_profile = dict(session_state.get("robot_profile") or {})
-        cameras = self._render_camera_selection(robot_profile)
-        workspace_dir = Path(str(self.load_site_world(site_world_id).get("workspace_dir") or "")).resolve()
-        snapshot_path = Path(str(session_state["current_world_snapshot_path"] or self._save_snapshot(session_id, snapshot)))
-        self._log_runtime_stage(
-            "render_snapshot.start",
-            session_id=session_id,
-            snapshot_id=snapshot.get("snapshot_id"),
-            site_world_id=site_world_id,
-            cameras=[str(camera.get("id") or "") for camera in cameras],
-        )
-        runner_started = time.monotonic()
-        try:
-            self._log_runtime_stage(
-                "render_snapshot.runner.start",
-                session_id=session_id,
-                snapshot_id=snapshot.get("snapshot_id"),
-                workspace_dir=str(workspace_dir),
-                snapshot_path=str(snapshot_path),
-            )
-            runner_payload = self.runner.render_snapshot(
-                site_world_id=site_world_id,
-                session_id=session_id,
-                workspace_dir=workspace_dir,
-                snapshot_path=snapshot_path,
-                output_dir=render_dir,
-                cameras=cameras,
-                base_frame_path=base_frame_path,
-            )
-            self._log_runtime_stage(
-                "render_snapshot.runner.done",
-                session_id=session_id,
-                snapshot_id=snapshot.get("snapshot_id"),
-                elapsed_ms=round((time.monotonic() - runner_started) * 1000),
-                frame_count=len(runner_payload.get("camera_frames") or []),
-            )
-        except NeoVerseRunnerTimeoutError as exc:
-            self._log_runtime_stage(
-                "render_snapshot.runner.timeout",
-                session_id=session_id,
-                snapshot_id=snapshot.get("snapshot_id"),
-                elapsed_ms=round((time.monotonic() - runner_started) * 1000),
-                error=str(exc),
-            )
-            runner_payload = self._fallback_runner_payload(
-                render_dir=render_dir,
-                cameras=cameras,
-                base_frame_path=base_frame_path,
-                error=exc,
-            )
         runtime_layer_bundle = self._runtime_layer_bundle_for_site_world(site_world_id)
         frame_records = [dict(item) for item in runner_payload.get("camera_frames", []) if isinstance(item, Mapping)]
         if not frame_records:
@@ -1030,7 +1054,9 @@ class NeoVerseProductionRuntimeStore:
         camera_summaries: list[Dict[str, Any]] = []
         primary_camera_id = ""
         quality_flags = dict(runner_payload.get("quality_flags") or {"presentation_quality": "normal"})
-        protected_region_violations = [dict(item) for item in runner_payload.get("protected_region_violations", []) if isinstance(item, Mapping)]
+        protected_region_violations = [
+            dict(item) for item in runner_payload.get("protected_region_violations", []) if isinstance(item, Mapping)
+        ]
         debug_artifacts = dict(runner_payload.get("debug_artifacts") or {})
         for camera in cameras:
             camera_id = str(camera.get("id") or "").strip()
@@ -1099,11 +1125,12 @@ class NeoVerseProductionRuntimeStore:
             "debug_artifacts": debug_artifacts,
         }
         _write_json(render_dir / "render_manifest.json", render_manifest)
-        session_state["latest_render_paths"] = latest_render_paths
-        session_state["render_manifest_path"] = str(render_dir / "render_manifest.json")
-        session_state["quality_flags"] = quality_flags
-        session_state["protected_region_violations"] = protected_region_violations
-        session_state["debug_artifacts"] = debug_artifacts
+        if persist_session_state:
+            session_state["latest_render_paths"] = latest_render_paths
+            session_state["render_manifest_path"] = str(render_dir / "render_manifest.json")
+            session_state["quality_flags"] = quality_flags
+            session_state["protected_region_violations"] = protected_region_violations
+            session_state["debug_artifacts"] = debug_artifacts
         self._log_runtime_stage(
             "render_snapshot.persist_manifest",
             session_id=session_id,
@@ -1143,6 +1170,231 @@ class NeoVerseProductionRuntimeStore:
                 "world_state": snapshot.get("world_state"),
             },
         }
+
+    def _schedule_render_refinement(self, session_id: str, snapshot_id: str) -> None:
+        if not self.enable_async_render_refinement or self._render_refinement_executor is None:
+            return
+        with self._render_refinement_lock:
+            self._render_refinement_targets[session_id] = snapshot_id
+            current = self._render_refinement_futures.get(session_id)
+            if current is not None and not current.done():
+                self._log_runtime_stage(
+                    "render_refinement.coalesced",
+                    session_id=session_id,
+                    snapshot_id=snapshot_id,
+                )
+                return
+            future = self._render_refinement_executor.submit(self._run_render_refinement_loop, session_id)
+            self._render_refinement_futures[session_id] = future
+
+    def _run_render_refinement_loop(self, session_id: str) -> None:
+        try:
+            while True:
+                with self._render_refinement_lock:
+                    snapshot_id = self._render_refinement_targets.get(session_id)
+                if not snapshot_id:
+                    return
+                self._refine_snapshot(session_id, snapshot_id)
+                with self._render_refinement_lock:
+                    latest = self._render_refinement_targets.get(session_id)
+                    if latest == snapshot_id:
+                        self._render_refinement_targets.pop(session_id, None)
+                        return
+        finally:
+            with self._render_refinement_lock:
+                self._render_refinement_futures.pop(session_id, None)
+
+    def _refine_snapshot(self, session_id: str, snapshot_id: str) -> None:
+        session_state = self.load_session(session_id)
+        current_snapshot_id = str(session_state.get("current_world_snapshot_id") or "")
+        if current_snapshot_id != snapshot_id:
+            self._log_runtime_stage(
+                "render_refinement.skip_stale",
+                session_id=session_id,
+                snapshot_id=snapshot_id,
+                current_snapshot_id=current_snapshot_id,
+            )
+            return
+        snapshot_path = self._snapshot_path(session_id, snapshot_id)
+        if not snapshot_path.is_file():
+            self._log_runtime_stage(
+                "render_refinement.skip_missing_snapshot",
+                session_id=session_id,
+                snapshot_id=snapshot_id,
+            )
+            return
+        snapshot = _read_json(snapshot_path)
+        site_world_id = str(session_state["site_world_id"])
+        render_dir = self._session_dir(session_id) / "renders" / snapshot_id
+        render_dir.mkdir(parents=True, exist_ok=True)
+        base_frame_path = self._base_frame_path(site_world_id)
+        robot_profile = dict(session_state.get("robot_profile") or {})
+        cameras = self._render_camera_selection(robot_profile)
+        workspace_dir = Path(str(self.load_site_world(site_world_id).get("workspace_dir") or "")).resolve()
+        self._log_runtime_stage(
+            "render_refinement.start",
+            session_id=session_id,
+            snapshot_id=snapshot_id,
+            cameras=[str(camera.get("id") or "") for camera in cameras],
+        )
+        started = time.monotonic()
+        try:
+            runner_payload = self.runner.render_snapshot(
+                site_world_id=site_world_id,
+                session_id=session_id,
+                workspace_dir=workspace_dir,
+                snapshot_path=snapshot_path,
+                output_dir=render_dir,
+                cameras=cameras,
+                base_frame_path=base_frame_path,
+            )
+        except Exception as exc:
+            self._log_runtime_stage(
+                "render_refinement.failed",
+                session_id=session_id,
+                snapshot_id=snapshot_id,
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+                error=str(exc),
+            )
+            latest_debug_artifacts = dict(session_state.get("debug_artifacts") or {})
+            latest_debug_artifacts.update(
+                {
+                    "refinement_status": "failed",
+                    "refinement_error": str(exc),
+                }
+            )
+            session_state["debug_artifacts"] = latest_debug_artifacts
+            session_state["quality_flags"] = {
+                **dict(session_state.get("quality_flags") or {}),
+                "refinement_status": "failed",
+            }
+            self._persist_session_state(session_state)
+            return
+        observation = self._materialize_render_snapshot(
+            session_state=session_state,
+            snapshot=snapshot,
+            runner_payload={
+                **dict(runner_payload),
+                "quality_flags": {
+                    **dict(runner_payload.get("quality_flags") or {}),
+                    "render_mode": "refined",
+                    "refinement_status": "complete",
+                },
+                "debug_artifacts": {
+                    **dict(runner_payload.get("debug_artifacts") or {}),
+                    "render_mode": "refined",
+                    "refinement_status": "complete",
+                },
+            },
+            cameras=cameras,
+            render_dir=render_dir,
+            persist_session_state=False,
+        )
+        reloaded = self.load_session(session_id)
+        if str(reloaded.get("current_world_snapshot_id") or "") != snapshot_id:
+            self._log_runtime_stage(
+                "render_refinement.discard_stale",
+                session_id=session_id,
+                snapshot_id=snapshot_id,
+                current_snapshot_id=reloaded.get("current_world_snapshot_id"),
+            )
+            return
+        session_state["latest_render_paths"] = {
+            str(key): str(value)
+            for key, value in dict(_read_json(render_dir / "render_manifest.json").get("camera_frame_paths") or {}).items()
+        }
+        session_state["render_manifest_path"] = str(render_dir / "render_manifest.json")
+        session_state["quality_flags"] = dict(observation.get("runtimeMetadata", {}).get("quality_flags") or {})
+        session_state["protected_region_violations"] = list(
+            observation.get("runtimeMetadata", {}).get("protected_region_violations") or []
+        )
+        session_state["debug_artifacts"] = dict(observation.get("runtimeMetadata", {}).get("debug_artifacts") or {})
+        self._persist_session_state(session_state)
+        self._log_runtime_stage(
+            "render_refinement.done",
+            session_id=session_id,
+            snapshot_id=snapshot_id,
+            elapsed_ms=round((time.monotonic() - started) * 1000),
+        )
+
+    def _action_trace_payload(self, session_state: Dict[str, Any]) -> list[Dict[str, Any]]:
+        action_space = dict((session_state.get("robot_profile") or {}).get("action_space") or {})
+        labels = [str(label).strip() or f"action_{index}" for index, label in enumerate(action_space.get("labels") or [])]
+        payload: list[Dict[str, Any]] = []
+        for index, action in enumerate(list(session_state.get("action_trace", []))):
+            if not isinstance(action, Sequence) or isinstance(action, (str, bytes, bytearray)):
+                continue
+            row: Dict[str, Any] = {"index": index}
+            for action_index, value in enumerate(action):
+                label = labels[action_index] if action_index < len(labels) else f"action_{action_index}"
+                row[label] = float(value)
+            payload.append(row)
+        return payload
+
+    def _render_snapshot(self, session_state: Dict[str, Any], snapshot: Dict[str, Any]) -> Dict[str, Any]:
+        session_id = str(session_state["session_id"])
+        site_world_id = str(session_state["site_world_id"])
+        render_dir = self._session_dir(session_id) / "renders" / str(snapshot["snapshot_id"])
+        render_dir.mkdir(parents=True, exist_ok=True)
+        base_frame_path = self._base_frame_path(site_world_id)
+        robot_profile = dict(session_state.get("robot_profile") or {})
+        cameras = self._render_camera_selection(robot_profile)
+        workspace_dir = Path(str(self.load_site_world(site_world_id).get("workspace_dir") or "")).resolve()
+        snapshot_path = Path(str(session_state["current_world_snapshot_path"] or self._save_snapshot(session_id, snapshot)))
+        self._log_runtime_stage(
+            "render_snapshot.start",
+            session_id=session_id,
+            snapshot_id=snapshot.get("snapshot_id"),
+            site_world_id=site_world_id,
+            cameras=[str(camera.get("id") or "") for camera in cameras],
+        )
+        runner_started = time.monotonic()
+        try:
+            self._log_runtime_stage(
+                "render_snapshot.runner.start",
+                session_id=session_id,
+                snapshot_id=snapshot.get("snapshot_id"),
+                workspace_dir=str(workspace_dir),
+                snapshot_path=str(snapshot_path),
+            )
+            runner_payload = self.runner.render_snapshot(
+                site_world_id=site_world_id,
+                session_id=session_id,
+                workspace_dir=workspace_dir,
+                snapshot_path=snapshot_path,
+                output_dir=render_dir,
+                cameras=cameras,
+                base_frame_path=base_frame_path,
+            )
+            self._log_runtime_stage(
+                "render_snapshot.runner.done",
+                session_id=session_id,
+                snapshot_id=snapshot.get("snapshot_id"),
+                elapsed_ms=round((time.monotonic() - runner_started) * 1000),
+                frame_count=len(runner_payload.get("camera_frames") or []),
+            )
+        except NeoVerseRunnerTimeoutError as exc:
+            self._log_runtime_stage(
+                "render_snapshot.runner.timeout",
+                session_id=session_id,
+                snapshot_id=snapshot.get("snapshot_id"),
+                elapsed_ms=round((time.monotonic() - runner_started) * 1000),
+                error=str(exc),
+            )
+            runner_payload = self._fallback_runner_payload(
+                render_dir=render_dir,
+                cameras=cameras,
+                base_frame_path=base_frame_path,
+                error=exc,
+            )
+        return self._materialize_render_snapshot(
+            session_state=session_state,
+            snapshot=snapshot,
+            runner_payload=runner_payload,
+            cameras=cameras,
+            render_dir=render_dir,
+            persist_session_state=True,
+        )
 
     def _episode_payload(self, session_state: Dict[str, Any], observation: Dict[str, Any]) -> Dict[str, Any]:
         return {
@@ -1220,6 +1472,36 @@ class NeoVerseProductionRuntimeStore:
             snapshot_id=snapshot.get("snapshot_id"),
             snapshot_path=str(snapshot_path),
         )
+        if self.enable_immediate_preview:
+            render_dir = self._session_dir(session_id) / "renders" / str(snapshot["snapshot_id"])
+            render_dir.mkdir(parents=True, exist_ok=True)
+            base_frame_path = self._base_frame_path(str(session_state["site_world_id"]))
+            cameras = self._render_camera_selection(dict(session_state.get("robot_profile") or {}))
+            observation = self._materialize_render_snapshot(
+                session_state=session_state,
+                snapshot=snapshot,
+                runner_payload=self._preview_runner_payload(
+                    render_dir=render_dir,
+                    cameras=cameras,
+                    base_frame_path=base_frame_path,
+                ),
+                cameras=cameras,
+                render_dir=render_dir,
+                persist_session_state=True,
+            )
+            self._clear_render_failure(session_state)
+            self._persist_session_state(session_state)
+            self._schedule_render_refinement(session_id, str(snapshot["snapshot_id"]))
+            self._log_runtime_stage(
+                "reset_session.preview_ready",
+                session_id=session_id,
+                snapshot_id=snapshot.get("snapshot_id"),
+                primary_camera_id=observation.get("primaryCameraId"),
+            )
+            return {
+                "session_id": session_id,
+                "episode": self._episode_payload(session_state, observation),
+            }
         try:
             self._log_runtime_stage(
                 "reset_session.render_snapshot.start",
@@ -1326,6 +1608,37 @@ class NeoVerseProductionRuntimeStore:
         session_state["status"] = "completed" if session_state["done"] else "running"
         self._clear_render_failure(session_state)
         self._persist_session_state(session_state)
+        if self.enable_immediate_preview:
+            render_dir = self._session_dir(session_id) / "renders" / str(snapshot["snapshot_id"])
+            render_dir.mkdir(parents=True, exist_ok=True)
+            base_frame_path = self._base_frame_path(str(session_state["site_world_id"]))
+            cameras = self._render_camera_selection(dict(session_state.get("robot_profile") or {}))
+            observation = self._materialize_render_snapshot(
+                session_state=session_state,
+                snapshot=snapshot,
+                runner_payload=self._preview_runner_payload(
+                    render_dir=render_dir,
+                    cameras=cameras,
+                    base_frame_path=base_frame_path,
+                ),
+                cameras=cameras,
+                render_dir=render_dir,
+                persist_session_state=True,
+            )
+            self._clear_render_failure(session_state)
+            self._persist_session_state(session_state)
+            self._schedule_render_refinement(session_id, str(snapshot["snapshot_id"]))
+            self._log_runtime_stage(
+                "step_session.preview_ready",
+                session_id=session_id,
+                snapshot_id=snapshot.get("snapshot_id"),
+                step_index=session_state.get("step_index"),
+                primary_camera_id=observation.get("primaryCameraId"),
+            )
+            return {
+                "session_id": session_id,
+                "episode": self._episode_payload(session_state, observation),
+            }
         try:
             observation = self._render_snapshot(session_state, snapshot)
         except Exception as exc:
@@ -1462,6 +1775,33 @@ class NeoVerseProductionRuntimeStore:
                 base_frame_path = self._base_frame_path(site_world_id)
                 robot_profile = dict(session_state.get("robot_profile") or {})
                 cameras = self._render_camera_selection(robot_profile, requested_camera_ids=[camera_id])
+                if self.enable_immediate_preview:
+                    observation = self._materialize_render_snapshot(
+                        session_state=session_state,
+                        snapshot=snapshot,
+                        runner_payload=self._preview_runner_payload(
+                            render_dir=render_dir,
+                            cameras=cameras,
+                            base_frame_path=base_frame_path,
+                        ),
+                        cameras=cameras,
+                        render_dir=render_dir,
+                        persist_session_state=True,
+                    )
+                    self._clear_render_failure(session_state)
+                    self._persist_session_state(session_state)
+                    self._schedule_render_refinement(session_id, str(snapshot["snapshot_id"]))
+                    render_path = Path(
+                        str(
+                            dict(session_state.get("latest_render_paths") or {}).get(camera_id)
+                            or observation.get("frame_path")
+                            or ""
+                        )
+                    ).resolve()
+                    if render_path.is_file():
+                        payload = render_path.read_bytes()
+                        if payload:
+                            return payload
                 workspace_dir = Path(str(self.load_site_world(site_world_id).get("workspace_dir") or "")).resolve()
                 render_snapshot_path = Path(str(session_state["current_world_snapshot_path"] or self._save_snapshot(session_id, snapshot)))
                 self._log_runtime_stage(
