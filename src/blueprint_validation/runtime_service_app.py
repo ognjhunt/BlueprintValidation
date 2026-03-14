@@ -159,8 +159,13 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
 
     @app.post("/v1/sessions/{session_id}/reset")
     def reset_session(session_id: str, request: SessionResetRequest) -> Dict[str, Any]:
+        print(
+            f"[runtime_service] reset start session_id={session_id} "
+            f"task_id={request.task_id} scenario_id={request.scenario_id} start_state_id={request.start_state_id}",
+            flush=True,
+        )
         try:
-            return dict(
+            payload = dict(
                 backend.reset_session(
                     session_id,
                     task_id=request.task_id,
@@ -168,9 +173,13 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
                     start_state_id=request.start_state_id,
                 )
             )
+            print(f"[runtime_service] reset done session_id={session_id}", flush=True)
+            return payload
         except FileNotFoundError as exc:
+            print(f"[runtime_service] reset missing session_id={session_id}", flush=True)
             raise HTTPException(status_code=404, detail=f"session not found: {session_id}") from exc
         except Exception as exc:
+            print(f"[runtime_service] reset error session_id={session_id} error={exc}", flush=True)
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/v1/sessions/{session_id}/step")
