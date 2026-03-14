@@ -105,6 +105,28 @@ def _spec_with_canonical_world_presentation(spec: Mapping[str, Any]) -> dict[str
     return remapped
 
 
+def _quality_flag_baseline(spec: Mapping[str, Any]) -> dict[str, Any]:
+    canonical_world_model = _canonical_world_model_map(spec)
+    runtime_layer_policy = dict(spec.get("runtime_layer_policy") or {}) if isinstance(spec.get("runtime_layer_policy"), Mapping) else {}
+    return {
+        "primary_runtime_backend": str(spec.get("primary_runtime_backend") or "neoverse"),
+        "world_model_backend": str(canonical_world_model.get("world_model_backend") or "neoverse"),
+        "scene_representation": str(canonical_world_model.get("scene_representation") or "gsplat_scene_v1"),
+        "render_source": str(
+            spec.get("runtime_render_source")
+            or canonical_world_model.get("render_source")
+            or ("canonical_world_model" if _has_canonical_world_model_bundle(spec) else "arkit_rgbd_last_resort")
+        ),
+        "fallback_mode": str(spec.get("fallback_mode") or canonical_world_model.get("fallback_mode") or "arkit_rgbd_last_resort"),
+        "grounding_status": str(
+            spec.get("grounding_status")
+            or runtime_layer_policy.get("grounding_status")
+            or "grounded"
+        ),
+        "canonical_package_version": str(spec.get("canonical_package_version") or ""),
+    }
+
+
 @dataclass(frozen=True)
 class NeoVerseRunnerConfig:
     model_root: str
@@ -1142,7 +1164,12 @@ class NeoVerseProductionRuntimeStore:
             "runtime_engine_identity": dict(registration.get("runtime_engine_identity") or {}),
             "runtime_model_identity": dict(registration.get("runtime_model_identity") or self.runner.model_identity()),
             "runtime_checkpoint_identity": dict(registration.get("runtime_checkpoint_identity") or self.runner.checkpoint_identity()),
-            "quality_flags": {"presentation_quality": "normal", "editable_ratio": 0.0, "locked_ratio": 0.0},
+            "quality_flags": {
+                **_quality_flag_baseline(site_world),
+                "presentation_quality": "normal",
+                "editable_ratio": 0.0,
+                "locked_ratio": 0.0,
+            },
             "protected_region_violations": [],
             "debug_artifacts": {},
             "step_index": 0,
@@ -1512,11 +1539,14 @@ class NeoVerseProductionRuntimeStore:
         return {
             "camera_frames": camera_frames,
             "quality_flags": {
+                **_quality_flag_baseline(spec),
                 "presentation_quality": "preview",
                 "render_mode": "preview",
                 "refinement_status": refinement_status,
                 "preview_mode": "presentation_bundle",
                 "preview_source": "server_gsplat",
+                "render_source": "presentation_bundle",
+                "fallback_mode": "arkit_rgbd_last_resort",
                 "renderer_backend": "gsplat",
                 "presentation_bundle_status": str(primary_debug.get("presentation_bundle_status") or "ready"),
                 "display_orientation": primary_debug.get("display_orientation"),
@@ -1570,11 +1600,14 @@ class NeoVerseProductionRuntimeStore:
         return {
             "camera_frames": camera_frames,
             "quality_flags": {
+                **_quality_flag_baseline(spec),
                 "presentation_quality": "preview",
                 "render_mode": "preview",
                 "refinement_status": refinement_status,
                 "preview_mode": "canonical_world_model",
                 "preview_source": "canonical_world_model",
+                "render_source": "canonical_world_model",
+                "fallback_mode": "arkit_rgbd_last_resort",
                 "world_model_backend": str(_canonical_world_model_map(spec).get("world_model_backend") or "neoverse"),
                 "scene_representation": str(_canonical_world_model_map(spec).get("scene_representation") or "gsplat_scene_v1"),
                 "renderer_backend": str(primary_debug.get("renderer_backend") or "gsplat"),
@@ -1676,12 +1709,14 @@ class NeoVerseProductionRuntimeStore:
         return {
             "camera_frames": camera_frames,
             "quality_flags": {
+                **_quality_flag_baseline(spec),
                 "presentation_quality": "preview",
                 "render_mode": "preview",
                 "refinement_status": refinement_status,
                 "preview_mode": "pose_driven",
-                "preview_source": "arkit_rgbd",
-                "fallback_mode": "canonical_only",
+                "preview_source": "arkit_rgbd_last_resort",
+                "render_source": "arkit_rgbd_last_resort",
+                "fallback_mode": "arkit_rgbd_last_resort",
                 "presentation_render_error": presentation_error,
             },
             "protected_region_violations": [],
@@ -1717,7 +1752,10 @@ class NeoVerseProductionRuntimeStore:
         latest_render_paths: Dict[str, str] = {}
         camera_summaries: list[Dict[str, Any]] = []
         primary_camera_id = ""
-        quality_flags = dict(runner_payload.get("quality_flags") or {"presentation_quality": "normal"})
+        quality_flags = {
+            **dict(session_state.get("quality_flags") or {}),
+            **dict(runner_payload.get("quality_flags") or {"presentation_quality": "normal"}),
+        }
         protected_region_violations = [
             dict(item) for item in runner_payload.get("protected_region_violations", []) if isinstance(item, Mapping)
         ]

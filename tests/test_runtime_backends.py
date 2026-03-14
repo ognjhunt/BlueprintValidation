@@ -567,7 +567,7 @@ def test_production_runtime_falls_back_to_pose_driven_when_presentation_render_f
     reset_payload = store.reset_session("session-preview-fallback")
 
     assert reset_payload["episode"]["qualityFlags"]["preview_mode"] == "pose_driven"
-    assert reset_payload["episode"]["qualityFlags"]["fallback_mode"] == "canonical_only"
+    assert reset_payload["episode"]["qualityFlags"]["fallback_mode"] == "arkit_rgbd_last_resort"
     assert "gsplat unavailable" in str(reset_payload["episode"]["qualityFlags"]["presentation_render_error"])
     assert runner.calls == 0
 
@@ -630,7 +630,7 @@ def test_production_runtime_legacy_spec_without_presentation_uses_pose_preview(
     reset_payload = store.reset_session("session-legacy-preview")
 
     assert reset_payload["episode"]["qualityFlags"]["preview_mode"] == "pose_driven"
-    assert reset_payload["episode"]["qualityFlags"]["fallback_mode"] == "canonical_only"
+    assert reset_payload["episode"]["qualityFlags"]["fallback_mode"] == "arkit_rgbd_last_resort"
     assert runner.calls == 0
 
 
