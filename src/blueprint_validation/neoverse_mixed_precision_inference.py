@@ -103,6 +103,9 @@ def _load_pipeline(*, model_root: Path, reconstructor_path: Path, device: str, u
         torch_dtype=torch.bfloat16,
         enable_vram_management=False,
     )
+    if low_vram:
+        # Let the pipeline offload large modules between stages instead of pinning everything on GPU.
+        pipe.enable_vram_management(vram_buffer=1.0)
     pipe.reconstructor = pipe.reconstructor.to(dtype=torch.float32, device="cpu")
     pipe.vram_management_enabled = True
     pipe.device = device

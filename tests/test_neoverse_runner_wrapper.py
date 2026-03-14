@@ -79,3 +79,41 @@ def test_runtime_frame_budgets_prefers_higher_video_budget_then_degrades() -> No
     assert mixed_precision._runtime_frame_budgets(static_scene=False, requested=8) == [8, 4, 2]
     assert mixed_precision._runtime_frame_budgets(static_scene=False, requested=4) == [4, 2]
     assert mixed_precision._runtime_frame_budgets(static_scene=True, requested=8) == [2]
+
+
+def test_load_pipeline_enables_vram_management_when_low_vram(monkeypatch, tmp_path: Path) -> None:
+    calls: list[tuple[str, object]] = []
+
+    class _FakeModule:
+        def to(self, *args, **kwargs):
+            calls.append(("reconstructor.to", (args, kwargs)))
+            return self
+
+    class _FakePipe:
+        def __init__(self) -> None:
+            self.reconstructor = _FakeModule()
+            self.vram_management_enabled = False
+            self.device = None
+
+        def enable_vram_management(self, **kwargs):
+            calls.append(("enable_vram_management", kwargs))
+
+    class _FakePipeline:
+        @staticmethod
+        def from_pretrained(**kwargs):
+            calls.append(("from_pretrained", kwargs))
+            return _FakePipe()
+
+    fake_module = type("FakeModule", (), {"WanVideoNeoVersePipeline": _FakePipeline})
+    monkeypatch.setitem(__import__("sys").modules, "diffsynth.pipelines.wan_video_neoverse", fake_module)
+
+    pipe = mixed_precision._load_pipeline(
+        model_root=tmp_path / "models",
+        reconstructor_path=tmp_path / "ckpt",
+        device="cuda:0",
+        use_lora=False,
+        low_vram=True,
+    )
+
+    assert any(name == "enable_vram_management" for name, _ in calls)
+    assert pipe.vram_management_enabled is True
