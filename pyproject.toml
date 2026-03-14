@@ -29,6 +29,7 @@ dependencies = [
 [project.optional-dependencies]
 vision = [
     "opencv-python>=4.8.0",
+    "plyfile>=1.1.0",
 ]
 
 [dependency-groups]

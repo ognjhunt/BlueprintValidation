@@ -23,6 +23,10 @@ def sample_site_world_bundle(tmp_path: Path) -> dict[str, Path]:
     }
     conditioning_frame_path = bundle_dir / "conditioning_frame.png"
     conditioning_frame_path.write_bytes(b"placeholder")
+    presentation_manifest_path = bundle_dir / "presentation_world_manifest.json"
+    runtime_demo_manifest_path = bundle_dir / "runtime_demo_manifest.json"
+    presentation_primary_asset_path = bundle_dir / "gaussian_splat.ply"
+    presentation_primary_asset_path.write_text("ply\nformat ascii 1.0\nend_header\n", encoding="utf-8")
     spec = {
         "schema_version": "v1",
         "scene_id": "scene-1",
@@ -40,6 +44,19 @@ def sample_site_world_bundle(tmp_path: Path) -> dict[str, Path]:
             }
         ],
         "conditioning": {
+            "capture_orientation": {
+                "encoded_width": 1920,
+                "encoded_height": 1080,
+                "declared_capture_width": 1080,
+                "declared_capture_height": 1920,
+                "display_rotation_degrees": 90,
+                "display_orientation": "portrait",
+                "normalization_applied": True,
+                "source": "capture_context",
+                "rotation_degrees": 90,
+                "display_size": {"width": 1080, "height": 1920},
+                "encoded_size": {"width": 1920, "height": 1080},
+            },
             "sensor_availability": {
                 "arkit_poses": True,
                 "arkit_intrinsics": True,
@@ -51,6 +68,28 @@ def sample_site_world_bundle(tmp_path: Path) -> dict[str, Path]:
                 "occupancy_path": str(bundle_dir / "occupancy.json"),
                 "object_index_path": str(bundle_dir / "object_index.json"),
             },
+        },
+        "presentation": {
+            "presentation_world_manifest_path": str(presentation_manifest_path),
+            "runtime_demo_manifest_path": str(runtime_demo_manifest_path),
+            "bundle_type": "gsplat_scene_v1",
+            "renderer_backend": "gsplat",
+            "bundle_status": "ready",
+            "primary_asset_path": str(presentation_primary_asset_path),
+            "orientation": {
+                "encoded_width": 1920,
+                "encoded_height": 1080,
+                "declared_capture_width": 1080,
+                "declared_capture_height": 1920,
+                "display_rotation_degrees": 90,
+                "display_orientation": "portrait",
+                "normalization_applied": True,
+                "source": "capture_context",
+                "rotation_degrees": 90,
+                "display_size": {"width": 1080, "height": 1920},
+                "encoded_size": {"width": 1920, "height": 1080},
+            },
+            "fallback_policy": "canonical_only",
         },
         "task_catalog": [{"id": "task-1", "task_text": "Pick item"}],
         "scenario_catalog": [{"id": "scenario-default", "name": "Default scenario"}],
@@ -85,6 +124,26 @@ def sample_site_world_bundle(tmp_path: Path) -> dict[str, Path]:
         "task_anchor_manifest.json": {"schema_version": "v1"},
         "object_geometry_manifest.json": {"schema_version": "v1", "objects": []},
         "scene_memory_manifest.json": {"schema_version": "v1"},
+        "presentation_world_manifest.json": {
+            "schema_version": "v1",
+            "bundle_type": "gsplat_scene_v1",
+            "renderer_backend": "gsplat",
+            "status": "ready",
+            "primary_asset_path": str(presentation_primary_asset_path),
+            "orientation": spec["presentation"]["orientation"],
+            "fallback_policy": "canonical_only",
+            "readiness": {"bundle_status": "ready"},
+        },
+        "runtime_demo_manifest.json": {
+            "schema_version": "v1",
+            "bundle_type": "gsplat_scene_v1",
+            "renderer_backend": "gsplat",
+            "bundle_status": "ready",
+            "presentation_world_manifest_uri": "gs://bundle/presentation_world_manifest.json",
+            "primary_asset_path": str(presentation_primary_asset_path),
+            "orientation": spec["presentation"]["orientation"],
+            "fallback_policy": "canonical_only",
+        },
         "arkit_poses.json": {"schema_version": "v1", "poses": []},
         "arkit_intrinsics.json": {"schema_version": "v1", "intrinsics": []},
         "occupancy.json": {"schema_version": "v1", "voxels": []},

@@ -94,6 +94,9 @@ class PoseSample:
 class SpatialPreviewScene:
     site_world_id: str
     video_path: Path
+    raw_video_width: int
+    raw_video_height: int
+    orientation: dict[str, Any]
     intrinsics_width: int
     intrinsics_height: int
     fx: float
@@ -109,6 +112,28 @@ class SpatialPreviewScene:
     _capture_lock: threading.Lock = field(default_factory=threading.Lock)
     _frame_cache: OrderedDict[int, np.ndarray] = field(default_factory=OrderedDict)
     _capture: Any = None
+
+    @property
+    def display_orientation(self) -> str:
+        declared = str(self.orientation.get("display_orientation") or "").strip().lower()
+        if declared in {"portrait", "landscape"}:
+            return declared
+        return "portrait" if self.raw_video_height > self.raw_video_width else "landscape"
+
+    @property
+    def display_rotation_degrees(self) -> int:
+        raw = self.orientation.get("display_rotation_degrees")
+        if raw is None:
+            raw = self.orientation.get("rotation_degrees")
+        try:
+            return int(raw or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _preview_output_size(self) -> tuple[int, int]:
+        if self.display_orientation == "portrait":
+            return (480, 640)
+        return (640, 480)
 
     def _cv2(self):
         return require_optional_dependency("cv2", extra="vision", purpose="pose-driven preview rendering")
@@ -207,6 +232,28 @@ class SpatialPreviewScene:
         )
         return self.anchor_pose.world_from_camera @ delta
 
+    def view_config(self, world_state: Mapping[str, Any], camera_id: str) -> dict[str, Any]:
+        target_world_from_camera = self._target_pose(world_state, camera_id)
+        fx, fy, cx, cy = self._camera_intrinsics_for(
+            self.intrinsics_width,
+            self.intrinsics_height,
+            camera_id,
+        )
+        preview_width, preview_height = self._preview_output_size()
+        return {
+            "world_from_camera": target_world_from_camera,
+            "raw_width": self.intrinsics_width,
+            "raw_height": self.intrinsics_height,
+            "fx": fx,
+            "fy": fy,
+            "cx": cx,
+            "cy": cy,
+            "preview_width": preview_width,
+            "preview_height": preview_height,
+            "display_orientation": self.display_orientation,
+            "display_rotation_degrees": self.display_rotation_degrees,
+        }
+
     def _select_source_sample(self, target_world_from_camera: np.ndarray) -> PoseSample:
         target_center = target_world_from_camera[:3, 3]
         target_forward = target_world_from_camera[:3, 2]
@@ -252,7 +299,8 @@ class SpatialPreviewScene:
 
     def render(self, world_state: Mapping[str, Any], camera_id: str) -> tuple[np.ndarray, dict[str, Any]]:
         cv2 = self._cv2()
-        target_world_from_camera = self._target_pose(world_state, camera_id)
+        view = self.view_config(world_state, camera_id)
+        target_world_from_camera = np.asarray(view["world_from_camera"], dtype=np.float32)
         source_sample = self._select_source_sample(target_world_from_camera)
         source_rgb = self.rgb_frame(source_sample.video_frame_index)
         depth_raw, confidence_raw = self._load_depth(source_sample)
@@ -320,16 +368,26 @@ class SpatialPreviewScene:
             repaired = cv2.inpaint(inpaint_input, (coverage == 0).astype(np.uint8) * 255, 3, cv2.INPAINT_TELEA)
             target_rgb = cv2.cvtColor(repaired, cv2.COLOR_BGR2RGB)
 
-        preview_rgb = cv2.resize(
-            target_rgb,
-            (self.preview_width, self.preview_height),
-            interpolation=cv2.INTER_CUBIC,
-        )
+        preview_width = int(view["preview_width"])
+        preview_height = int(view["preview_height"])
+        if int(view["display_rotation_degrees"]) == 90:
+            target_rgb = cv2.rotate(target_rgb, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        elif int(view["display_rotation_degrees"]) == 180:
+            target_rgb = cv2.rotate(target_rgb, cv2.ROTATE_180)
+        elif int(view["display_rotation_degrees"]) == 270:
+            target_rgb = cv2.rotate(target_rgb, cv2.ROTATE_90_CLOCKWISE)
+        elif self.display_orientation == "portrait":
+            target_rgb = cv2.rotate(target_rgb, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        preview_rgb = cv2.resize(target_rgb, (preview_width, preview_height), interpolation=cv2.INTER_CUBIC)
         return preview_rgb, {
             "preview_mode": "pose_driven_rgbd",
             "source_frame_id": source_sample.frame_id,
             "source_video_frame_index": source_sample.video_frame_index,
             "coverage_ratio": round(float(np.mean(coverage > 0)), 4),
+            "display_orientation": self.display_orientation,
+            "display_rotation_degrees": int(view["display_rotation_degrees"]),
+            "raw_video_size": [self.raw_video_width, self.raw_video_height],
+            "preview_size": [preview_width, preview_height],
         }
 
 
@@ -345,6 +403,7 @@ class PoseDrivenPreviewRenderer:
     def _build_scene(self, site_world_id: str, spec: Mapping[str, Any]) -> SpatialPreviewScene:
         conditioning = dict(spec.get("conditioning") or {}) if isinstance(spec.get("conditioning"), Mapping) else {}
         conditioning_paths = dict(conditioning.get("local_paths") or {}) if isinstance(conditioning.get("local_paths"), Mapping) else {}
+        presentation = dict(spec.get("presentation") or {}) if isinstance(spec.get("presentation"), Mapping) else {}
         geometry = dict(spec.get("geometry") or {}) if isinstance(spec.get("geometry"), Mapping) else {}
         scene_memory_bundle = _read_json(
             _resolve_local_path(
@@ -403,10 +462,18 @@ class PoseDrivenPreviewRenderer:
                 raise RuntimeError(f"failed to open preview video: {raw_video_path}")
             video_fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
             frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            raw_video_width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            raw_video_height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            ok, first_frame = capture.read()
+            if ok and first_frame is not None:
+                raw_video_height, raw_video_width = first_frame.shape[:2]
         finally:
             capture.release()
         if video_fps <= 0.0:
             video_fps = 24.0
+        if min(raw_video_width, raw_video_height) <= 0:
+            raw_video_width = width
+            raw_video_height = height
 
         pose_rows = _load_jsonl(poses_path)
         pose_samples: list[PoseSample] = []
@@ -457,9 +524,19 @@ class PoseDrivenPreviewRenderer:
             raise RuntimeError(f"site world {site_world_id} has no ARKit samples with depth for spatial preview")
 
         anchor_pose = min(pose_samples, key=lambda sample: sample.t_device_sec)
+        orientation = (
+            dict(presentation.get("orientation") or {})
+            if isinstance(presentation.get("orientation"), Mapping)
+            else dict(conditioning.get("capture_orientation") or {})
+            if isinstance(conditioning.get("capture_orientation"), Mapping)
+            else {}
+        )
         return SpatialPreviewScene(
             site_world_id=site_world_id,
             video_path=raw_video_path,
+            raw_video_width=raw_video_width,
+            raw_video_height=raw_video_height,
+            orientation=orientation,
             intrinsics_width=width,
             intrinsics_height=height,
             fx=fx,

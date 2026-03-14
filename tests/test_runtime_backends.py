@@ -150,6 +150,23 @@ class _ExplodingNeoVerseRunner(_StubNeoVerseRunner):
         raise AssertionError("runner should not be called in immediate preview mode")
 
 
+class _StubPreviewScene:
+    def view_config(self, _world_state, _camera_id):
+        return {
+            "world_from_camera": np.eye(4, dtype=np.float32),
+            "raw_width": 16,
+            "raw_height": 16,
+            "fx": 10.0,
+            "fy": 10.0,
+            "cx": 8.0,
+            "cy": 8.0,
+            "preview_width": 16,
+            "preview_height": 16,
+            "display_orientation": "portrait",
+            "display_rotation_degrees": 90,
+        }
+
+
 def _write_partial_render_artifacts(
     store: NeoVerseProductionRuntimeStore,
     session_state: dict[str, object],
@@ -345,12 +362,19 @@ def test_production_runtime_immediate_preview_skips_sync_runner(
         "blueprint_validation.neoverse_production_runtime.verify_canonical_package_version",
         lambda **_kwargs: None,
     )
+    monkeypatch.setattr(store._pose_preview_renderer, "scene", lambda *_args, **_kwargs: _StubPreviewScene())
     monkeypatch.setattr(
-        store._pose_preview_renderer,
+        store._presentation_bundle_renderer,
         "render_camera",
         lambda **_kwargs: (
             np.zeros((16, 16, 3), dtype=np.uint8),
-            {"preview_mode": "pose_driven_rgbd", "source_frame_id": "000001", "coverage_ratio": 1.0},
+            {
+                "preview_mode": "presentation_bundle",
+                "preview_source": "server_gsplat",
+                "renderer_backend": "gsplat",
+                "presentation_bundle_status": "ready",
+                "display_orientation": "portrait",
+            },
         ),
     )
 
@@ -371,7 +395,136 @@ def test_production_runtime_immediate_preview_skips_sync_runner(
 
     assert reset_payload["episode"]["observation"]["primaryCameraId"] == "head_rgb"
     assert reset_payload["episode"]["qualityFlags"]["render_mode"] == "preview"
+    assert reset_payload["episode"]["qualityFlags"]["preview_mode"] == "presentation_bundle"
+    assert reset_payload["episode"]["qualityFlags"]["preview_source"] == "server_gsplat"
+    assert reset_payload["episode"]["qualityFlags"]["renderer_backend"] == "gsplat"
+    assert runner.calls == 0
+
+
+def test_production_runtime_falls_back_to_pose_driven_when_presentation_render_fails(
+    tmp_path: Path,
+    sample_site_world_bundle: dict[str, Path],
+    monkeypatch,
+) -> None:
+    runner = _ExplodingNeoVerseRunner()
+    store = NeoVerseProductionRuntimeStore(
+        root_dir=tmp_path / "runtime",
+        base_url="http://prod.local",
+        runner=runner,
+        enable_immediate_preview=True,
+        enable_async_render_refinement=False,
+    )
+    monkeypatch.setattr(store, "validate_spec", lambda *args, **kwargs: (True, [], []))
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._load_frame",
+        lambda _path: np.zeros((16, 16, 3), dtype=np.uint8),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._save_frame",
+        lambda path, _frame: path.parent.mkdir(parents=True, exist_ok=True) or path.write_bytes(b"frame"),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._coerce_camera_frame",
+        lambda frame, _camera_id: frame,
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime.verify_canonical_package_version",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(store._pose_preview_renderer, "scene", lambda *_args, **_kwargs: _StubPreviewScene())
+    monkeypatch.setattr(
+        store._presentation_bundle_renderer,
+        "render_camera",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("gsplat unavailable")),
+    )
+    monkeypatch.setattr(
+        store._pose_preview_renderer,
+        "render_camera",
+        lambda **_kwargs: (
+            np.zeros((16, 16, 3), dtype=np.uint8),
+            {"preview_mode": "pose_driven_rgbd", "source_frame_id": "000001", "coverage_ratio": 1.0},
+        ),
+    )
+
+    registration = json.loads(sample_site_world_bundle["registration_path"].read_text(encoding="utf-8"))
+    health = json.loads(sample_site_world_bundle["health_path"].read_text(encoding="utf-8"))
+    spec = json.loads(sample_site_world_bundle["spec_path"].read_text(encoding="utf-8"))
+    store.register_site_world_package(spec=spec, registration=registration, health=health)
+    store.create_session(
+        registration["site_world_id"],
+        session_id="session-preview-fallback",
+        robot_profile_id="mobile_manipulator_rgb_v1",
+        task_id="task-1",
+        scenario_id="scenario-default",
+        start_state_id="start-default",
+    )
+
+    reset_payload = store.reset_session("session-preview-fallback")
+
     assert reset_payload["episode"]["qualityFlags"]["preview_mode"] == "pose_driven"
+    assert reset_payload["episode"]["qualityFlags"]["fallback_mode"] == "canonical_only"
+    assert "gsplat unavailable" in str(reset_payload["episode"]["qualityFlags"]["presentation_render_error"])
+    assert runner.calls == 0
+
+
+def test_production_runtime_legacy_spec_without_presentation_uses_pose_preview(
+    tmp_path: Path,
+    sample_site_world_bundle: dict[str, Path],
+    monkeypatch,
+) -> None:
+    runner = _ExplodingNeoVerseRunner()
+    store = NeoVerseProductionRuntimeStore(
+        root_dir=tmp_path / "runtime",
+        base_url="http://prod.local",
+        runner=runner,
+        enable_immediate_preview=True,
+        enable_async_render_refinement=False,
+    )
+    monkeypatch.setattr(store, "validate_spec", lambda *args, **kwargs: (True, [], []))
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._load_frame",
+        lambda _path: np.zeros((16, 16, 3), dtype=np.uint8),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._save_frame",
+        lambda path, _frame: path.parent.mkdir(parents=True, exist_ok=True) or path.write_bytes(b"frame"),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._coerce_camera_frame",
+        lambda frame, _camera_id: frame,
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime.verify_canonical_package_version",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(store._pose_preview_renderer, "scene", lambda *_args, **_kwargs: _StubPreviewScene())
+    monkeypatch.setattr(
+        store._pose_preview_renderer,
+        "render_camera",
+        lambda **_kwargs: (
+            np.zeros((16, 16, 3), dtype=np.uint8),
+            {"preview_mode": "pose_driven_rgbd", "source_frame_id": "000001", "coverage_ratio": 1.0},
+        ),
+    )
+
+    registration = json.loads(sample_site_world_bundle["registration_path"].read_text(encoding="utf-8"))
+    health = json.loads(sample_site_world_bundle["health_path"].read_text(encoding="utf-8"))
+    spec = json.loads(sample_site_world_bundle["spec_path"].read_text(encoding="utf-8"))
+    spec.pop("presentation", None)
+    store.register_site_world_package(spec=spec, registration=registration, health=health)
+    store.create_session(
+        registration["site_world_id"],
+        session_id="session-legacy-preview",
+        robot_profile_id="mobile_manipulator_rgb_v1",
+        task_id="task-1",
+        scenario_id="scenario-default",
+        start_state_id="start-default",
+    )
+
+    reset_payload = store.reset_session("session-legacy-preview")
+
+    assert reset_payload["episode"]["qualityFlags"]["preview_mode"] == "pose_driven"
+    assert reset_payload["episode"]["qualityFlags"]["fallback_mode"] == "canonical_only"
     assert runner.calls == 0
 
 

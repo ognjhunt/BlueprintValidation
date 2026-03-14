@@ -34,6 +34,7 @@ from .neoverse_runtime_core import (
     _utc_now_iso,
     _write_json,
 )
+from .presentation_bundle_renderer import PresentationBundleRenderer
 from .pose_driven_preview import PoseDrivenPreviewRenderer
 from .runtime_backend import RuntimeMetadata
 from .runtime_layer_grounding import (
@@ -324,6 +325,7 @@ class NeoVerseProductionRuntimeStore:
             if self.enable_async_render_refinement
             else None
         )
+        self._presentation_bundle_renderer = PresentationBundleRenderer()
         self._pose_preview_renderer = PoseDrivenPreviewRenderer()
 
     def _log_runtime_stage(self, event: str, **fields: Any) -> None:
@@ -419,6 +421,37 @@ class NeoVerseProductionRuntimeStore:
             warnings.append("occupancy_path_missing")
         if _preferred_local_path(local_map.get("object_index_path"), geometry_map.get("object_index_path")) is None:
             warnings.append("object_index_path_missing")
+
+        presentation = dict(spec.get("presentation") or {}) if isinstance(spec.get("presentation"), Mapping) else {}
+        if presentation:
+            presentation_manifest_path = _preferred_local_path(
+                presentation.get("presentation_world_manifest_path"),
+                presentation.get("presentation_world_manifest_uri"),
+            )
+            if presentation_manifest_path is None:
+                warnings.append("presentation_manifest_missing")
+            primary_asset_path = _preferred_local_path(
+                presentation.get("primary_asset_path"),
+                presentation.get("primary_asset_uri"),
+            )
+            bundle_status = str(presentation.get("bundle_status") or "").strip().lower()
+            if primary_asset_path is None:
+                warnings.append("presentation_primary_asset_missing")
+            elif bundle_status not in {"", "ready", "demo_ready"}:
+                warnings.append(f"presentation_bundle_status:{bundle_status}")
+            orientation = (
+                dict(presentation.get("orientation") or {})
+                if isinstance(presentation.get("orientation"), Mapping)
+                else {}
+            )
+            try:
+                encoded_width = int(orientation.get("encoded_width") or 0)
+                encoded_height = int(orientation.get("encoded_height") or 0)
+            except (TypeError, ValueError):
+                encoded_width = 0
+                encoded_height = 0
+            if (encoded_width < 0) or (encoded_height < 0):
+                warnings.append("presentation_orientation_invalid")
 
         return len(blockers) == 0, blockers, warnings
 
@@ -614,6 +647,7 @@ class NeoVerseProductionRuntimeStore:
         _write_json(self._site_world_spec_path(site_world_id), dict(spec))
         _write_json(self._site_world_state_path(site_world_id), registration_payload)
         _write_json(self._site_world_health_path(site_world_id), health_payload)
+        self._presentation_bundle_renderer.invalidate(site_world_id)
         self._pose_preview_renderer.invalidate(site_world_id)
         return registration_payload
 
@@ -683,6 +717,7 @@ class NeoVerseProductionRuntimeStore:
             else {}
         )
         geometry = dict(spec.get("geometry") or {}) if isinstance(spec.get("geometry"), Mapping) else {}
+        presentation = dict(spec.get("presentation") or {}) if isinstance(spec.get("presentation"), Mapping) else {}
         workspace_manifest = _read_json(workspace_manifest_path)
         manifest_registration = (
             dict(workspace_manifest.get("registration") or {})
@@ -741,6 +776,20 @@ class NeoVerseProductionRuntimeStore:
                     _preferred_local_path(
                         conditioning_local.get("object_geometry_manifest_path"),
                         geometry.get("object_geometry_manifest_path"),
+                    )
+                    or ""
+                ),
+                "presentation_world_manifest_path": str(
+                    _preferred_local_path(
+                        presentation.get("presentation_world_manifest_path"),
+                        presentation.get("presentation_world_manifest_uri"),
+                    )
+                    or ""
+                ),
+                "presentation_primary_asset_path": str(
+                    _preferred_local_path(
+                        presentation.get("primary_asset_path"),
+                        presentation.get("primary_asset_uri"),
                     )
                     or ""
                 ),
@@ -1130,6 +1179,63 @@ class NeoVerseProductionRuntimeStore:
             },
         }
 
+    def _presentation_runner_payload(
+        self,
+        *,
+        site_world_id: str,
+        spec: Mapping[str, Any],
+        world_state: Mapping[str, Any],
+        render_dir: Path,
+        cameras: Sequence[Mapping[str, Any]],
+    ) -> Dict[str, Any]:
+        scene = self._pose_preview_renderer.scene(site_world_id, spec)
+        camera_frames: list[Dict[str, Any]] = []
+        per_camera_debug: dict[str, Any] = {}
+        for camera in cameras:
+            camera_id = str(camera.get("id") or camera.get("cameraId") or "head_rgb").strip() or "head_rgb"
+            preview_frame, debug = self._presentation_bundle_renderer.render_camera(
+                site_world_id=site_world_id,
+                spec=spec,
+                view_config=scene.view_config(world_state, camera_id),
+            )
+            output_path = render_dir / f"{camera_id}-presentation.png"
+            _save_frame(output_path, preview_frame)
+            camera_frames.append(
+                {
+                    "cameraId": camera_id,
+                    "path": str(output_path),
+                    "preview": True,
+                    "presentation_bundle": True,
+                }
+            )
+            per_camera_debug[camera_id] = debug
+        refinement_status = "pending" if self.enable_async_render_refinement else "disabled"
+        primary_camera_id = str(camera_frames[0]["cameraId"]) if camera_frames else ""
+        primary_debug = dict(per_camera_debug.get(primary_camera_id) or {})
+        return {
+            "camera_frames": camera_frames,
+            "quality_flags": {
+                "presentation_quality": "preview",
+                "render_mode": "preview",
+                "refinement_status": refinement_status,
+                "preview_mode": "presentation_bundle",
+                "preview_source": "server_gsplat",
+                "renderer_backend": "gsplat",
+                "presentation_bundle_status": str(primary_debug.get("presentation_bundle_status") or "ready"),
+                "display_orientation": primary_debug.get("display_orientation"),
+            },
+            "protected_region_violations": [],
+            "debug_artifacts": {
+                "preview_mode": "presentation_bundle",
+                "preview_source": "server_gsplat",
+                "renderer_backend": "gsplat",
+                "render_mode": "preview",
+                "refinement_status": refinement_status,
+                "presentation_bundle_preview": primary_debug,
+                "presentation_bundle_preview_per_camera": per_camera_debug,
+            },
+        }
+
     def _preview_runner_payload(
         self,
         *,
@@ -1141,6 +1247,24 @@ class NeoVerseProductionRuntimeStore:
         site_world_id = str(session_state["site_world_id"])
         spec = self._load_site_world_bundle(site_world_id)["resolved"]
         world_state = dict(snapshot.get("world_state") or {})
+        presentation_error: Optional[str] = None
+        try:
+            return self._presentation_runner_payload(
+                site_world_id=site_world_id,
+                spec=spec,
+                world_state=world_state,
+                render_dir=render_dir,
+                cameras=cameras,
+            )
+        except Exception as exc:
+            presentation_error = str(exc)
+            logger_message = {
+                "site_world_id": site_world_id,
+                "session_id": session_state.get("session_id"),
+                "snapshot_id": snapshot.get("snapshot_id"),
+                "error": presentation_error,
+            }
+            self._log_runtime_stage("preview.presentation_fallback", **logger_message)
         camera_frames: list[Dict[str, Any]] = []
         per_camera_debug: dict[str, Any] = {}
         for camera in cameras:
@@ -1172,11 +1296,15 @@ class NeoVerseProductionRuntimeStore:
                 "refinement_status": refinement_status,
                 "preview_mode": "pose_driven",
                 "preview_source": "arkit_rgbd",
+                "fallback_mode": "canonical_only",
+                "presentation_render_error": presentation_error,
             },
             "protected_region_violations": [],
             "debug_artifacts": {
                 "preview_mode": "pose_driven",
                 "preview_source": "arkit_rgbd",
+                "fallback_mode": "canonical_only",
+                "presentation_render_error": presentation_error,
                 "render_mode": "preview",
                 "refinement_status": refinement_status,
                 "pose_driven_preview": dict(per_camera_debug.get(primary_camera_id) or {}),
@@ -1246,7 +1374,13 @@ class NeoVerseProductionRuntimeStore:
             if not primary_camera_id:
                 primary_camera_id = camera_id
                 merged_quality_flags = dict(quality_flags)
-                merged_quality_flags.update(dict(composite.get("quality_flags") or {}))
+                merged_quality_flags.update(
+                    {
+                        key: value
+                        for key, value in dict(composite.get("quality_flags") or {}).items()
+                        if value is not None
+                    }
+                )
                 quality_flags = merged_quality_flags
                 merged_debug_artifacts = dict(debug_artifacts)
                 merged_debug_artifacts.update(dict(composite.get("debug_artifacts") or {}))
