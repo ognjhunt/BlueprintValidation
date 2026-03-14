@@ -360,9 +360,9 @@ class NeoVerseProductionRuntimeStore:
                 checkpoint_path=str(os.getenv("NEOVERSE_CHECKPOINT_PATH", "")).strip(),
                 cache_root=str(os.getenv("NEOVERSE_CACHE_ROOT", "")).strip(),
                 runner_command=str(os.getenv("NEOVERSE_RUNNER_COMMAND", "")).strip(),
-                device=str(os.getenv("NEOVERSE_DEVICE", "cuda")).strip() or "cuda",
+                device=str(os.getenv("NEOVERSE_DEVICE", "cuda:0")).strip() or "cuda:0",
                 gpu_enabled=_env_truthy("NEOVERSE_GPU_ENABLED") if os.getenv("NEOVERSE_GPU_ENABLED") else True,
-                render_timeout_seconds=float(str(os.getenv("NEOVERSE_RENDER_TIMEOUT_SECONDS", "45")).strip() or "45"),
+                render_timeout_seconds=float(str(os.getenv("NEOVERSE_RENDER_TIMEOUT_SECONDS", "300")).strip() or "300"),
             )
         )
         immediate_preview_from_env = _env_truthy("NEOVERSE_IMMEDIATE_PREVIEW") if os.getenv("NEOVERSE_IMMEDIATE_PREVIEW") else None

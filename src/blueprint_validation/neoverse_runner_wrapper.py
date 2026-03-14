@@ -7,7 +7,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, Mapping, Sequence
+from typing import Any, Dict, Iterable, Mapping, Sequence
 
 from .optional_dependencies import require_optional_dependency
 
@@ -19,6 +19,8 @@ _PREDEFINED_TRAJECTORIES = {
     "context": "orbit_left",
     "overhead": "tilt_down",
 }
+
+_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
@@ -93,30 +95,40 @@ def _snapshot(request_payload: Mapping[str, Any]) -> Dict[str, Any]:
     return _read_json(path)
 
 
+def _project_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _existing_file_candidates(values: Iterable[Any]) -> list[Path]:
+    rows: list[Path] = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        candidate = Path(text).expanduser().resolve()
+        if candidate.is_file() and candidate not in rows:
+            rows.append(candidate)
+    return rows
+
+
 def _conditioning_input_path(request_payload: Mapping[str, Any], workspace_manifest: Mapping[str, Any]) -> Path:
     registration = dict(workspace_manifest.get("registration") or {})
-    candidate = Path(str(registration.get("conditioning_source_path") or "")).expanduser().resolve()
-    if candidate.is_file():
-        return candidate
+    spec = dict(workspace_manifest.get("spec") or {})
+    conditioning = dict(spec.get("conditioning") or {}) if isinstance(spec.get("conditioning"), Mapping) else {}
+    local_paths = dict(conditioning.get("local_paths") or {}) if isinstance(conditioning.get("local_paths"), Mapping) else {}
+    candidates = _existing_file_candidates(
+        [
+            registration.get("conditioning_source_path"),
+            local_paths.get("raw_video_path"),
+            local_paths.get("keyframe_path"),
+        ]
+    )
+    if candidates:
+        return candidates[0]
     base_frame_path = Path(str(request_payload.get("base_frame_path") or "")).expanduser().resolve()
     if not base_frame_path.is_file():
         raise RuntimeError(f"Base frame path does not exist: {base_frame_path}")
-    return _build_static_scene_clip(base_frame_path, Path(str(request_payload.get("output_dir") or "")).expanduser().resolve())
-
-
-def _build_static_scene_clip(image_path: Path, output_dir: Path, *, num_frames: int = 81) -> Path:
-    cv2 = _require_cv2()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    frame = cv2.imread(str(image_path))
-    if frame is None:
-        raise RuntimeError(f"Failed to load base frame: {image_path}")
-    height, width = frame.shape[:2]
-    clip_path = output_dir / "static_scene_input.mp4"
-    writer = cv2.VideoWriter(str(clip_path), cv2.VideoWriter_fourcc(*"mp4v"), 16.0, (width, height))
-    for _ in range(max(1, int(num_frames))):
-        writer.write(frame)
-    writer.release()
-    return clip_path
+    return base_frame_path
 
 
 def _prompt(snapshot: Mapping[str, Any]) -> str:
@@ -160,6 +172,18 @@ def _extract_first_frame(video_path: Path, frame_path: Path) -> None:
     cv2.imwrite(str(frame_path), frame)
 
 
+def _normalized_device() -> str:
+    raw = str(os.environ.get("NEOVERSE_DEVICE") or "cuda:0").strip() or "cuda:0"
+    if raw == "cuda":
+        return "cuda:0"
+    return raw
+
+
+def _reconstructor_devices() -> list[str]:
+    preferred = _normalized_device()
+    return [preferred, "cpu"] if preferred != "cpu" else ["cpu"]
+
+
 def run_request(request_path: Path, response_path: Path) -> Dict[str, Any]:
     request_payload = _read_json(request_path)
     repo_root = _neoverse_repo_root()
@@ -176,6 +200,7 @@ def run_request(request_path: Path, response_path: Path) -> Dict[str, Any]:
     if not cameras:
         cameras = [{"id": "head_rgb", "role": "head"}]
     low_vram = str(os.environ.get("NEOVERSE_LOW_VRAM") or "").strip().lower() in {"1", "true", "yes", "on"}
+    project_root = _project_root()
 
     frame_rows: list[Dict[str, Any]] = []
     for camera in cameras:
@@ -185,7 +210,8 @@ def run_request(request_path: Path, response_path: Path) -> Dict[str, Any]:
         trajectory = _trajectory_for_camera(snapshot, camera)
         command = [
             python_bin,
-            str(repo_root / "inference.py"),
+            "-m",
+            "blueprint_validation.neoverse_mixed_precision_inference",
             "--input_path",
             str(input_path),
             "--trajectory",
@@ -198,8 +224,10 @@ def run_request(request_path: Path, response_path: Path) -> Dict[str, Any]:
             str(model_root),
             "--reconstructor_path",
             str(checkpoint_path),
+            "--device",
+            _normalized_device(),
         ]
-        if input_path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
+        if input_path.suffix.lower() in _IMAGE_SUFFIXES:
             command.append("--static_scene")
         if low_vram:
             command.append("--low_vram")
@@ -209,10 +237,25 @@ def run_request(request_path: Path, response_path: Path) -> Dict[str, Any]:
         if existing_path:
             path_entries.append(existing_path)
         env["PATH"] = os.pathsep.join(path_entries)
-        completed = subprocess.run(command, capture_output=True, text=True, check=False, env=env)
-        if completed.returncode != 0:
+        py_entries = [str(project_root), str(repo_root)]
+        existing_pythonpath = str(env.get("PYTHONPATH") or "").strip()
+        if existing_pythonpath:
+            py_entries.append(existing_pythonpath)
+        env["PYTHONPATH"] = os.pathsep.join(py_entries)
+        attempt_errors: list[str] = []
+        completed = None
+        for reconstructor_device in _reconstructor_devices():
+            attempt_env = dict(env)
+            attempt_env["NEOVERSE_RUNTIME_RECONSTRUCTOR_DEVICE"] = reconstructor_device
+            completed = subprocess.run(command, capture_output=True, text=True, check=False, env=attempt_env)
+            if completed.returncode == 0:
+                break
             stderr = (completed.stderr or completed.stdout or "").strip()
-            raise RuntimeError(f"NeoVerse inference failed for {camera_id}: {stderr[:500]}")
+            attempt_errors.append(f"{reconstructor_device}: {stderr[:500]}")
+        if completed is None or completed.returncode != 0:
+            raise RuntimeError(
+                f"NeoVerse inference failed for {camera_id}: {' | '.join(attempt_errors)}"
+            )
         if not output_video.is_file():
             raise RuntimeError(f"NeoVerse output video missing for {camera_id}: {output_video}")
         _extract_first_frame(output_video, output_frame)

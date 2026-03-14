@@ -255,6 +255,8 @@ def bootstrap_neoverse_runtime(
         "NEOVERSE_MODEL_ROOT": str(model_root),
         "NEOVERSE_CHECKPOINT_PATH": str(checkpoint_path),
         "NEOVERSE_RUNNER_COMMAND": runner_command,
+        "NEOVERSE_DEVICE": "cuda:0",
+        "NEOVERSE_RENDER_TIMEOUT_SECONDS": "300",
         "NEOVERSE_TORCH_CUDA_VARIANT": selected_cuda,
         "NEOVERSE_GPU_ENABLED": "true",
     }

@@ -24,7 +24,7 @@ class NeoVerseModelConfig:
     checkpoint_path: str = ""
     cache_root: str = ""
     runner_command: str = ""
-    device: str = "cuda"
+    device: str = "cuda:0"
     gpu_enabled: bool = True
 
 
