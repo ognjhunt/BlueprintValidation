@@ -48,6 +48,7 @@ class SessionCliGroup(click.Group):
 _RUNTIME_COMMAND_ORDER = {
     "bootstrap": 0,
     "smoke-test": 1,
+    "register-site-world": 2,
 }
 
 
@@ -255,6 +256,25 @@ def runtime_smoke_test(
         scenario_id=scenario_id,
         start_state_id=start_state_id,
         boot_service=boot_service,
+        service_url=service_url,
+    )
+    click.echo(json.dumps(payload, indent=2))
+
+
+@runtime_group.command("register-site-world")
+@click.option("--site-world-registration", type=click.Path(exists=True), required=True)
+@click.option("--service-url", default="", help="Optional runtime service URL override.")
+@click.pass_context
+def runtime_register_site_world(
+    ctx: click.Context,
+    site_world_registration: str,
+    service_url: str,
+) -> None:
+    from .neoverse_runtime_ops import register_site_world_with_runtime
+
+    payload = register_site_world_with_runtime(
+        config=_load_cli_config(ctx),
+        registration_path=Path(site_world_registration),
         service_url=service_url,
     )
     click.echo(json.dumps(payload, indent=2))

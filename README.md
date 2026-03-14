@@ -71,6 +71,49 @@ Use the smoke runtime only for local interface smoke checks. It is intentionally
 
 The production service is the one intended to be surfaced behind a `runtime_base_url` for downstream tools or `Blueprint-WebApp`. The WebApp already expects a live runtime handle and proxies runtime calls through that URL; this repo now returns runtime-kind and production-readiness fields with that handle.
 
+### Hosted Demo Setup
+
+For a live hosted Blueprint demo, this repo is the runtime host. Redis and Firestore do not replace it; they only store app/session state after the web app knows which runtime URL to call.
+
+1. Bootstrap the NeoVerse runtime environment on the runtime host.
+2. Set the public runtime URLs before starting the service:
+
+```bash
+export NEOVERSE_RUNTIME_PUBLIC_BASE_URL="https://<live-runtime-host>"
+export NEOVERSE_RUNTIME_PUBLIC_WS_BASE_URL="wss://<live-runtime-host>"
+```
+
+3. Preload the site-world package on boot so `GET /v1/site-worlds/<id>` works immediately:
+
+```bash
+export NEOVERSE_RUNTIME_BOOTSTRAP_REGISTRATION_PATH="/absolute/path/to/site_world_registration.json"
+blueprint-neoverse-runtime
+```
+
+Use `NEOVERSE_RUNTIME_BOOTSTRAP_REGISTRATION_PATHS` for multiple registration files. The runtime service will load each built bundle and register it on startup.
+
+4. Verify the runtime host:
+
+```bash
+curl https://<live-runtime-host>/v1/site-worlds/siteworld-f5fd54898cfb
+curl https://<live-runtime-host>/v1/site-worlds/siteworld-f5fd54898cfb/health
+```
+
+5. If you prefer explicit registration instead of boot-time preload, register the bundle against a running runtime:
+
+```bash
+blueprint-validate runtime register-site-world \
+  --service-url https://<live-runtime-host> \
+  --site-world-registration /absolute/path/to/site_world_registration.json
+```
+
+That command returns the registered site-world payload plus the exact Blueprint web-app env values:
+
+- `BLUEPRINT_HOSTED_DEMO_RUNTIME_BASE_URL`
+- `BLUEPRINT_HOSTED_DEMO_RUNTIME_WEBSOCKET_BASE_URL`
+
+6. Set those two env vars on the deployed Blueprint web service and redeploy it.
+
 Run a live runtime smoke test against the production backend:
 
 ```bash

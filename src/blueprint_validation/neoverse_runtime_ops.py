@@ -289,6 +289,83 @@ def _runtime_service_url(env: Mapping[str, str]) -> str:
     return f"http://{host}:{port}".rstrip("/")
 
 
+def _configured_service_url(config: ValidationConfig, *, service_url: str = "") -> str:
+    resolved = (
+        service_url.strip()
+        or str(config.scene_memory_runtime.neoverse_service.service_url or "").strip()
+        or str(os.environ.get("NEOVERSE_RUNTIME_SERVICE_URL") or "").strip()
+    )
+    return resolved.rstrip("/")
+
+
+def _runtime_client_for_service(config: ValidationConfig, *, service_url: str = "") -> NeoVerseRuntimeClient:
+    resolved_url = _configured_service_url(config, service_url=service_url)
+    if not resolved_url:
+        raise RuntimeError("NeoVerse runtime service URL is not configured.")
+    return NeoVerseRuntimeClient(
+        NeoVerseRuntimeClientConfig(
+            service_url=resolved_url,
+            api_key=str(os.environ.get(config.scene_memory_runtime.neoverse_service.api_key_env) or "").strip(),
+            timeout_seconds=max(5, int(config.scene_memory_runtime.neoverse_service.timeout_seconds)),
+        )
+    )
+
+
+def blueprint_webapp_runtime_env(runtime_base_url: str, websocket_base_url: str = "") -> Dict[str, str]:
+    base = runtime_base_url.rstrip("/")
+    if not base:
+        raise RuntimeError("runtime_base_url is required")
+    websocket = websocket_base_url.rstrip("/")
+    if not websocket:
+        websocket = base.replace("http://", "ws://").replace("https://", "wss://")
+    return {
+        "BLUEPRINT_HOSTED_DEMO_RUNTIME_BASE_URL": base,
+        "BLUEPRINT_HOSTED_DEMO_RUNTIME_WEBSOCKET_BASE_URL": websocket,
+    }
+
+
+def register_site_world_with_runtime(
+    *,
+    config: ValidationConfig,
+    registration_path: Path,
+    service_url: str = "",
+) -> Dict[str, Any]:
+    bundle = load_site_world_bundle(registration_path, require_spec=True)
+    client = _runtime_client_for_service(config, service_url=service_url)
+    runtime_probe = client.probe_runtime()
+    registration_payload = dict(
+        client.register_site_world_package(
+            spec=dict(bundle.spec or {}),
+            registration=dict(bundle.registration or {}),
+            health=dict(bundle.health or {}),
+        )
+    )
+    runtime_info = dict(runtime_probe.get("runtime") or {})
+    runtime_base_url = (
+        str(registration_payload.get("runtime_base_url") or "").strip()
+        or str(runtime_info.get("runtime_base_url") or "").strip()
+        or client.config.service_url
+    ).rstrip("/")
+    websocket_base_url = (
+        str(registration_payload.get("websocket_base_url") or "").strip()
+        or str(runtime_info.get("websocket_base_url") or "").strip()
+    ).rstrip("/")
+    health_payload = dict(
+        client.get_site_world_health(str(registration_payload.get("site_world_id") or bundle.registration.get("site_world_id") or ""))
+    )
+    return {
+        "service_url": client.config.service_url,
+        "site_world_id": registration_payload.get("site_world_id") or bundle.registration.get("site_world_id"),
+        "runtime_probe": runtime_probe,
+        "registration": registration_payload,
+        "health": health_payload,
+        "blueprint_webapp_env": blueprint_webapp_runtime_env(
+            runtime_base_url=runtime_base_url,
+            websocket_base_url=websocket_base_url,
+        ),
+    }
+
+
 def _wait_for_runtime(url: str, *, timeout_seconds: int = 180) -> None:
     client = NeoVerseRuntimeClient(NeoVerseRuntimeClientConfig(service_url=url, api_key="", timeout_seconds=5))
     deadline = time.time() + max(1, int(timeout_seconds))

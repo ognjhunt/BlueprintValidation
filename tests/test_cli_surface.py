@@ -17,6 +17,13 @@ def test_cli_only_exposes_kept_commands() -> None:
         assert removed not in result.output
 
 
+def test_runtime_help_lists_register_site_world_command() -> None:
+    runner = CliRunner()
+    result = runner.invoke(cli, ["runtime", "--help"])
+    assert result.exit_code == 0
+    assert "register-site-world" in result.output
+
+
 def test_resolve_config_path_falls_back_to_example_for_default_name(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
 

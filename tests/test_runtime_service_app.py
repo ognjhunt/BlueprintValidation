@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import importlib
 
 import numpy as np
 import pytest
@@ -201,6 +202,79 @@ def test_runtime_service_exposes_synthetic_presentation_manifests(
     assert runtime_demo_response.status_code == 200
     assert runtime_demo_response.json()["ui_base_url"] is None
     assert runtime_demo_response.json()["ui_optional"] is True
+
+
+def test_runtime_service_bootstrap_site_worlds_from_env(
+    tmp_path,
+    sample_site_world_bundle,
+    monkeypatch,
+):
+    runtime_service = importlib.import_module("blueprint_validation.neoverse_runtime_service")
+
+    class _ReadyRunner:
+        def readiness(self):
+            return {
+                "ready": True,
+                "model_ready": True,
+                "checkpoint_ready": True,
+                "runner_command_ready": True,
+            }
+
+        def model_identity(self):
+            return {"model_family": "neoverse", "model_id": "stub-model"}
+
+        def checkpoint_identity(self):
+            return {"checkpoint_id": "stub-checkpoint", "checkpoint_ready": True}
+
+        def prepare_site_world(self, *, site_world_id, workspace_dir, spec, registration, health):
+            manifest_path = workspace_dir / "stub_workspace_manifest.json"
+            manifest_path.write_text(json.dumps({"site_world_id": site_world_id}), encoding="utf-8")
+            return {"workspace_manifest_path": str(manifest_path)}
+
+        def render_snapshot(
+            self,
+            *,
+            site_world_id,
+            session_id,
+            workspace_dir,
+            snapshot_path,
+            output_dir,
+            cameras,
+            base_frame_path,
+        ):
+            raise RuntimeError("unused")
+
+    store = NeoVerseProductionRuntimeStore(
+        root_dir=tmp_path / "runtime",
+        base_url="http://prod.local",
+        runner=_ReadyRunner(),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._load_frame",
+        lambda _path: np.zeros((16, 16, 3), dtype=np.uint8),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._save_frame",
+        lambda path, _frame: path.parent.mkdir(parents=True, exist_ok=True) or path.write_bytes(b"frame"),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._coerce_camera_frame",
+        lambda frame, _camera_id: frame,
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime.verify_canonical_package_version",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(store, "validate_spec", lambda *args, **kwargs: (True, [], []))
+    monkeypatch.setenv(
+        "NEOVERSE_RUNTIME_BOOTSTRAP_REGISTRATION_PATH",
+        str(sample_site_world_bundle["registration_path"]),
+    )
+
+    runtime_service._bootstrap_site_worlds(store)
+
+    payload = store.load_site_world("site-world-1")
+    assert payload["site_world_id"] == "site-world-1"
 
 
 def test_runtime_service_routes_requested_gen3c_backend(

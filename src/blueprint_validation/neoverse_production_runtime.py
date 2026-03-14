@@ -55,6 +55,10 @@ def _presentation_map(spec: Mapping[str, Any]) -> dict[str, Any]:
     return dict(spec.get("presentation") or {}) if isinstance(spec.get("presentation"), Mapping) else {}
 
 
+def _canonical_world_model_map(spec: Mapping[str, Any]) -> dict[str, Any]:
+    return dict(spec.get("canonical_world_model") or {}) if isinstance(spec.get("canonical_world_model"), Mapping) else {}
+
+
 def _presentation_ref(presentation: Mapping[str, Any], *keys: str) -> str:
     for key in keys:
         value = str(presentation.get(key) or "").strip()
@@ -76,6 +80,29 @@ def _has_dedicated_presentation_bundle(spec: Mapping[str, Any]) -> bool:
         "primary_asset_uri",
     )
     return bool(manifest_ref and asset_ref)
+
+
+def _has_canonical_world_model_bundle(spec: Mapping[str, Any]) -> bool:
+    canonical_world_model = _canonical_world_model_map(spec)
+    asset_ref = _presentation_ref(
+        canonical_world_model,
+        "primary_asset_path",
+        "primary_asset_uri",
+    )
+    return bool(asset_ref)
+
+
+def _spec_with_canonical_world_presentation(spec: Mapping[str, Any]) -> dict[str, Any]:
+    canonical_world_model = _canonical_world_model_map(spec)
+    remapped = dict(spec)
+    if canonical_world_model:
+        remapped["presentation"] = {
+            **dict(canonical_world_model),
+            "presentation_world_manifest_path": str(canonical_world_model.get("manifest_path") or ""),
+            "presentation_world_manifest_uri": str(canonical_world_model.get("manifest_uri") or ""),
+            "bundle_status": str(canonical_world_model.get("status") or canonical_world_model.get("bundle_status") or "missing"),
+        }
+    return remapped
 
 
 @dataclass(frozen=True)
@@ -768,6 +795,7 @@ class NeoVerseProductionRuntimeStore:
         blockers = _dedupe_strings(list(registration.get("blockers") or []), list(health.get("blockers") or []), runtime_blockers)
         warnings = _dedupe_strings(list(registration.get("warnings") or []), list(health.get("warnings") or []), runtime_warnings)
         runtime_metadata = self.runtime_info(service_version="1.0.0")
+        canonical_world_model = _canonical_world_model_map(persisted_spec)
         registration_payload = {
             **dict(registration),
             "schema_version": "v1",
@@ -815,6 +843,8 @@ class NeoVerseProductionRuntimeStore:
             "grounding_status": spec.get("grounding_status") or (spec.get("runtime_layer_policy") or {}).get("grounding_status"),
             "ungrounded_reason": spec.get("ungrounded_reason") or (spec.get("runtime_layer_policy") or {}).get("ungrounded_reason"),
             "empty_index_cause": spec.get("empty_index_cause"),
+            "primary_runtime_backend": str(persisted_spec.get("primary_runtime_backend") or "neoverse"),
+            "canonical_world_model": canonical_world_model,
             "presentation_world_manifest_path": str(presentation_manifest_path or ""),
             "runtime_demo_manifest_path": str(runtime_demo_manifest_path or ""),
             "presentation_world_manifest_url": (
@@ -855,6 +885,8 @@ class NeoVerseProductionRuntimeStore:
             "last_heartbeat_at": _utc_now_iso(),
             "runtime_base_url": self.base_url,
             "websocket_base_url": self.ws_base_url,
+            "primary_runtime_backend": str(registration_payload.get("primary_runtime_backend") or "neoverse"),
+            "canonical_world_model": canonical_world_model,
             "supported_cameras": supported_cameras,
             "runtime_capabilities": dict(registration_payload.get("runtime_capabilities") or {}),
             "runtime_engine_identity": dict(registration_payload.get("runtime_engine_identity") or {}),
@@ -1501,6 +1533,67 @@ class NeoVerseProductionRuntimeStore:
             },
         }
 
+    def _canonical_world_runner_payload(
+        self,
+        *,
+        site_world_id: str,
+        spec: Mapping[str, Any],
+        world_state: Mapping[str, Any],
+        render_dir: Path,
+        cameras: Sequence[Mapping[str, Any]],
+    ) -> Dict[str, Any]:
+        scene = self._pose_preview_renderer.scene(site_world_id, spec)
+        camera_frames: list[Dict[str, Any]] = []
+        per_camera_debug: dict[str, Any] = {}
+        renderer_spec = _spec_with_canonical_world_presentation(spec)
+        for camera in cameras:
+            camera_id = str(camera.get("id") or camera.get("cameraId") or "head_rgb").strip() or "head_rgb"
+            preview_frame, debug = self._presentation_bundle_renderer.render_camera(
+                site_world_id=site_world_id,
+                spec=renderer_spec,
+                view_config=scene.view_config(world_state, camera_id),
+            )
+            output_path = render_dir / f"{camera_id}-canonical-world.png"
+            _save_frame(output_path, preview_frame)
+            camera_frames.append(
+                {
+                    "cameraId": camera_id,
+                    "path": str(output_path),
+                    "preview": True,
+                    "canonical_world_model": True,
+                }
+            )
+            per_camera_debug[camera_id] = debug
+        refinement_status = "pending" if self.enable_async_render_refinement else "disabled"
+        primary_camera_id = str(camera_frames[0]["cameraId"]) if camera_frames else ""
+        primary_debug = dict(per_camera_debug.get(primary_camera_id) or {})
+        return {
+            "camera_frames": camera_frames,
+            "quality_flags": {
+                "presentation_quality": "preview",
+                "render_mode": "preview",
+                "refinement_status": refinement_status,
+                "preview_mode": "canonical_world_model",
+                "preview_source": "canonical_world_model",
+                "world_model_backend": str(_canonical_world_model_map(spec).get("world_model_backend") or "neoverse"),
+                "scene_representation": str(_canonical_world_model_map(spec).get("scene_representation") or "gsplat_scene_v1"),
+                "renderer_backend": str(primary_debug.get("renderer_backend") or "gsplat"),
+                "display_orientation": primary_debug.get("display_orientation"),
+            },
+            "protected_region_violations": [],
+            "debug_artifacts": {
+                "preview_mode": "canonical_world_model",
+                "preview_source": "canonical_world_model",
+                "world_model_backend": str(_canonical_world_model_map(spec).get("world_model_backend") or "neoverse"),
+                "scene_representation": str(_canonical_world_model_map(spec).get("scene_representation") or "gsplat_scene_v1"),
+                "renderer_backend": str(primary_debug.get("renderer_backend") or "gsplat"),
+                "render_mode": "preview",
+                "refinement_status": refinement_status,
+                "canonical_world_preview": primary_debug,
+                "canonical_world_preview_per_camera": per_camera_debug,
+            },
+        }
+
     def _preview_runner_payload(
         self,
         *,
@@ -1521,6 +1614,23 @@ class NeoVerseProductionRuntimeStore:
                     **resolved_presentation,
                 }
         world_state = dict(snapshot.get("world_state") or {})
+        if _has_canonical_world_model_bundle(spec):
+            try:
+                return self._canonical_world_runner_payload(
+                    site_world_id=site_world_id,
+                    spec=spec,
+                    world_state=world_state,
+                    render_dir=render_dir,
+                    cameras=cameras,
+                )
+            except Exception as exc:
+                self._log_runtime_stage(
+                    "preview.canonical_world_fallback",
+                    site_world_id=site_world_id,
+                    session_id=session_state.get("session_id"),
+                    snapshot_id=snapshot.get("snapshot_id"),
+                    error=str(exc),
+                )
         presentation_error: Optional[str] = None
         if _has_dedicated_presentation_bundle(spec):
             try:
