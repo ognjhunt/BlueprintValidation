@@ -13,7 +13,7 @@ import time
 import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Protocol, Sequence
+from typing import Any, Callable, Dict, Mapping, Optional, Protocol, Sequence
 
 import numpy as np
 
@@ -425,6 +425,8 @@ class NeoVerseProductionRuntimeStore:
         self._render_refinement_lock = threading.Lock()
         self._render_refinement_targets: Dict[str, str] = {}
         self._render_refinement_futures: Dict[str, Future[None]] = {}
+        self._snapshot_render_lock = threading.Lock()
+        self._snapshot_render_futures: Dict[str, Future[Dict[str, Any]]] = {}
         self._render_refinement_executor = (
             ThreadPoolExecutor(
                 max_workers=self.render_refinement_workers,
@@ -464,6 +466,53 @@ class NeoVerseProductionRuntimeStore:
 
     def _session_state_path(self, session_id: str) -> Path:
         return self._session_dir(session_id) / "session_state.json"
+
+    def _snapshot_render_key(self, session_id: str, snapshot_id: str) -> str:
+        return f"{session_id}:{snapshot_id}"
+
+    def _get_inflight_snapshot_render(self, session_id: str, snapshot_id: str) -> Future[Dict[str, Any]] | None:
+        key = self._snapshot_render_key(session_id, snapshot_id)
+        with self._snapshot_render_lock:
+            future = self._snapshot_render_futures.get(key)
+            if future is None or future.done():
+                return None
+            return future
+
+    def _run_snapshot_render_once(
+        self,
+        *,
+        session_id: str,
+        snapshot_id: str,
+        render_fn: Callable[[], Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        key = self._snapshot_render_key(session_id, snapshot_id)
+        created = False
+        with self._snapshot_render_lock:
+            future = self._snapshot_render_futures.get(key)
+            if future is None:
+                future = Future()
+                self._snapshot_render_futures[key] = future
+                created = True
+        if not created:
+            self._log_runtime_stage(
+                "render_snapshot.join_inflight",
+                session_id=session_id,
+                snapshot_id=snapshot_id,
+            )
+            return future.result()
+        try:
+            result = render_fn()
+        except Exception as exc:
+            future.set_exception(exc)
+            raise
+        else:
+            future.set_result(result)
+            return result
+        finally:
+            with self._snapshot_render_lock:
+                current = self._snapshot_render_futures.get(key)
+                if current is future:
+                    self._snapshot_render_futures.pop(key, None)
 
     def _workspace_dir(self, site_world_id: str, build_id: str) -> Path:
         return self._site_world_dir(site_world_id) / "workspace" / build_id
@@ -2098,7 +2147,28 @@ class NeoVerseProductionRuntimeStore:
     def _render_snapshot(self, session_state: Dict[str, Any], snapshot: Dict[str, Any]) -> Dict[str, Any]:
         session_id = str(session_state["session_id"])
         site_world_id = str(session_state["site_world_id"])
-        render_dir = self._session_dir(session_id) / "renders" / str(snapshot["snapshot_id"])
+        snapshot_id = str(snapshot["snapshot_id"])
+        return self._run_snapshot_render_once(
+            session_id=session_id,
+            snapshot_id=snapshot_id,
+            render_fn=lambda: self._render_snapshot_impl(
+                session_state=session_state,
+                snapshot=snapshot,
+                site_world_id=site_world_id,
+                snapshot_id=snapshot_id,
+            ),
+        )
+
+    def _render_snapshot_impl(
+        self,
+        *,
+        session_state: Dict[str, Any],
+        snapshot: Dict[str, Any],
+        site_world_id: str,
+        snapshot_id: str,
+    ) -> Dict[str, Any]:
+        session_id = str(session_state["session_id"])
+        render_dir = self._session_dir(session_id) / "renders" / snapshot_id
         render_dir.mkdir(parents=True, exist_ok=True)
         base_frame_path = self._base_frame_path(site_world_id)
         robot_profile = dict(session_state.get("robot_profile") or {})
@@ -2108,7 +2178,7 @@ class NeoVerseProductionRuntimeStore:
         self._log_runtime_stage(
             "render_snapshot.start",
             session_id=session_id,
-            snapshot_id=snapshot.get("snapshot_id"),
+            snapshot_id=snapshot_id,
             site_world_id=site_world_id,
             cameras=[str(camera.get("id") or "") for camera in cameras],
         )
@@ -2117,7 +2187,7 @@ class NeoVerseProductionRuntimeStore:
             self._log_runtime_stage(
                 "render_snapshot.runner.start",
                 session_id=session_id,
-                snapshot_id=snapshot.get("snapshot_id"),
+                snapshot_id=snapshot_id,
                 workspace_dir=str(workspace_dir),
                 snapshot_path=str(snapshot_path),
             )
@@ -2133,7 +2203,7 @@ class NeoVerseProductionRuntimeStore:
             self._log_runtime_stage(
                 "render_snapshot.runner.done",
                 session_id=session_id,
-                snapshot_id=snapshot.get("snapshot_id"),
+                snapshot_id=snapshot_id,
                 elapsed_ms=round((time.monotonic() - runner_started) * 1000),
                 frame_count=len(runner_payload.get("camera_frames") or []),
             )
@@ -2141,7 +2211,7 @@ class NeoVerseProductionRuntimeStore:
             self._log_runtime_stage(
                 "render_snapshot.runner.timeout",
                 session_id=session_id,
-                snapshot_id=snapshot.get("snapshot_id"),
+                snapshot_id=snapshot_id,
                 elapsed_ms=round((time.monotonic() - runner_started) * 1000),
                 error=str(exc),
             )
@@ -2555,6 +2625,22 @@ class NeoVerseProductionRuntimeStore:
                 )
                 raise RuntimeError(f"missing world snapshot for {session_id}")
             snapshot = _read_json(snapshot_path)
+            inflight_render = self._get_inflight_snapshot_render(session_id, str(snapshot.get("snapshot_id") or ""))
+            if inflight_render is not None:
+                self._log_runtime_stage(
+                    "render_bytes.await_inflight",
+                    session_id=session_id,
+                    snapshot_id=snapshot.get("snapshot_id"),
+                    camera_id=camera_id,
+                )
+                inflight_render.result()
+                session_state = self.load_session(session_id)
+                latest = dict(session_state.get("latest_render_paths") or {})
+                render_path = Path(str(latest.get(camera_id) or "")).resolve()
+                if render_path.is_file():
+                    payload = render_path.read_bytes()
+                    if payload:
+                        return payload
             try:
                 session_id = str(session_state["session_id"])
                 site_world_id = str(session_state["site_world_id"])
