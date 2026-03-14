@@ -21,6 +21,14 @@ _PREDEFINED_TRAJECTORIES = {
 }
 
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+_THREAD_LIMIT_ENV_VARS = (
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "BLIS_NUM_THREADS",
+)
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
@@ -187,6 +195,23 @@ def _normalized_device() -> str:
     return raw
 
 
+def _normalized_thread_limit(raw_value: str | None) -> str:
+    try:
+        limit = int(str(raw_value or "").strip() or "1")
+    except ValueError:
+        limit = 1
+    return str(max(1, limit))
+
+
+def _thread_limited_env(base_env: Mapping[str, str]) -> Dict[str, str]:
+    env = dict(base_env)
+    thread_limit = _normalized_thread_limit(env.get("NEOVERSE_BLAS_NUM_THREADS"))
+    for key in _THREAD_LIMIT_ENV_VARS:
+        env.setdefault(key, thread_limit)
+    env.setdefault("OMP_WAIT_POLICY", "PASSIVE")
+    return env
+
+
 def _reconstructor_devices() -> list[str]:
     preferred = _normalized_device()
     return [preferred, "cpu"] if preferred != "cpu" else ["cpu"]
@@ -239,7 +264,7 @@ def run_request(request_path: Path, response_path: Path) -> Dict[str, Any]:
             command.append("--static_scene")
         if low_vram:
             command.append("--low_vram")
-        env = dict(os.environ)
+        env = _thread_limited_env(os.environ)
         path_entries = [python_bin_dir]
         existing_path = str(env.get("PATH") or "").strip()
         if existing_path:

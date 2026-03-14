@@ -58,6 +58,23 @@ def test_normalized_device_defaults_to_indexed_cuda(monkeypatch) -> None:
     assert wrapper._normalized_device() == "cuda:3"
 
 
+def test_thread_limited_env_defaults_and_preserves_explicit_values() -> None:
+    env = wrapper._thread_limited_env(
+        {
+            "PATH": "/usr/bin",
+            "OPENBLAS_NUM_THREADS": "4",
+            "NEOVERSE_BLAS_NUM_THREADS": "2",
+        }
+    )
+
+    assert env["OPENBLAS_NUM_THREADS"] == "4"
+    assert env["OMP_NUM_THREADS"] == "2"
+    assert env["MKL_NUM_THREADS"] == "2"
+    assert env["NUMEXPR_NUM_THREADS"] == "2"
+    assert env["BLIS_NUM_THREADS"] == "2"
+    assert env["OMP_WAIT_POLICY"] == "PASSIVE"
+
+
 def test_runtime_frame_budgets_prefers_higher_video_budget_then_degrades() -> None:
     assert mixed_precision._runtime_frame_budgets(static_scene=False, requested=8) == [8, 4, 2]
     assert mixed_precision._runtime_frame_budgets(static_scene=False, requested=4) == [4, 2]

@@ -51,6 +51,16 @@ from .runtime_layer_grounding import (
 )
 
 
+_THREAD_LIMIT_ENV_VARS = (
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "BLIS_NUM_THREADS",
+)
+
+
 def _presentation_map(spec: Mapping[str, Any]) -> dict[str, Any]:
     return dict(spec.get("presentation") or {}) if isinstance(spec.get("presentation"), Mapping) else {}
 
@@ -125,6 +135,23 @@ def _quality_flag_baseline(spec: Mapping[str, Any]) -> dict[str, Any]:
         ),
         "canonical_package_version": str(spec.get("canonical_package_version") or ""),
     }
+
+
+def _normalized_neoverse_thread_limit(raw_value: str | None) -> str:
+    try:
+        limit = int(str(raw_value or "").strip() or "1")
+    except ValueError:
+        limit = 1
+    return str(max(1, limit))
+
+
+def _thread_limited_runner_env(base_env: Mapping[str, str] | None = None) -> dict[str, str]:
+    env = dict(base_env or os.environ)
+    thread_limit = _normalized_neoverse_thread_limit(env.get("NEOVERSE_BLAS_NUM_THREADS"))
+    for key in _THREAD_LIMIT_ENV_VARS:
+        env.setdefault(key, thread_limit)
+    env.setdefault("OMP_WAIT_POLICY", "PASSIVE")
+    return env
 
 
 @dataclass(frozen=True)
@@ -301,6 +328,7 @@ class LocalNeoVerseRunnerAdapter:
             stderr=subprocess.PIPE,
             text=True,
             start_new_session=True,
+            env=_thread_limited_runner_env(),
         )
         try:
             stdout, stderr = process.communicate(timeout=max(1.0, float(self.config.render_timeout_seconds)))

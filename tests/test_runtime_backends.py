@@ -6,7 +6,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from blueprint_validation.neoverse_production_runtime import NeoVerseProductionRuntimeStore, NeoVerseRunnerTimeoutError
+from blueprint_validation.neoverse_production_runtime import (
+    LocalNeoVerseRunnerAdapter,
+    NeoVerseProductionRuntimeStore,
+    NeoVerseRunnerConfig,
+    NeoVerseRunnerTimeoutError,
+)
 from blueprint_validation.neoverse_runtime_core import SmokeContractRuntimeStore
 
 
@@ -204,6 +209,73 @@ def test_runtime_backends_report_distinct_kinds(tmp_path: Path) -> None:
 
     assert smoke.runtime_info(service_version="1.0.0")["runtime_kind"] == "smoke_contract"
     assert production.runtime_info(service_version="1.0.0")["runtime_kind"] == "neoverse_production"
+
+
+def test_local_runner_caps_blas_threads_for_wrapper_process(tmp_path: Path, monkeypatch) -> None:
+    workspace_dir = tmp_path / "workspace"
+    output_dir = tmp_path / "output"
+    request_capture: dict[str, object] = {}
+
+    config = NeoVerseRunnerConfig(
+        model_root=str(tmp_path / "models"),
+        checkpoint_path=str(tmp_path / "models" / "NeoVerse" / "reconstructor.ckpt"),
+        cache_root=str(tmp_path / "cache"),
+        runner_command="python -m blueprint_validation.neoverse_runner_wrapper",
+        device="cuda:0",
+        gpu_enabled=True,
+        render_timeout_seconds=5.0,
+    )
+    adapter = LocalNeoVerseRunnerAdapter(config)
+
+    monkeypatch.setattr(adapter, "_require_ready", lambda: None)
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._write_json",
+        lambda path, payload: path.parent.mkdir(parents=True, exist_ok=True) or path.write_text("{}", encoding="utf-8"),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._read_json",
+        lambda _path: {"camera_frames": [{"cameraId": "head_rgb", "path": str(output_dir / "head_rgb-frame0.png")}]},
+    )
+
+    class _FakeProcess:
+        def __init__(self) -> None:
+            self.pid = 123
+            self.returncode = 0
+
+        def communicate(self, timeout: float | None = None):
+            request_capture["timeout"] = timeout
+            response_path = output_dir / "neoverse_render_response.json"
+            response_path.parent.mkdir(parents=True, exist_ok=True)
+            response_path.write_text(
+                json.dumps({"camera_frames": [{"cameraId": "head_rgb", "path": str(output_dir / "head_rgb-frame0.png")}]}),
+                encoding="utf-8",
+            )
+            return ("", "")
+
+    def fake_popen(command, **kwargs):
+        request_capture["command"] = command
+        request_capture["env"] = kwargs.get("env")
+        return _FakeProcess()
+
+    monkeypatch.setattr("blueprint_validation.neoverse_production_runtime.subprocess.Popen", fake_popen)
+
+    response = adapter.render_snapshot(
+        site_world_id="siteworld-f5fd54898cfb",
+        session_id="session-123",
+        workspace_dir=workspace_dir,
+        snapshot_path=tmp_path / "snapshot.json",
+        output_dir=output_dir,
+        cameras=[{"id": "head_rgb"}],
+        base_frame_path=tmp_path / "frame.png",
+    )
+
+    assert response["camera_frames"][0]["cameraId"] == "head_rgb"
+    env = request_capture["env"]
+    assert isinstance(env, dict)
+    assert env["OPENBLAS_NUM_THREADS"] == "1"
+    assert env["OMP_NUM_THREADS"] == "1"
+    assert env["MKL_NUM_THREADS"] == "1"
+    assert env["OMP_WAIT_POLICY"] == "PASSIVE"
 
 
 def test_production_runtime_synthesizes_presentation_manifests_when_missing(
