@@ -724,6 +724,47 @@ class NeoVerseProductionRuntimeStore:
         session_state["latest_render_error_code"] = None
         session_state["latest_render_error_message"] = None
 
+    def _recover_render_state(self, session_state: Dict[str, Any]) -> bool:
+        session_id = str(session_state.get("session_id") or "")
+        snapshot_id = str(session_state.get("current_world_snapshot_id") or "").strip()
+        if not session_id or not snapshot_id:
+            return False
+        render_manifest_path = self._session_dir(session_id) / "renders" / snapshot_id / "render_manifest.json"
+        if not render_manifest_path.is_file():
+            return False
+
+        manifest = _read_json(render_manifest_path)
+        latest_render_paths = {
+            str(key): str(value)
+            for key, value in dict(manifest.get("camera_frame_paths") or {}).items()
+            if str(key).strip() and Path(str(value)).is_file()
+        }
+        if not latest_render_paths:
+            return False
+
+        session_state["latest_render_paths"] = latest_render_paths
+        session_state["render_manifest_path"] = str(render_manifest_path)
+        session_state["quality_flags"] = dict(manifest.get("quality_flags") or session_state.get("quality_flags") or {})
+        session_state["protected_region_violations"] = list(
+            manifest.get("protected_region_violations") or session_state.get("protected_region_violations") or []
+        )
+        session_state["debug_artifacts"] = dict(manifest.get("debug_artifacts") or session_state.get("debug_artifacts") or {})
+        return True
+
+    def _observation_from_current_state(self, session_state: Dict[str, Any]) -> Dict[str, Any]:
+        session_id = str(session_state["session_id"])
+        snapshot_path = Path(str(session_state.get("current_world_snapshot_path") or "")).resolve()
+        snapshot = _read_json(snapshot_path) if snapshot_path.is_file() else self._snapshot_from_state(session_state, self._initial_world_state(session_state))
+        state_payload = self.session_state(session_id)
+        observation = dict(state_payload.get("observation") or {})
+        if observation.get("worldSnapshot") is None:
+            observation["worldSnapshot"] = {
+                "snapshotId": session_state.get("current_world_snapshot_id"),
+                "world_state": snapshot.get("world_state"),
+                "status": session_state.get("status"),
+            }
+        return observation
+
     def _initial_world_state(self, session_state: Mapping[str, Any]) -> Dict[str, Any]:
         return {
             "step_index": 0,
@@ -972,6 +1013,14 @@ class NeoVerseProductionRuntimeStore:
         try:
             observation = self._render_snapshot(session_state, snapshot)
         except Exception as exc:
+            if self._recover_render_state(session_state):
+                self._clear_render_failure(session_state)
+                self._persist_session_state(session_state)
+                observation = self._observation_from_current_state(session_state)
+                return {
+                    "session_id": session_id,
+                    "episode": self._episode_payload(session_state, observation),
+                }
             self._record_render_failure(
                 session_state,
                 code="render_snapshot_failed",
@@ -1043,6 +1092,14 @@ class NeoVerseProductionRuntimeStore:
         try:
             observation = self._render_snapshot(session_state, snapshot)
         except Exception as exc:
+            if self._recover_render_state(session_state):
+                self._clear_render_failure(session_state)
+                self._persist_session_state(session_state)
+                observation = self._observation_from_current_state(session_state)
+                return {
+                    "session_id": session_id,
+                    "episode": self._episode_payload(session_state, observation),
+                }
             self._record_render_failure(
                 session_state,
                 code="render_snapshot_failed",
@@ -1066,6 +1123,9 @@ class NeoVerseProductionRuntimeStore:
             session_state["current_world_snapshot_path"] = str(snapshot_path)
             self._persist_session_state(session_state)
         snapshot = _read_json(snapshot_path)
+        if not dict(session_state.get("latest_render_paths") or {}):
+            if self._recover_render_state(session_state):
+                self._persist_session_state(session_state)
         latest_render_paths = {
             str(key): str(value)
             for key, value in dict(session_state.get("latest_render_paths") or {}).items()
@@ -1140,6 +1200,10 @@ class NeoVerseProductionRuntimeStore:
 
     def render_bytes(self, session_id: str, camera_id: str) -> bytes:
         session_state = self.load_session(session_id)
+        if not dict(session_state.get("latest_render_paths") or {}):
+            if self._recover_render_state(session_state):
+                self._clear_render_failure(session_state)
+                self._persist_session_state(session_state)
         latest = dict(session_state.get("latest_render_paths") or {})
         render_path = Path(str(latest.get(camera_id) or "")).resolve()
         if not render_path.is_file():

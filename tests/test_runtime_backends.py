@@ -114,6 +114,33 @@ class _FlakyNeoVerseRunner(_StubNeoVerseRunner):
         )
 
 
+def _write_partial_render_artifacts(
+    store: NeoVerseProductionRuntimeStore,
+    session_state: dict[str, object],
+) -> Path:
+    session_id = str(session_state["session_id"])
+    snapshot_id = str(session_state["current_world_snapshot_id"])
+    render_dir = store._session_dir(session_id) / "renders" / snapshot_id
+    render_dir.mkdir(parents=True, exist_ok=True)
+    output_path = render_dir / "head_rgb.png"
+    output_path.write_bytes(b"frame")
+    manifest_path = render_dir / "render_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "snapshot_id": snapshot_id,
+                "camera_frame_paths": {"head_rgb": str(output_path)},
+                "primary_camera_id": "head_rgb",
+                "quality_flags": {"presentation_quality": "degraded"},
+                "protected_region_violations": [],
+                "debug_artifacts": {"request_path": str(render_dir / "neoverse_render_request.json")},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return manifest_path
+
+
 def test_runtime_backends_report_distinct_kinds(tmp_path: Path) -> None:
     smoke = SmokeContractRuntimeStore(root_dir=tmp_path / "smoke", base_url="http://smoke.local")
     production = NeoVerseProductionRuntimeStore(
@@ -409,3 +436,125 @@ def test_production_runtime_persists_step_snapshot_when_render_fails(
     state_payload = store.session_state("session-step-fail")
     assert state_payload["step_index"] == 1
     assert state_payload["observation"]["worldSnapshot"]["snapshotId"] == persisted["current_world_snapshot_id"]
+
+
+def test_production_runtime_recovers_reset_from_partial_render_artifacts(
+    tmp_path: Path,
+    sample_site_world_bundle: dict[str, Path],
+    monkeypatch,
+) -> None:
+    store = NeoVerseProductionRuntimeStore(
+        root_dir=tmp_path / "runtime",
+        base_url="http://prod.local",
+        runner=_StubNeoVerseRunner(),
+    )
+    monkeypatch.setattr(store, "validate_spec", lambda *args, **kwargs: (True, [], []))
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._load_frame",
+        lambda _path: np.zeros((16, 16, 3), dtype=np.uint8),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime.verify_canonical_package_version",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        store,
+        "_render_snapshot",
+        lambda session_state, _snapshot: (
+            _write_partial_render_artifacts(store, session_state),
+            (_ for _ in ()).throw(RuntimeError("late persistence failure")),
+        )[1],
+    )
+
+    registration = json.loads(sample_site_world_bundle["registration_path"].read_text(encoding="utf-8"))
+    health = json.loads(sample_site_world_bundle["health_path"].read_text(encoding="utf-8"))
+    spec = json.loads(sample_site_world_bundle["spec_path"].read_text(encoding="utf-8"))
+    store.register_site_world_package(spec=spec, registration=registration, health=health)
+    store.create_session(
+        registration["site_world_id"],
+        session_id="session-reset-recover",
+        robot_profile_id="mobile_manipulator_rgb_v1",
+        task_id="task-1",
+        scenario_id="scenario-default",
+        start_state_id="start-default",
+    )
+
+    reset_payload = store.reset_session("session-reset-recover")
+
+    assert reset_payload["episode"]["observation"]["primaryCameraId"] == "head_rgb"
+    persisted = store.load_session("session-reset-recover")
+    assert persisted["latest_render_paths"]["head_rgb"].endswith("head_rgb.png")
+    assert persisted["render_manifest_path"].endswith("render_manifest.json")
+    assert persisted["latest_render_error_code"] is None
+
+
+def test_production_runtime_recovers_render_bytes_from_manifest_when_state_is_stale(
+    tmp_path: Path,
+    sample_site_world_bundle: dict[str, Path],
+    monkeypatch,
+) -> None:
+    store = NeoVerseProductionRuntimeStore(
+        root_dir=tmp_path / "runtime",
+        base_url="http://prod.local",
+        runner=_StubNeoVerseRunner(),
+    )
+    monkeypatch.setattr(store, "validate_spec", lambda *args, **kwargs: (True, [], []))
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._load_frame",
+        lambda _path: np.zeros((16, 16, 3), dtype=np.uint8),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._save_frame",
+        lambda path, _frame: path.parent.mkdir(parents=True, exist_ok=True) or path.write_bytes(b"frame"),
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime._coerce_camera_frame",
+        lambda frame, _camera_id: frame,
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime.composite_runtime_layer",
+        lambda **_kwargs: {
+            "frame": np.zeros((16, 16, 3), dtype=np.uint8),
+            "quality_flags": {"presentation_quality": "high"},
+            "protected_region_violations": [],
+            "debug_artifacts": {},
+        },
+    )
+    monkeypatch.setattr(
+        "blueprint_validation.neoverse_production_runtime.verify_canonical_package_version",
+        lambda **_kwargs: None,
+    )
+
+    registration = json.loads(sample_site_world_bundle["registration_path"].read_text(encoding="utf-8"))
+    health = json.loads(sample_site_world_bundle["health_path"].read_text(encoding="utf-8"))
+    spec = json.loads(sample_site_world_bundle["spec_path"].read_text(encoding="utf-8"))
+    store.register_site_world_package(spec=spec, registration=registration, health=health)
+    store.create_session(
+        registration["site_world_id"],
+        session_id="session-render-recover",
+        robot_profile_id="mobile_manipulator_rgb_v1",
+        task_id="task-1",
+        scenario_id="scenario-default",
+        start_state_id="start-default",
+    )
+    store.reset_session("session-render-recover")
+
+    session_state = store.load_session("session-render-recover")
+    render_path = Path(str(session_state["latest_render_paths"]["head_rgb"]))
+    manifest_path = Path(str(session_state["render_manifest_path"]))
+    session_state["latest_render_paths"] = {}
+    session_state["render_manifest_path"] = None
+    session_state["latest_render_error_code"] = "render_bytes_failed"
+    session_state["latest_render_error_message"] = "stale state"
+    store._persist_session_state(session_state)
+
+    assert render_path.is_file()
+    assert manifest_path.is_file()
+
+    payload = store.render_bytes("session-render-recover", "head_rgb")
+
+    assert payload == b"frame"
+    persisted = store.load_session("session-render-recover")
+    assert persisted["latest_render_paths"]["head_rgb"] == str(render_path)
+    assert persisted["render_manifest_path"] == str(manifest_path)
+    assert persisted["latest_render_error_code"] is None
