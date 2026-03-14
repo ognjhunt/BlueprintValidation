@@ -345,6 +345,14 @@ def test_production_runtime_immediate_preview_skips_sync_runner(
         "blueprint_validation.neoverse_production_runtime.verify_canonical_package_version",
         lambda **_kwargs: None,
     )
+    monkeypatch.setattr(
+        store._pose_preview_renderer,
+        "render_camera",
+        lambda **_kwargs: (
+            np.zeros((16, 16, 3), dtype=np.uint8),
+            {"preview_mode": "pose_driven_rgbd", "source_frame_id": "000001", "coverage_ratio": 1.0},
+        ),
+    )
 
     registration = json.loads(sample_site_world_bundle["registration_path"].read_text(encoding="utf-8"))
     health = json.loads(sample_site_world_bundle["health_path"].read_text(encoding="utf-8"))
@@ -363,6 +371,7 @@ def test_production_runtime_immediate_preview_skips_sync_runner(
 
     assert reset_payload["episode"]["observation"]["primaryCameraId"] == "head_rgb"
     assert reset_payload["episode"]["qualityFlags"]["render_mode"] == "preview"
+    assert reset_payload["episode"]["qualityFlags"]["preview_mode"] == "pose_driven"
     assert runner.calls == 0
 
 

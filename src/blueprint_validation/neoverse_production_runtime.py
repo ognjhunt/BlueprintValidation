@@ -34,6 +34,7 @@ from .neoverse_runtime_core import (
     _utc_now_iso,
     _write_json,
 )
+from .pose_driven_preview import PoseDrivenPreviewRenderer
 from .runtime_backend import RuntimeMetadata
 from .runtime_layer_grounding import (
     composite_runtime_layer,
@@ -323,6 +324,7 @@ class NeoVerseProductionRuntimeStore:
             if self.enable_async_render_refinement
             else None
         )
+        self._pose_preview_renderer = PoseDrivenPreviewRenderer()
 
     def _log_runtime_stage(self, event: str, **fields: Any) -> None:
         payload = " ".join(
@@ -577,6 +579,13 @@ class NeoVerseProductionRuntimeStore:
             "ungrounded_reason": spec.get("ungrounded_reason") or (spec.get("runtime_layer_policy") or {}).get("ungrounded_reason"),
             "empty_index_cause": spec.get("empty_index_cause"),
         }
+        self._augment_runner_workspace_manifest(
+            workspace_manifest_path=Path(str(runner_workspace.get("workspace_manifest_path") or "")).resolve(),
+            spec=spec,
+            registration_payload=registration_payload,
+            conditioning_source=conditioning_source,
+            base_frame_path=base_frame_path,
+        )
         health_payload = {
             **dict(health),
             "schema_version": "v1",
@@ -605,6 +614,7 @@ class NeoVerseProductionRuntimeStore:
         _write_json(self._site_world_spec_path(site_world_id), dict(spec))
         _write_json(self._site_world_state_path(site_world_id), registration_payload)
         _write_json(self._site_world_health_path(site_world_id), health_payload)
+        self._pose_preview_renderer.invalidate(site_world_id)
         return registration_payload
 
     def load_site_world(self, site_world_id: str) -> Dict[str, Any]:
@@ -648,10 +658,97 @@ class NeoVerseProductionRuntimeStore:
 
     def _base_frame_path(self, site_world_id: str) -> Path:
         registration = self.load_site_world(site_world_id)
-        path = Path(str(registration.get("base_frame_path") or "")).resolve()
+        path = Path(
+            str(registration.get("base_frame_path") or registration.get("seed_frame_path") or "")
+        ).resolve()
         if not path.is_file():
             raise RuntimeError(f"base frame missing for {site_world_id}")
         return path
+
+    def _augment_runner_workspace_manifest(
+        self,
+        *,
+        workspace_manifest_path: Path,
+        spec: Mapping[str, Any],
+        registration_payload: Mapping[str, Any],
+        conditioning_source: Path,
+        base_frame_path: Path,
+    ) -> None:
+        if not workspace_manifest_path.is_file():
+            return
+        conditioning = dict(spec.get("conditioning") or {}) if isinstance(spec.get("conditioning"), Mapping) else {}
+        conditioning_local = (
+            dict(conditioning.get("local_paths") or {})
+            if isinstance(conditioning.get("local_paths"), Mapping)
+            else {}
+        )
+        geometry = dict(spec.get("geometry") or {}) if isinstance(spec.get("geometry"), Mapping) else {}
+        workspace_manifest = _read_json(workspace_manifest_path)
+        manifest_registration = (
+            dict(workspace_manifest.get("registration") or {})
+            if isinstance(workspace_manifest.get("registration"), Mapping)
+            else {}
+        )
+        manifest_registration.update(
+            {
+                "site_world_id": registration_payload.get("site_world_id"),
+                "build_id": registration_payload.get("build_id"),
+                "conditioning_source_path": str(conditioning_source),
+                "base_frame_path": str(base_frame_path),
+                "arkit_poses_path": str(
+                    _preferred_local_path(
+                        conditioning_local.get("arkit_poses_path"),
+                        conditioning.get("arkit_poses_path"),
+                    )
+                    or ""
+                ),
+                "arkit_intrinsics_path": str(
+                    _preferred_local_path(
+                        conditioning_local.get("arkit_intrinsics_path"),
+                        conditioning.get("arkit_intrinsics_path"),
+                    )
+                    or ""
+                ),
+                "arkit_depth_path": str(
+                    _preferred_local_path(
+                        conditioning_local.get("arkit_depth_path"),
+                        conditioning.get("arkit_depth_path"),
+                    )
+                    or ""
+                ),
+                "scene_memory_manifest_path": str(
+                    _preferred_local_path(
+                        conditioning_local.get("scene_memory_manifest_path"),
+                        conditioning.get("scene_memory_manifest_path"),
+                    )
+                    or ""
+                ),
+                "conditioning_bundle_path": str(
+                    _preferred_local_path(
+                        conditioning_local.get("conditioning_bundle_path"),
+                        conditioning.get("conditioning_bundle_path"),
+                    )
+                    or ""
+                ),
+                "object_index_path": str(
+                    _preferred_local_path(
+                        conditioning_local.get("object_index_path"),
+                        geometry.get("object_index_path"),
+                    )
+                    or ""
+                ),
+                "object_geometry_manifest_path": str(
+                    _preferred_local_path(
+                        conditioning_local.get("object_geometry_manifest_path"),
+                        geometry.get("object_geometry_manifest_path"),
+                    )
+                    or ""
+                ),
+            }
+        )
+        workspace_manifest["registration"] = manifest_registration
+        workspace_manifest["resolved_spec"] = dict(spec)
+        _write_json(workspace_manifest_path, workspace_manifest)
 
     def _runtime_layer_bundle_for_site_world(self, site_world_id: str) -> Dict[str, Any]:
         registration = self.load_site_world(site_world_id)
@@ -996,7 +1093,7 @@ class NeoVerseProductionRuntimeStore:
                 },
             }
 
-    def _preview_runner_payload(
+    def _base_frame_preview_runner_payload(
         self,
         *,
         render_dir: Path,
@@ -1030,6 +1127,60 @@ class NeoVerseProductionRuntimeStore:
                 "preview_mode": "base_frame",
                 "render_mode": "preview",
                 "refinement_status": refinement_status,
+            },
+        }
+
+    def _preview_runner_payload(
+        self,
+        *,
+        session_state: Dict[str, Any],
+        snapshot: Mapping[str, Any],
+        render_dir: Path,
+        cameras: Sequence[Mapping[str, Any]],
+    ) -> Dict[str, Any]:
+        site_world_id = str(session_state["site_world_id"])
+        spec = self._load_site_world_bundle(site_world_id)["resolved"]
+        world_state = dict(snapshot.get("world_state") or {})
+        camera_frames: list[Dict[str, Any]] = []
+        per_camera_debug: dict[str, Any] = {}
+        for camera in cameras:
+            camera_id = str(camera.get("id") or camera.get("cameraId") or "head_rgb").strip() or "head_rgb"
+            preview_frame, debug = self._pose_preview_renderer.render_camera(
+                site_world_id=site_world_id,
+                spec=spec,
+                world_state=world_state,
+                camera_id=camera_id,
+            )
+            output_path = render_dir / f"{camera_id}-preview.png"
+            _save_frame(output_path, preview_frame)
+            camera_frames.append(
+                {
+                    "cameraId": camera_id,
+                    "path": str(output_path),
+                    "preview": True,
+                    "pose_driven": True,
+                }
+            )
+            per_camera_debug[camera_id] = debug
+        refinement_status = "pending" if self.enable_async_render_refinement else "disabled"
+        primary_camera_id = str(camera_frames[0]["cameraId"]) if camera_frames else ""
+        return {
+            "camera_frames": camera_frames,
+            "quality_flags": {
+                "presentation_quality": "preview",
+                "render_mode": "preview",
+                "refinement_status": refinement_status,
+                "preview_mode": "pose_driven",
+                "preview_source": "arkit_rgbd",
+            },
+            "protected_region_violations": [],
+            "debug_artifacts": {
+                "preview_mode": "pose_driven",
+                "preview_source": "arkit_rgbd",
+                "render_mode": "preview",
+                "refinement_status": refinement_status,
+                "pose_driven_preview": dict(per_camera_debug.get(primary_camera_id) or {}),
+                "pose_driven_preview_per_camera": per_camera_debug,
             },
         }
 
@@ -1473,35 +1624,43 @@ class NeoVerseProductionRuntimeStore:
             snapshot_path=str(snapshot_path),
         )
         if self.enable_immediate_preview:
-            render_dir = self._session_dir(session_id) / "renders" / str(snapshot["snapshot_id"])
-            render_dir.mkdir(parents=True, exist_ok=True)
-            base_frame_path = self._base_frame_path(str(session_state["site_world_id"]))
-            cameras = self._render_camera_selection(dict(session_state.get("robot_profile") or {}))
-            observation = self._materialize_render_snapshot(
-                session_state=session_state,
-                snapshot=snapshot,
-                runner_payload=self._preview_runner_payload(
-                    render_dir=render_dir,
+            try:
+                render_dir = self._session_dir(session_id) / "renders" / str(snapshot["snapshot_id"])
+                render_dir.mkdir(parents=True, exist_ok=True)
+                cameras = self._render_camera_selection(dict(session_state.get("robot_profile") or {}))
+                observation = self._materialize_render_snapshot(
+                    session_state=session_state,
+                    snapshot=snapshot,
+                    runner_payload=self._preview_runner_payload(
+                        session_state=session_state,
+                        snapshot=snapshot,
+                        render_dir=render_dir,
+                        cameras=cameras,
+                    ),
                     cameras=cameras,
-                    base_frame_path=base_frame_path,
-                ),
-                cameras=cameras,
-                render_dir=render_dir,
-                persist_session_state=True,
-            )
-            self._clear_render_failure(session_state)
-            self._persist_session_state(session_state)
-            self._schedule_render_refinement(session_id, str(snapshot["snapshot_id"]))
-            self._log_runtime_stage(
-                "reset_session.preview_ready",
-                session_id=session_id,
-                snapshot_id=snapshot.get("snapshot_id"),
-                primary_camera_id=observation.get("primaryCameraId"),
-            )
-            return {
-                "session_id": session_id,
-                "episode": self._episode_payload(session_state, observation),
-            }
+                    render_dir=render_dir,
+                    persist_session_state=True,
+                )
+                self._clear_render_failure(session_state)
+                self._persist_session_state(session_state)
+                self._schedule_render_refinement(session_id, str(snapshot["snapshot_id"]))
+                self._log_runtime_stage(
+                    "reset_session.preview_ready",
+                    session_id=session_id,
+                    snapshot_id=snapshot.get("snapshot_id"),
+                    primary_camera_id=observation.get("primaryCameraId"),
+                )
+                return {
+                    "session_id": session_id,
+                    "episode": self._episode_payload(session_state, observation),
+                }
+            except Exception as exc:
+                self._record_render_failure(
+                    session_state,
+                    code="pose_preview_failed",
+                    message=str(exc),
+                )
+                raise
         try:
             self._log_runtime_stage(
                 "reset_session.render_snapshot.start",
@@ -1609,36 +1768,44 @@ class NeoVerseProductionRuntimeStore:
         self._clear_render_failure(session_state)
         self._persist_session_state(session_state)
         if self.enable_immediate_preview:
-            render_dir = self._session_dir(session_id) / "renders" / str(snapshot["snapshot_id"])
-            render_dir.mkdir(parents=True, exist_ok=True)
-            base_frame_path = self._base_frame_path(str(session_state["site_world_id"]))
-            cameras = self._render_camera_selection(dict(session_state.get("robot_profile") or {}))
-            observation = self._materialize_render_snapshot(
-                session_state=session_state,
-                snapshot=snapshot,
-                runner_payload=self._preview_runner_payload(
-                    render_dir=render_dir,
+            try:
+                render_dir = self._session_dir(session_id) / "renders" / str(snapshot["snapshot_id"])
+                render_dir.mkdir(parents=True, exist_ok=True)
+                cameras = self._render_camera_selection(dict(session_state.get("robot_profile") or {}))
+                observation = self._materialize_render_snapshot(
+                    session_state=session_state,
+                    snapshot=snapshot,
+                    runner_payload=self._preview_runner_payload(
+                        session_state=session_state,
+                        snapshot=snapshot,
+                        render_dir=render_dir,
+                        cameras=cameras,
+                    ),
                     cameras=cameras,
-                    base_frame_path=base_frame_path,
-                ),
-                cameras=cameras,
-                render_dir=render_dir,
-                persist_session_state=True,
-            )
-            self._clear_render_failure(session_state)
-            self._persist_session_state(session_state)
-            self._schedule_render_refinement(session_id, str(snapshot["snapshot_id"]))
-            self._log_runtime_stage(
-                "step_session.preview_ready",
-                session_id=session_id,
-                snapshot_id=snapshot.get("snapshot_id"),
-                step_index=session_state.get("step_index"),
-                primary_camera_id=observation.get("primaryCameraId"),
-            )
-            return {
-                "session_id": session_id,
-                "episode": self._episode_payload(session_state, observation),
-            }
+                    render_dir=render_dir,
+                    persist_session_state=True,
+                )
+                self._clear_render_failure(session_state)
+                self._persist_session_state(session_state)
+                self._schedule_render_refinement(session_id, str(snapshot["snapshot_id"]))
+                self._log_runtime_stage(
+                    "step_session.preview_ready",
+                    session_id=session_id,
+                    snapshot_id=snapshot.get("snapshot_id"),
+                    step_index=session_state.get("step_index"),
+                    primary_camera_id=observation.get("primaryCameraId"),
+                )
+                return {
+                    "session_id": session_id,
+                    "episode": self._episode_payload(session_state, observation),
+                }
+            except Exception as exc:
+                self._record_render_failure(
+                    session_state,
+                    code="pose_preview_failed",
+                    message=str(exc),
+                )
+                raise
         try:
             observation = self._render_snapshot(session_state, snapshot)
         except Exception as exc:
@@ -1776,32 +1943,41 @@ class NeoVerseProductionRuntimeStore:
                 robot_profile = dict(session_state.get("robot_profile") or {})
                 cameras = self._render_camera_selection(robot_profile, requested_camera_ids=[camera_id])
                 if self.enable_immediate_preview:
-                    observation = self._materialize_render_snapshot(
-                        session_state=session_state,
-                        snapshot=snapshot,
-                        runner_payload=self._preview_runner_payload(
-                            render_dir=render_dir,
+                    try:
+                        observation = self._materialize_render_snapshot(
+                            session_state=session_state,
+                            snapshot=snapshot,
+                            runner_payload=self._preview_runner_payload(
+                                session_state=session_state,
+                                snapshot=snapshot,
+                                render_dir=render_dir,
+                                cameras=cameras,
+                            ),
                             cameras=cameras,
-                            base_frame_path=base_frame_path,
-                        ),
-                        cameras=cameras,
-                        render_dir=render_dir,
-                        persist_session_state=True,
-                    )
-                    self._clear_render_failure(session_state)
-                    self._persist_session_state(session_state)
-                    self._schedule_render_refinement(session_id, str(snapshot["snapshot_id"]))
-                    render_path = Path(
-                        str(
-                            dict(session_state.get("latest_render_paths") or {}).get(camera_id)
-                            or observation.get("frame_path")
-                            or ""
+                            render_dir=render_dir,
+                            persist_session_state=True,
                         )
-                    ).resolve()
-                    if render_path.is_file():
-                        payload = render_path.read_bytes()
-                        if payload:
-                            return payload
+                        self._clear_render_failure(session_state)
+                        self._persist_session_state(session_state)
+                        self._schedule_render_refinement(session_id, str(snapshot["snapshot_id"]))
+                        render_path = Path(
+                            str(
+                                dict(session_state.get("latest_render_paths") or {}).get(camera_id)
+                                or observation.get("frame_path")
+                                or ""
+                            )
+                        ).resolve()
+                        if render_path.is_file():
+                            payload = render_path.read_bytes()
+                            if payload:
+                                return payload
+                    except Exception as exc:
+                        self._record_render_failure(
+                            session_state,
+                            code="pose_preview_failed",
+                            message=str(exc),
+                        )
+                        raise
                 workspace_dir = Path(str(self.load_site_world(site_world_id).get("workspace_dir") or "")).resolve()
                 render_snapshot_path = Path(str(session_state["current_world_snapshot_path"] or self._save_snapshot(session_id, snapshot)))
                 self._log_runtime_stage(
