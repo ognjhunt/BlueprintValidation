@@ -1,6 +1,8 @@
 # BlueprintValidation
 
-`BlueprintValidation` is the downstream NeoVerse runtime consumer for built site-world packages.
+`BlueprintValidation` is optional downstream infrastructure for provider benchmarking, runtime-backed demos, and deeper robot evaluation after qualification.
+
+It is not part of the launch-critical alpha loop. Alpha can succeed with `BlueprintCapture` plus `BlueprintCapturePipeline` plus `Blueprint-WebApp` even if this repo is not running.
 
 ## Runtime Role
 
@@ -13,15 +15,16 @@ Preflight, hosted-session artifacts, exports, and reports record which runtime k
 
 ## Scope
 
-This repo owns the downstream runtime path:
+This repo owns optional downstream technical lanes:
 
 - consume a built `site_world_spec.json`, `site_world_registration.json`, and `site_world_health.json`
+- compare provider outputs and benchmark preview usefulness
 - register the built package with a NeoVerse runtime backend
 - preflight runtime kind, capabilities, and production readiness
 - create, reset, step, batch-run, stop, and export hosted sessions
 - produce runtime-aware validation reports and export manifests
 
-This repo does not own package assembly or upstream qualification. Those stay upstream in `BlueprintCapturePipeline`.
+This repo does not own raw capture, package assembly, upstream qualification, trust-score assembly, or buyer-facing readiness state. Those stay upstream in `BlueprintCapturePipeline` and `Blueprint-WebApp`.
 
 ## Install
 
