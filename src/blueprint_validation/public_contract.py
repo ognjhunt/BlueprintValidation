@@ -12,6 +12,8 @@ _PUBLIC_RUNTIME_LABELS = {
     "neoverse_service": "NeoVerse runtime service",
     "smoke_contract": "Smoke contract runtime",
     "neoverse_production": "NeoVerse production runtime",
+    "world_labs": "World Labs preview",
+    "stub_preview": "Stub preview provider",
 }
 
 
@@ -26,6 +28,7 @@ def build_standardized_eval_report(report_data: Mapping[str, Any]) -> Dict[str, 
     session = report_data.get("session") if isinstance(report_data.get("session"), Mapping) else {}
     batch = report_data.get("batch") if isinstance(report_data.get("batch"), Mapping) else {}
     export_data = report_data.get("export") if isinstance(report_data.get("export"), Mapping) else {}
+    provider_run = report_data.get("provider_run") if isinstance(report_data.get("provider_run"), Mapping) else {}
     return {
         "schema_version": "v1",
         "project_name": report_data.get("project_name"),
@@ -39,6 +42,9 @@ def build_standardized_eval_report(report_data: Mapping[str, Any]) -> Dict[str, 
         "model_identity": session.get("runtime_model_identity", {}),
         "checkpoint_identity": session.get("runtime_checkpoint_identity", {}),
         "session_status": session.get("status"),
+        "provider_label": public_runtime_label(provider_run.get("provider_name")),
+        "preview_status": provider_run.get("status"),
+        "preview_artifacts": provider_run.get("artifact_uris", {}),
         "batch_summary": batch.get("summary"),
         "export_artifacts": export_data.get("artifact_uris", {}),
     }
