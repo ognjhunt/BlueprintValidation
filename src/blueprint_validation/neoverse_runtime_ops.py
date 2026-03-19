@@ -342,6 +342,11 @@ def register_site_world_with_runtime(
             health=dict(bundle.health or {}),
         )
     )
+    remote_registration = dict(
+        client.get_site_world(
+            str(registration_payload.get("site_world_id") or bundle.registration.get("site_world_id") or "")
+        )
+    )
     runtime_info = dict(runtime_probe.get("runtime") or {})
     runtime_base_url = (
         str(registration_payload.get("runtime_base_url") or "").strip()
@@ -360,6 +365,7 @@ def register_site_world_with_runtime(
         "site_world_id": registration_payload.get("site_world_id") or bundle.registration.get("site_world_id"),
         "runtime_probe": runtime_probe,
         "registration": registration_payload,
+        "remote_registration": remote_registration,
         "health": health_payload,
         "blueprint_webapp_env": blueprint_webapp_runtime_env(
             runtime_base_url=runtime_base_url,

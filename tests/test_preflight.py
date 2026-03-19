@@ -25,6 +25,12 @@ class _HealthyRuntimeClient:
             }
         }
 
+    def get_site_world(self, site_world_id: str):
+        return {"site_world_id": site_world_id, "build_id": "build-1"}
+
+    def get_site_world_health(self, _site_world_id: str):
+        return {"status": "healthy", "launchable": True, "blockers": []}
+
 
 def test_preflight_checks_runtime_and_bundle(sample_site_world_bundle, monkeypatch) -> None:
     config = ValidationConfig()

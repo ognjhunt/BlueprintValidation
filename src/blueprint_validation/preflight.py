@@ -146,6 +146,40 @@ def run_preflight(
                     detail=detail or "blocked",
                 )
             )
+            site_world_id = str(bundle.registration.get("site_world_id") or "").strip()
+            if site_world_id:
+                try:
+                    remote_registration = client.get_site_world(site_world_id)
+                    registered = bool(remote_registration)
+                    checks.append(
+                        PreflightCheck(
+                            name="site_world:runtime_registration",
+                            passed=registered,
+                            detail=str(remote_registration.get("build_id") or site_world_id) if registered else "missing_remote_registration",
+                        )
+                    )
+                    remote_health = client.get_site_world_health(site_world_id)
+                    remote_launchable = bool(remote_health.get("launchable", False))
+                    remote_blockers = ",".join(str(item) for item in remote_health.get("blockers", []))
+                    checks.append(
+                        PreflightCheck(
+                            name="site_world:runtime_health",
+                            passed=remote_launchable,
+                            detail=(
+                                str(remote_health.get("status") or "healthy")
+                                if remote_launchable
+                                else remote_blockers or str(remote_health.get("status") or "blocked")
+                            ),
+                        )
+                    )
+                except Exception as exc:
+                    checks.append(
+                        PreflightCheck(
+                            name="site_world:runtime_registration",
+                            passed=False,
+                            detail=str(exc),
+                        )
+                    )
         except (SiteWorldIntakeError, OSError, ValueError) as exc:
             checks.append(PreflightCheck(name="site_world:bundle", passed=False, detail=str(exc)))
 
