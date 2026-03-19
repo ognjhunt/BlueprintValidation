@@ -1,4 +1,4 @@
-"""Shared FastAPI app factory for NeoVerse runtime backends."""
+"""Shared FastAPI app factory for site-world runtime backends."""
 
 from __future__ import annotations
 
@@ -129,7 +129,7 @@ def create_runtime_app(*, backend: RuntimeBackend, title: str) -> FastAPI:
         readiness = dict(runtime.get("readiness") or {})
         return {
             "status": "ok",
-            "service": runtime.get("service") or "neoverse-runtime",
+            "service": runtime.get("service") or "site-world-runtime",
             "version": app.version,
             "runtime_kind": runtime.get("runtime_kind"),
             "production_grade": runtime.get("production_grade"),

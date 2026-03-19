@@ -4,14 +4,17 @@
 
 It is not part of the launch-critical alpha loop. Alpha can succeed with `BlueprintCapture` plus `BlueprintCapturePipeline` plus `Blueprint-WebApp` even if this repo is not running.
 
+The target architecture is now explicit: this repo is a validation harness, not the target home for the native site-world runtime. Native Cosmos/SWM-style serving should live behind a generic site-world runtime service and can be probed from here, but should not be productized by extending the legacy NeoVerse runtime stack in this repo.
+
 ## Runtime Role
 
-This repo now has two explicit runtime backends:
+This repo now validates three runtime kinds:
 
-- `neoverse_production`: the default production runtime service in this repo. It owns authoritative hosted-session state, reset/step lifecycle, render persistence, and NeoVerse model/checkpoint provenance. It requires a local NeoVerse runner integration plus model assets.
+- `native_world_model`: the target runtime kind for native site-specific world-model serving. This repo can preflight and exercise it through the shared runtime-service contract, but the runtime implementation should live outside `BlueprintValidation`.
+- `neoverse_production`: a legacy production runtime service implemented in this repo. It remains available for comparison and fallback-only workflows, not as the target product runtime.
 - `smoke_contract`: a local deterministic contract/smoke runtime for developer flows and interface validation only. It is not a production backend.
 
-Preflight, hosted-session artifacts, exports, and reports record which runtime kind was used. A smoke endpoint can no longer silently pass as production.
+Preflight, hosted-session artifacts, exports, and reports record which runtime kind was used. A smoke endpoint can no longer silently pass as production, and native runtime semantics are no longer owned by this repo.
 
 ## Scope
 
@@ -19,12 +22,12 @@ This repo owns optional downstream technical lanes:
 
 - consume a built `site_world_spec.json`, `site_world_registration.json`, and `site_world_health.json`
 - compare provider outputs and benchmark preview usefulness
-- register the built package with a NeoVerse runtime backend
+- register the built package with a runtime backend
 - preflight runtime kind, capabilities, and production readiness
 - create, reset, step, batch-run, stop, and export hosted sessions
 - produce runtime-aware validation reports and export manifests
 
-This repo does not own raw capture, package assembly, upstream qualification, trust-score assembly, or buyer-facing readiness state. Those stay upstream in `BlueprintCapturePipeline` and `Blueprint-WebApp`.
+This repo does not own raw capture, package assembly, upstream qualification, trust-score assembly, buyer-facing readiness state, or the target native serving backend. Those stay upstream in `BlueprintCapturePipeline`, `Blueprint-WebApp`, and the future dedicated native runtime implementation.
 
 ## Install
 
@@ -57,7 +60,15 @@ blueprint-validate runtime bootstrap \
 source ./scripts/runtime_env.local
 ```
 
-Production runtime service:
+Target native runtime:
+
+```bash
+export SITE_WORLD_RUNTIME_SERVICE_URL="http://127.0.0.1:8787"
+```
+
+Point the validation harness at the external native runtime service with `SITE_WORLD_RUNTIME_SERVICE_URL`. This repo does not provide that native runtime implementation yet.
+
+Legacy NeoVerse production runtime service:
 
 ```bash
 uv sync --extra vision
@@ -70,20 +81,20 @@ Smoke-contract runtime service:
 blueprint-neoverse-smoke-runtime
 ```
 
-Use the smoke runtime only for local interface smoke checks. It is intentionally non-production and should fail preflight whenever `--required-runtime-kind neoverse_production` is used.
+Use the smoke runtime only for local interface smoke checks. It is intentionally non-production and should fail preflight whenever a non-smoke runtime kind is required.
 
-The production service is the one intended to be surfaced behind a `runtime_base_url` for downstream tools or `Blueprint-WebApp`. The WebApp already expects a live runtime handle and proxies runtime calls through that URL; this repo now returns runtime-kind and production-readiness fields with that handle.
+The WebApp already expects a live runtime handle and proxies runtime calls through that URL. This repo now treats that handle as a generic site-world runtime surface; the local NeoVerse service is just one legacy implementation of it.
 
 ### Hosted Demo Setup
 
-For a live hosted Blueprint demo, this repo is the runtime host. Redis and Firestore do not replace it; they only store app/session state after the web app knows which runtime URL to call.
+For validation and legacy demo flows, this repo can still host the NeoVerse runtime. That does not make it the target native runtime home.
 
 1. Bootstrap the NeoVerse runtime environment on the runtime host.
 2. Set the public runtime URLs before starting the service:
 
 ```bash
-export NEOVERSE_RUNTIME_PUBLIC_BASE_URL="https://<live-runtime-host>"
-export NEOVERSE_RUNTIME_PUBLIC_WS_BASE_URL="wss://<live-runtime-host>"
+export NEOVERSE_RUNTIME_PUBLIC_BASE_URL="https://<legacy-runtime-host>"
+export NEOVERSE_RUNTIME_PUBLIC_WS_BASE_URL="wss://<legacy-runtime-host>"
 ```
 
 3. Preload the site-world package on boot so `GET /v1/site-worlds/<id>` works immediately:
@@ -98,15 +109,15 @@ Use `NEOVERSE_RUNTIME_BOOTSTRAP_REGISTRATION_PATHS` for multiple registration fi
 4. Verify the runtime host:
 
 ```bash
-curl https://<live-runtime-host>/v1/site-worlds/siteworld-f5fd54898cfb
-curl https://<live-runtime-host>/v1/site-worlds/siteworld-f5fd54898cfb/health
+curl https://<legacy-runtime-host>/v1/site-worlds/siteworld-f5fd54898cfb
+curl https://<legacy-runtime-host>/v1/site-worlds/siteworld-f5fd54898cfb/health
 ```
 
 5. If you prefer explicit registration instead of boot-time preload, register the bundle against a running runtime:
 
 ```bash
 blueprint-validate runtime register-site-world \
-  --service-url https://<live-runtime-host> \
+  --service-url https://<legacy-runtime-host> \
   --site-world-registration /absolute/path/to/site_world_registration.json
 ```
 
@@ -131,17 +142,17 @@ blueprint-validate runtime smoke-test \
 ## Validation Workflow
 
 ```bash
-export NEOVERSE_RUNTIME_SERVICE_URL="http://127.0.0.1:8787"
+export SITE_WORLD_RUNTIME_SERVICE_URL="http://127.0.0.1:8787"
 
 blueprint-validate \
   --config configs/example_validation.yaml \
-  --required-runtime-kind neoverse_production \
+  --required-runtime-kind native_world_model \
   preflight \
   --site-world-registration /path/to/site_world_registration.json
 
 blueprint-validate \
   --config configs/example_validation.yaml \
-  --required-runtime-kind neoverse_production \
+  --required-runtime-kind native_world_model \
   session create \
   --session-id validation-session \
   --session-work-dir data/session-validation \
@@ -187,7 +198,7 @@ blueprint-validate --work-dir data/session-validation report
 
 ## Production Backend Notes
 
-- The production backend is local to this repo, but it still depends on external NeoVerse model assets and a local runner integration.
+- The legacy `neoverse_production` backend is local to this repo, but it still depends on external NeoVerse model assets and a local runner integration.
 - `blueprint-validate runtime bootstrap` clones the public NeoVerse repo, creates a dedicated `.venv`, downloads model assets from Hugging Face, discovers a checkpoint, and writes an env file with the runtime variables this service expects.
 - The built-in `LocalNeoVerseRunnerAdapter` expects `NEOVERSE_RUNNER_COMMAND` to point to a command that accepts `request_json_path response_json_path` and writes a response manifest containing `camera_frames`. The bootstrap command configures this to `python -m blueprint_validation.neoverse_runner_wrapper`.
 - `blueprint_validation.neoverse_runner_wrapper` invokes the official NeoVerse `inference.py` entrypoint, extracts the first frame of each generated video, and returns camera-frame paths back to the runtime service.

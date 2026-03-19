@@ -1,4 +1,4 @@
-"""Preflight checks for the NeoVerse-only runtime path."""
+"""Preflight checks for the downstream site-world runtime path."""
 
 from __future__ import annotations
 
@@ -10,26 +10,38 @@ from blueprint_contracts.site_world_contract import SiteWorldIntakeError, load_s
 
 from .common import PreflightCheck
 from .config import ValidationConfig
-from .neoverse_runtime_client import NeoVerseRuntimeClient, NeoVerseRuntimeClientConfig
 from .runtime_backend import parse_runtime_metadata, runtime_kind_matches
+from .runtime_service_client import RuntimeServiceClient, RuntimeServiceClientConfig
 
 
 def _configured_service_url(config: ValidationConfig) -> str:
     return (
-        str(config.scene_memory_runtime.neoverse_service.service_url or "").strip()
+        str(config.scene_memory_runtime.runtime_service.service_url or "").strip()
+        or str(config.scene_memory_runtime.neoverse_service.service_url or "").strip()
+        or str(os.environ.get("SITE_WORLD_RUNTIME_SERVICE_URL") or "").strip()
         or str(os.environ.get("NEOVERSE_RUNTIME_SERVICE_URL") or "").strip()
     ).rstrip("/")
 
 
-def _runtime_client(config: ValidationConfig) -> NeoVerseRuntimeClient:
+def _runtime_client(config: ValidationConfig) -> RuntimeServiceClient:
     service_url = _configured_service_url(config)
-    api_key_env = config.scene_memory_runtime.neoverse_service.api_key_env
+    api_key_env = (
+        config.scene_memory_runtime.runtime_service.api_key_env
+        or config.scene_memory_runtime.neoverse_service.api_key_env
+    )
     api_key = str(os.environ.get(api_key_env, "") or "").strip() if api_key_env else ""
-    return NeoVerseRuntimeClient(
-        NeoVerseRuntimeClientConfig(
+    timeout_seconds = max(
+        1,
+        int(
+            config.scene_memory_runtime.runtime_service.timeout_seconds
+            or config.scene_memory_runtime.neoverse_service.timeout_seconds
+        ),
+    )
+    return RuntimeServiceClient(
+        RuntimeServiceClientConfig(
             service_url=service_url,
             api_key=api_key,
-            timeout_seconds=max(1, int(config.scene_memory_runtime.neoverse_service.timeout_seconds)),
+            timeout_seconds=timeout_seconds,
         )
     )
 
@@ -46,7 +58,7 @@ def run_preflight(
             PreflightCheck(
                 name="runtime:service_url",
                 passed=False,
-                detail="NeoVerse runtime service URL is not configured.",
+                detail="Site-world runtime service URL is not configured.",
             )
         )
         return checks

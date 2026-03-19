@@ -1,4 +1,4 @@
-"""NeoVerse hosted-session helpers for built site-world packages."""
+"""Hosted-session helpers for built site-world packages."""
 
 from __future__ import annotations
 
@@ -12,10 +12,10 @@ import numpy as np
 from blueprint_contracts.site_world_contract import SiteWorldIntakeError, load_site_world_bundle
 
 from .config import ValidationConfig
-from .neoverse_runtime_client import NeoVerseRuntimeClient, NeoVerseRuntimeClientConfig
 from .optional_dependencies import require_optional_dependency
 from .public_contract import public_runtime_label
 from .runtime_backend import parse_runtime_metadata, runtime_kind_matches, runtime_kind_label
+from .runtime_service_client import RuntimeServiceClient, RuntimeServiceClientConfig
 
 
 class HostedSessionError(RuntimeError):
@@ -70,12 +70,12 @@ def _validate_runtime_probe(config: ValidationConfig, probe: Mapping[str, Any]) 
     if not runtime_match:
         raise HostedSessionError(f"Runtime kind mismatch: {runtime_detail}")
     metadata = parse_runtime_metadata(runtime)
-    if metadata.runtime_kind == "neoverse_production":
+    if metadata.runtime_kind != "smoke_contract":
         readiness = metadata.readiness
-        if not bool(readiness.get("model_ready", False)):
-            raise HostedSessionError("NeoVerse production runtime model is not ready.")
-        if not bool(readiness.get("checkpoint_ready", False)):
-            raise HostedSessionError("NeoVerse production runtime checkpoint is not ready.")
+        if not bool(readiness.get("model_ready", True)):
+            raise HostedSessionError(f"{runtime_kind_label(metadata.runtime_kind)} model is not ready.")
+        if not bool(readiness.get("checkpoint_ready", True)):
+            raise HostedSessionError(f"{runtime_kind_label(metadata.runtime_kind)} checkpoint is not ready.")
     return {
         "runtime_kind": metadata.runtime_kind,
         "runtime_kind_public_name": runtime_kind_label(metadata.runtime_kind),
@@ -88,21 +88,28 @@ def _validate_runtime_probe(config: ValidationConfig, probe: Mapping[str, Any]) 
     }
 
 
-def _resolve_runtime_client(config: ValidationConfig, registration: Mapping[str, Any]) -> NeoVerseRuntimeClient:
-    service_cfg = config.scene_memory_runtime.neoverse_service
+def _resolve_runtime_client(config: ValidationConfig, registration: Mapping[str, Any]) -> RuntimeServiceClient:
+    service_cfg = config.scene_memory_runtime.runtime_service
+    legacy_service_cfg = config.scene_memory_runtime.neoverse_service
     service_url = str(service_cfg.service_url or "").strip() or str(registration.get("runtime_base_url") or "").strip()
+    if not service_url:
+        service_url = str(legacy_service_cfg.service_url or "").strip()
+    if not service_url:
+        service_url = str(os.environ.get("SITE_WORLD_RUNTIME_SERVICE_URL") or "").strip()
     if not service_url:
         service_url = str(os.environ.get("NEOVERSE_RUNTIME_SERVICE_URL") or "").strip()
     if not service_url:
-        raise HostedSessionError("NeoVerse runtime service URL is not configured in config, registration, or env.")
+        raise HostedSessionError("Site-world runtime service URL is not configured in config, registration, or env.")
     api_key = ""
     if service_cfg.api_key_env:
         api_key = str(os.environ.get(service_cfg.api_key_env, "") or "").strip()
-    return NeoVerseRuntimeClient(
-        NeoVerseRuntimeClientConfig(
+    elif legacy_service_cfg.api_key_env:
+        api_key = str(os.environ.get(legacy_service_cfg.api_key_env, "") or "").strip()
+    return RuntimeServiceClient(
+        RuntimeServiceClientConfig(
             service_url=service_url.rstrip("/"),
             api_key=api_key,
-            timeout_seconds=max(1, int(service_cfg.timeout_seconds)),
+            timeout_seconds=max(1, int(service_cfg.timeout_seconds or legacy_service_cfg.timeout_seconds)),
         )
     )
 
@@ -130,7 +137,7 @@ def _decode_png(payload: bytes) -> np.ndarray:
     array = np.frombuffer(payload, dtype=np.uint8)
     frame = cv2.imdecode(array, cv2.IMREAD_COLOR)
     if frame is None:
-        raise HostedSessionError("NeoVerse runtime returned invalid PNG bytes.")
+        raise HostedSessionError("Runtime returned invalid PNG bytes.")
     return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
 
@@ -204,7 +211,7 @@ def _materialize_observation(
         local_paths[primary_camera_id] = str(output_path)
 
     if not primary_camera_id:
-        raise HostedSessionError("NeoVerse runtime observation did not include any cameras.")
+        raise HostedSessionError("Runtime observation did not include any cameras.")
 
     return {
         "stepIndex": int(remote_episode.get("stepIndex", step_index) or step_index),

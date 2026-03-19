@@ -1,4 +1,4 @@
-"""CLI entry point for the NeoVerse-only validation workflow."""
+"""CLI entry point for the site-world runtime validation workflow."""
 
 from __future__ import annotations
 
@@ -138,7 +138,7 @@ def cli(
     required_runtime_kind: Optional[str],
     verbose: bool,
 ) -> None:
-    """Consume built site-world packages through NeoVerse runtime sessions and exports."""
+    """Consume built site-world packages through runtime sessions and exports."""
     setup_logging(verbose)
     _load_local_env_defaults()
     ctx.ensure_object(dict)
@@ -156,7 +156,7 @@ def cli(
 )
 @click.pass_context
 def preflight(ctx: click.Context, site_world_registration: Optional[str]) -> None:
-    """Run NeoVerse runtime readiness checks for built site-world packages."""
+    """Run runtime readiness checks for built site-world packages."""
     from .preflight import run_preflight
 
     checks = run_preflight(_load_cli_config(ctx), site_world_registration=site_world_registration)
@@ -173,7 +173,7 @@ def preflight(ctx: click.Context, site_world_registration: Optional[str]) -> Non
 @click.option("--output", "output_path", type=click.Path(), default="validation_report.md")
 @click.pass_context
 def report(ctx: click.Context, fmt: str, output_path: str) -> None:
-    """Generate a minimal report from NeoVerse session/export artifacts."""
+    """Generate a minimal report from session/export artifacts."""
     from .reporting.report_builder import build_report
 
     report_path = build_report(
@@ -187,7 +187,7 @@ def report(ctx: click.Context, fmt: str, output_path: str) -> None:
 
 @cli.group("runtime", cls=RuntimeCliGroup)
 def runtime_group() -> None:
-    """Bootstrap and smoke-test the NeoVerse runtime environment."""
+    """Bootstrap and smoke-test the legacy NeoVerse runtime environment."""
 
 
 @runtime_group.command("bootstrap")

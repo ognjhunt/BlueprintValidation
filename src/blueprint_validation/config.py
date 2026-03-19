@@ -12,9 +12,9 @@ from .runtime_backend import DEFAULT_RUNTIME_BACKEND_KIND, RuntimeBackendKind, n
 
 
 @dataclass(frozen=True)
-class NeoVerseServiceConfig:
+class RuntimeServiceConfig:
     service_url: str = ""
-    api_key_env: str = "NEOVERSE_RUNTIME_SERVICE_API_KEY"
+    api_key_env: str = "SITE_WORLD_RUNTIME_SERVICE_API_KEY"
     timeout_seconds: int = 120
 
 
@@ -33,7 +33,8 @@ class SceneMemoryRuntimeConfig:
     enabled: bool = True
     required_runtime_kind: RuntimeBackendKind = DEFAULT_RUNTIME_BACKEND_KIND
     allow_smoke_fallback: bool = False
-    neoverse_service: NeoVerseServiceConfig = field(default_factory=NeoVerseServiceConfig)
+    runtime_service: RuntimeServiceConfig = field(default_factory=RuntimeServiceConfig)
+    neoverse_service: RuntimeServiceConfig = field(default_factory=RuntimeServiceConfig)
     neoverse_model: NeoVerseModelConfig = field(default_factory=NeoVerseModelConfig)
 
 
@@ -52,7 +53,8 @@ def load_config(path: str | Path) -> ValidationConfig:
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     root = _as_mapping(payload)
     runtime_raw = _as_mapping(root.get("scene_memory_runtime"))
-    service_raw = _as_mapping(runtime_raw.get("neoverse_service"))
+    service_raw = _as_mapping(runtime_raw.get("runtime_service")) or _as_mapping(runtime_raw.get("neoverse_service"))
+    legacy_service_raw = _as_mapping(runtime_raw.get("neoverse_service")) or service_raw
 
     return ValidationConfig(
         project_name=str(root.get("project_name") or "Blueprint Validation"),
@@ -60,10 +62,15 @@ def load_config(path: str | Path) -> ValidationConfig:
             enabled=bool(runtime_raw.get("enabled", True)),
             required_runtime_kind=normalize_runtime_kind(runtime_raw.get("required_runtime_kind")),
             allow_smoke_fallback=bool(runtime_raw.get("allow_smoke_fallback", False)),
-            neoverse_service=NeoVerseServiceConfig(
+            runtime_service=RuntimeServiceConfig(
                 service_url=str(service_raw.get("service_url") or "").rstrip("/"),
-                api_key_env=str(service_raw.get("api_key_env") or "NEOVERSE_RUNTIME_SERVICE_API_KEY"),
+                api_key_env=str(service_raw.get("api_key_env") or "SITE_WORLD_RUNTIME_SERVICE_API_KEY"),
                 timeout_seconds=max(1, int(service_raw.get("timeout_seconds", 120) or 120)),
+            ),
+            neoverse_service=RuntimeServiceConfig(
+                service_url=str(legacy_service_raw.get("service_url") or "").rstrip("/"),
+                api_key_env=str(legacy_service_raw.get("api_key_env") or "NEOVERSE_RUNTIME_SERVICE_API_KEY"),
+                timeout_seconds=max(1, int(legacy_service_raw.get("timeout_seconds", 120) or 120)),
             ),
             neoverse_model=NeoVerseModelConfig(
                 model_root=str(_as_mapping(runtime_raw.get("neoverse_model")).get("model_root") or "").strip(),

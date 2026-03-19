@@ -17,7 +17,7 @@ class _FakeRuntimeClient:
     def register_site_world_package(self, *, spec, registration, health):
         return {
             "site_world_id": registration["site_world_id"],
-            "runtime_kind": "neoverse_production",
+            "runtime_kind": "native_world_model",
             "production_grade": True,
             "runtime_model_identity": {"model_id": "test-model"},
             "runtime_checkpoint_identity": {"checkpoint_id": "test-ckpt"},
@@ -31,9 +31,9 @@ class _FakeRuntimeClient:
             "healthz": {"status": "ok", "runtime_kind": "neoverse_production"},
             "runtime": {
                 "service": "fake",
-                "runtime_kind": "neoverse_production",
+                "runtime_kind": "native_world_model",
                 "production_grade": True,
-                "engine_identity": {"engine": "neoverse"},
+                "engine_identity": {"engine": "cosmos"},
                 "model_identity": {"model_id": "test-model"},
                 "checkpoint_identity": {"checkpoint_id": "test-ckpt"},
                 "readiness": {"model_ready": True, "checkpoint_ready": True},
@@ -79,7 +79,7 @@ def test_hosted_session_round_trip(tmp_path: Path, sample_site_world_bundle: dic
         start_state_id="start-default",
     )
     assert create_payload["status"] == "ready"
-    assert create_payload["runtime_kind"] == "neoverse_production"
+    assert create_payload["runtime_kind"] == "native_world_model"
 
     reset_payload = reset_session(config=config, session_id="session-1", session_work_dir=session_dir)
     episode_id = reset_payload["episode"]["episodeId"]
@@ -99,5 +99,5 @@ def test_hosted_session_round_trip(tmp_path: Path, sample_site_world_bundle: dic
     assert export_manifest.exists()
     exported = json.loads(export_manifest.read_text(encoding="utf-8"))
     assert exported["raw_bundle"]["rollout_count"] >= 1
-    assert exported["runtime_kind"] == "neoverse_production"
+    assert exported["runtime_kind"] == "native_world_model"
     assert (session_dir / "runtime_probe.json").exists()

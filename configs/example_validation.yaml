@@ -2,8 +2,12 @@ project_name: "Blueprint Validation"
 
 scene_memory_runtime:
   enabled: true
-  required_runtime_kind: "neoverse_production"
-  allow_smoke_fallback: false  # production acceptance must not silently downgrade to smoke_contract
+  required_runtime_kind: "native_world_model"
+  allow_smoke_fallback: false  # native acceptance must not silently downgrade to smoke_contract
+  runtime_service:
+    service_url: "http://127.0.0.1:8787"
+    api_key_env: "SITE_WORLD_RUNTIME_SERVICE_API_KEY"
+    timeout_seconds: 120
   neoverse_service:
     service_url: "http://127.0.0.1:8787"
     api_key_env: "NEOVERSE_RUNTIME_SERVICE_API_KEY"
